@@ -84,9 +84,9 @@ function approximateWidth(text: string, fontSize: number): number {
 // ---- 折り返しの単位 ----
 
 // 行頭に来てはいけない文字（前の文字とくっつける）
-const NO_BREAK_BEFORE = new Set('、。，．,.・：；:;？！?!ー～…‥）」』】〕｝〉》〙〗］)]}ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々〻゛゜')
+export const NO_BREAK_BEFORE = new Set('、。，．,.・：；:;？！?!ー～…‥）」』】〕｝〉》〙〗］)]}ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々〻゛゜')
 // 行末に来てはいけない文字（後ろの文字とくっつける）
-const NO_BREAK_AFTER = new Set('（「『【〔｛〈《〘〖［([{')
+export const NO_BREAK_AFTER = new Set('（「『【〔｛〈《〘〖［([{')
 
 function isWide(ch: string): boolean {
   const code = ch.codePointAt(0) ?? 0

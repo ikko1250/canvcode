@@ -16,6 +16,7 @@ import {
   DRAW_COLORS,
   DRAW_SIZES,
   builtinNodeTypes,
+  createCodeCardType,
   type ArrowProps,
   type FileContentSource,
   type PortalProps,
@@ -48,6 +49,7 @@ const TOOLS: { id: ToolId; label: string; key: string }[] = [
   { id: 'arrow', label: '矢印', key: 'A' },
   { id: 'portal', label: 'Portal', key: 'P' },
   { id: 'markdown', label: 'Markdown', key: 'M' },
+  { id: 'code', label: 'Python', key: 'Y' },
 ]
 
 // Markdown カードの名前の帯の寸法（ワールド座標。cardHtml.ts の .md-card-header に合わせる）
@@ -79,7 +81,9 @@ function fileIdFromUrl(): string | null {
 function createWorkspace() {
   let manager: FileManager | null = null
   const content: FileContentSource = { get: (fileId) => manager?.get(fileId) ?? null }
-  const workspace = new Workspace({ types: [...builtinNodeTypes, createAppMarkdownCardType(content)] })
+  const workspace = new Workspace({
+    types: [...builtinNodeTypes, createAppMarkdownCardType(content), createCodeCardType({ files: content })],
+  })
   manager = new FileManager({ workspace })
   return { workspace, files: manager }
 }
@@ -273,7 +277,8 @@ export function App() {
           })
         }
       }
-      if (single?.type === 'markdown-card') {
+      // File のカード（Markdown・Python）
+      if (single?.type === 'markdown-card' || single?.type === 'code-card') {
         const props = single.props as MarkdownCardProps
         const file = workspace.getFile(props.fileId)
         if (file) {
@@ -340,7 +345,17 @@ export function App() {
             const rect = view.root.getBoundingClientRect()
             const camera = editor.session.get().camera
             const world = { x: camera.x + (at.x - rect.left) / camera.zoom, y: camera.y + (at.y - rect.top) / camera.zoom }
-            void view.createMarkdownAt(world)
+            void view.createDocumentAt('markdown', world)
+          },
+        })
+        items.push({
+          label: 'ここに Python',
+          shortcut: 'Y',
+          onSelect: () => {
+            const rect = view.root.getBoundingClientRect()
+            const camera = editor.session.get().camera
+            const world = { x: camera.x + (at.x - rect.left) / camera.zoom, y: camera.y + (at.y - rect.top) / camera.zoom }
+            void view.createDocumentAt('code', world)
           },
         })
         items.push({ label: 'すべて選択', shortcut: 'Ctrl+A', onSelect: () => editor.selectAll() })
@@ -443,10 +458,6 @@ export function App() {
       const { width, height } = view.size
       const camera = editor.session.get().camera
       const center = { x: camera.x + width / 2 / camera.zoom, y: camera.y + height / 2 / camera.zoom }
-      if (workspace.getFile(id)?.kind === 'code') {
-        notify('Python のカードは、段階 10-2 で対応します')
-        return
-      }
       if (!editor.placeCanvas(id, center)) notify('キャンバスを、それ自身やその中には置けません')
     },
     onOpenFile: (id: string) => openFile(id),

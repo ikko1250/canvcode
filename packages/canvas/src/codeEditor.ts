@@ -1,8 +1,9 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
+import { python } from '@codemirror/lang-python'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { EditorState, type Extension } from '@codemirror/state'
-import { EditorView, keymap, placeholder } from '@codemirror/view'
+import { EditorState, RangeSetBuilder, type Extension } from '@codemirror/state'
+import { Decoration, EditorView, ViewPlugin, keymap, lineNumbers, placeholder, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 
 // CodeMirror の設定（MAI-9、MAI-30）。カードの上での編集と、全画面のエディタで同じものを使う。
@@ -59,6 +60,56 @@ const baseTheme = EditorView.theme({
   '.cm-cursor': { borderLeftColor: '#2f6fed' },
 })
 
+// 折り返した行も、元の行のインデントの位置から続ける（MAI-31：コードカードと同じ折り返し）。
+// 行ごとに、行頭の空白の分だけ左の余白を増やし、1 行目だけ字下げを戻す
+const TAB_SIZE = 4
+const LINE_PADDING = 16
+function indentWidth(text: string): number {
+  let width = 0
+  for (const char of text) {
+    if (char === ' ') width++
+    else if (char === '\t') width += TAB_SIZE - (width % TAB_SIZE)
+    else break
+  }
+  return width
+}
+
+const hangingIndent = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet
+    constructor(view: EditorView) {
+      this.decorations = this.build(view)
+    }
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) this.decorations = this.build(update.view)
+    }
+    build(view: EditorView): DecorationSet {
+      const builder = new RangeSetBuilder<Decoration>()
+      for (const { from, to } of view.visibleRanges) {
+        for (let pos = from; pos <= to; ) {
+          const line = view.state.doc.lineAt(pos)
+          const indent = indentWidth(line.text)
+          if (indent > 0) {
+            builder.add(
+              line.from,
+              line.from,
+              Decoration.line({ attributes: { style: `padding-left: calc(${indent}ch + ${LINE_PADDING}px); text-indent: -${indent}ch` } }),
+            )
+          }
+          pos = line.to + 1
+        }
+      }
+      return builder.finish()
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+)
+
+const codeTheme = EditorView.theme({
+  '.cm-scroller': { fontFamily: "ui-monospace, 'SFMono-Regular', Menlo, 'DejaVu Sans Mono', 'Noto Sans Mono CJK JP', monospace", fontSize: '13px' },
+  '.cm-gutters': { backgroundColor: '#fbfcfd', color: '#8c959f', border: 'none' },
+})
+
 export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
   const keys = keymap.of([
     {
@@ -91,6 +142,8 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
         baseTheme,
         options.theme ?? [],
         options.language === 'markdown' ? markdown() : [],
+        // コードは、行番号とインデントを保つ折り返し、等幅フォント
+        options.language === 'python' ? [python(), lineNumbers(), hangingIndent, codeTheme, EditorState.tabSize.of(TAB_SIZE)] : [],
         options.placeholder ? placeholder(options.placeholder) : [],
         EditorView.updateListener.of((update) => {
           if (update.docChanged) options.onChange(update.state.doc.toString())

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { builtinNodeTypes } from '@canvcode/nodes'
+import { builtinNodeTypes, createCodeCardType } from '@canvcode/nodes'
 import { createMarkdownCardType, type MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { copySelection, insertPayloadWithResult } from './clipboard.ts'
 import { Editor } from './editor.ts'
@@ -11,7 +11,7 @@ import { Workspace } from './workspace.ts'
 
 function setup() {
   const cardType = createMarkdownCardType({ embedCss: async () => '', measureCss: '' })
-  const workspace = new Workspace({ rootCanvasId: 'canvas:root', types: [...builtinNodeTypes, cardType] })
+  const workspace = new Workspace({ rootCanvasId: 'canvas:root', types: [...builtinNodeTypes, cardType, createCodeCardType()] })
   const root = new Editor({ workspace })
   const file = (id: string, title = 'メモ') =>
     workspace.applyServerFile({ id, kind: 'markdown', title, path: `${title}.md`, size: 0, mtime: 0, hash: 'h', missing: false })
@@ -93,6 +93,14 @@ describe('cards', () => {
     const [moved] = insertPayloadWithResult(root, payload, { center: { x: 0, y: 0 } }).ids
     expect(card(moved).props.role).toBe('owner')
     expect(workspace.getFile('file:a')!.ownerNodeId).toBe(moved)
+  })
+
+  it('places a Python file as a code card', () => {
+    const { workspace, root, card } = setup()
+    workspace.applyServerFile({ id: 'file:py', kind: 'code', title: 'main', path: 'main.py', size: 0, mtime: 0, hash: 'h', missing: false })
+    const id = root.placeCanvas('file:py', { x: 0, y: 0 })!
+    expect(card(id).type).toBe('code-card')
+    expect(workspace.getFile('file:py')!.ownerNodeId).toBe(id)
   })
 
   it('places an unplaced file again as a card', () => {

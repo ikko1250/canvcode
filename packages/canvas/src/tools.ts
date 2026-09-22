@@ -80,8 +80,8 @@ export interface ToolContext {
   openPortal(portalId: string): void
   // カードの本文をその場で編集する。編集できるノードなら true（MAI-30）
   editDocument(nodeId: string): boolean
-  // 新しい Markdown の File とカードを作り、その場で編集する（MAI-30）
-  createMarkdownAt(center: Vec, width?: number): void
+  // 新しい File（Markdown・Python）とカードを作り、その場で編集する（MAI-30、MAI-31）
+  createDocumentAt(kind: 'markdown' | 'code', center: Vec, width?: number): void
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
@@ -1250,17 +1250,18 @@ export class PortalTool implements Tool {
 
 const PORTAL_MIN_SIZE = { w: 80, h: 60 }
 
-// ---- Markdown（MAI-30） ----
+// ---- Markdown・Python（MAI-30、MAI-31） ----
 
-// クリックで既定の幅、ドラッグで幅を決めて、新しい Markdown のカードを作り、その場で編集する
-export class MarkdownTool implements Tool {
-  readonly id = 'markdown' as const
+// クリックで既定の幅、ドラッグで幅を決めて、新しい File のカードを作り、その場で編集する
+export class DocumentTool implements Tool {
+  readonly id: 'markdown' | 'code'
   readonly cursor = 'crosshair'
   private start: ToolPointer | null = null
   private readonly ctx: ToolContext
 
-  constructor(ctx: ToolContext) {
+  constructor(ctx: ToolContext, kind: 'markdown' | 'code') {
     this.ctx = ctx
+    this.id = kind
   }
 
   onPointerDown(pointer: ToolPointer): void {
@@ -1274,8 +1275,8 @@ export class MarkdownTool implements Tool {
     const dragged = dist(pointer.screen, start.screen) >= DRAG_THRESHOLD_PX
     const box = boxFromPoints(start.world, pointer.world)
     this.ctx.setTool('select')
-    if (dragged) this.ctx.createMarkdownAt({ x: box.x + box.w / 2, y: box.y }, Math.max(box.w, 200))
-    else this.ctx.createMarkdownAt(start.world)
+    if (dragged) this.ctx.createDocumentAt(this.id, { x: box.x + box.w / 2, y: box.y }, Math.max(box.w, 200))
+    else this.ctx.createDocumentAt(this.id, start.world)
   }
 
   cancel(): boolean {

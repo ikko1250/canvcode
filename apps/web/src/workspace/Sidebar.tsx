@@ -92,7 +92,8 @@ function TreeItem(props: SidebarProps & { canvas: CanvasRecord; depth: number })
 // File の種類の印（Canvas には付けない）
 function KindMark(props: { doc: DocumentRecord }) {
   if (props.doc.typeName === 'canvas') return null
-  return <span className="sidebar-kind">{props.doc.kind === 'markdown' ? 'MD' : 'PY'}</span>
+  const code = props.doc.kind === 'code'
+  return <span className={code ? 'sidebar-kind code' : 'sidebar-kind'}>{code ? 'PY' : 'MD'}</span>
 }
 
 // File の名前。クリックで全画面のエディタを開く。ファイルが見つからなければ、そのことを表示する

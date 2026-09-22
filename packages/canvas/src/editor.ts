@@ -46,8 +46,8 @@ export function nodeIn(tx: Transaction<WorkspaceRecord>, id: string): NodeRecord
 
 export type { HistoryMeta } from './workspace.ts'
 
-// File の種類ごとの、カードの型（MAI-7）。Python のコードカードは段階 10-2 で加える
-const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card' }
+// File の種類ごとの、カードの型（MAI-7）
+const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
 
 // 選択しているノードをリサイズ・回転するときの対象（MAI-23）
 export interface TransformSelection {

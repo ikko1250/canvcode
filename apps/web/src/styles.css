@@ -684,3 +684,14 @@ body,
   transform: translate(-50%, -50%);
   color: var(--muted);
 }
+
+/* Python（MAI-31） */
+.file-editor-type.code {
+  background: rgba(56, 139, 253, 0.16);
+  color: #0550ae;
+}
+
+.sidebar-kind.code {
+  background: rgba(56, 139, 253, 0.16);
+  color: #0550ae;
+}

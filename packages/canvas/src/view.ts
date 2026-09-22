@@ -27,13 +27,13 @@ import { FrameStats, type StatsSummary } from './stats.ts'
 import { TextEditor } from './textEditor.ts'
 import {
   ArrowTool,
+  DocumentTool,
   DrawTool,
   EraserTool,
   FrameTool,
   GeoTool,
   HIT_MARGIN_PX,
   HandTool,
-  MarkdownTool,
   NoteTool,
   PortalTool,
   SelectTool,
@@ -307,7 +307,7 @@ export class CanvasView {
       startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
       openPortal: (portalId) => this.options.onOpenPortal(portalId),
       editDocument: (nodeId) => this.editDocument(nodeId),
-      createMarkdownAt: (center, width) => void this.createMarkdownAt(center, width),
+      createDocumentAt: (kind, center, width) => void this.createDocumentAt(kind, center, width),
     }
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
@@ -321,7 +321,8 @@ export class CanvasView {
       ['eraser', new EraserTool(toolContext)],
       ['arrow', new ArrowTool(toolContext)],
       ['portal', new PortalTool(toolContext)],
-      ['markdown', new MarkdownTool(toolContext)],
+      ['markdown', new DocumentTool(toolContext, 'markdown')],
+      ['code', new DocumentTool(toolContext, 'code')],
     ])
     this.tool = this.tools.get(editor.session.get().toolId)!
     this.editorDisposers = [
@@ -424,19 +425,24 @@ export class CanvasView {
     return true
   }
 
-  // 新しい Markdown の File（「無題.md」）とカードを作り、その場で編集する（MAI-30）
-  async createMarkdownAt(top: Vec, width?: number, options: { title?: string; content?: string; edit?: boolean } = {}): Promise<string | null> {
+  // 新しい File（「無題.md」「無題.py」）とカードを作り、その場で編集する（MAI-30、MAI-31）
+  async createDocumentAt(
+    kind: 'markdown' | 'code',
+    top: Vec,
+    width?: number,
+    options: { title?: string; content?: string; edit?: boolean } = {},
+  ): Promise<string | null> {
     if (!this.files) return null
     const editor = this.editor
     try {
-      const file = await this.files.create('markdown', options.title ?? '無題', options.content ?? '')
+      const file = await this.files.create(kind, options.title ?? '無題', options.content ?? '')
       if (this.editor !== editor) return null
       const nodeId = editor.createFileCard(file.id, top, { width })
       if (nodeId && options.edit !== false) this.editDocument(nodeId)
       return nodeId
     } catch (error) {
-      console.error('Failed to create a Markdown file', error)
-      this.options.notify('Markdown のファイルを作れませんでした')
+      console.error('Failed to create a file', error)
+      this.options.notify(`${kind === 'markdown' ? 'Markdown' : 'Python'} のファイルを作れませんでした`)
       return null
     }
   }
@@ -913,6 +919,7 @@ export class CanvasView {
       a: 'arrow',
       p: 'portal',
       m: 'markdown',
+      y: 'code',
     }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })
@@ -979,7 +986,7 @@ export class CanvasView {
     // 表は Markdown の表にして、「貼り付けた表.md」のカードにする（MAI-12、MAI-30）
     const table = this.files ? markdownTableFromClipboard(data.getData('text/html'), text) : null
     if (table) {
-      await this.createMarkdownAt({ x: center.x, y: center.y - 60 }, undefined, { title: '貼り付けた表', content: table, edit: false })
+      await this.createDocumentAt('markdown', { x: center.x, y: center.y - 60 }, undefined, { title: '貼り付けた表', content: table, edit: false })
       return
     }
     if (text) insertText(this.editor, text, center)
@@ -995,16 +1002,17 @@ export class CanvasView {
 
   // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
   private async importFiles(files: File[], center: Vec): Promise<void> {
-    const markdown = this.files ? files.filter((file) => /\.(md|markdown)$/i.test(file.name)) : []
-    for (const [i, file] of markdown.entries()) {
-      const title = file.name.replace(/\.(md|markdown)$/i, '')
-      await this.createMarkdownAt({ x: center.x + i * 40, y: center.y + i * 40 }, undefined, {
-        title,
+    // .md と .py は、ワークスペースに保存してカードを置く（MAI-12）
+    const documents = this.files ? files.filter((file) => DOCUMENT_EXTENSION.test(file.name)) : []
+    for (const [i, file] of documents.entries()) {
+      const kind = /\.py$/i.test(file.name) ? 'code' : 'markdown'
+      await this.createDocumentAt(kind, { x: center.x + i * 40, y: center.y + i * 40 }, undefined, {
+        title: file.name.replace(DOCUMENT_EXTENSION, ''),
         content: await file.text(),
         edit: false,
       })
     }
-    const rest = files.filter((file) => !markdown.includes(file))
+    const rest = files.filter((file) => !documents.includes(file))
     const images = rest.filter(isSupportedImage)
     const rejected = rest.filter((file) => !isSupportedImage(file))
     if (rejected.length > 0) this.options.notify(rejectMessage(rejected))
@@ -1074,11 +1082,13 @@ function clipboardFiles(data: DataTransfer): File[] {
   })
 }
 
+const DOCUMENT_EXTENSION = /\.(md|markdown|py)$/i
+
 // 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
-  const later = files.every((file) => /\.(pdf|py|ricbackup)$/i.test(file.name))
+  const later = files.every((file) => /\.(pdf|ricbackup)$/i.test(file.name))
   return later
-    ? `${names}：PDF・Python・.ricbackup の取り込みは、後の段階で対応します`
-    : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）と Markdown（.md））`
+    ? `${names}：PDF・.ricbackup の取り込みは、後の段階で対応します`
+    : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py））`
 }

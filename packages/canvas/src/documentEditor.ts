@@ -1,4 +1,3 @@
-import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { createCodeEditor, type CodeEditorHandle } from './codeEditor.ts'
 import type { Editor } from './editor.ts'
 import type { FileManager } from './files.ts'
@@ -29,6 +28,7 @@ interface Session {
 // 編集するときの最小の高さ（ワールド座標）。短い本文でも打ちやすいように
 const MIN_EDIT_HEIGHT = 220
 const HEADER_H = 36
+const EDITABLE_CARDS = new Set(['markdown-card', 'code-card'])
 
 export class DocumentEditor {
   private readonly options: DocumentEditorOptions
@@ -42,10 +42,13 @@ export class DocumentEditor {
     return this.session?.nodeId ?? null
   }
 
-  // 編集できるノード（本文を持つカード）か
+  // 編集できるノード（本文を持つ File のカード）か
   canEdit(nodeId: string): boolean {
-    const node = this.options.getEditor().getNode(nodeId)
-    return node?.type === 'markdown-card' && Boolean((node.props as MarkdownCardProps).fileId) && !node.locked
+    const editor = this.options.getEditor()
+    const node = editor.getNode(nodeId)
+    if (!node || node.locked || !EDITABLE_CARDS.has(node.type)) return false
+    const ref = editor.workspace.referenceOf(node)
+    return ref !== null && editor.workspace.getFile(ref.targetId) !== undefined
   }
 
   async start(nodeId: string): Promise<boolean> {
@@ -53,7 +56,8 @@ export class DocumentEditor {
     const editor = this.options.getEditor()
     const node = editor.getNode(nodeId)
     if (!node || !this.canEdit(nodeId)) return false
-    const fileId = (node.props as MarkdownCardProps).fileId
+    const fileId = editor.workspace.referenceOf(node)!.targetId
+    const kind = editor.workspace.getFile(fileId)!.kind
     if (editor.workspace.targetStatus(fileId) !== 'ok') return false
     const text = await this.options.files.text(fileId)
     if (text === null || this.options.getEditor() !== editor || !editor.getNode(nodeId)) return false
@@ -83,7 +87,7 @@ export class DocumentEditor {
       alignItems: 'center',
       justifyContent: 'space-between',
       padding: '0 12px',
-      background: 'rgba(245, 231, 197, 0.55)',
+      background: kind === 'markdown' ? 'rgba(245, 231, 197, 0.55)' : '#eef2f7',
       borderBottom: '1px solid rgba(80, 66, 45, 0.16)',
       font: "600 13px 'Noto Sans JP', sans-serif",
       color: '#2b2930',
@@ -108,8 +112,8 @@ export class DocumentEditor {
     const code = createCodeEditor({
       parent: body,
       doc: text,
-      language: 'markdown',
-      placeholder: 'Markdown を書く…',
+      language: kind === 'markdown' ? 'markdown' : 'python',
+      placeholder: kind === 'markdown' ? 'Markdown を書く…' : 'Python を書く…',
       onChange: (value) => this.options.files.edit(fileId, value),
       onEscape: () => this.finish(),
       onModEnter: () => {

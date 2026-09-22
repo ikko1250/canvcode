@@ -3,7 +3,8 @@ import { createCodeEditor, type FileManager, type Workspace } from '@canvcode/ca
 import { MARKDOWN_CARD_CSS, renderMarkdown } from '@canvcode/nodes/markdown'
 import 'katex/dist/katex.min.css'
 
-// 全画面のエディタ（MAI-9 の「5. 編集モードの挙動」、MAI-30）。左に本文、右にプレビュー。
+// 全画面のエディタ（MAI-9 の「5. 編集モードの挙動」、MAI-30、MAI-31）。Markdown は左に本文、右にプレビュー。
+// Python は本文だけ（行番号とインデントを保つ折り返しは、カードと同じ）。
 // カードの上での編集と同じく、本文は File に直接書く（少し待ってまとめて保存する）。Esc か Ctrl（⌘）+Enter で閉じる
 
 type Mode = 'both' | 'source' | 'preview'
@@ -20,7 +21,10 @@ const PREVIEW_DELAY_MS = 150
 export function FileEditor(props: { workspace: Workspace; files: FileManager; fileId: string; onClose(): void }) {
   const { workspace, files, fileId, onClose } = props
   const file = workspace.getFile(fileId)
-  const [mode, setMode] = useState<Mode>('both')
+  const isCode = file?.kind === 'code'
+  const [chosenMode, setMode] = useState<Mode>('both')
+  // Python にはプレビューがない
+  const mode: Mode = isCode ? 'source' : chosenMode
   const [text, setText] = useState<string | null>(null)
   const [previewText, setPreviewText] = useState('')
   const sourceRef = useRef<HTMLDivElement>(null)
@@ -42,8 +46,8 @@ export function FileEditor(props: { workspace: Workspace; files: FileManager; fi
     const editor = createCodeEditor({
       parent,
       doc: text,
-      language: 'markdown',
-      placeholder: 'Markdown を書く…',
+      language: isCode ? 'python' : 'markdown',
+      placeholder: isCode ? 'Python を書く…' : 'Markdown を書く…',
       onChange: (value) => {
         files.edit(fileId, value)
         setPreviewText(value)
@@ -68,7 +72,7 @@ export function FileEditor(props: { workspace: Workspace; files: FileManager; fi
       void files.flush(fileId)
     }
     // text は読み込んだときに一度だけ決まる（そのあとの変更はエディタが持つ）
-  }, [files, fileId, onClose, text])
+  }, [files, fileId, onClose, text, isCode])
 
   // Esc は、エディタの外（プレビュー側など）にフォーカスがあるときも閉じる
   useEffect(() => {
@@ -88,22 +92,24 @@ export function FileEditor(props: { workspace: Workspace; files: FileManager; fi
     const timer = window.setTimeout(() => setDebounced(previewText), PREVIEW_DELAY_MS)
     return () => window.clearTimeout(timer)
   }, [previewText])
-  const html = useMemo(() => renderMarkdown(debounced).html, [debounced])
+  const html = useMemo(() => (isCode ? '' : renderMarkdown(debounced).html), [debounced, isCode])
 
   return (
     <div className="file-editor" role="dialog" aria-label={file?.title}>
       <style>{MARKDOWN_CARD_CSS}</style>
       <header className="file-editor-header">
-        <span className="file-editor-type">MD</span>
+        <span className={isCode ? 'file-editor-type code' : 'file-editor-type'}>{isCode ? 'PY' : 'MD'}</span>
         <strong className="file-editor-title">{file?.title ?? ''}</strong>
         <span className="file-editor-path">{file?.path}</span>
-        <div className="file-editor-modes">
-          {MODES.map(({ mode: m, label }) => (
-            <button key={m} className={mode === m ? 'active' : ''} onClick={() => setMode(m)}>
-              {label}
-            </button>
-          ))}
-        </div>
+        {!isCode && (
+          <div className="file-editor-modes">
+            {MODES.map(({ mode: m, label }) => (
+              <button key={m} className={mode === m ? 'active' : ''} onClick={() => setMode(m)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         <button className="file-editor-close" onClick={onClose} title="閉じる（Esc）">
           ×
         </button>
