@@ -1230,15 +1230,14 @@ export class CanvasView {
     for (const file of backups) this.options.onImportBackup(file)
     const files = all.filter((file) => !backups.includes(file))
     if (files.length === 0) return
-    // .md と .py は、ワークスペースに保存してカードを置く（MAI-12）
+    // .md と .py は、ワークスペースに保存する。.md はカードを置き、.py は PDF と同じく、
+    // コードのカードを置いた Canvas とその Portal にする（MAI-12、MAI-37）
     const documents = this.files ? files.filter((file) => DOCUMENT_EXTENSION.test(file.name)) : []
     for (const [i, file] of documents.entries()) {
-      const kind = /\.py$/i.test(file.name) ? 'code' : 'markdown'
-      await this.createDocumentAt(kind, { x: center.x + i * 40, y: center.y + i * 40 }, undefined, {
-        title: file.name.replace(DOCUMENT_EXTENSION, ''),
-        content: await file.text(),
-        edit: false,
-      })
+      const at = { x: center.x + i * 40, y: center.y + i * 40 }
+      const title = file.name.replace(DOCUMENT_EXTENSION, '')
+      if (/\.py$/i.test(file.name)) await this.importPython(title, await file.text(), at)
+      else await this.createDocumentAt('markdown', at, undefined, { title, content: await file.text(), edit: false })
     }
     // PDF は、ページを並べた Canvas とその Portal にする（MAI-12、MAI-32）
     const pdfs = files.filter((file) => isPdf(file))
@@ -1295,6 +1294,21 @@ export class CanvasView {
       // 壊れた PDF など、ファイルの側の問題が多いので、知らせるだけにする
       console.warn('Failed to import a PDF', file.name, error)
       this.options.notify(`PDF を読み込めませんでした：${file.name}`)
+      return null
+    }
+  }
+
+  // Python を取り込む：File にして、コードのカードを置いた Canvas と Portal を作る（MAI-37）
+  async importPython(title: string, content: string, center: Vec): Promise<string | null> {
+    if (!this.files) return null
+    const editor = this.editor
+    try {
+      const file = await this.files.create('code', title || '無題', content)
+      if (this.editor !== editor) return null
+      return editor.createPythonCanvas(file.id, center)?.portalId ?? null
+    } catch (error) {
+      console.error('Failed to import a Python file', error)
+      this.options.notify(`Python のファイルを作れませんでした：${title}`)
       return null
     }
   }

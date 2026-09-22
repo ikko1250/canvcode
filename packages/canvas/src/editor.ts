@@ -481,6 +481,24 @@ export class Editor {
     })
   }
 
+  // ---- Python の Canvas（MAI-37） ----
+
+  // Python の File を、PDF と同じく自分の Canvas に置く：新しい Canvas、その中のコードのカード（左上が原点。
+  // 高さは中身に合わせる）、その持ち主の Portal（この Canvas の center）を 1 回の操作で作る（1 回の Undo で戻る）
+  createPythonCanvas(fileId: string, center: Vec, options: { title?: string } = {}): { portalId: string; canvasId: string; cardId: string } | null {
+    const file = this.workspace.getFile(fileId)
+    if (!file || file.kind !== 'code' || !this.types.has('code-card')) return null
+    const role = file.ownerNodeId === null && file.deletedAt === null ? 'owner' : 'shortcut'
+    return this.transact('create python canvas', (tx) => {
+      const canvas = this.workspace.createCanvas(tx, options.title ?? file.title)
+      const card = this.makeNode('code-card', { x: 0, y: 0, parentId: canvas.id, props: { fileId, role, sizing: 'auto' } })
+      tx.put(card)
+      const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
+      this.setSelection([portalId])
+      return { portalId, canvasId: canvas.id, cardId: card.id }
+    })
+  }
+
   // ---- 引用（MAI-33） ----
 
   // 引用ノートを、左上が topLeft（ワールド座標）になるように置く。draft から新しい SourceAnchor も作る（1 回の Undo で戻る）
