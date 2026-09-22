@@ -1,6 +1,6 @@
 import { applyMat, clampZoom, fitBox, invert, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
 import type { DocumentResolver, RasterImage } from '@canvcode/nodes'
-import { AssetManager, isSupportedImage } from './assets.ts'
+import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import {
   CLIPBOARD_MIME,
   copySelection,
@@ -53,6 +53,8 @@ export interface CanvasViewOptions {
   gridColors?: { minor: string; major: string }
   // 画像の Asset（MAI-26）。渡さなければ、このビューが自分で作る
   assets?: AssetManager
+  // PDF を開いて描く先（MAI-32）。assets を渡さないときに、このビューが作る AssetManager に渡す
+  pdf?: PdfService
   // 画面に短く知らせる（受け付けないファイルをドロップしたときなど）
   notify?: (message: string) => void
   // Portal の参照先に入る（ダブルクリック・Portal を作ったとき。MAI-29）
@@ -88,7 +90,7 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files'>>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf'>>
   readonly files: FileManager | null
   // カードの上での本文の編集（MAI-30）
   readonly documentEditor: DocumentEditor | null
@@ -151,7 +153,7 @@ export class CanvasView {
       },
       thumbnail: (id) => this.thumbnails.get(id) ?? null,
     }
-    this.assets = options.assets ?? new AssetManager({ notify: this.options.notify })
+    this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
 
     this.root = document.createElement('div')
     this.root.tabIndex = 0
@@ -1012,7 +1014,10 @@ export class CanvasView {
         edit: false,
       })
     }
-    const rest = files.filter((file) => !documents.includes(file))
+    // PDF は、ページを並べた Canvas とその Portal にする（MAI-12、MAI-32）
+    const pdfs = files.filter((file) => isPdf(file))
+    for (const [i, file] of pdfs.entries()) await this.importPdf(file, { x: center.x + i * 40, y: center.y + i * 40 })
+    const rest = files.filter((file) => !documents.includes(file) && !pdfs.includes(file))
     const images = rest.filter(isSupportedImage)
     const rejected = rest.filter((file) => !isSupportedImage(file))
     if (rejected.length > 0) this.options.notify(rejectMessage(rejected))
@@ -1029,6 +1034,38 @@ export class CanvasView {
     const maxSize = { w: (this.width * IMAGE_FIT_RATIO) / zoom, h: (this.height * IMAGE_FIT_RATIO) / zoom }
     this.editor.focusGroup(null)
     insertImages(this.editor, assets, center, maxSize)
+  }
+
+  // PDF を取り込む：Asset にしてアップロードを始め、ページの大きさを読み、ページの Canvas と Portal を作る。
+  // Portal のサムネイルは 1 ページ目（MAI-10）
+  async importPdf(file: File, center: Vec): Promise<string | null> {
+    if (!this.assets.canOpenPdf) {
+      this.options.notify('PDF を開く準備ができていません')
+      return null
+    }
+    const editor = this.editor
+    try {
+      const asset = await this.assets.importPdf(file)
+      const doc = await this.assets.pdfDocument(asset.id)
+      const pageSizes = await Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.pageSize(i)))
+      if (this.editor !== editor) return null
+      const title = file.name.replace(/\.pdf$/i, '') || 'PDF'
+      const { portalId, canvasId } = editor.importPdf({ title, asset, pageSizes, center })
+      // 1 ページ目を小さく描いて、Portal のサムネイルにする
+      const first = pageSizes[0]
+      if (first) {
+        const scale = Math.min(THUMBNAIL_MAX.w / first.width, THUMBNAIL_MAX.h / first.height)
+        const image = await doc.render(0, scale)
+        this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
+        this.invalidate('scene')
+      }
+      return portalId
+    } catch (error) {
+      // 壊れた PDF など、ファイルの側の問題が多いので、知らせるだけにする
+      console.warn('Failed to import a PDF', file.name, error)
+      this.options.notify(`PDF を読み込めませんでした：${file.name}`)
+      return null
+    }
   }
 
   private onKeyUp(e: KeyboardEvent): void {
@@ -1087,8 +1124,8 @@ const DOCUMENT_EXTENSION = /\.(md|markdown|py)$/i
 // 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
-  const later = files.every((file) => /\.(pdf|ricbackup)$/i.test(file.name))
+  const later = files.every((file) => /\.ricbackup$/i.test(file.name))
   return later
-    ? `${names}：PDF・.ricbackup の取り込みは、後の段階で対応します`
-    : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py））`
+    ? `${names}：.ricbackup の取り込みは、段階 11 で対応します`
+    : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、PDF）`
 }

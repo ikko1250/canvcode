@@ -9,6 +9,8 @@ import { join } from 'node:path'
 //   同じファイルを 2 回受け取っても 1 つにまとまり、中身が変わることもない（ブラウザに長くキャッシュさせる）
 // - 縮小版（長辺 256px・1024px）はブラウザが作って送ってくる（MAI-14）。<ハッシュ>.<長辺>.<拡張子> に置く
 // - 種類や縮小版の一覧は <ハッシュ>.json に書いておく。段階 11 で Asset のレコードを SQLite に入れたら、そちらに移す
+// - PDF は、受け取ったあとで検索用のテキストをページごとに取り出し、<ハッシュ>.pages.json に置く（MAI-10 の「4. PDF」）。
+//   全文検索の画面は初版の範囲外なので、取り出しておくだけ
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -17,10 +19,11 @@ const ORIGINAL_TYPES: Record<string, string> = {
   'image/webp': 'webp',
   'image/avif': 'avif',
   'image/bmp': 'bmp',
+  'application/pdf': 'pdf',
 }
 const VARIANT_TYPES: Record<string, string> = { 'image/webp': 'webp', 'image/png': 'png' }
 const VARIANT_SIZES = new Set([256, 1024])
-const MAX_ORIGINAL_BYTES = 100 * 1024 * 1024
+const MAX_ORIGINAL_BYTES = 200 * 1024 * 1024
 const MAX_VARIANT_BYTES = 10 * 1024 * 1024
 const HASH_PATTERN = /^[0-9a-f]{64}$/
 
@@ -80,6 +83,8 @@ export class AssetStore {
     if (!(await this.readMeta(hash))) {
       await writeAtomic(join(this.dir, `${hash}.${ext}`), body)
       await this.writeMeta(hash, { mime, size: body.length, variants: {} })
+      // 応答を待たせないよう、裏で行う
+      if (mime === 'application/pdf') void this.extractPdfText(hash, body)
     }
     sendJson(res, 200, { hash, mime, size: body.length })
   }
@@ -127,6 +132,23 @@ export class AssetStore {
       return
     }
     createReadStream(path).pipe(res)
+  }
+
+  private async extractPdfText(hash: string, data: Buffer): Promise<void> {
+    try {
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+      const task = pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: false })
+      const doc = await task.promise
+      const pages: string[] = []
+      for (let i = 1; i <= doc.numPages; i++) {
+        const content = await (await doc.getPage(i)).getTextContent()
+        pages.push(content.items.map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : '') : '')).join(''))
+      }
+      await task.destroy()
+      await writeAtomic(join(this.dir, `${hash}.pages.json`), Buffer.from(JSON.stringify({ version: 1, pages })))
+    } catch (error) {
+      console.error('failed to extract the text of a PDF', hash, error)
+    }
   }
 
   private async readMeta(hash: string): Promise<AssetMeta | null> {

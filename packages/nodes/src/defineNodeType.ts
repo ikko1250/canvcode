@@ -25,7 +25,7 @@ export interface RenderInfo {
 
 export interface DocumentInfo {
   title: string
-  kind: 'canvas' | 'markdown' | 'code'
+  kind: 'canvas' | 'markdown' | 'code' | 'pdf'
   // 'trashed'：ゴミ箱の中 / 'missing'：完全に削除された（リンク切れ）/ 'nofile'：File はあるが実ファイルが見つからない
   status: 'ok' | 'trashed' | 'missing' | 'nofile'
 }
@@ -51,6 +51,8 @@ export interface AssetResolver {
   get(assetId: string): AssetRecord | undefined
   // Asset の画像を、長辺 size 画素の版（縮小版か原本）で読み込む。返す RasterImage の level は size にする
   load(assetId: string, size: number): Promise<RasterImage>
+  // PDF の Asset のページ（0 から）を、1 単位あたり scale 画素で描く。返す RasterImage の level は scale にする（MAI-32）
+  renderPdfPage?(assetId: string, pageIndex: number, scale: number): Promise<RasterImage>
 }
 
 // 作ってある画像。level は解像度の倍率（CSS ピクセル 1 つあたりの画素数）

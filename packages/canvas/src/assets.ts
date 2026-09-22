@@ -1,5 +1,5 @@
 import { assetIdFromHash, type AssetRecord } from '@canvcode/core'
-import { IMAGE_VARIANT_SIZES, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
+import { IMAGE_VARIANT_SIZES, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
 
 // 画像の Asset の取り込み・アップロード・読み込み（MAI-10、MAI-14、MAI-26）。
 // - 取り込むとき、ブラウザで中身の SHA-256 と縮小版（長辺 256px・1024px）を作り、すぐに使えるようにしてから、
@@ -12,7 +12,29 @@ export interface AssetManagerOptions {
   baseUrl?: string
   // アップロードに失敗したときなどに、画面に知らせる
   notify?: (message: string) => void
+  // PDF を開いて描く先（PDF.js。Vite の機能で Worker を読み込むので、アプリ側から渡す。MAI-32）
+  pdf?: PdfService
 }
+
+// PDF を開いて描く（MAI-5、MAI-32）。大きさはポイント（1/72 インチ）
+export interface PdfDocument {
+  numPages: number
+  pageSize(pageIndex: number): Promise<{ width: number; height: number }>
+  // 1 ポイントあたり scale 画素で描く
+  render(pageIndex: number, scale: number): Promise<ImageBitmap>
+}
+
+export interface PdfService {
+  open(source: { data: ArrayBuffer } | { url: string }): Promise<PdfDocument>
+}
+
+export function isPdf(file: Blob & { name?: string }): boolean {
+  return file.type === 'application/pdf' || /\.pdf$/i.test(file.name ?? '')
+}
+
+// PDF のページを描くときの、1 辺と画素数の上限（大きすぎる画像を作らないように）
+const PDF_MAX_SIDE = 8192
+const PDF_MAX_PIXELS = 32 * 1024 * 1024
 
 // 取り込める画像の種類。SVG は中にスクリプトを持てるので、初版では受け付けない
 export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp']
@@ -28,10 +50,69 @@ export class AssetManager implements AssetResolver {
   private readonly uploads = new Map<string, Promise<void>>()
   private readonly baseUrl: string
   private readonly notify: (message: string) => void
+  private readonly pdf: PdfService | null
+  private readonly pdfDocuments = new Map<string, Promise<PdfDocument>>()
 
   constructor(options: AssetManagerOptions = {}) {
     this.baseUrl = options.baseUrl ?? '/api/assets'
     this.notify = options.notify ?? ((message) => console.warn(message))
+    this.pdf = options.pdf ?? null
+  }
+
+  get canOpenPdf(): boolean {
+    return this.pdf !== null
+  }
+
+  // PDF のファイルを Asset として取り込み、裏でアップロードを始める（MAI-32）。
+  // 先に開いてみて、読めない（壊れている）PDF はアップロードしない
+  async importPdf(file: Blob): Promise<AssetRecord> {
+    if (!this.pdf) throw new Error('PDF is not available')
+    const hash = await sha256Hex(file)
+    const id = assetIdFromHash(hash)
+    const existing = this.records.get(id)
+    if (existing) return existing
+    const opened = this.pdf.open({ data: await file.arrayBuffer() })
+    await opened
+    this.pdfDocuments.set(id, opened)
+    const record: AssetRecord = { typeName: 'asset', id, mime: 'application/pdf', size: file.size, hash, width: 0, height: 0, variants: [] }
+    this.records.set(id, record)
+    this.local.set(id, new Map([[0, file]]))
+    const upload = this.upload(record, new Map([[0, file]]))
+      .then(() => {
+        this.local.delete(id)
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to upload a PDF', id, error)
+        this.notify('PDF をサーバーに保存できませんでした。このタブを閉じると、PDF は失われます。')
+      })
+      .finally(() => this.uploads.delete(id))
+    this.uploads.set(id, upload)
+    return record
+  }
+
+  // PDF を開く（Asset ごとに一度だけ）。アップロードが済むまでは手元のファイルから、済んだらサーバーから読む
+  pdfDocument(assetId: string): Promise<PdfDocument> {
+    let pending = this.pdfDocuments.get(assetId)
+    if (!pending) {
+      const pdf = this.pdf
+      const record = this.records.get(assetId)
+      if (!pdf || !record) return Promise.reject(new Error(`Cannot open the PDF: ${assetId}`))
+      const local = this.local.get(assetId)?.get(0)
+      pending = local ? local.arrayBuffer().then((data) => pdf.open({ data })) : pdf.open({ url: `${this.baseUrl}/${record.hash}` })
+      pending.catch(() => this.pdfDocuments.delete(assetId))
+      this.pdfDocuments.set(assetId, pending)
+    }
+    return pending
+  }
+
+  async renderPdfPage(assetId: string, pageIndex: number, scale: number): Promise<RasterImage> {
+    const doc = await this.pdfDocument(assetId)
+    const size = await doc.pageSize(pageIndex)
+    // ワールド座標の 1 単位あたり scale 画素 → ポイントあたりの画素。大きすぎるときは抑える
+    let pointScale = scale * PDF_POINT_SCALE
+    pointScale = Math.min(pointScale, PDF_MAX_SIDE / size.width, PDF_MAX_SIDE / size.height, Math.sqrt(PDF_MAX_PIXELS / (size.width * size.height)))
+    const image = await doc.render(pageIndex, pointScale)
+    return { image, width: image.width, height: image.height, level: scale }
   }
 
   get(assetId: string): AssetRecord | undefined {
@@ -111,6 +192,7 @@ export class AssetManager implements AssetResolver {
 
   private async upload(record: AssetRecord, blobs: Map<number, Blob>): Promise<void> {
     const original = blobs.get(Math.max(record.width, record.height))!
+    // record.variants が空（PDF など）なら、原本だけを送る
     const response = await fetch(this.baseUrl, {
       method: 'POST',
       headers: { 'content-type': record.mime, 'x-canvcode-sha256': record.hash },

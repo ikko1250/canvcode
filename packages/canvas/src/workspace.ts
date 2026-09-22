@@ -214,11 +214,12 @@ export class Workspace implements NodeLookup {
     return out
   }
 
-  // 持ち主による子の File（ゴミ箱の中のものは除く）。ツリーでは葉になる
+  // 持ち主による子の File（ゴミ箱の中のものは除く）。ツリーでは葉になる。
+  // PDF はページを並べた Canvas として表すので、ここには入れない
   childFiles(canvasId: string): FileRecord[] {
     const out: FileRecord[] = []
     for (const record of this.store.values()) {
-      if (isFileRecord(record) && record.parentCanvasId === canvasId && record.deletedAt === null) out.push(record)
+      if (isFileRecord(record) && record.kind !== 'pdf' && record.parentCanvasId === canvasId && record.deletedAt === null) out.push(record)
     }
     return out.sort((a, b) => a.title.localeCompare(b.title, 'ja'))
   }
@@ -235,6 +236,7 @@ export class Workspace implements NodeLookup {
   unplacedDocuments(): DocumentRecord[] {
     return this.documents()
       .filter((d) => d.id !== this.rootCanvasId && d.ownerNodeId === null && d.deletedAt === null)
+      .filter((d) => !(isFileRecord(d) && d.kind === 'pdf'))
       .sort((a, b) => a.title.localeCompare(b.title, 'ja'))
   }
 
@@ -342,15 +344,21 @@ export class Workspace implements NodeLookup {
   }
 
   // ゴミ箱から完全に削除する。一緒に入れたものと、その中身をすべて消す。これを指すショートカットは「リンク切れ」になる。
-  // 消した File の id を返す（呼び出し側が、サーバーに実ファイルの退避を頼む）
+  // 消した File（.md・.py）の id を返す（呼び出し側が、サーバーに実ファイルの退避を頼む）
   deleteCanvasForever(tx: Transaction<WorkspaceRecord>, documentId: string): string[] {
     const root = this.getDocument(documentId)
     if (!root?.trash) return []
     const files: string[] = []
+    const removed = new Set<string>()
     for (const doc of this.documents()) {
       if (doc.trash?.batchId !== root.trash.batchId) continue
       tx.remove(doc.id)
-      if (isFileRecord(doc)) files.push(doc.id)
+      removed.add(doc.id)
+      if (isFileRecord(doc) && doc.kind !== 'pdf') files.push(doc.id)
+    }
+    // ページの Canvas を消したら、その PDF の File も消す（原本の Asset は、どこからも参照されなくなってからサーバーが消す）
+    for (const doc of this.documents()) {
+      if (isFileRecord(doc) && doc.kind === 'pdf' && doc.pagesCanvasId && removed.has(doc.pagesCanvasId)) tx.remove(doc.id)
     }
     return files
   }

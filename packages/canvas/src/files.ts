@@ -263,7 +263,7 @@ export class FileManager implements FileContentSource {
       await this.put(fileId, entry, mine, null)
       return
     }
-    if (choice === 'saveAs') {
+    if (choice === 'saveAs' && file.kind !== 'pdf') {
       const copy = await this.create(file.kind, `${file.title}（自分の編集）`, mine)
       this.notify(`自分の編集を「${copy.title}」として保存しました。サイドバーの「未配置」から置けます`)
     }
@@ -305,7 +305,7 @@ export class FileManager implements FileContentSource {
   private async recheckAll(): Promise<void> {
     for (const fileId of this.entries.keys()) {
       const file = this.workspace.getFile(fileId)
-      if (file) await this.onServerFile(file)
+      if (file && file.kind !== 'pdf') await this.onServerFile(file as ServerFile)
     }
   }
 

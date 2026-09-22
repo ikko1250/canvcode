@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "chokidar": "^5.0.0",
+    "pdfjs-dist": "^6.3.289",
     "ws": "^8.21.3"
   },
   "devDependencies": {

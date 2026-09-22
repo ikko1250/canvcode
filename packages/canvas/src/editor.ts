@@ -19,7 +19,7 @@ import {
   type Transaction,
   type Vec,
 } from '@canvcode/core'
-import { PORTAL_DEFAULT_SIZE, type AnyNodeTypeDef } from '@canvcode/nodes'
+import { PDF_POINT_SCALE, PORTAL_DEFAULT_SIZE, type AnyNodeTypeDef } from '@canvcode/nodes'
 import { unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
 import { Session } from './session.ts'
@@ -45,6 +45,10 @@ export function nodeIn(tx: Transaction<WorkspaceRecord>, id: string): NodeRecord
 }
 
 export type { HistoryMeta } from './workspace.ts'
+
+// PDF のページの並べ方（MAI-32：横 4 枚ずつの格子）
+const PDF_COLUMNS = 4
+const PDF_PAGE_GAP = 40
 
 // File の種類ごとの、カードの型（MAI-7）
 const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
@@ -392,6 +396,80 @@ export class Editor {
     return ids
   }
 
+  // ノードを固定する・固定を外す（MAI-32）。固定したノードは選べず、動かせない
+  setLocked(ids: Iterable<string>, locked: boolean): void {
+    const nodes = [...ids].flatMap((id) => this.getNode(id) ?? []).filter((n) => n.locked !== locked)
+    if (nodes.length === 0) return
+    this.transact(locked ? 'lock' : 'unlock', (tx) => {
+      for (const node of nodes) tx.put({ ...node, locked })
+      this.setSelection(locked ? [] : nodes.map((n) => n.id))
+    })
+  }
+
+  // ---- PDF（MAI-7、MAI-10、MAI-32） ----
+
+  // PDF を取り込む：PDF の File、ページを並べた Canvas（横 4 枚ずつの格子。ページは固定する）、
+  // その持ち主の Portal（この Canvas の center）を 1 回の操作で作る（1 回の Undo で戻る）
+  importPdf(options: {
+    title: string
+    asset: { id: string; hash: string; size: number }
+    // ページの大きさ（ポイント）
+    pageSizes: { width: number; height: number }[]
+    center: Vec
+  }): { portalId: string; canvasId: string; fileId: string } {
+    const { title, asset, pageSizes, center } = options
+    return this.transact('import pdf', (tx) => {
+      const canvas = this.workspace.createCanvas(tx, title)
+      const now = Date.now()
+      const fileId = createId('file')
+      tx.put({
+        typeName: 'file',
+        id: fileId,
+        kind: 'pdf',
+        title,
+        path: '',
+        size: asset.size,
+        mtime: now,
+        hash: asset.hash,
+        missing: false,
+        assetId: asset.id,
+        pagesCanvasId: canvas.id,
+        pageCount: pageSizes.length,
+        parentCanvasId: null,
+        ownerNodeId: null,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+        trash: null,
+      })
+      // 格子に並べる。列の幅と行の高さは、その中で最も大きいページに合わせる
+      const sizes = pageSizes.map((p) => ({ w: p.width * PDF_POINT_SCALE, h: p.height * PDF_POINT_SCALE }))
+      const columnW = Math.max(...sizes.map((s) => s.w), 1)
+      const indices = indicesBetween(null, null, sizes.length)
+      let y = 0
+      for (let row = 0; row * PDF_COLUMNS < sizes.length; row++) {
+        const rowSizes = sizes.slice(row * PDF_COLUMNS, (row + 1) * PDF_COLUMNS)
+        for (const [col, size] of rowSizes.entries()) {
+          const pageIndex = row * PDF_COLUMNS + col
+          tx.put({
+            ...this.makeNode('pdf-page', {
+              x: col * (columnW + PDF_PAGE_GAP),
+              y,
+              parentId: canvas.id,
+              index: indices[pageIndex],
+              props: { assetId: asset.id, fileId, pageIndex, w: size.w, h: size.h },
+            }),
+            locked: true,
+          })
+        }
+        y += Math.max(...rowSizes.map((s) => s.h)) + PDF_PAGE_GAP
+      }
+      const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
+      this.setSelection([portalId])
+      return { portalId, canvasId: canvas.id, fileId }
+    })
+  }
+
   // ---- Portal と階層（MAI-8、MAI-29） ----
 
   // ワールド座標の点を中心に、新しい子の Canvas と、その持ち主の Portal を作る。フレームの上なら、フレームの中に置く
@@ -662,7 +740,8 @@ export class Editor {
   // ---- 当たり判定（MAI-12） ----
 
   // ワールド座標の点に当たっている、最も手前のノード（group 以外）。marginWorld はワールド座標での余裕
-  hitTest(point: Vec, marginWorld: number): NodeRecord | null {
+  // includeLocked：固定したノードも当てる（右クリックで固定を外すため。MAI-32）
+  hitTest(point: Vec, marginWorld: number, options: { includeLocked?: boolean } = {}): NodeRecord | null {
     const zoom = this.session.get().camera.zoom
     const ids = this.index.search({
       x: point.x - marginWorld,
@@ -675,7 +754,7 @@ export class Editor {
     const ordered = this.index.sortByOrder([...new Set([...ids, ...labelIds])])
     for (let i = ordered.length - 1; i >= 0; i--) {
       const entry = this.index.get(ordered[i])
-      if (!entry || entry.node.locked) continue
+      if (!entry || (entry.node.locked && !options.includeLocked)) continue
       // フレームの外にはみ出した子は、見えないので当たらない
       if (this.clippedAway(entry, point)) continue
       const local = applyMat(invert(entry.worldMatrix), point)

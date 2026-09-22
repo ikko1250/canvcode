@@ -25,6 +25,7 @@ import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
+import { pdfService } from './pdf.ts'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
@@ -324,9 +325,19 @@ export function App() {
         if (selected.some((n) => n.type === 'group')) {
           items.push({ label: 'グループを解除', shortcut: 'Ctrl+Shift+G', onSelect: () => editor.ungroupSelected() })
         }
+        items.push({ label: '固定する', onSelect: () => editor.setLocked(selected.map((n) => n.id), true) })
         items.push('separator')
         items.push({ label: '削除', shortcut: 'Delete', danger: true, onSelect: () => void view.deleteSelection() })
       } else {
+        // 固定したノード（PDF のページなど）の上なら、固定を外せる（MAI-32）
+        const rect = view.root.getBoundingClientRect()
+        const camera = editor.session.get().camera
+        const point = { x: camera.x + (at.x - rect.left) / camera.zoom, y: camera.y + (at.y - rect.top) / camera.zoom }
+        const locked = editor.hitTest(point, 4 / camera.zoom, { includeLocked: true })
+        if (locked?.locked) {
+          items.push({ label: '固定を外す', onSelect: () => editor.setLocked([locked.id], false) })
+          items.push('separator')
+        }
         items.push({
           label: 'ここに新しいキャンバス',
           shortcut: 'P',
@@ -372,6 +383,7 @@ export function App() {
     const created = new CanvasView(getEditor(workspace.rootCanvasId), container, {
       notify,
       files,
+      pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
       onOpenPortal: (portalId) => openPortal(portalId),
       onContextMenu: ({ clientX, clientY }) => {

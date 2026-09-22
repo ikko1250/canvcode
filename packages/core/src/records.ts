@@ -83,7 +83,8 @@ export interface CanvasRecord {
 export interface FileRecord {
   typeName: 'file'
   id: string
-  kind: 'markdown' | 'code'
+  // pdf は、本文を Asset に持ち、ページを並べた Canvas（pagesCanvasId）で表示する（MAI-7、MAI-32）
+  kind: 'markdown' | 'code' | 'pdf'
   // 名前はファイル名（拡張子を除く）と同じ。名前を変えるとファイル名も変わる
   title: string
   // ワークスペースのフォルダからの相対パス
@@ -94,6 +95,10 @@ export interface FileRecord {
   hash: string
   // 実ファイルが見つからない（外で削除された）。ノードは消さず、カードにそのことを表示する
   missing: boolean
+  // PDF のとき：原本の Asset、ページを並べた Canvas、ページ数
+  assetId?: string
+  pagesCanvasId?: string
+  pageCount?: number
   // ここから下は Canvas と同じ（階層とゴミ箱）
   parentCanvasId: string | null
   ownerNodeId: string | null
