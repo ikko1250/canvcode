@@ -86,6 +86,8 @@ export interface ToolContext {
   quoteRegion(pageId: string, rect: Box, screen: Vec): void
   // PDF のページの上の、引用した範囲をクリックした（逆リンク）
   openCitations(anchorIds: string[], screen: Vec): void
+  // ノードを Portal の上に落とした：確かめてから、参照先の Canvas に移す（MAI-38）
+  moveToCanvas(ids: string[], canvasId: string): void
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
@@ -175,6 +177,8 @@ type SelectState =
       tx: Transaction<WorkspaceRecord>
       // ワールドでの形にした、動かし始めのノード
       initial: Map<string, NodeRecord>
+      // ポインタの下にある、落とせば中に移せる Portal（MAI-38）
+      dropTarget: { portalId: string; canvasId: string } | null
     }
   | { name: 'resizing'; handle: Handle; tx: Transaction<WorkspaceRecord>; selection: TransformSelection }
   | { name: 'draggingArrowEnd'; tx: Transaction<WorkspaceRecord>; drag: ArrowTerminalDrag }
@@ -364,6 +368,10 @@ export class SelectTool implements Tool {
           state.tx.put(editor.fromWorld({ ...world, x: world.x + dx, y: world.y + dy }))
         }
         state.tx.flush()
+        // Portal の上なら、落とせることをホバーの枠で見せる
+        state.dropTarget = editor.canvasDropTarget(pointer.world, state.initial.keys())
+        const hoveredId = state.dropTarget?.portalId ?? null
+        if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
         return
       }
     }
@@ -398,6 +406,12 @@ export class SelectTool implements Tool {
         this.ctx.quoteRegion(state.pageId, { x: rect.x / w, y: rect.y / h, w: rect.w / w, h: rect.h / h }, pointer.screen)
       }
       this.ctx.setCursor(null)
+    } else if (state.name === 'translating' && state.dropTarget) {
+      // Portal の上に落とした：いったん元の位置に戻し、確かめてから参照先の Canvas に移す（MAI-38）
+      state.tx.cancel()
+      this.ctx.drop()
+      editor.session.set({ hoveredId: null })
+      this.ctx.moveToCanvas([...state.initial.keys()], state.dropTarget.canvasId)
     } else if (state.name === 'translating') {
       this.dropIntoFrames(state.tx, [...state.initial.keys()])
       editor.finish(state.tx)
@@ -434,6 +448,8 @@ export class SelectTool implements Tool {
       state.tx.cancel()
       this.ctx.drop()
       this.ctx.setCursor(null)
+      // 落とす先の Portal の枠を消す（MAI-38）
+      if (state.name === 'translating' && state.dropTarget) session.set({ hoveredId: null })
       return true
     }
     if (state.name === 'brushing') {
@@ -543,7 +559,7 @@ export class SelectTool implements Tool {
     for (const id of ids) initial.set(id, editor.toWorld(nodeIn(tx, id)!))
     this.ctx.lift(initial.keys())
     editor.session.set({ hoveredId: null })
-    this.state = { name: 'translating', start, tx, initial }
+    this.state = { name: 'translating', start, tx, initial, dropTarget: null }
   }
 
   // 動かし終えたノードを、中心の下にあるフレームの子にする（フレームの外に出したら Canvas に戻す）。

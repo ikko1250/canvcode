@@ -22,6 +22,7 @@ function setup() {
     createDocumentAt: () => {},
     quoteRegion: () => {},
     openCitations: () => {},
+    moveToCanvas: () => {},
   }
   const pointer = (x: number, y: number, coalesced?: Vec[], shiftKey = false): ToolPointer => ({
     screen: { x, y },

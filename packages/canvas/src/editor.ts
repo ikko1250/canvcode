@@ -61,6 +61,9 @@ const PDF_PAGE_GAP = 40
 // 引用ノートを出典の横に置くときの間隔（MAI-33）
 const QUOTE_GAP = 24
 
+// 子キャンバスに移したノードを、移す先にすでにあるものの右に置くときの間隔（MAI-38）
+const MOVE_TO_CANVAS_GAP = 80
+
 // File の種類ごとの、カードの型（MAI-7）
 const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
 
@@ -632,14 +635,7 @@ export class Editor {
     const topmost = this.getNode(roots.at(-1)!)!
     return this.transact('promote', (tx) => {
       const canvas = this.workspace.createCanvas(tx, title)
-      // つながりのうち、片方だけが切り出されるものを外す
-      for (const id of moving) {
-        for (const binding of this.bindingsOfArrow(id)) if (!moving.has(binding.toId)) unbind(tx, binding)
-        for (const bindingId of this.bindings.toTarget(id)) {
-          const binding = this.getBinding(bindingId)
-          if (binding && !moving.has(binding.fromId)) unbind(tx, binding)
-        }
-      }
+      this.unbindCrossing(tx, moving)
       // ワールドでの位置のまま、新しい Canvas の直下に移す（子孫は親のローカル座標のままでよい）
       const indices = indicesBetween(null, null, roots.length)
       for (const [i, id] of roots.entries()) {
@@ -649,6 +645,97 @@ export class Editor {
       const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE, portalParent, portalParent === topmost.parentId ? topmost.index : undefined)
       this.setSelection([portalId])
       return { portalId, canvasId: canvas.id }
+    })
+  }
+
+  // 動かすノードの集まり moving と、残るノードの間の矢印のつながりを外す（別の Canvas に移すとき）
+  private unbindCrossing(tx: Transaction<WorkspaceRecord>, moving: ReadonlySet<string>): void {
+    for (const id of moving) {
+      for (const binding of this.bindingsOfArrow(id)) if (!moving.has(binding.toId)) unbind(tx, binding)
+      for (const bindingId of this.bindings.toTarget(id)) {
+        const binding = this.getBinding(bindingId)
+        if (binding && !moving.has(binding.fromId)) unbind(tx, binding)
+      }
+    }
+  }
+
+  // ---- 子キャンバスへの移動（MAI-38） ----
+
+  // ids のうち、ほかの Canvas に移せるもの（固定していないもの。祖先も含まれるものは祖先と一緒に移るので除く）。重なり順
+  private movableRoots(ids: Iterable<string>): string[] {
+    const set = new Set(ids)
+    return this.index.sortByOrder(
+      [...set].filter((id) => {
+        const node = this.getNode(id)
+        return node && !node.locked && !this.index.ancestorsOf(id).some((a) => set.has(a))
+      }),
+    )
+  }
+
+  // ids（とその子孫）を canvasId に移せるか。移す先は、ゴミ箱の中でない、この Canvas 以外の Canvas。
+  // 持ち主の Portal を移すと参照先の Canvas も移す先の子になるので、参照先自身やその子孫には移せない（循環になる）
+  canMoveToCanvas(ids: Iterable<string>, canvasId: string): boolean {
+    const target = this.workspace.getCanvas(canvasId)
+    if (!target || target.deletedAt !== null || canvasId === this.canvasId) return false
+    const roots = this.movableRoots(ids)
+    if (roots.length === 0) return false
+    return this.ownersIn(roots).every(({ targetId }) => !this.workspace.isSameOrInside(canvasId, targetId))
+  }
+
+  // ワールド座標の点にある、ids を落として移せる Portal（参照先が Canvas のもの。ids とその子孫は除く）。
+  // いちばん手前の Portal の参照先に ids を移せない（循環になるなど）ときは null
+  canvasDropTarget(point: Vec, ids: Iterable<string>): { portalId: string; canvasId: string } | null {
+    const list = [...ids]
+    const exclude = new Set(list)
+    const ordered = this.index.sortByOrder(this.index.search({ x: point.x, y: point.y, w: 0, h: 0 }))
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const entry = this.index.get(ordered[i])
+      if (!entry || entry.node.type !== 'portal') continue
+      if ([ordered[i], ...this.index.ancestorsOf(ordered[i])].some((id) => exclude.has(id))) continue
+      if (this.clippedAway(entry, point)) continue
+      const local = applyMat(invert(entry.worldMatrix), point)
+      if (!this.getType(entry.node).hitTest(entry.node, local, 0, this.session.get().camera.zoom)) continue
+      const ref = this.workspace.referenceOf(entry.node)
+      if (!ref || !this.canMoveToCanvas(list, ref.targetId)) return null
+      return { portalId: entry.node.id, canvasId: ref.targetId }
+    }
+    return null
+  }
+
+  // ids（とその子孫）を、別の Canvas（子の Canvas など）の直下に移す（1 回の Undo で戻る。履歴はこの Canvas に入る）。
+  // 並びは保ったまま、移す先にすでにあるものの右に置く（空なら、今のワールドでの位置のまま）。
+  // 移すノードと残るノードの間の矢印のつながりは外す。持ち主の Portal を移すと、参照先は移す先の子になる（フック）。
+  // 移したノードの id を返す。移せなければ null
+  moveToCanvas(ids: Iterable<string>, canvasId: string): string[] | null {
+    const list = [...ids]
+    if (!this.canMoveToCanvas(list, canvasId)) return null
+    const roots = this.movableRoots(list)
+    const bounds = unionBoxes(roots.flatMap((id) => this.index.get(id)?.worldBounds ?? []))!
+    const moving = new Set(roots.flatMap((id) => [id, ...this.index.descendantsOf(id)]))
+    // 移す先の中身（直下のノードとその子孫）の索引。置く位置と重なり順を決める
+    const target = new NodeIndex(canvasId, this.types)
+    target.load(this.workspace.tree.descendantsOf(canvasId).flatMap((id) => this.getNode(id) ?? []))
+    const content = unionBoxes(target.allIds().flatMap((id) => target.get(id)?.worldBounds ?? []))
+    const offset = content
+      ? { x: content.x + content.w + MOVE_TO_CANVAS_GAP - bounds.x, y: content.y - bounds.y }
+      : { x: 0, y: 0 }
+    const owners = this.ownersIn(roots)
+    return this.transact('move to canvas', (tx) => {
+      this.unbindCrossing(tx, moving)
+      // 移す先の最も手前に、今の重なり順のまま並べる（子孫は親のローカル座標のままでよい）
+      const indices = indicesBetween(target.topmost()?.index ?? null, null, roots.length)
+      for (const [i, id] of roots.entries()) {
+        const world = this.toWorld(nodeIn(tx, id)!)
+        tx.put({ ...world, parentId: canvasId, x: world.x + offset.x, y: world.y + offset.y, index: indices[i] })
+      }
+      // 持ち主の Portal の参照先を、移す先の子にする。直下のものはフックでも付け直すが、フレームの中などで
+      // レコードの変わらないものがあるので、ここでまとめて行う
+      for (const { targetId } of owners) {
+        const doc = this.workspace.getDocument(targetId)
+        if (doc && doc.parentCanvasId !== canvasId) tx.put({ ...doc, parentCanvasId: canvasId, updatedAt: Date.now() })
+      }
+      this.setSelection([])
+      return roots
     })
   }
 

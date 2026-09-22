@@ -4,9 +4,10 @@ import type { PortalProps } from '@canvcode/nodes'
 import { makeBinding } from './bindings.ts'
 import { copySelection, insertPayloadWithResult } from './clipboard.ts'
 import { Editor } from './editor.ts'
+import { SelectTool, type ToolContext, type ToolPointer } from './tools.ts'
 import { Workspace } from './workspace.ts'
 
-// Portal・階層・ゴミ箱・昇格（MAI-8、MAI-29）
+// Portal・階層・ゴミ箱・昇格・子キャンバスへの移動（MAI-8、MAI-29、MAI-38）
 
 function setup() {
   const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
@@ -169,5 +170,146 @@ describe('promoting a selection to a canvas', () => {
     expect(workspace.getCanvas(canvasId)).toBeUndefined()
     expect(canvas(inner.canvasId).parentCanvasId).toBe('canvas:root')
     expect(workspace.bindingsOfArrow(arrow.id)).toHaveLength(2)
+  })
+})
+
+describe('moving items into a child canvas', () => {
+  it('moves the items with their children to the child canvas, in one undo step', () => {
+    const { workspace, root, open, rect } = setup()
+    const { portalId, canvasId } = root.createPortal({ x: 1000, y: 0 })
+    const x = rect(root, 0, 0)
+    const y = rect(root, 200, 50)
+    const frame = root.makeNode('frame', { x: 0, y: 300, props: { w: 300, h: 200 } })
+    root.createNodes([frame])
+    const inFrame = root.makeNode('geo', { x: 10, y: 10, parentId: frame.id, props: { shape: 'rect', w: 50, h: 50 } })
+    root.createNodes([inFrame])
+    root.setSelection([x, y, frame.id])
+    expect(root.moveToCanvas([x, y, frame.id], canvasId)).toEqual([x, y, frame.id])
+    const child = open(canvasId)
+    expect(new Set(child.index.allIds())).toEqual(new Set([x, y, frame.id]))
+    expect(workspace.getNode(inFrame.id)!.parentId).toBe(frame.id)
+    expect(root.index.allIds()).toEqual([portalId])
+    expect(root.session.get().selectedIds.size).toBe(0)
+    // 移す先が空なら、ワールドでの位置のまま
+    expect(child.getNode(x)).toMatchObject({ x: 0, y: 0 })
+    root.undo()
+    expect(new Set(root.index.allIds())).toEqual(new Set([portalId, x, y, frame.id]))
+    expect(workspace.tree.childrenOf(canvasId)).toEqual([])
+    expect(new Set(root.session.get().selectedIds)).toEqual(new Set([x, y, frame.id]))
+  })
+
+  it('places the items to the right of what the child canvas already has, on top', () => {
+    const { root, open, rect } = setup()
+    const { canvasId } = root.createPortal({ x: 1000, y: 0 })
+    const child = open(canvasId)
+    const existing = rect(child, 0, 0)
+    const x = rect(root, 500, 500)
+    root.moveToCanvas([x], canvasId)
+    expect(child.index.get(x)!.worldBounds).toMatchObject({ x: 180, y: 0 })
+    expect(child.index.allIds()).toEqual([existing, x])
+  })
+
+  it('moves the canvases of owner portals along, even inside a frame, but not into themselves', () => {
+    const { workspace, root, canvas } = setup()
+    const a = root.createPortal({ x: 0, y: 0 })
+    const b = root.createPortal({ x: 1000, y: 0 })
+    const frame = root.makeNode('frame', { x: 400, y: 400, props: { w: 400, h: 400 } })
+    root.createNodes([frame])
+    const c = root.createPortal({ x: 600, y: 600 })
+    expect(workspace.getNode(c.portalId)!.parentId).toBe(frame.id)
+    root.moveToCanvas([a.portalId, frame.id], b.canvasId)
+    expect(canvas(a.canvasId)).toMatchObject({ parentCanvasId: b.canvasId, ownerNodeId: a.portalId })
+    expect(canvas(c.canvasId)).toMatchObject({ parentCanvasId: b.canvasId, ownerNodeId: c.portalId })
+    expect(workspace.childCanvases(b.canvasId).map((d) => d.id).sort()).toEqual([a.canvasId, c.canvasId].sort())
+    // b の Portal を、b の中の Canvas（a）には移せない
+    expect(root.canMoveToCanvas([b.portalId], a.canvasId)).toBe(false)
+    expect(root.moveToCanvas([b.portalId], a.canvasId)).toBeNull()
+    // 今の Canvas にも移せない
+    expect(root.canMoveToCanvas([b.portalId], 'canvas:root')).toBe(false)
+    root.undo()
+    expect(canvas(a.canvasId).parentCanvasId).toBe('canvas:root')
+    expect(canvas(c.canvasId).parentCanvasId).toBe('canvas:root')
+  })
+
+  it('does not move into a trashed canvas', () => {
+    const { root, rect } = setup()
+    const a = root.createPortal({ x: 0, y: 0 })
+    const x = rect(root, 500, 0)
+    root.deleteNodes([a.portalId], { ownerPortals: 'trash' })
+    expect(root.moveToCanvas([x], a.canvasId)).toBeNull()
+  })
+
+  it('unbinds arrows that connect moved items with ones that stay', () => {
+    const { workspace, root, rect } = setup()
+    const { canvasId } = root.createPortal({ x: 1000, y: 0 })
+    const x = rect(root, 0, 0)
+    const stay = rect(root, 300, 0)
+    const arrow = root.makeNode('arrow', { x: 0, y: 0 })
+    root.transact('arrow', (tx) => {
+      tx.put(arrow)
+      tx.put(makeBinding(arrow.id, x, { terminal: 'start', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+      tx.put(makeBinding(arrow.id, stay, { terminal: 'end', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+    })
+    root.moveToCanvas([x, arrow.id], canvasId)
+    expect(workspace.bindingsOfArrow(arrow.id).map((b) => b.toId)).toEqual([x])
+    root.undo()
+    expect(workspace.bindingsOfArrow(arrow.id)).toHaveLength(2)
+  })
+
+  it('finds the portal under the pointer as a drop target, skipping the dragged items', () => {
+    const { root, rect } = setup()
+    const a = root.createPortal({ x: 0, y: 0 })
+    const b = root.createPortal({ x: 0, y: 0 })
+    const x = rect(root, -50, -50)
+    // 動かしているもの（x と、上に重なった b）は除いて、下の a を返す
+    expect(root.canvasDropTarget({ x: 0, y: 0 }, [x, b.portalId])).toEqual({ portalId: a.portalId, canvasId: a.canvasId })
+    expect(root.canvasDropTarget({ x: 0, y: 0 }, [x])).toEqual({ portalId: b.portalId, canvasId: b.canvasId })
+    expect(root.canvasDropTarget({ x: 5000, y: 0 }, [x])).toBeNull()
+  })
+
+  it('asks to move items dropped onto a portal, putting them back where they were meanwhile', () => {
+    const { root, rect } = setup()
+    const a = root.createPortal({ x: 500, y: 0 })
+    const x = rect(root, 0, 0)
+    const requests: { ids: string[]; canvasId: string }[] = []
+    const ctx: ToolContext = {
+      editor: root,
+      setTool: () => {},
+      lift: () => {},
+      drop: () => {},
+      setCursor: () => {},
+      startEditing: () => false,
+      openPortal: () => {},
+      editDocument: () => false,
+      createDocumentAt: () => {},
+      quoteRegion: () => {},
+      openCitations: () => {},
+      moveToCanvas: (ids, canvasId) => requests.push({ ids, canvasId }),
+    }
+    const pointer = (px: number, py: number): ToolPointer => ({
+      screen: { x: px, y: py },
+      world: { x: px, y: py },
+      button: 0,
+      shiftKey: false,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+    })
+    const tool = new SelectTool(ctx)
+    tool.onPointerDown(pointer(50, 50))
+    tool.onPointerMove(pointer(300, 50))
+    tool.onPointerMove(pointer(500, 0))
+    // 落とす先の Portal を、ホバーの枠で見せる
+    expect(root.session.get().hoveredId).toBe(a.portalId)
+    tool.onPointerUp(pointer(500, 0))
+    expect(requests).toEqual([{ ids: [x], canvasId: a.canvasId }])
+    expect(root.getNode(x)).toMatchObject({ x: 0, y: 0 })
+    expect(root.session.get().hoveredId).toBeNull()
+    // Portal の外に落としたら、ふつうに動かす
+    tool.onPointerDown(pointer(50, 50))
+    tool.onPointerMove(pointer(300, 50))
+    tool.onPointerUp(pointer(300, 50))
+    expect(requests).toHaveLength(1)
+    expect(root.getNode(x)).toMatchObject({ x: 250, y: 0 })
   })
 })

@@ -63,6 +63,8 @@ export interface CanvasViewOptions {
   onOpenPortal?: (portalId: string) => void
   // 持ち主の Portal を消す前に、参照先をどうするか尋ねる（MAI-8）。null ならやめる
   confirmOwnerPortalDeletion?: (portals: { title: string; descendants: number }[]) => Promise<OwnerPortalDeletion | null>
+  // ノードを Portal の上に落としたとき、参照先の Canvas に移してよいか尋ねる（MAI-38）。count は移すノードの数
+  confirmMoveToCanvas?: (target: { title: string; count: number }) => Promise<boolean>
   // 右クリック（画面の座標。ブラウザのウィンドウ基準）
   onContextMenu?: (point: { clientX: number; clientY: number }) => void
   // Markdown などの File（MAI-30）。渡さなければ、カードの本文は編集できない
@@ -165,6 +167,7 @@ export class CanvasView {
       notify: options.notify ?? ((message) => console.warn(message)),
       onOpenPortal: options.onOpenPortal ?? (() => {}),
       confirmOwnerPortalDeletion: options.confirmOwnerPortalDeletion ?? (async () => 'trash'),
+      confirmMoveToCanvas: options.confirmMoveToCanvas ?? (async () => true),
       onContextMenu: options.onContextMenu ?? (() => {}),
       onOpenFile: options.onOpenFile ?? (() => {}),
       onQuote: options.onQuote ?? (() => {}),
@@ -363,6 +366,7 @@ export class CanvasView {
         const bounds = this.root.getBoundingClientRect()
         this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
       },
+      moveToCanvas: (ids, canvasId) => void this.moveToCanvas(ids, canvasId, { confirm: true }),
     }
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
@@ -702,6 +706,31 @@ export class CanvasView {
   promoteSelection(): void {
     this.tool.cancel()
     if (!this.editor.promoteSelection()) this.options.notify('昇格するノードを選んでください')
+  }
+
+  // ノードを別の Canvas（子の Canvas など）に移す（MAI-38）。confirm なら、先に確かめる。
+  // 移したら、移す先を知らせる。移せなかったら（循環になるなど）そう知らせる
+  async moveToCanvas(ids: string[], canvasId: string, options: { confirm?: boolean } = {}): Promise<boolean> {
+    this.tool.cancel()
+    const editor = this.editor
+    const title = editor.workspace.getCanvas(canvasId)?.title ?? ''
+    if (!editor.canMoveToCanvas(ids, canvasId)) {
+      this.options.notify(`「${title}」には移せません`)
+      return false
+    }
+    if (options.confirm) {
+      const ok = await this.options.confirmMoveToCanvas({ title, count: ids.length })
+      // 尋ねている間に Canvas を移った・ノードが変わった場合は、やめる
+      if (!ok || this.editor !== editor || !editor.canMoveToCanvas(ids, canvasId)) return false
+    }
+    const moved = editor.moveToCanvas(ids, canvasId)
+    if (moved) this.options.notify(`「${title}」に移動しました`)
+    return moved !== null
+  }
+
+  // 選んでいるノードを、別の Canvas に移す（右クリックの「子キャンバスに移動」）
+  moveSelectionToCanvas(canvasId: string): Promise<boolean> {
+    return this.moveToCanvas([...this.editor.session.get().selectedIds], canvasId)
   }
 
   duplicateSelection(): void {
