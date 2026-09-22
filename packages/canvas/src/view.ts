@@ -7,7 +7,17 @@ import type { SessionState, ToolId } from './session.ts'
 import { ImageCache } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
 import { TextEditor } from './textEditor.ts'
-import { GeoTool, HandTool, NoteTool, SelectTool, TextTool, type Tool, type ToolContext, type ToolPointer } from './tools.ts'
+import {
+  FrameTool,
+  GeoTool,
+  HandTool,
+  NoteTool,
+  SelectTool,
+  TextTool,
+  type Tool,
+  type ToolContext,
+  type ToolPointer,
+} from './tools.ts'
 
 // キャンバスの表示と入力（MAI-5、MAI-6、MAI-12）。
 // レイヤーは下から、背景（グリッド）・シーン・オーバーレイの 3 枚の Canvas と、編集用の DOM。
@@ -125,6 +135,7 @@ export class CanvasView {
       ['ellipse', new GeoTool(toolContext, 'ellipse')],
       ['text', new TextTool(toolContext)],
       ['note', new NoteTool(toolContext)],
+      ['frame', new FrameTool(toolContext)],
     ])
     this.tool = this.tools.get(editor.session.get().toolId)!
 
@@ -254,8 +265,14 @@ export class CanvasView {
       this.images.endFrame()
     }
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId } = this.editor.session.get()
-      drawn += drawOverlay(this.overlayCtx, this.editor, view, { lifted: this.lifted, selectedIds, hoveredId })
+      const { selectedIds, hoveredId, brush, focusedGroupId } = this.editor.session.get()
+      drawn += drawOverlay(this.overlayCtx, this.editor, view, {
+        lifted: this.lifted,
+        selectedIds,
+        hoveredId,
+        brush,
+        focusedGroupId,
+      })
     }
     // 描いたノード数は、シーンを描き直したフレームの値を表示し続ける
     if (this.dirty.has('scene')) this.lastDrawnNodes = drawn
@@ -287,7 +304,8 @@ export class CanvasView {
   }
 
   private lift(ids: Iterable<string>): void {
-    this.lifted = new Set(ids)
+    // group やフレームを動かすときは、子孫も一緒にシーンから外す（行列が変わるのは子孫も同じなので）
+    this.lifted = new Set([...ids].flatMap((id) => [id, ...this.editor.index.descendantsOf(id)]))
     this.invalidate('scene')
     this.invalidate('overlay')
   }
@@ -306,7 +324,14 @@ export class CanvasView {
       this.invalidate('all')
       this.textEditor.layout()
     }
-    if (state.selectedIds !== prev.selectedIds || state.hoveredId !== prev.hoveredId) this.invalidate('overlay')
+    if (
+      state.selectedIds !== prev.selectedIds ||
+      state.hoveredId !== prev.hoveredId ||
+      state.brush !== prev.brush ||
+      state.focusedGroupId !== prev.focusedGroupId
+    ) {
+      this.invalidate('overlay')
+    }
     if (state.toolId !== prev.toolId) {
       this.tool.onExit?.()
       this.tool = this.tools.get(state.toolId)!
@@ -411,7 +436,22 @@ export class CanvasView {
       return
     }
     if (e.key === 'Escape') {
-      if (!this.tool.cancel()) editor.setSelection([])
+      if (this.tool.cancel()) return
+      // group の中に入っていれば、group を選んで外に出る。そうでなければ選択を外す
+      const focused = editor.session.get().focusedGroupId
+      if (focused) {
+        editor.focusGroup(null)
+        editor.setSelection([focused])
+      } else {
+        editor.setSelection([])
+      }
+      return
+    }
+    if (mod && e.key.toLowerCase() === 'g') {
+      e.preventDefault()
+      this.tool.cancel()
+      if (e.shiftKey) editor.ungroupSelected()
+      else editor.groupSelected()
       return
     }
     if (mod && e.key.toLowerCase() === 'z') {
@@ -461,7 +501,15 @@ export class CanvasView {
     }
     if (mod || e.altKey) return
     // ツールの切り替え（旧実装と同じ tldraw 風の割り当て。MAI-12）
-    const toolKeys: Record<string, ToolId> = { v: 'select', h: 'hand', r: 'rect', o: 'ellipse', t: 'text', n: 'note' }
+    const toolKeys: Record<string, ToolId> = {
+      v: 'select',
+      h: 'hand',
+      r: 'rect',
+      o: 'ellipse',
+      t: 'text',
+      n: 'note',
+      f: 'frame',
+    }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })
   }

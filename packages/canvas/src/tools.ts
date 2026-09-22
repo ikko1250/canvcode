@@ -1,5 +1,12 @@
-import { boxFromPoints, dist, panBy, worldToScreen, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
-import { GEO_DEFAULT_SIZE, textLayout, type GeoProps, type NoteProps, type TextProps } from '@canvcode/nodes'
+import { boxFromPoints, dist, panBy, worldToScreen, type Box, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
+import {
+  GEO_DEFAULT_SIZE,
+  textLayout,
+  type FrameProps,
+  type GeoProps,
+  type NoteProps,
+  type TextProps,
+} from '@canvcode/nodes'
 import type { Editor, TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import {
@@ -7,8 +14,6 @@ import {
   handleCursor,
   hitHandle,
   resizeFrame,
-  resizeNodes,
-  rotateNodes,
   rotationDelta,
   screenHandles,
   type Handle,
@@ -18,6 +23,7 @@ import {
 
 // ツールの状態機械（MAI-12）。各ツールは自分の状態を持ち、ポインタとキーの入力で状態を移る。
 // どの状態でも cancel（Esc）で操作を取り消して idle に戻れる。
+// 入れ子のノード（MAI-25）の移動・リサイズ・回転は、ワールドで計算してから親のローカル座標に戻す。
 
 // ドラッグとみなすまでの移動量（CSS ピクセル）
 const DRAG_THRESHOLD_PX = 3
@@ -37,7 +43,7 @@ export interface ToolPointer {
 export interface ToolContext {
   readonly editor: Editor
   setTool(id: ToolId): void
-  // シーンから外してオーバーレイに描くノードを決める（ドラッグ中など）
+  // シーンから外してオーバーレイに描くノードを決める（ドラッグ中など）。子孫も一緒に外す
   lift(ids: Iterable<string>): void
   drop(): void
   // ツールの既定のカーソルの代わりに使うカーソル（ハンドルの上など）。null で元に戻す
@@ -71,25 +77,33 @@ export interface Tool {
   onExit?(): void
 }
 
+// ワールド座標の点に新しいノードを置くときの親（フレームの中ならそのフレーム）と、親のローカル座標での位置
+function placeAt(editor: Editor, point: Vec): { parentId: string; local: Vec } {
+  const parentId = editor.frameAt(point) ?? editor.canvasId
+  return { parentId, local: editor.worldToParent(parentId, point) }
+}
+
 // ---- 選択ツール ----
 
 type SelectState =
   | { name: 'idle' }
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
-  | { name: 'pointingCanvas'; start: ToolPointer }
+  | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string> }
+  | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean }
   | {
       name: 'translating'
       start: ToolPointer
       tx: Transaction<NodeRecord>
+      // ワールドでの形にした、動かし始めのノード
       initial: Map<string, NodeRecord>
     }
   | { name: 'resizing'; handle: Handle; tx: Transaction<NodeRecord>; selection: TransformSelection }
   | {
       name: 'rotating'
       tx: Transaction<NodeRecord>
+      selection: TransformSelection
       pivot: Vec
       start: Vec
-      initial: NodeRecord[]
       // 1 つだけのときはそのノードの向き（Shift で向きを 15° 刻みにする）。複数なら null
       baseRotation: number | null
     }
@@ -117,16 +131,21 @@ export class SelectTool implements Tool {
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
     if (hit) {
-      const wasSelected = selected.has(hit.id)
+      // group の中のノードは、中に入っていなければ group 全体を選ぶ（MAI-12）
+      const target = editor.selectableFor(hit.id)
+      const wasSelected = selected.has(target)
       if (pointer.shiftKey) {
-        if (!wasSelected) editor.setSelection([...selected, hit.id])
+        if (!wasSelected) editor.setSelection([...selected, target])
       } else if (!wasSelected) {
-        editor.setSelection([hit.id])
+        editor.setSelection([target])
       }
-      this.state = { name: 'pointingNode', start: pointer, nodeId: hit.id, wasSelected }
+      this.state = { name: 'pointingNode', start: pointer, nodeId: target, wasSelected }
     } else {
-      if (!pointer.shiftKey) editor.setSelection([])
-      this.state = { name: 'pointingCanvas', start: pointer }
+      if (!pointer.shiftKey) {
+        editor.setSelection([])
+        editor.focusGroup(null)
+      }
+      this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(editor.session.get().selectedIds) }
     }
   }
 
@@ -143,7 +162,9 @@ export class SelectTool implements Tool {
         }
         this.ctx.setCursor(null)
         const zoom = editor.session.get().camera.zoom
-        const hoveredId = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)?.id ?? null
+        const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
+        // ホバーの表示も、クリックしたら選ばれるもの（group 全体など）に合わせる
+        const hoveredId = hit ? this.selectableWithoutSideEffects(hit.id) : null
         if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
         return
       }
@@ -155,13 +176,13 @@ export class SelectTool implements Tool {
           minW: selection.minSize.w,
           minH: selection.minSize.h,
         })
-        for (const node of resizeNodes(selection.targets, selection.frame, frame)) tx.put(node)
+        for (const node of editor.resizeSelection(selection, frame)) tx.put(node)
         tx.flush()
         return
       }
       case 'rotating': {
         const delta = rotationDelta(state.pivot, state.start, pointer.world, pointer.shiftKey, state.baseRotation)
-        for (const node of rotateNodes(state.initial, state.pivot, delta)) state.tx.put(node)
+        for (const node of editor.rotateSelection(state.selection, state.pivot, delta)) state.tx.put(node)
         state.tx.flush()
         return
       }
@@ -171,14 +192,25 @@ export class SelectTool implements Tool {
         this.onPointerMove(pointer)
         return
       }
-      case 'pointingCanvas':
-        // 範囲選択は段階 5 で入れる
+      case 'pointingCanvas': {
+        if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
+        this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey }
+        this.onPointerMove(pointer)
         return
+      }
+      case 'brushing': {
+        // 範囲選択：枠に少しでも触れたノードを選ぶ。Shift なら今の選択に足す（MAI-25）
+        const brush = boxFromPoints(state.start.world, pointer.world)
+        const hits = editor.nodesInBrush(brush)
+        editor.session.set({ brush, hoveredId: null })
+        editor.setSelection(state.additive ? new Set([...state.initial, ...hits]) : hits)
+        return
+      }
       case 'translating': {
         const dx = pointer.world.x - state.start.world.x
         const dy = pointer.world.y - state.start.world.y
-        for (const node of state.initial.values()) {
-          state.tx.put({ ...node, x: node.x + dx, y: node.y + dy })
+        for (const world of state.initial.values()) {
+          state.tx.put(editor.fromWorld({ ...world, x: world.x + dx, y: world.y + dy }))
         }
         state.tx.flush()
         return
@@ -197,7 +229,13 @@ export class SelectTool implements Tool {
     } else if (state.name === 'pointingNode' && !pointer.shiftKey && state.wasSelected) {
       // 複数選択中に 1 つをクリックしたら、それだけを選ぶ
       editor.setSelection([state.nodeId])
-    } else if (state.name === 'translating' || state.name === 'resizing' || state.name === 'rotating') {
+    } else if (state.name === 'brushing') {
+      editor.session.set({ brush: null })
+    } else if (state.name === 'translating') {
+      this.dropIntoFrames(state.tx, [...state.initial.keys()])
+      editor.finish(state.tx)
+      this.ctx.drop()
+    } else if (state.name === 'resizing' || state.name === 'rotating') {
       editor.finish(state.tx)
       this.ctx.drop()
       this.ctx.setCursor(null)
@@ -214,19 +252,51 @@ export class SelectTool implements Tool {
       this.ctx.setCursor(null)
       return true
     }
+    if (state.name === 'brushing') {
+      this.ctx.editor.session.set({ brush: null })
+      this.ctx.editor.setSelection(state.initial)
+      return true
+    }
     return state.name !== 'idle'
   }
 
-  // ダブルクリック：文字を持つノードなら編集モードに入る。何もない所なら、そこにテキストを作って編集する
+  // ダブルクリック：
+  // - group の中のノードなら、その group の中に入って、中のノードを選ぶ（入れ子なら 1 段ずつ）
+  // - 文字を持つノードなら、編集モードに入る
+  // - 何もない所なら、そこにテキストを作って編集する
   onDoubleClick(pointer: ToolPointer): void {
     const editor = this.ctx.editor
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
-    if (hit) {
-      if (editor.getType(hit).editText) this.ctx.startEditing(hit.id, { selectAll: true })
+    if (!hit) {
+      createTextAt(this.ctx, pointer.world)
       return
     }
-    createTextAt(this.ctx, pointer.world)
+    const target = editor.selectableFor(hit.id)
+    if (target !== hit.id) {
+      editor.focusGroup(target)
+      editor.setSelection([editor.selectableFor(hit.id)])
+      return
+    }
+    if (editor.getType(hit).editText) this.ctx.startEditing(hit.id, { selectAll: true })
+  }
+
+  onExit(): void {
+    this.cancel()
+    this.ctx.editor.session.set({ hoveredId: null })
+  }
+
+  // selectableFor と同じ選び方で、中に入っている group から出る処理はしないもの（ホバーの表示用）
+  private selectableWithoutSideEffects(id: string): string {
+    const editor = this.ctx.editor
+    const focus = editor.session.get().focusedGroupId
+    let target = id
+    for (const ancestor of editor.index.ancestorsOf(id)) {
+      if (ancestor === focus) break
+      const node = editor.getNode(ancestor)
+      if (node && editor.isContainer(node, 'group')) target = ancestor
+    }
+    return target
   }
 
   private hitSelectionHandle(pointer: ToolPointer): { hit: HandleHit; selection: TransformSelection } | null {
@@ -257,17 +327,12 @@ export class SelectTool implements Tool {
       this.state = {
         name: 'rotating',
         tx,
+        selection,
         pivot: frameCenter(selection.frame),
         start: pointer.world,
-        initial: selection.targets.map((t) => t.node),
         baseRotation: single ? selection.targets[0].node.rotation : null,
       }
     }
-  }
-
-  onExit(): void {
-    this.cancel()
-    this.ctx.editor.session.set({ hoveredId: null })
   }
 
   private startTranslating(start: ToolPointer): void {
@@ -275,7 +340,7 @@ export class SelectTool implements Tool {
     const initial = new Map<string, NodeRecord>()
     for (const id of editor.session.get().selectedIds) {
       const node = editor.getNode(id)
-      if (node && !node.locked) initial.set(id, node)
+      if (node && !node.locked) initial.set(id, editor.toWorld(node))
     }
     if (initial.size === 0) {
       this.state = { name: 'idle' }
@@ -285,6 +350,26 @@ export class SelectTool implements Tool {
     this.ctx.lift(initial.keys())
     editor.session.set({ hoveredId: null })
     this.state = { name: 'translating', start, tx, initial }
+  }
+
+  // 動かし終えたノードを、中心の下にあるフレームの子にする（フレームの外に出したら Canvas に戻す）。
+  // group の中のノードは、group から勝手に出さない
+  private dropIntoFrames(tx: Transaction<NodeRecord>, ids: string[]): void {
+    const editor = this.ctx.editor
+    const moving = new Set(ids)
+    const byParent = new Map<string, string[]>()
+    for (const id of ids) {
+      const node = tx.get(id)
+      const entry = editor.index.get(id)
+      if (!node || !entry) continue
+      const parent = node.parentId === editor.canvasId ? null : editor.getNode(node.parentId)
+      if (parent && editor.isContainer(parent, 'group')) continue
+      const center = { x: entry.worldBounds.x + entry.worldBounds.w / 2, y: entry.worldBounds.y + entry.worldBounds.h / 2 }
+      const target = editor.frameAt(center, moving) ?? editor.canvasId
+      if (target === node.parentId) continue
+      byParent.set(target, [...(byParent.get(target) ?? []), id])
+    }
+    for (const [parentId, members] of byParent) editor.reparent(tx, members, parentId)
   }
 }
 
@@ -324,13 +409,35 @@ export class HandTool implements Tool {
   }
 }
 
+// ---- ドラッグで箱を作るツール（図形・フレーム）の共通部分 ----
+
+interface BoxCreation<P extends object> {
+  start: ToolPointer
+  tx: Transaction<NodeRecord>
+  node: NodeRecord<P>
+  parentId: string
+  // 親のローカル座標でのドラッグの始点
+  startLocal: Vec
+}
+
+// 親のローカル座標で、始点から今の点までの箱（Shift で正方形にする）
+function dragBox<P extends object>(editor: Editor, creating: BoxCreation<P>, pointer: ToolPointer): Box {
+  let end = editor.worldToParent(creating.parentId, pointer.world)
+  if (pointer.shiftKey) {
+    const dx = end.x - creating.startLocal.x
+    const dy = end.y - creating.startLocal.y
+    const size = Math.max(Math.abs(dx), Math.abs(dy))
+    end = { x: creating.startLocal.x + Math.sign(dx || 1) * size, y: creating.startLocal.y + Math.sign(dy || 1) * size }
+  }
+  return boxFromPoints(creating.startLocal, end)
+}
+
 // ---- 図形ツール（矩形・楕円） ----
 
 export class GeoTool implements Tool {
   readonly id: 'rect' | 'ellipse'
   readonly cursor = 'crosshair'
-  private creating: { start: ToolPointer; tx: Transaction<NodeRecord>; node: NodeRecord<GeoProps> } | null =
-    null
+  private creating: BoxCreation<GeoProps> | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext, shape: 'rect' | 'ellipse') {
@@ -341,31 +448,25 @@ export class GeoTool implements Tool {
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
+    const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin(`create ${this.id}`)
     const node = editor.makeNode('geo', {
-      x: pointer.world.x,
-      y: pointer.world.y,
+      x: local.x,
+      y: local.y,
+      parentId,
       props: { shape: this.id, w: 1, h: 1 },
     }) as NodeRecord<GeoProps>
     tx.put(node)
     tx.flush()
     editor.setSelection([node.id])
     this.ctx.lift([node.id])
-    this.creating = { start: pointer, tx, node }
+    this.creating = { start: pointer, tx, node, parentId, startLocal: local }
   }
 
   onPointerMove(pointer: ToolPointer): void {
     const creating = this.creating
     if (!creating) return
-    let end = pointer.world
-    if (pointer.shiftKey) {
-      // Shift で正方形・正円にする
-      const dx = end.x - creating.start.world.x
-      const dy = end.y - creating.start.world.y
-      const size = Math.max(Math.abs(dx), Math.abs(dy))
-      end = { x: creating.start.world.x + Math.sign(dx || 1) * size, y: creating.start.world.y + Math.sign(dy || 1) * size }
-    }
-    const box = boxFromPoints(creating.start.world, end)
+    const box = dragBox(this.ctx.editor, creating, pointer)
     creating.tx.put({
       ...creating.node,
       x: box.x,
@@ -383,8 +484,8 @@ export class GeoTool implements Tool {
       // クリックだけなら、既定の大きさでクリックした位置を中心に置く
       creating.tx.put({
         ...creating.node,
-        x: pointer.world.x - GEO_DEFAULT_SIZE / 2,
-        y: pointer.world.y - GEO_DEFAULT_SIZE / 2,
+        x: creating.startLocal.x - GEO_DEFAULT_SIZE / 2,
+        y: creating.startLocal.y - GEO_DEFAULT_SIZE / 2,
         props: { ...creating.node.props, w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE },
       })
     }
@@ -408,23 +509,15 @@ export class GeoTool implements Tool {
   }
 }
 
-// ---- テキストツール（T）と付箋ツール（N）（MAI-24） ----
+// ---- フレームツール（F）（MAI-25） ----
 
-// クリックした位置にテキストを作り、そのまま編集する（クリックした点が 1 行目の中ほどに来るようにする）
-function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<NodeRecord>): void {
-  const editor = ctx.editor
-  const transaction = tx ?? editor.begin('create text')
-  const draft = editor.makeNode('text', { x: point.x, y: point.y }) as NodeRecord<TextProps>
-  const lineHeight = textLayout(draft.props).lineHeightPx
-  const node = { ...draft, y: point.y - lineHeight / 2 }
-  transaction.put(node)
-  ctx.startEditing(node.id, { tx: transaction })
-}
+const FRAME_DEFAULT_W = 320
+const FRAME_DEFAULT_H = 240
 
-export class TextTool implements Tool {
-  readonly id = 'text' as const
-  readonly cursor = 'text'
-  private creating: { start: ToolPointer; tx: Transaction<NodeRecord>; node: NodeRecord<TextProps> } | null = null
+export class FrameTool implements Tool {
+  readonly id = 'frame' as const
+  readonly cursor = 'crosshair'
+  private creating: BoxCreation<FrameProps> | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
@@ -434,20 +527,127 @@ export class TextTool implements Tool {
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
-    const tx = editor.begin('create text')
-    const draft = editor.makeNode('text', { x: pointer.world.x, y: pointer.world.y }) as NodeRecord<TextProps>
-    const node = { ...draft, y: pointer.world.y - textLayout(draft.props).lineHeightPx / 2 }
+    const { parentId, local } = placeAt(editor, pointer.world)
+    const count = [...editor.store.values()].filter((n) => n.type === 'frame').length
+    const tx = editor.begin('create frame')
+    const node = editor.makeNode('frame', {
+      x: local.x,
+      y: local.y,
+      parentId,
+      props: { w: 1, h: 1, name: `フレーム ${count + 1}` },
+    }) as NodeRecord<FrameProps>
     tx.put(node)
     tx.flush()
-    this.creating = { start: pointer, tx, node }
+    editor.setSelection([node.id])
+    this.creating = { start: pointer, tx, node, parentId, startLocal: local }
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const creating = this.creating
+    if (!creating) return
+    const box = dragBox(this.ctx.editor, creating, pointer)
+    creating.tx.put({
+      ...creating.node,
+      x: box.x,
+      y: box.y,
+      props: { ...creating.node.props, w: Math.max(box.w, 1), h: Math.max(box.h, 1) },
+    })
+    creating.tx.flush()
+  }
+
+  onPointerUp(pointer: ToolPointer): void {
+    const creating = this.creating
+    if (!creating) return
+    this.creating = null
+    const editor = this.ctx.editor
+    if (dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) {
+      creating.tx.put({
+        ...creating.node,
+        x: creating.startLocal.x - FRAME_DEFAULT_W / 2,
+        y: creating.startLocal.y - FRAME_DEFAULT_H / 2,
+        props: { ...creating.node.props, w: FRAME_DEFAULT_W, h: FRAME_DEFAULT_H },
+      })
+      creating.tx.flush()
+    }
+    // 作ったフレームの中にすっぽり入っている、同じ親のノードを子にする
+    const frameEntry = editor.index.get(creating.node.id)
+    if (frameEntry) {
+      const inside = editor.index.childrenOf(creating.parentId).filter((id) => {
+        if (id === creating.node.id) return false
+        const entry = editor.index.get(id)
+        return entry && !entry.node.locked && containsBox(frameEntry.worldBounds, entry.worldBounds)
+      })
+      editor.reparent(creating.tx, inside, creating.node.id)
+    }
+    editor.finish(creating.tx)
+    this.ctx.setTool('select')
+  }
+
+  cancel(): boolean {
+    const creating = this.creating
+    if (!creating) return false
+    this.creating = null
+    creating.tx.cancel()
+    return true
+  }
+
+  onExit(): void {
+    this.cancel()
+  }
+}
+
+function containsBox(outer: Box, inner: Box): boolean {
+  return (
+    inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h
+  )
+}
+
+// ---- テキストツール（T）と付箋ツール（N）（MAI-24） ----
+
+// クリックした位置にテキストを作り、そのまま編集する（クリックした点が 1 行目の中ほどに来るようにする）
+function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<NodeRecord>): void {
+  const editor = ctx.editor
+  const { parentId, local } = placeAt(editor, point)
+  const transaction = tx ?? editor.begin('create text')
+  const draft = editor.makeNode('text', { x: local.x, y: local.y, parentId }) as NodeRecord<TextProps>
+  const lineHeight = textLayout(draft.props).lineHeightPx
+  const node = { ...draft, y: local.y - lineHeight / 2 }
+  transaction.put(node)
+  ctx.startEditing(node.id, { tx: transaction })
+}
+
+export class TextTool implements Tool {
+  readonly id = 'text' as const
+  readonly cursor = 'text'
+  private creating: { start: ToolPointer; tx: Transaction<NodeRecord>; node: NodeRecord<TextProps>; parentId: string } | null =
+    null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const { parentId, local } = placeAt(editor, pointer.world)
+    const tx = editor.begin('create text')
+    const draft = editor.makeNode('text', { x: local.x, y: local.y, parentId }) as NodeRecord<TextProps>
+    const node = { ...draft, y: local.y - textLayout(draft.props).lineHeightPx / 2 }
+    tx.put(node)
+    tx.flush()
+    this.creating = { start: pointer, tx, node, parentId }
   }
 
   onPointerMove(pointer: ToolPointer): void {
     const creating = this.creating
     if (!creating || dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) return
     // ドラッグしたら、その幅で折り返すテキストにする
-    const x = Math.min(creating.start.world.x, pointer.world.x)
-    const w = Math.max(Math.abs(pointer.world.x - creating.start.world.x), 16)
+    const editor = this.ctx.editor
+    const start = editor.worldToParent(creating.parentId, creating.start.world)
+    const end = editor.worldToParent(creating.parentId, pointer.world)
+    const x = Math.min(start.x, end.x)
+    const w = Math.max(Math.abs(end.x - start.x), 16)
     creating.tx.put({ ...creating.node, x, props: { ...creating.node.props, w, autoWidth: false } })
     creating.tx.flush()
   }
@@ -488,9 +688,10 @@ export class NoteTool implements Tool {
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
+    const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin('create note')
-    const draft = editor.makeNode('note', { x: 0, y: 0 }) as NodeRecord<NoteProps>
-    const node = { ...draft, x: pointer.world.x - draft.props.w / 2, y: pointer.world.y - draft.props.h / 2 }
+    const draft = editor.makeNode('note', { x: 0, y: 0, parentId }) as NodeRecord<NoteProps>
+    const node = { ...draft, x: local.x - draft.props.w / 2, y: local.y - draft.props.h / 2 }
     tx.put(node)
     tx.flush()
     this.creating = { tx, node }

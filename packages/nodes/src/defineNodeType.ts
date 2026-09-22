@@ -39,8 +39,9 @@ export interface NodeTypeDef<P extends object> {
   defaultProps(): P
   // ノードのローカル座標でのバウンディングボックス
   getBounds(node: NodeRecord<P>): Box
-  // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）
-  hitTest(node: NodeRecord<P>, point: Vec, margin: number): boolean
+  // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）。
+  // zoom は、画面上で大きさが決まる部分（フレームの名前など）の判定に使う
+  hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number): boolean
   // ctx はノードのローカル座標に合わせてある。1 単位 = ワールド 1 単位。
   render(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
   // ズームアウト時の簡略描画。定義しなければ基盤がバウンディングボックスを塗りつぶす。
@@ -54,6 +55,8 @@ export interface NodeTypeDef<P extends object> {
   minSize?: { w: number; h: number }
   // 回転できるか（既定は true）
   canRotate?: boolean
+  // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く
+  container?: 'group' | 'frame'
   // 文字を編集できる型は、編集のしかたを返す（MAI-24）。編集モードでは、これに合わせて textarea を重ねる
   editText?(node: NodeRecord<P>): TextEditSpec<P>
 }

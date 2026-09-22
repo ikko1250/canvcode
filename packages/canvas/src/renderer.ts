@@ -93,14 +93,39 @@ export function drawNodes(
         ctx.fillRect(r.x, r.y, Math.max(r.w, 1), Math.max(r.h, 1))
       }
     } else {
+      // フレームの中のノードは、フレームの枠で切り抜いて描く（MAI-25）
+      const clipped = clipToFrames(ctx, editor, id, view)
       setNodeTransform(ctx, worldMatrix, view)
       type.render(ctx, node, id === view.editingId ? { ...info, editing: true } : info)
+      if (clipped) ctx.restore()
       lastRoughColor = ''
     }
     drawn++
   }
   ctx.globalAlpha = 1
   return drawn
+}
+
+// 祖先のフレームの枠で切り抜く。切り抜いたら true を返す（呼び出し側で restore する）
+function clipToFrames(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport): boolean {
+  const ancestors = editor.index.ancestorsOf(id)
+  if (ancestors.length === 0) return false
+  let saved = false
+  // 外側のフレームから順に切り抜く
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const entry = editor.index.get(ancestors[i])
+    if (!entry || !editor.isContainer(entry.node, 'frame')) continue
+    if (!saved) {
+      ctx.save()
+      saved = true
+    }
+    setNodeTransform(ctx, entry.worldMatrix, view)
+    ctx.beginPath()
+    const b = entry.localBounds
+    ctx.rect(b.x, b.y, b.w, b.h)
+    ctx.clip()
+  }
+  return saved
 }
 
 export function clearCanvas(ctx: CanvasRenderingContext2D): void {
@@ -123,6 +148,9 @@ export interface OverlayState {
   lifted: ReadonlySet<string>
   selectedIds: ReadonlySet<string>
   hoveredId: string | null
+  // 範囲選択の枠（ワールド座標）と、中に入っている group（MAI-25）
+  brush: Box | null
+  focusedGroupId: string | null
 }
 
 export function drawOverlay(
@@ -140,6 +168,15 @@ export function drawOverlay(
   ctx.lineWidth = 1.5 * view.dpr
   ctx.strokeStyle = SELECTION_COLOR
 
+  // 中に入っている group の外枠（点線）
+  if (state.focusedGroupId) {
+    ctx.setLineDash([3 * view.dpr, 3 * view.dpr])
+    ctx.globalAlpha = 0.6
+    outlineNode(ctx, editor, state.focusedGroupId, view)
+    ctx.globalAlpha = 1
+    ctx.setLineDash([])
+  }
+
   if (state.hoveredId && !state.selectedIds.has(state.hoveredId)) {
     outlineNode(ctx, editor, state.hoveredId, view)
   }
@@ -148,13 +185,24 @@ export function drawOverlay(
   // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
   const found = editor.session.get().editingId ? null : selectionHandles(editor)
   if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
+
+  // 範囲選択の枠
+  if (state.brush) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    const r = deviceRect(state.brush, view)
+    ctx.fillStyle = 'rgba(47, 111, 237, 0.08)'
+    ctx.fillRect(r.x, r.y, r.w, r.h)
+    ctx.lineWidth = view.dpr
+    ctx.strokeRect(r.x, r.y, r.w, r.h)
+  }
   return drawn
 }
 
 function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport): void {
   const entry = editor.index.get(id)
   if (!entry) return
-  const local = editor.getType(entry.node).getBounds(entry.node)
+  // group の大きさは索引が子から計算しているので、索引の値を使う
+  const local = entry.localBounds
   // 線の太さを倍率によらず一定にするため、角の位置だけを行列で写して、単位行列で描く
   const s = view.camera.zoom * view.dpr
   const m = entry.worldMatrix

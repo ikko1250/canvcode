@@ -1,8 +1,8 @@
-import type { Camera } from '@canvcode/core'
+import type { Box, Camera } from '@canvcode/core'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note'
+export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note' | 'frame'
 
 export interface SessionState {
   camera: Camera
@@ -11,6 +11,10 @@ export interface SessionState {
   toolId: ToolId
   // 文字を編集しているノード（MAI-24）
   editingId: string | null
+  // ダブルクリックで中に入っている group（MAI-25）。中のノードを直接選べる
+  focusedGroupId: string | null
+  // 範囲選択の枠（ワールド座標）
+  brush: Box | null
 }
 
 export class Session {
@@ -24,6 +28,8 @@ export class Session {
       hoveredId: null,
       toolId: 'select',
       editingId: null,
+      focusedGroupId: null,
+      brush: null,
       ...initial,
     }
   }

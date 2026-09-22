@@ -47,25 +47,26 @@ export function handlePosition(frame: Frame, handle: Handle): Vec {
   return applyMat(frameMatrix(frame), { x: ((hx + 1) / 2) * frame.w, y: ((hy + 1) / 2) * frame.h })
 }
 
-// ノードのローカル座標の箱の原点が、ワールドでどこにあるか（リサイズできる型は、箱の原点を (0, 0) にする）
+// 索引の項目（ノードと、そのワールドの行列・ローカルの大きさ）
 export interface NodeEntryLike {
   node: NodeRecord
   worldMatrix: Mat
+  // ノードのローカル座標での大きさ（group は子から計算したもの）
+  localBounds: { x: number; y: number; w: number; h: number }
+  worldBounds: { x: number; y: number; w: number; h: number }
 }
 
-export function nodeFrame(entry: NodeEntryLike, type: AnyNodeTypeDef): Frame {
-  const bounds = type.getBounds(entry.node)
-  const origin = applyMat(entry.worldMatrix, { x: bounds.x, y: bounds.y })
-  return { x: origin.x, y: origin.y, w: bounds.w, h: bounds.h, rotation: entry.node.rotation }
+// ノードの向きに沿った枠（ワールド座標）
+export function nodeFrame(entry: NodeEntryLike): Frame {
+  const origin = applyMat(entry.worldMatrix, { x: entry.localBounds.x, y: entry.localBounds.y })
+  const rotation = Math.atan2(entry.worldMatrix.b, entry.worldMatrix.a)
+  return { x: origin.x, y: origin.y, w: entry.localBounds.w, h: entry.localBounds.h, rotation }
 }
 
 // 選択枠。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
-export function selectionFrame(
-  entries: (NodeEntryLike & { worldBounds: { x: number; y: number; w: number; h: number } })[],
-  typeOf: (node: NodeRecord) => AnyNodeTypeDef,
-): Frame | null {
+export function selectionFrame(entries: NodeEntryLike[]): Frame | null {
   if (entries.length === 0) return null
-  if (entries.length === 1) return nodeFrame(entries[0], typeOf(entries[0].node))
+  if (entries.length === 1) return nodeFrame(entries[0])
   const box = unionBoxes(entries.map((entry) => entry.worldBounds))
   return box ? { ...box, rotation: 0 } : null
 }
@@ -136,8 +137,14 @@ export interface ResizeTarget {
 // 1 つだけなら、そのノードの枠を newFrame にする。
 // 複数なら、枠の中での位置と大きさを比例させる（回転していないか 90° 刻みのものは縦横別々、
 // 斜めのものは縦横比を保つ。呼び出し側は、斜めのものがあれば keepAspect で枠を計算しておく）。
-export function resizeNodes(targets: ResizeTarget[], oldFrame: Frame, newFrame: Frame): NodeRecord[] {
-  if (targets.length === 1) {
+// single は、選択が 1 つだけかどうか（複数選択のうちの一部だけを渡すときは false にする）
+export function resizeNodes(
+  targets: ResizeTarget[],
+  oldFrame: Frame,
+  newFrame: Frame,
+  single = targets.length === 1,
+): NodeRecord[] {
+  if (single && targets.length === 1) {
     const { node, type } = targets[0]
     return [resizeNode(node, type, newFrame.x, newFrame.y, newFrame.w, newFrame.h)]
   }

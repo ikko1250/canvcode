@@ -14,6 +14,7 @@ const TOOLS: { id: ToolId; label: string; key: string }[] = [
   { id: 'ellipse', label: '楕円', key: 'O' },
   { id: 'text', label: 'テキスト', key: 'T' },
   { id: 'note', label: '付箋', key: 'N' },
+  { id: 'frame', label: 'フレーム', key: 'F' },
 ]
 
 const BENCH_NODE_COUNT = 10_000
