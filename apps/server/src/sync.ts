@@ -47,6 +47,12 @@ export class SyncHub {
     return true
   }
 
+  // サーバーの中で保存した変更（旧データの取り込み）を、開いているすべてのタブに知らせる
+  broadcast(rev: number, records: unknown[], extra: Record<string, unknown> = {}): void {
+    const message = JSON.stringify({ type: 'changes', rev, records, deleted: [], ...extra })
+    for (const client of this.clients) if (client.readyState === client.OPEN) client.send(message)
+  }
+
   private receive(socket: WebSocket, text: string): void {
     let message: ClientMessage
     try {

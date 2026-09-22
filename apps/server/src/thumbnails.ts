@@ -20,6 +20,15 @@ export class ThumbnailStore {
     await mkdir(this.dir, { recursive: true })
   }
 
+  // 保存する（旧データの取り込みから使う）
+  async save(canvasId: string, png: Buffer): Promise<void> {
+    if (!ID_PATTERN.test(canvasId)) return
+    const file = join(this.dir, `${canvasId.replace(':', '_')}.png`)
+    const temp = `${file}.${process.pid}.${Date.now()}.tmp`
+    await writeFile(temp, png)
+    await rename(temp, file)
+  }
+
   async handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
     const match = /^\/api\/thumbnails\/([^/]+)$/.exec(path)
     if (!match) return false

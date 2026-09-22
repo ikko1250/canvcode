@@ -119,6 +119,36 @@ function saveCamera(canvasId: string, camera: Camera): void {
   }
 }
 
+// 旧データの取り込みの結果（サーバーの describeReport と同じ内容。MAI-36）
+interface ImportReport {
+  canvases: number
+  markdown: number
+  code: number
+  pdf: number
+  nodes: number
+  quotes: number
+  images: number
+  unplaced: number
+  skippedTrashed: number
+  skippedLinks: number
+  unsupported: Record<string, number>
+  lostFormatting: number
+  lostPortalLabels: number
+}
+
+function describeImport(report: ImportReport): string[] {
+  const lines = [
+    `キャンバス ${report.canvases} 個、Markdown ${report.markdown} 個、Python ${report.code} 個、PDF ${report.pdf} 個、ノード ${report.nodes} 個（画像 ${report.images}、引用ノート ${report.quotes}）を取り込みました。`,
+  ]
+  if (report.unplaced > 0) lines.push(`どこからもたどれなかった ${report.unplaced} 個は「未配置」に入れました。`)
+  if (report.skippedTrashed > 0) lines.push(`ゴミ箱の中の ${report.skippedTrashed} 個は取り込みませんでした。`)
+  if (report.skippedLinks > 0) lines.push(`ゴミ箱の中のものを指していた Portal・カード・引用 ${report.skippedLinks} 個は取り込みませんでした。`)
+  if (report.lostFormatting > 0) lines.push(`テキスト ${report.lostFormatting} 個の書式（太字・リンク・箇条書きなど）は失われ、プレーンテキストになりました。`)
+  if (report.lostPortalLabels > 0) lines.push(`Portal ${report.lostPortalLabels} 個の独自の名前は失われ、参照先の名前になりました。`)
+  for (const [what, count] of Object.entries(report.unsupported)) lines.push(`${what} ${count} 個は変換できませんでした。`)
+  return lines
+}
+
 const SYNC_LABELS: Record<SyncStatus, string> = { saved: '保存済み', saving: '保存中…', offline: 'サーバーにつながっていません（つながったら送ります）' }
 
 type Dialog = { title: string; message: string; choices: DialogChoice<string>[]; resolve(value: string | null): void }
@@ -127,6 +157,8 @@ export function App(props: { initial: InitialRecords }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [{ workspace, files, sync }] = useState(() => createWorkspace(props.initial))
   const syncStatus = useSyncExternalStore(sync.subscribeStatus, sync.getStatus)
+  // 旧データを送っている途中なら、その割合（0〜1）。送り終えて取り込んでいる間は 1
+  const [importProgress, setImportProgress] = useState<number | null>(null)
   // 全画面のエディタで開いている File（MAI-30）と、開いたときに選んで見せる引用（「出典へ」。MAI-33）
   const [openFileId, setOpenFileId] = useState<string | null>(null)
   const [fileFocus, setFileFocus] = useState<{ quote: string; line: number } | null>(null)
@@ -191,6 +223,15 @@ export function App(props: { initial: InitialRecords }) {
     [setDialog],
   )
   useEffect(() => {
+    sync.setHandlers({
+      notify,
+      // どこかのタブ（やコマンド）が旧データを取り込んだ：画像・PDF の一覧を読み直す
+      onImported: () => {
+        const view = viewRef.current
+        void view?.assets.loadList().then(() => view.invalidate('scene'))
+        if (view && view.editor.canvasId === workspace.rootCanvasId) view.zoomToFit()
+      },
+    })
     files.setHandlers({
       notify,
       // 保存していない編集があるときに、外で本文が変わった（MAI-10）。やめた場合は、どちらも失わないよう別名で保存する
@@ -207,7 +248,43 @@ export function App(props: { initial: InitialRecords }) {
         return (choice as ConflictChoice | null) ?? 'saveAs'
       },
     })
-  }, [files, notify, ask])
+  }, [files, sync, workspace, notify, ask])
+
+  // 旧データ（.ricbackup）をサーバーに送って取り込む。数百 MB あるので、送った割合を出す
+  const importBackup = useCallback(
+    (file: File) => {
+      if (importProgress !== null) return notify('ほかの取り込みの途中です')
+      setImportProgress(0)
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/import')
+      xhr.setRequestHeader('content-type', 'application/octet-stream')
+      xhr.setRequestHeader('x-filename', encodeURIComponent(file.name))
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setImportProgress(e.loaded / e.total)
+      }
+      xhr.onload = () => {
+        setImportProgress(null)
+        let body: { report?: ImportReport; error?: string } = {}
+        try {
+          body = JSON.parse(xhr.responseText)
+        } catch {
+          // 下で知らせる
+        }
+        if (xhr.status === 200 && body.report) void ask('旧データを取り込みました', describeImport(body.report).join('\n'), [{ label: '閉じる', value: 'ok' }])
+        else void ask('旧データを取り込めませんでした', body.error ?? `サーバーの応答：${xhr.status}`, [{ label: '閉じる', value: 'ok' }])
+      }
+      xhr.onerror = () => {
+        setImportProgress(null)
+        notify('旧データを送れませんでした（サーバーとの接続が切れました）')
+      }
+      xhr.send(file)
+    },
+    [importProgress, notify, ask],
+  )
+  const importBackupRef = useRef(importBackup)
+  useEffect(() => {
+    importBackupRef.current = importBackup
+  }, [importBackup])
 
   // 全画面のエディタを開く・閉じる（URL は /f/<id>。ブラウザの「戻る」で閉じる）
   const openFile = useCallback(
@@ -560,6 +637,7 @@ export function App(props: { initial: InitialRecords }) {
         if (items.length > 0) setMenu({ x: clientX, y: clientY, items })
       },
       onOpenSource: (anchorId) => void openSource(anchorId),
+      onImportBackup: (file) => importBackupRef.current(file),
       onContextMenu: ({ clientX, clientY }) => {
         const at = { x: clientX, y: clientY }
         setMenu({ ...at, items: buildMenu(at) })
@@ -936,6 +1014,12 @@ export function App(props: { initial: InitialRecords }) {
               最初の画像を作り終えるまで {(cardBench.warmupMs / 1000).toFixed(2)} 秒。「落ちたフレーム」は、間隔が 25 ms
               を超えたフレームの数。
             </p>
+          </div>
+        )}
+
+        {importProgress !== null && (
+          <div className="import-progress">
+            {importProgress < 1 ? `旧データを送っています… ${Math.round(importProgress * 100)}%` : '旧データを取り込んでいます…'}
           </div>
         )}
 

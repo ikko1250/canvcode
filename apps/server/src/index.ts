@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { AssetStore } from './assets.ts'
 import { FileStore, type FileEvent } from './files.ts'
+import { handleImport } from './import/import.ts'
 import { RecordStore } from './records.ts'
 import { SyncHub } from './sync.ts'
 import { ThumbnailStore } from './thumbnails.ts'
@@ -107,6 +108,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (sync.handle(req, res, url.pathname)) return
+  if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return

@@ -82,17 +82,25 @@ export class AssetStore {
     const ext = ORIGINAL_TYPES[mime]
     if (!ext) throw new HttpError(415, `unsupported type: ${mime}`)
     const body = await readBody(req, MAX_ORIGINAL_BYTES)
-    const hash = createHash('sha256').update(body).digest('hex')
     // ブラウザが計算したハッシュと違えば、途中で壊れている
     const claimed = req.headers['x-canvcode-sha256']
-    if (typeof claimed === 'string' && claimed !== hash) throw new HttpError(400, 'hash mismatch')
+    if (typeof claimed === 'string' && claimed !== createHash('sha256').update(body).digest('hex')) throw new HttpError(400, 'hash mismatch')
+    const hash = await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'))
+    sendJson(res, 200, { hash, mime, size: body.length })
+  }
+
+  // 原本を保存して、ハッシュを返す（すでにあれば何もしない）。旧データの取り込みからも使う
+  async storeOriginal(body: Buffer, mime: string, width: number, height: number): Promise<string> {
+    const ext = ORIGINAL_TYPES[mime]
+    if (!ext) throw new HttpError(415, `unsupported type: ${mime}`)
+    const hash = createHash('sha256').update(body).digest('hex')
     if (!(await this.readMeta(hash))) {
       await writeAtomic(join(this.dir, `${hash}.${ext}`), body)
-      await this.writeMeta(hash, { mime, size: body.length, width: headerNumber(req, 'x-canvcode-width'), height: headerNumber(req, 'x-canvcode-height'), variants: {} })
+      await this.writeMeta(hash, { mime, size: body.length, width, height, variants: {} })
       // 応答を待たせないよう、裏で行う
       if (mime === 'application/pdf') void this.extractPdfText(hash, body)
     }
-    sendJson(res, 200, { hash, mime, size: body.length })
+    return hash
   }
 
   private async receiveVariant(req: IncomingMessage, res: ServerResponse, hash: string, size: number): Promise<void> {

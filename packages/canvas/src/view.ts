@@ -76,6 +76,8 @@ export interface CanvasViewOptions {
   onOpenCitations?: (anchorIds: string[], point: { clientX: number; clientY: number }) => void
   // 引用ノートの出典へ移る（出典の帯の Ctrl（⌘）+クリック）
   onOpenSource?: (anchorId: string) => void
+  // 旧データ（.ricbackup）がドロップされた（MAI-36）
+  onImportBackup?: (file: File) => void
 }
 
 // 引用の頼み（MAI-33）。source は出典のノード（PDF のページ、Markdown カード）で、引用ノートをその横に置く
@@ -168,6 +170,7 @@ export class CanvasView {
       onQuote: options.onQuote ?? (() => {}),
       onOpenCitations: options.onOpenCitations ?? (() => {}),
       onOpenSource: options.onOpenSource ?? (() => {}),
+      onImportBackup: options.onImportBackup ?? (() => {}),
     }
     this.files = options.files ?? null
     this.documents = {
@@ -1221,7 +1224,12 @@ export class CanvasView {
   }
 
   // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
-  private async importFiles(files: File[], center: Vec): Promise<void> {
+  private async importFiles(all: File[], center: Vec): Promise<void> {
+    // 旧データ（.ricbackup）は、サーバーに送って取り込む（MAI-36）
+    const backups = all.filter((file) => /\.ricbackup$/i.test(file.name))
+    for (const file of backups) this.options.onImportBackup(file)
+    const files = all.filter((file) => !backups.includes(file))
+    if (files.length === 0) return
     // .md と .py は、ワークスペースに保存してカードを置く（MAI-12）
     const documents = this.files ? files.filter((file) => DOCUMENT_EXTENSION.test(file.name)) : []
     for (const [i, file] of documents.entries()) {
@@ -1347,8 +1355,5 @@ const DOCUMENT_EXTENSION = /\.(md|markdown|py)$/i
 // 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
-  const later = files.every((file) => /\.ricbackup$/i.test(file.name))
-  return later
-    ? `${names}：.ricbackup の取り込みは、段階 11-2 で対応します`
-    : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、PDF）`
+  return `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、PDF、旧アプリの .ricbackup）`
 }

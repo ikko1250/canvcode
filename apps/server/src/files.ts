@@ -164,13 +164,16 @@ export class FileStore {
     return next
   }
 
-  async create(kind: FileKind, title: string, content: string): Promise<FileInfo> {
+  // id を渡すと、その id で作る（旧データの取り込み。旧の ID を引き継ぐ）。announce なら、開いているブラウザに知らせる
+  async create(kind: FileKind, title: string, content: string, options: { id?: string; announce?: boolean } = {}): Promise<FileInfo> {
+    if (options.id && this.files.has(options.id)) throw new HttpError(409, `file already exists: ${options.id}`)
     const path = await this.freePath(sanitizeTitle(title), EXT_BY_KIND[kind])
     const buffer = Buffer.from(content, 'utf8')
     await this.writeAtomic(path, buffer)
-    const info: FileInfo = { id: newFileId(), kind, title: titleOf(path), path, ...(await this.statOf(path)), hash: hashOf(buffer), missing: false }
+    const info: FileInfo = { id: options.id ?? newFileId(), kind, title: titleOf(path), path, ...(await this.statOf(path)), hash: hashOf(buffer), missing: false }
     this.put(info)
     await this.saveIndex()
+    if (options.announce) this.broadcast({ type: 'file-added', file: info })
     return info
   }
 

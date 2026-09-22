@@ -24,6 +24,8 @@ export interface SyncOptions {
   notify?: (message: string) => void
   // 何ミリ秒待ってまとめて送るか
   delayMs?: number
+  // サーバーが旧データを取り込んだ（その変更は、このあと届く changes と一緒に当たる）
+  onImported?: (report: unknown) => void
 }
 
 const SEND_DELAY_MS = 100
@@ -63,6 +65,7 @@ export class SyncClient {
       onStatus: options.onStatus ?? (() => {}),
       notify: options.notify ?? ((message) => console.warn(message)),
       delayMs: options.delayMs ?? SEND_DELAY_MS,
+      onImported: options.onImported ?? (() => {}),
     }
     this.rev = initial.rev
     this.applyRemote(initial.records, [])
@@ -78,6 +81,12 @@ export class SyncClient {
       }
     })
     this.connect()
+  }
+
+  // あとから知らせる先を決める（画面を作る前に同期を始めるため）
+  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported'>): void {
+    if (handlers.notify) this.options.notify = handlers.notify
+    if (handlers.onImported) this.options.onImported = handlers.onImported
   }
 
   // まだ保存が済んでいない変更があるか
@@ -156,7 +165,7 @@ export class SyncClient {
   }
 
   private receive(text: string): void {
-    let message: { type: string; seq?: number; rev?: number; records?: WorkspaceRecord[]; deleted?: string[]; message?: string }
+    let message: { type: string; seq?: number; rev?: number; records?: WorkspaceRecord[]; deleted?: string[]; message?: string; imported?: unknown }
     try {
       message = JSON.parse(text)
     } catch {
@@ -165,6 +174,7 @@ export class SyncClient {
     if (message.type === 'changes') {
       this.rev = Math.max(this.rev, message.rev ?? 0)
       this.applyRemote(message.records ?? [], message.deleted ?? [])
+      if (message.imported) this.options.onImported(message.imported)
       // hello への応答のあとで、手元の変更を送る
       this.send()
     } else if (message.type === 'ack' && message.seq !== undefined) {
