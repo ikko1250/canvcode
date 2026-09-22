@@ -15,6 +15,8 @@ export interface DocumentEditorOptions {
   onChange(editingId: string | null): void
   // 全画面のエディタで開く
   onFullscreen(fileId: string): void
+  // 選んだ文字を引用する（帯の「引用」ボタン。Markdown のとき。MAI-33）。line は選んだ範囲の始まりの行（1 から）
+  onQuote?(request: { nodeId: string; fileId: string; quote: string; line: number; clientX: number; clientY: number }): void
 }
 
 interface Session {
@@ -96,8 +98,27 @@ export class DocumentEditor {
     title.textContent = editor.workspace.getFile(fileId)?.title ?? ''
     const hint = document.createElement('span')
     hint.textContent = 'Esc で終える ／ Ctrl+Enter で全画面'
-    Object.assign(hint.style, { fontWeight: '400', fontSize: '11px', color: '#8c959f' })
+    Object.assign(hint.style, { fontWeight: '400', fontSize: '11px', color: '#8c959f', marginLeft: 'auto', marginRight: '8px' })
     header.append(title, hint)
+    // Markdown は、選んだ文字を引用できる（MAI-33）
+    const quoteButton = kind === 'markdown' && this.options.onQuote ? document.createElement('button') : null
+    if (quoteButton) {
+      quoteButton.textContent = '引用'
+      quoteButton.title = '選んだ文字を引用する'
+      quoteButton.className = 'canvcode-quote-button'
+      Object.assign(quoteButton.style, {
+        font: "600 11px 'Noto Sans JP', sans-serif",
+        padding: '2px 10px',
+        border: '1px solid rgba(80, 66, 45, 0.3)',
+        borderRadius: '6px',
+        background: '#ffffff',
+        color: '#2b2930',
+        cursor: 'pointer',
+      })
+      // 押しても、エディタの選択を失わないように
+      quoteButton.addEventListener('mousedown', (e) => e.preventDefault())
+      header.append(quoteButton)
+    }
     const body = document.createElement('div')
     Object.assign(body.style, { flex: '1', minHeight: '0' })
     host.append(header, body)
@@ -126,6 +147,15 @@ export class DocumentEditor {
       if (changed !== fileId || !this.session) return
       const latest = this.options.files.get(fileId)
       if (latest && latest.text !== code.text()) code.replace(latest.text)
+    })
+    quoteButton?.addEventListener('click', () => {
+      const selected = code.selectedQuote()
+      if (!selected) {
+        hint.textContent = '引用する文字を選んでから押してください'
+        return
+      }
+      const rect = quoteButton.getBoundingClientRect()
+      this.options.onQuote?.({ nodeId, fileId, ...selected, clientX: rect.left, clientY: rect.bottom + 4 })
     })
     this.session = { nodeId, fileId, host, editor: code, unlisten }
     editor.setSelection([nodeId])

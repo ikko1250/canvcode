@@ -21,6 +21,16 @@ export interface RenderInfo {
   documents?: DocumentResolver
   // File の本文を引く先（MAI-30）
   files?: FileContentSource
+  // 引用の出典を引く先（MAI-33）
+  citations?: CitationResolver
+}
+
+// 引用の出典（SourceAnchor）を引く先（MAI-33）
+export interface CitationResolver {
+  // 引用ノートに見せる、出典の位置（「p.3」「12 行目」）。Markdown で引用した文字列が見つからなければ lost
+  location(anchorId: string): { label: string; lost: boolean }
+  // PDF のページの上に枠で見せる、引用した範囲（ページ全体を 0〜1 とした割合）。emphasized は「出典へ」で移ってきた範囲
+  regionsOnPage(fileId: string, pageIndex: number): { rect: Box; emphasized: boolean }[]
 }
 
 export interface DocumentInfo {
@@ -103,6 +113,8 @@ export interface NodeTypeDef<P extends object> {
   reference?(node: NodeRecord<P>): DocumentReference | null
   // role を変えた props（貼り付けで持ち主をショートカットにするときなど）
   withRole?(node: NodeRecord<P>, role: 'owner' | 'shortcut'): P
+  // 引用ノートは、参照している SourceAnchor の id を返す（逆リンクの索引に使う。MAI-33）
+  citation?(node: NodeRecord<P>): string | null
   // ローカル座標の点にあるリンク（Ctrl（⌘）+クリックで開く。MAI-21）
   linkAt?(node: NodeRecord<P>, point: Vec): string | null
   // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く

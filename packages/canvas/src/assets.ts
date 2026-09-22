@@ -1,5 +1,6 @@
 import { assetIdFromHash, type AssetRecord } from '@canvcode/core'
 import { IMAGE_VARIANT_SIZES, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
+import type { PdfTextItem } from './quotes.ts'
 
 // 画像の Asset の取り込み・アップロード・読み込み（MAI-10、MAI-14、MAI-26）。
 // - 取り込むとき、ブラウザで中身の SHA-256 と縮小版（長辺 256px・1024px）を作り、すぐに使えるようにしてから、
@@ -22,6 +23,8 @@ export interface PdfDocument {
   pageSize(pageIndex: number): Promise<{ width: number; height: number }>
   // 1 ポイントあたり scale 画素で描く
   render(pageIndex: number, scale: number): Promise<ImageBitmap>
+  // ページの文字の断片（位置はポイント、ページの左上が原点。引用に使う。MAI-33）
+  textItems(pageIndex: number): Promise<PdfTextItem[]>
 }
 
 export interface PdfService {

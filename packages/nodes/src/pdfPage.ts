@@ -63,6 +63,15 @@ export const pdfPageType = defineNodeType<PdfPageProps>({
       ctx.fillText(`${pageIndex + 1}`, w / 2, h * 0.95)
       ctx.textAlign = 'left'
     }
+    // 引用した範囲（逆リンク。MAI-33）。クリックすると、引用しているノートの一覧が出る
+    for (const region of info.citations?.regionsOnPage(node.props.fileId, pageIndex) ?? []) {
+      const { x, y, w: rw, h: rh } = region.rect
+      ctx.fillStyle = region.emphasized ? 'rgba(212, 167, 44, 0.32)' : 'rgba(212, 167, 44, 0.14)'
+      ctx.fillRect(x * w, y * h, rw * w, rh * h)
+      ctx.lineWidth = (region.emphasized ? 3 : 1.5) / info.zoom
+      ctx.strokeStyle = region.emphasized ? '#b7861b' : 'rgba(183, 134, 27, 0.7)'
+      ctx.strokeRect(x * w, y * h, rw * w, rh * h)
+    }
     ctx.lineWidth = 1 / info.zoom
     ctx.strokeStyle = PAGE_BORDER
     ctx.strokeRect(0, 0, w, h)

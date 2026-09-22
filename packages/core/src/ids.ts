@@ -4,7 +4,7 @@
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 const ID_LENGTH = 16
 
-export type IdPrefix = 'node' | 'binding' | 'asset' | 'canvas' | 'file'
+export type IdPrefix = 'node' | 'binding' | 'asset' | 'canvas' | 'file' | 'anchor'
 
 export function randomIdSuffix(length = ID_LENGTH): string {
   const bytes = new Uint8Array(length * 2)

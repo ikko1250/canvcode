@@ -27,6 +27,10 @@ export interface CodeEditorHandle {
   text(): string
   // 外で変わった本文に入れ替える（カーソルはできるだけ同じ位置に残す）
   replace(text: string): void
+  // from〜to を選んで、画面の中ほどに見せる（引用ノートの「出典へ」。MAI-33）
+  select(from: number, to: number): void
+  // 選んでいる文字と、その始まりの行（1 から。前後の空白は除く）。何も選んでいなければ null
+  selectedQuote(): { quote: string; line: number } | null
   focus(): void
   destroy(): void
 }
@@ -159,6 +163,22 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
       if (current === text) return
       const head = Math.min(view.state.selection.main.head, text.length)
       view.dispatch({ changes: { from: 0, to: current.length, insert: text }, selection: { anchor: head } })
+    },
+    select(from, to) {
+      const length = view.state.doc.length
+      const anchor = Math.min(Math.max(0, from), length)
+      view.dispatch({
+        selection: { anchor, head: Math.min(Math.max(anchor, to), length) },
+        effects: EditorView.scrollIntoView(anchor, { y: 'center' }),
+      })
+    },
+    selectedQuote() {
+      const { state } = view
+      const { from, to } = state.selection.main
+      const raw = state.sliceDoc(from, to)
+      const quote = raw.trim()
+      if (!quote) return null
+      return { quote, line: state.doc.lineAt(from + (raw.length - raw.trimStart().length)).number }
     },
     focus: () => view.focus(),
     destroy: () => view.destroy(),

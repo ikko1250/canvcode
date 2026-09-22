@@ -3,6 +3,7 @@ import {
   arrowPolyline,
   type ArrowProps,
   type AssetResolver,
+  type CitationResolver,
   type DocumentResolver,
   type FileContentSource,
   type ImageRequester,
@@ -35,6 +36,7 @@ export interface Viewport {
   assets?: AssetResolver
   documents?: DocumentResolver
   files?: FileContentSource
+  citations?: CitationResolver
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
 }
@@ -87,6 +89,7 @@ export function drawNodes(
     assets: view.assets,
     documents: view.documents,
     files: view.files,
+    citations: view.citations,
   }
   let drawn = 0
   let lastRoughColor = ''
@@ -171,6 +174,8 @@ export interface OverlayState {
   // 範囲選択の枠（ワールド座標）と、中に入っている group（MAI-25）
   brush: Box | null
   focusedGroupId: string | null
+  // 引用する範囲（MAI-33）
+  quoteRegion?: Box | null
 }
 
 export function drawOverlay(
@@ -231,6 +236,18 @@ export function drawOverlay(
     ctx.fillRect(r.x, r.y, r.w, r.h)
     ctx.lineWidth = view.dpr
     ctx.strokeRect(r.x, r.y, r.w, r.h)
+  }
+  // 引用する範囲（PDF のページの上）
+  if (state.quoteRegion) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    const r = deviceRect(state.quoteRegion, view)
+    ctx.fillStyle = 'rgba(212, 167, 44, 0.16)'
+    ctx.fillRect(r.x, r.y, r.w, r.h)
+    ctx.strokeStyle = '#b7861b'
+    ctx.lineWidth = 1.5 * view.dpr
+    ctx.setLineDash([5 * view.dpr, 3 * view.dpr])
+    ctx.strokeRect(r.x, r.y, r.w, r.h)
+    ctx.setLineDash([])
   }
   return drawn
 }

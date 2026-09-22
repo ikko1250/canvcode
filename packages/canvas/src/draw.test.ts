@@ -20,6 +20,8 @@ function setup() {
     openPortal: () => {},
     editDocument: () => false,
     createDocumentAt: () => {},
+    quoteRegion: () => {},
+    openCitations: () => {},
   }
   const pointer = (x: number, y: number, coalesced?: Vec[], shiftKey = false): ToolPointer => ({
     screen: { x, y },

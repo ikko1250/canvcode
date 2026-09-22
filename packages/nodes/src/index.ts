@@ -6,6 +6,7 @@ import { geoType } from './geo.ts'
 import { imageType } from './image.ts'
 import { pdfPageType } from './pdfPage.ts'
 import { portalType } from './portal.ts'
+import { quoteCardType } from './quoteCard.ts'
 import { noteType } from './text/noteNode.ts'
 import { textType } from './text/textNode.ts'
 
@@ -19,9 +20,10 @@ export * from './geo.ts'
 export * from './image.ts'
 export * from './pdfPage.ts'
 export * from './portal.ts'
+export * from './quoteCard.ts'
 export * from './text/layout.ts'
 export * from './text/noteNode.ts'
 export * from './text/textNode.ts'
 
 // ビルド時に組み込むノードの型の一覧（MAI-9）
-export const builtinNodeTypes: AnyNodeTypeDef[] = [geoType, textType, noteType, imageType, drawType, arrowType, portalType, pdfPageType, groupType, frameType]
+export const builtinNodeTypes: AnyNodeTypeDef[] = [geoType, textType, noteType, imageType, drawType, arrowType, portalType, pdfPageType, quoteCardType, groupType, frameType]

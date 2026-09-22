@@ -7,6 +7,8 @@ import {
   type ConflictChoice,
   type ArrowStyle,
   type OwnerPortalDeletion,
+  type QuoteDraft,
+  type QuoteRequest,
   type StatsSummary,
   type ToolId,
 } from '@canvcode/canvas'
@@ -20,6 +22,7 @@ import {
   type ArrowProps,
   type FileContentSource,
   type PortalProps,
+  type QuoteCardProps,
 } from '@canvcode/nodes'
 import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
@@ -94,8 +97,9 @@ type Dialog = { title: string; message: string; choices: DialogChoice<string>[];
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [{ workspace, files }] = useState(createWorkspace)
-  // 全画面のエディタで開いている File（MAI-30）
+  // 全画面のエディタで開いている File（MAI-30）と、開いたときに選んで見せる引用（「出典へ」。MAI-33）
   const [openFileId, setOpenFileId] = useState<string | null>(null)
+  const [fileFocus, setFileFocus] = useState<{ quote: string; line: number } | null>(null)
   // Canvas ごとの Editor（一度開いたら取っておく）と、開いたことのある Canvas（初めてなら全体を表示する）
   const [editors] = useState(() => new Map<string, Editor>())
   const [visited] = useState(() => new Set<string>())
@@ -122,7 +126,7 @@ export function App() {
   // 画面の下に短く出す知らせ（受け付けないファイルをドロップしたときなど）
   const [notices, setNotices] = useState<{ id: number; message: string }[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [menu, setMenu] = useState<{ x: number; y: number; items: (MenuItem | 'separator')[] } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; items: (MenuItem | 'separator')[]; onClose?: () => void } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   // Portal の名前を、その場で変えているとき（右クリックメニューの「名前を変更」）
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
@@ -163,19 +167,21 @@ export function App() {
 
   // 全画面のエディタを開く・閉じる（URL は /f/<id>。ブラウザの「戻る」で閉じる）
   const openFile = useCallback(
-    (fileId: string, options: { push?: boolean } = {}) => {
+    (fileId: string, options: { push?: boolean; focus?: { quote: string; line: number } } = {}) => {
       if (!workspace.getFile(fileId)) return
       if (workspace.targetStatus(fileId) !== 'ok') {
         notify('この File は開けません（ゴミ箱の中か、ファイルが見つかりません）')
         return
       }
       setOpenFileId(fileId)
+      setFileFocus(options.focus ?? null)
       if (options.push !== false) history.pushState({ fileId }, '', `/f/${encodeURIComponent(fileId)}`)
     },
     [workspace, notify],
   )
   const closeFile = useCallback(() => {
     setOpenFileId(null)
+    setFileFocus(null)
     if (fileIdFromUrl()) history.back()
     viewRef.current?.root.focus({ preventScroll: true })
   }, [])
@@ -245,6 +251,97 @@ export function App() {
     [workspace, navigate, notify],
   )
 
+  // ---- 引用（MAI-33） ----
+
+  // 引用ノートへ移る（逆リンク）。別の Canvas にあれば、そこへ移ってから見せる
+  const goToNote = useCallback(
+    async (noteId: string) => {
+      const canvas = workspace.canvasOf(noteId)
+      if (!canvas) return
+      await navigate(canvas)
+      const view = viewRef.current
+      if (view && view.editor.canvasId === canvas) await view.focusNode(noteId)
+    },
+    [workspace, navigate],
+  )
+
+  // 引用しているノートの一覧（右クリックメニューと同じ形で出す）
+  const citationItems = useCallback(
+    (anchorIds: string[]): MenuItem[] =>
+      anchorIds.flatMap((anchorId) =>
+        workspace.notesOfAnchor(anchorId).map((note) => {
+          const props = note.props as QuoteCardProps
+          const canvasTitle = workspace.getCanvas(workspace.canvasOf(note.id) ?? '')?.title ?? ''
+          const head = (props.memo.trim() || props.quote.trim() || '（図）').split('\n')[0]
+          const label = `${head.length > 24 ? `${head.slice(0, 24)}…` : head} — ${canvasTitle}`
+          return { label, onSelect: () => void goToNote(note.id) }
+        }),
+      ),
+    [workspace, goToNote],
+  )
+
+  // 引用ノートの出典へ移る。PDF はそのページの範囲、Markdown は全画面のエディタのその行
+  const openSource = useCallback(
+    async (anchorId: string) => {
+      const anchor = workspace.getAnchor(anchorId)
+      const file = anchor && workspace.getFile(anchor.fileId)
+      if (!anchor || !file) return notify('出典の資料は削除されています')
+      if (workspace.targetStatus(file.id) === 'trashed') return notify('出典の資料はゴミ箱の中にあります。サイドバーから元に戻せます')
+      if (anchor.locator.kind === 'markdown') {
+        openFile(file.id, { focus: { quote: anchor.quote, line: anchor.locator.line } })
+        return
+      }
+      if (anchor.locator.kind !== 'pdf' || !file.pagesCanvasId) return
+      const pages = workspace.getCanvas(file.pagesCanvasId)
+      if (!pages || pages.deletedAt !== null) return notify('出典の PDF はゴミ箱の中にあります。サイドバーから元に戻せます')
+      await navigate(pages.id)
+      const view = viewRef.current
+      if (view && view.editor.canvasId === pages.id) await view.showCitation(anchorId)
+    },
+    [workspace, navigate, openFile, notify],
+  )
+
+  // 引用する範囲を決めた・文字を選んで「引用」を押した：ノートを横に置くか、コピーするかを選ばせる
+  const onQuote = useCallback(
+    async (request: QuoteRequest) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      let draft: QuoteDraft | null
+      let place: () => void
+      if (request.kind === 'pdf') {
+        draft = await view.quoteFromPdf(request.pageId, request.rect)
+        const page = editor.index.get(request.pageId)?.worldBounds
+        const d = draft
+        place = () => {
+          if (d && page) view.placeQuote(d, request.pageId, page.y + request.rect.y * page.h)
+        }
+      } else {
+        draft = request.draft
+        const card = editor.index.get(request.nodeId)?.worldBounds
+        const d = draft
+        place = () => {
+          if (card) view.placeQuote(d, request.nodeId, card.y)
+        }
+      }
+      if (!draft || view.editor !== editor) {
+        view.clearQuoteRegion()
+        return
+      }
+      const d = draft
+      setMenu({
+        x: request.clientX,
+        y: request.clientY,
+        items: [
+          { label: request.kind === 'pdf' ? 'このページの横に引用ノート' : 'カードの横に引用ノート', onSelect: place },
+          { label: '引用をコピー', onSelect: () => void view.copyQuote(d) },
+        ],
+        onClose: () => view.clearQuoteRegion(),
+      })
+    },
+    [setMenu],
+  )
+
   // 右クリックメニューの項目（MAI-29）。右クリックしたときの選択に合わせる
   const buildMenu = useCallback(
     (at: { x: number; y: number }): (MenuItem | 'separator')[] => {
@@ -278,6 +375,13 @@ export function App() {
           })
         }
       }
+      // 引用ノート（MAI-33）
+      if (single?.type === 'quote-card') {
+        const props = single.props as QuoteCardProps
+        items.push({ label: '出典へ', shortcut: 'Ctrl+クリック', onSelect: () => void openSource(props.anchorId) })
+        items.push({ label: 'メモを編集', shortcut: 'Enter', onSelect: () => view.textEditor.start(single.id) })
+        items.push('separator')
+      }
       // File のカード（Markdown・Python）
       if (single?.type === 'markdown-card' || single?.type === 'code-card') {
         const props = single.props as MarkdownCardProps
@@ -285,6 +389,11 @@ export function App() {
         if (file) {
           items.push({ label: '編集', shortcut: 'Enter', onSelect: () => view.editDocument(single.id) })
           items.push({ label: '全画面で開く', shortcut: 'Ctrl+Enter', onSelect: () => openFile(file.id) })
+          // このファイルを引用しているノート（逆リンク。MAI-33）
+          const cited = citationItems(workspace.anchorsOfFile(file.id).map((a) => a.id))
+          if (cited.length > 0) {
+            items.push({ label: `引用しているノート（${cited.length}）`, onSelect: () => setMenu({ x: at.x, y: at.y, items: cited }) })
+          }
           items.push({
             label: props.sizing === 'auto' ? '大きさを固定' : '高さを中身に合わせる',
             onSelect: () => {
@@ -334,6 +443,21 @@ export function App() {
         const camera = editor.session.get().camera
         const point = { x: camera.x + (at.x - rect.left) / camera.zoom, y: camera.y + (at.y - rect.top) / camera.zoom }
         const locked = editor.hitTest(point, 4 / camera.zoom, { includeLocked: true })
+        // PDF のページなら、範囲を選んで引用できる。引用した範囲の上なら、引用しているノートを出せる（MAI-33）
+        if (locked?.type === 'pdf-page') {
+          items.push({
+            label: '範囲を選んで引用',
+            shortcut: 'Alt+ドラッグ',
+            onSelect: () => {
+              view.armQuoteRegion()
+              notify('引用する範囲をドラッグで囲んでください（Esc でやめる）')
+            },
+          })
+          const cited = citationItems(editor.citationsAt(point))
+          if (cited.length > 0) {
+            items.push({ label: `この範囲を引用しているノート（${cited.length}）`, onSelect: () => setMenu({ x: at.x, y: at.y, items: cited }) })
+          }
+        }
         if (locked?.locked) {
           items.push({ label: '固定を外す', onSelect: () => editor.setLocked([locked.id], false) })
           items.push('separator')
@@ -373,7 +497,7 @@ export function App() {
       }
       return items
     },
-    [openPortal, openFile, workspace, setRenaming],
+    [openPortal, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify],
   )
 
 
@@ -386,6 +510,12 @@ export function App() {
       pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
       onOpenPortal: (portalId) => openPortal(portalId),
+      onQuote: (request) => void onQuote(request),
+      onOpenCitations: (anchorIds, { clientX, clientY }) => {
+        const items = citationItems(anchorIds)
+        if (items.length > 0) setMenu({ x: clientX, y: clientY, items })
+      },
+      onOpenSource: (anchorId) => void openSource(anchorId),
       onContextMenu: ({ clientX, clientY }) => {
         const at = { x: clientX, y: clientY }
         setMenu({ ...at, items: buildMenu(at) })
@@ -447,7 +577,7 @@ export function App() {
       files.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu])
+  }, [workspace, files, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
@@ -787,9 +917,29 @@ export function App() {
           />
         )}
 
-        {openFileId && <FileEditor workspace={workspace} files={files} fileId={openFileId} onClose={closeFile} />}
+        {openFileId && (
+          <FileEditor
+            workspace={workspace}
+            files={files}
+            fileId={openFileId}
+            focus={fileFocus}
+            onQuote={(draft) => void view?.copyQuote(draft)}
+            onLost={() => notify('引用した文字列が見つかりません（位置不明）。覚えていた行を開きました')}
+            onClose={closeFile}
+          />
+        )}
 
-        {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+        {menu && (
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            items={menu.items}
+            onClose={() => {
+              menu.onClose?.()
+              setMenu(null)
+            }}
+          />
+        )}
         {dialog && (
           <ConfirmDialog
             title={dialog.title}

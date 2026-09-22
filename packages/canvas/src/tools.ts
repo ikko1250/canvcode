@@ -82,6 +82,10 @@ export interface ToolContext {
   editDocument(nodeId: string): boolean
   // 新しい File（Markdown・Python）とカードを作り、その場で編集する（MAI-30、MAI-31）
   createDocumentAt(kind: 'markdown' | 'code', center: Vec, width?: number): void
+  // 引用する範囲を決めた（PDF のページの上。rect はページ全体を 0〜1 とした割合。MAI-33）
+  quoteRegion(pageId: string, rect: Box, screen: Vec): void
+  // PDF のページの上の、引用した範囲をクリックした（逆リンク）
+  openCitations(anchorIds: string[], screen: Vec): void
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
@@ -162,6 +166,8 @@ type SelectState =
   | { name: 'idle' }
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string> }
+  // 引用する範囲を選んでいる（Alt+ドラッグ、または「範囲を選んで引用」のあとのドラッグ。MAI-33）。start はページのローカル座標
+  | { name: 'selectingQuote'; pageId: string; start: Vec; rect: Box | null }
   | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean }
   | {
       name: 'translating'
@@ -196,6 +202,23 @@ export class SelectTool implements Tool {
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
+    if (editor.session.get().quoteRegion) editor.session.set({ quoteRegion: null })
+    // PDF のページの上の Alt+ドラッグ（または「範囲を選んで引用」のあと）は、引用する範囲の選択（MAI-33）
+    const armed = editor.session.get().quoteArmed
+    if (armed || pointer.altKey) {
+      const page = editor.hitTest(pointer.world, 0, { includeLocked: true })
+      const entry = page?.type === 'pdf-page' ? editor.index.get(page.id) : undefined
+      if (entry) {
+        const start = applyMat(invert(entry.worldMatrix), pointer.world)
+        this.state = { name: 'selectingQuote', pageId: entry.node.id, start, rect: null }
+        editor.session.set({ quoteArmed: false, hoveredId: null })
+        return
+      }
+      if (armed) {
+        editor.session.set({ quoteArmed: false })
+        this.ctx.setCursor(null)
+      }
+    }
     // 矢印の端と曲がりのハンドル（MAI-28）
     const arrowHit = hitArrowHandle(editor, pointer)
     if (arrowHit) {
@@ -252,9 +275,15 @@ export class SelectTool implements Tool {
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           return
         }
-        this.ctx.setCursor(null)
         const zoom = editor.session.get().camera.zoom
         const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
+        // 引用の範囲を選ぶ前は十字、PDF のページの上の引用した範囲の上では指のカーソル（MAI-33）
+        const cursor = editor.session.get().quoteArmed
+          ? 'crosshair'
+          : !hit && editor.citationsAt(pointer.world).length > 0
+            ? 'pointer'
+            : null
+        this.ctx.setCursor(cursor)
         // ホバーの表示も、クリックしたら選ばれるもの（group 全体など）に合わせる
         const hoveredId = hit ? this.selectableWithoutSideEffects(hit.id) : null
         if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
@@ -262,6 +291,20 @@ export class SelectTool implements Tool {
       }
       case 'draggingArrowEnd': {
         state.drag.move(pointer)
+        return
+      }
+      case 'selectingQuote': {
+        const entry = editor.index.get(state.pageId)
+        if (!entry) return
+        const { w, h } = entry.localBounds
+        const local = applyMat(invert(entry.worldMatrix), pointer.world)
+        const clamp = (p: Vec) => ({ x: Math.min(Math.max(p.x, 0), w), y: Math.min(Math.max(p.y, 0), h) })
+        const rect = boxFromPoints(clamp(state.start), clamp(local))
+        state.rect = rect
+        // 画面に出す枠（ワールド座標）。ページはふつう回転させないので、角を写した箱で足りる
+        const a = applyMat(entry.worldMatrix, { x: rect.x, y: rect.y })
+        const b = applyMat(entry.worldMatrix, { x: rect.x + rect.w, y: rect.y + rect.h })
+        editor.session.set({ quoteRegion: boxFromPoints(a, b) })
         return
       }
       case 'bendingArrow': {
@@ -339,6 +382,22 @@ export class SelectTool implements Tool {
       editor.setSelection([state.nodeId])
     } else if (state.name === 'brushing') {
       editor.session.set({ brush: null })
+    } else if (state.name === 'pointingCanvas') {
+      // PDF のページの上の、引用した範囲をクリックした（MAI-33）
+      const anchors = editor.citationsAt(pointer.world)
+      if (anchors.length > 0) this.ctx.openCitations(anchors, pointer.screen)
+    } else if (state.name === 'selectingQuote') {
+      const entry = editor.index.get(state.pageId)
+      const rect = state.rect
+      const zoom = editor.session.get().camera.zoom
+      // 小さすぎる範囲（クリックしただけなど）は、なかったことにする
+      if (!entry || !rect || rect.w * zoom < 6 || rect.h * zoom < 6) {
+        editor.session.set({ quoteRegion: null })
+      } else {
+        const { w, h } = entry.localBounds
+        this.ctx.quoteRegion(state.pageId, { x: rect.x / w, y: rect.y / h, w: rect.w / w, h: rect.h / h }, pointer.screen)
+      }
+      this.ctx.setCursor(null)
     } else if (state.name === 'translating') {
       this.dropIntoFrames(state.tx, [...state.initial.keys()])
       editor.finish(state.tx)
@@ -358,6 +417,12 @@ export class SelectTool implements Tool {
   cancel(): boolean {
     const state = this.state
     this.state = { name: 'idle' }
+    const session = this.ctx.editor.session
+    if (state.name === 'selectingQuote' || session.get().quoteArmed) {
+      session.set({ quoteRegion: null, quoteArmed: false })
+      this.ctx.setCursor(null)
+      return true
+    }
     if (state.name === 'draggingArrowEnd') state.drag.end()
     if (
       state.name === 'translating' ||

@@ -623,6 +623,20 @@ body,
   color: var(--accent);
 }
 
+.file-editor-quote {
+  padding: 4px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.file-editor-quote:hover {
+  background: #fdf6e3;
+}
+
 .file-editor-close {
   padding: 2px 10px;
   border: 1px solid transparent;

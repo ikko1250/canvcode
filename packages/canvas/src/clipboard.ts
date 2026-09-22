@@ -6,11 +6,13 @@ import {
   type BindingRecord,
   type Box,
   type NodeRecord,
+  type SourceAnchorRecord,
   type Vec,
 } from '@canvcode/core'
-import type { ArrowProps, DocumentReference, ImageProps } from '@canvcode/nodes'
+import { QUOTE_CARD_DEFAULT_WIDTH, type ArrowProps, type DocumentReference, type ImageProps, type QuoteCardProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
+import type { QuoteDraft } from './quotes.ts'
 
 // コピー・貼り付け・複製（MAI-12 の「8. クリップボード」、MAI-26）。
 // クリップボードには、アプリ内の形式（ノードの JSON）と、プレーンテキスト（ノードの文字）を両方載せる。
@@ -31,6 +33,8 @@ export interface ClipboardPayload {
   assets: AssetRecord[]
   // 矢印の Binding のうち、両端がコピーに入っているもの（MAI-28）
   bindings: BindingRecord[]
+  // 引用ノートが参照している SourceAnchor（MAI-33）。貼り付け先になければ入れる
+  anchors: SourceAnchorRecord[]
 }
 
 // 選んでいるノードを、クリップボードに載せる形にする。何も選んでいなければ null
@@ -69,6 +73,12 @@ export function copySelection(editor: Editor, resolveAsset?: (id: string) => Ass
     const asset = resolveAsset?.(assetId)
     if (asset) assets.set(assetId, asset)
   }
+  const anchors = new Map<string, SourceAnchorRecord>()
+  for (const node of nodes) {
+    const anchorId = editor.types.get(node.type)?.citation?.(node)
+    const anchor = anchorId ? editor.workspace.getAnchor(anchorId) : undefined
+    if (anchor) anchors.set(anchor.id, anchor)
+  }
   return {
     kind: 'canvcode/nodes',
     version: 1,
@@ -77,6 +87,53 @@ export function copySelection(editor: Editor, resolveAsset?: (id: string) => Ass
     bounds: unionBoxes(boxes) ?? { x: 0, y: 0, w: 0, h: 0 },
     assets: [...assets.values()],
     bindings,
+    anchors: [...anchors.values()],
+  }
+}
+
+// 引用（「引用をコピー」）を、引用ノート 1 つを載せたクリップボードの中身にする（MAI-33）。
+// SourceAnchor はここで作る（貼り付けたときにワークスペースに入る）
+export function quotePayload(draft: QuoteDraft): ClipboardPayload {
+  const anchor: SourceAnchorRecord = {
+    typeName: 'anchor',
+    id: createId('anchor'),
+    fileId: draft.fileId,
+    locator: draft.locator,
+    quote: draft.quote,
+    createdAt: Date.now(),
+  }
+  const props: QuoteCardProps = {
+    anchorId: anchor.id,
+    fileId: draft.fileId,
+    quote: draft.quote,
+    figure: draft.figure,
+    memo: '',
+    w: QUOTE_CARD_DEFAULT_WIDTH,
+  }
+  const node: NodeRecord = {
+    typeName: 'node',
+    id: createId('node'),
+    type: 'quote-card',
+    parentId: '',
+    x: 0,
+    y: 0,
+    rotation: 0,
+    index: 'a0',
+    opacity: 1,
+    locked: false,
+    props,
+    meta: {},
+  }
+  // 高さは貼り付けるまでわからないので、中心は幅の中央・上端に置く
+  return {
+    kind: 'canvcode/nodes',
+    version: 1,
+    nodes: [node],
+    roots: [node.id],
+    bounds: { x: 0, y: 0, w: props.w, h: 0 },
+    assets: [],
+    bindings: [],
+    anchors: [anchor],
   }
 }
 
@@ -180,6 +237,10 @@ export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayloa
       if (!parentId) continue
       tx.put({ ...withRole(node), id: idMap.get(node.id)!, parentId })
     }
+    // 引用ノートの SourceAnchor（同じワークスペースにあれば、それを共有する）
+    for (const anchor of payload.anchors) {
+      if (!tx.get(anchor.id)) tx.put(anchor)
+    }
     for (const binding of payload.bindings) {
       const fromId = idMap.get(binding.fromId)
       const toId = idMap.get(binding.toId)
@@ -220,7 +281,12 @@ export function parsePayload(data: { json?: string; html?: string }): ClipboardP
 function validPayload(value: unknown): ClipboardPayload | null {
   const p = value as ClipboardPayload
   if (p?.kind !== 'canvcode/nodes' || p.version !== 1 || !Array.isArray(p.nodes) || !Array.isArray(p.roots)) return null
-  return { ...p, assets: Array.isArray(p.assets) ? p.assets : [], bindings: Array.isArray(p.bindings) ? p.bindings : [] }
+  return {
+    ...p,
+    assets: Array.isArray(p.assets) ? p.assets : [],
+    bindings: Array.isArray(p.bindings) ? p.bindings : [],
+    anchors: Array.isArray(p.anchors) ? p.anchors : [],
+  }
 }
 
 function encodeBase64(text: string): string {

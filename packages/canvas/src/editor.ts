@@ -19,9 +19,17 @@ import {
   type Transaction,
   type Vec,
 } from '@canvcode/core'
-import { PDF_POINT_SCALE, PORTAL_DEFAULT_SIZE, type AnyNodeTypeDef } from '@canvcode/nodes'
+import {
+  PDF_POINT_SCALE,
+  PORTAL_DEFAULT_SIZE,
+  QUOTE_CARD_DEFAULT_WIDTH,
+  type AnyNodeTypeDef,
+  type PdfPageProps,
+  type QuoteCardProps,
+} from '@canvcode/nodes'
 import { unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
+import type { QuoteDraft } from './quotes.ts'
 import { Session } from './session.ts'
 import {
   nodeFrame,
@@ -49,6 +57,9 @@ export type { HistoryMeta } from './workspace.ts'
 // PDF のページの並べ方（MAI-32：横 4 枚ずつの格子）
 const PDF_COLUMNS = 4
 const PDF_PAGE_GAP = 40
+
+// 引用ノートを出典の横に置くときの間隔（MAI-33）
+const QUOTE_GAP = 24
 
 // File の種類ごとの、カードの型（MAI-7）
 const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
@@ -467,6 +478,69 @@ export class Editor {
       const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
       this.setSelection([portalId])
       return { portalId, canvasId: canvas.id, fileId }
+    })
+  }
+
+  // ---- 引用（MAI-33） ----
+
+  // 引用ノートを、左上が topLeft（ワールド座標）になるように置く。draft から新しい SourceAnchor も作る（1 回の Undo で戻る）
+  createQuoteNote(draft: QuoteDraft, topLeft: Vec, options: { width?: number; label?: string } = {}): string {
+    return this.transact(options.label ?? 'create quote', (tx) => {
+      const anchorId = createId('anchor')
+      tx.put({ typeName: 'anchor', id: anchorId, fileId: draft.fileId, locator: draft.locator, quote: draft.quote, createdAt: Date.now() })
+      const parentId = this.frameAt(topLeft) ?? this.canvasId
+      const local = this.worldToParent(parentId, topLeft)
+      const props: QuoteCardProps = {
+        anchorId,
+        fileId: draft.fileId,
+        quote: draft.quote,
+        figure: draft.figure,
+        memo: '',
+        w: options.width ?? QUOTE_CARD_DEFAULT_WIDTH,
+      }
+      const node = this.makeNode('quote-card', { x: local.x, y: local.y, parentId, props })
+      tx.put(node)
+      this.setSelection([node.id])
+      return node.id
+    })
+  }
+
+  // 出典のノード（PDF のページ、Markdown カード）の右に、引用ノートを置く。高さは y（ワールド座標）から。
+  // すでにある引用ノートと重なるなら、その下にずらす
+  placeQuoteBeside(sourceNodeId: string, draft: QuoteDraft, y: number): string | null {
+    const source = this.index.get(sourceNodeId)
+    if (!source) return null
+    const x = source.worldBounds.x + source.worldBounds.w + QUOTE_GAP
+    const w = QUOTE_CARD_DEFAULT_WIDTH
+    let top = y
+    for (let guard = 0; guard < 100; guard++) {
+      const blocking = this.index
+        .search({ x, y: top, w, h: 1 })
+        .flatMap((id) => {
+          const entry = this.index.get(id)
+          return entry && entry.node.type === 'quote-card' ? [entry.worldBounds] : []
+        })
+      if (blocking.length === 0) break
+      top = Math.max(...blocking.map((b) => b.y + b.h)) + 12
+    }
+    return this.createQuoteNote(draft, { x, y: top })
+  }
+
+  // ワールド座標の点にある、PDF のページの上の引用した範囲（SourceAnchor）。固定したページにも当てる
+  citationsAt(point: Vec): string[] {
+    const zoom = this.session.get().camera.zoom
+    const page = this.hitTest(point, 0, { includeLocked: true })
+    if (!page || page.type !== 'pdf-page' || zoom <= 0) return []
+    const entry = this.index.get(page.id)
+    if (!entry) return []
+    const { fileId, pageIndex, w, h } = page.props as PdfPageProps
+    const local = applyMat(invert(entry.worldMatrix), point)
+    const u = { x: local.x / w, y: local.y / h }
+    return this.workspace.anchorsOfFile(fileId).flatMap((anchor) => {
+      const loc = anchor.locator
+      if (loc.kind !== 'pdf' || loc.pageIndex !== pageIndex) return []
+      const inside = u.x >= loc.rect.x && u.x <= loc.rect.x + loc.rect.w && u.y >= loc.rect.y && u.y <= loc.rect.y + loc.rect.h
+      return inside ? [anchor.id] : []
     })
   }
 

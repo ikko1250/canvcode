@@ -15,6 +15,10 @@ export interface SessionState {
   focusedGroupId: string | null
   // 範囲選択の枠（ワールド座標）
   brush: Box | null
+  // 引用する範囲（PDF のページの上。ワールド座標。MAI-33）。範囲を決めたあと、メニューを閉じるまで出しておく
+  quoteRegion: Box | null
+  // 次のドラッグを、引用する範囲の選択にする（右クリックの「範囲を選んで引用」。一度だけ）
+  quoteArmed: boolean
   // フリーハンドで描く線の色と太さ（MAI-27）
   drawStyle: { color: string; size: number }
   // 矢印の色・太さ・矢じり（MAI-28）
@@ -41,6 +45,8 @@ export class Session {
       editingId: null,
       focusedGroupId: null,
       brush: null,
+      quoteRegion: null,
+      quoteArmed: false,
       drawStyle: { color: '#1f2328', size: 4 },
       arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },
       ...initial,

@@ -1,5 +1,5 @@
-import { applyMat, clampZoom, fitBox, invert, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
-import type { DocumentResolver, RasterImage } from '@canvcode/nodes'
+import { applyMat, clampZoom, fitBox, invert, panBy, screenToWorld, unionBoxes, zoomAt, type Box, type Camera, type Vec } from '@canvcode/core'
+import { SOURCE_LINK_PREFIX, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
 import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import {
   CLIPBOARD_MIME,
@@ -11,8 +11,10 @@ import {
   parsePayload,
   payloadText,
   payloadToHtml,
+  quotePayload,
   type ClipboardPayload,
 } from './clipboard.ts'
+import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
 import type { Editor } from './editor.ts'
 import type { FileManager } from './files.ts'
@@ -67,7 +69,19 @@ export interface CanvasViewOptions {
   files?: FileManager
   // File を全画面のエディタで開く（Ctrl+Enter）
   onOpenFile?: (fileId: string) => void
+  // 引用（MAI-33）：PDF のページの上で引用する範囲を決めた / カードの上の編集で文字を選んで「引用」を押した。
+  // 呼び出し側は、「横に引用ノート」か「引用をコピー」かを選ばせる
+  onQuote?: (request: QuoteRequest) => void
+  // PDF のページの上の、引用した範囲をクリックした（逆リンク）
+  onOpenCitations?: (anchorIds: string[], point: { clientX: number; clientY: number }) => void
+  // 引用ノートの出典へ移る（出典の帯の Ctrl（⌘）+クリック）
+  onOpenSource?: (anchorId: string) => void
 }
+
+// 引用の頼み（MAI-33）。source は出典のノード（PDF のページ、Markdown カード）で、引用ノートをその横に置く
+export type QuoteRequest =
+  | { kind: 'pdf'; pageId: string; rect: Box; clientX: number; clientY: number }
+  | { kind: 'markdown'; nodeId: string; draft: QuoteDraft; clientX: number; clientY: number }
 
 // 1 回のホイールイベントで変える倍率の上限。マウスの 1 段で約 0.67 倍になる
 const MAX_WHEEL_ZOOM_DELTA = 40
@@ -91,6 +105,13 @@ export class CanvasView {
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
   private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf'>>
+  // 引用の出典（MAI-33）
+  private readonly citations: CitationResolver
+  // 「出典へ」で移ってきた範囲（しばらく強調して見せる）
+  private emphasizedAnchor: string | null = null
+  private emphasisTimer: number | null = null
+  // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
+  private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
   readonly files: FileManager | null
   // カードの上での本文の編集（MAI-30）
   readonly documentEditor: DocumentEditor | null
@@ -142,6 +163,9 @@ export class CanvasView {
       confirmOwnerPortalDeletion: options.confirmOwnerPortalDeletion ?? (async () => 'trash'),
       onContextMenu: options.onContextMenu ?? (() => {}),
       onOpenFile: options.onOpenFile ?? (() => {}),
+      onQuote: options.onQuote ?? (() => {}),
+      onOpenCitations: options.onOpenCitations ?? (() => {}),
+      onOpenSource: options.onOpenSource ?? (() => {}),
     }
     this.files = options.files ?? null
     this.documents = {
@@ -152,6 +176,20 @@ export class CanvasView {
         return { title: doc.title, kind: doc.typeName === 'canvas' ? 'canvas' : doc.kind, status: workspace.targetStatus(id) }
       },
       thumbnail: (id) => this.thumbnails.get(id) ?? null,
+    }
+    this.citations = {
+      location: (anchorId) => {
+        const anchor = this.editor.workspace.getAnchor(anchorId)
+        if (!anchor) return { label: '', lost: false }
+        if (anchor.locator.kind !== 'markdown') return { label: locationLabel(anchor.locator, null), lost: false }
+        const line = this.quoteLine(anchorId)
+        return { label: locationLabel(anchor.locator, line), lost: line === null }
+      },
+      regionsOnPage: (fileId, pageIndex) =>
+        this.editor.workspace.anchorsOfFile(fileId).flatMap((anchor) => {
+          const loc = anchor.locator
+          return loc.kind === 'pdf' && loc.pageIndex === pageIndex ? [{ rect: loc.rect, emphasized: anchor.id === this.emphasizedAnchor }] : []
+        }),
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
 
@@ -205,6 +243,8 @@ export class CanvasView {
             if (!editingId) this.root.focus({ preventScroll: true })
           },
           onFullscreen: (fileId) => this.options.onOpenFile(fileId),
+          onQuote: ({ nodeId, fileId, quote, line, clientX, clientY }) =>
+            this.options.onQuote({ kind: 'markdown', nodeId, draft: { fileId, locator: { kind: 'markdown', line }, quote, figure: null }, clientX, clientY }),
         })
       : null
     // 本文を読み込めた・編集した・外で変わったら、そのカードの形（高さ）と絵を描き直す
@@ -283,9 +323,9 @@ export class CanvasView {
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
-    this.editorRef.session.set({ hoveredId: null, brush: null })
+    this.editorRef.session.set({ hoveredId: null, brush: null, quoteRegion: null, quoteArmed: false })
     this.editorRef = editor
-    editor.session.set({ toolId: 'select', drawStyle, arrowStyle, editingId: null, hoveredId: null, brush: null })
+    editor.session.set({ toolId: 'select', drawStyle, arrowStyle, editingId: null, hoveredId: null, brush: null, quoteRegion: null, quoteArmed: false })
     this.lifted = new Set()
     this.panPointer = null
     this.cursorOverride = null
@@ -310,6 +350,14 @@ export class CanvasView {
       openPortal: (portalId) => this.options.onOpenPortal(portalId),
       editDocument: (nodeId) => this.editDocument(nodeId),
       createDocumentAt: (kind, center, width) => void this.createDocumentAt(kind, center, width),
+      quoteRegion: (pageId, rect, screen) => {
+        const bounds = this.root.getBoundingClientRect()
+        this.options.onQuote({ kind: 'pdf', pageId, rect, clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
+      },
+      openCitations: (anchorIds, screen) => {
+        const bounds = this.root.getBoundingClientRect()
+        this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
+      },
     }
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
@@ -375,6 +423,7 @@ export class CanvasView {
       assets: this.assets,
       documents: this.documents,
       files: this.files ?? undefined,
+      citations: this.citations,
     }
     drawNodes(ctx, editor, visibleIds(editor, viewport), viewport)
     const image = await createImageBitmap(canvas)
@@ -449,6 +498,133 @@ export class CanvasView {
     }
   }
 
+  // ---- 引用（MAI-33） ----
+
+  // 次のドラッグを、PDF のページの上で引用する範囲の選択にする（右クリックの「範囲を選んで引用」）
+  armQuoteRegion(): void {
+    this.tool.cancel()
+    this.editor.session.set({ toolId: 'select', quoteArmed: true, quoteRegion: null })
+    this.cursorOverride = 'crosshair'
+    this.updateCursor()
+  }
+
+  clearQuoteRegion(): void {
+    if (this.editor.session.get().quoteRegion) this.editor.session.set({ quoteRegion: null })
+  }
+
+  // PDF のページの範囲（ページの中の割合）から、引用の中身を作る。文字がほとんどなければ、図として切り抜く
+  async quoteFromPdf(pageId: string, rect: Box): Promise<QuoteDraft | null> {
+    const page = this.editor.getNode(pageId)
+    if (page?.type !== 'pdf-page') return null
+    const props = page.props as PdfPageProps
+    try {
+      const doc = await this.assets.pdfDocument(props.assetId)
+      const [size, items] = await Promise.all([doc.pageSize(props.pageIndex), doc.textItems(props.pageIndex)])
+      const region = textInRegion(items, { x: rect.x * size.width, y: rect.y * size.height, w: rect.w * size.width, h: rect.h * size.height })
+      const figure = looksLikeFigure(region)
+        ? { assetId: props.assetId, pageIndex: props.pageIndex, rect, pageWidth: props.w, aspect: (rect.h * props.h) / (rect.w * props.w) }
+        : null
+      return { fileId: props.fileId, locator: { kind: 'pdf', pageIndex: props.pageIndex, rect }, quote: region.text, figure }
+    } catch (error) {
+      console.error('Failed to read the text of a PDF page', error)
+      this.options.notify('PDF の文字を読み取れませんでした')
+      return null
+    }
+  }
+
+  // 出典のノード（PDF のページ、Markdown カード）の横に引用ノートを置き、メモを書き始める。y はワールド座標
+  placeQuote(draft: QuoteDraft, sourceNodeId: string, y: number): string | null {
+    this.tool.cancel()
+    this.documentEditor?.finish()
+    const id = this.editor.placeQuoteBeside(sourceNodeId, draft, y)
+    this.clearQuoteRegion()
+    if (!id) return null
+    // 置いたノートが画面の外なら、見えるところまで動かす
+    const box = this.editor.index.get(id)?.worldBounds
+    const camera = this.editor.session.get().camera
+    if (box && (box.x + box.w > camera.x + this.width / camera.zoom || box.y + box.h > camera.y + this.height / camera.zoom)) {
+      void this.animateCamera({ ...camera, x: box.x + box.w + 40 / camera.zoom - this.width / camera.zoom })
+    }
+    this.textEditor.start(id)
+    return id
+  }
+
+  // 引用をクリップボードに載せる（別の Canvas に貼ると引用ノートになる）
+  async copyQuote(draft: QuoteDraft): Promise<void> {
+    const payload = quotePayload(draft)
+    const title = this.editor.workspace.getFile(draft.fileId)?.title ?? ''
+    const location = locationLabel(draft.locator, draft.locator.kind === 'markdown' ? draft.locator.line : null)
+    const text = `${draft.quote || '（図）'}\n— ${title}${location ? ` ${location}` : ''}`
+    // プレーンテキストしか載せられなかったときも、このタブの中では引用ノートとして貼れるように
+    this.lastCopied = { payload, text }
+    this.clearQuoteRegion()
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([payloadToHtml(payload)], { type: 'text/html' }),
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+        }),
+      ])
+    } catch {
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch (error) {
+        console.warn('Failed to write the clipboard', error)
+      }
+    }
+    this.options.notify('引用をコピーしました。貼り付けると引用ノートになります')
+  }
+
+  // ノードを画面の中央に見せて選ぶ（逆リンクから、引用ノートへ移ったとき）
+  async focusNode(nodeId: string): Promise<void> {
+    const box = this.editor.index.get(nodeId)?.worldBounds
+    if (!box) return
+    this.editor.setSelection([nodeId])
+    const zoom = clampZoom(Math.min(1, (this.width * 0.6) / box.w, (this.height * 0.6) / box.h))
+    await this.animateCamera({ x: box.x + box.w / 2 - this.width / 2 / zoom, y: box.y + box.h / 2 - this.height / 2 / zoom, zoom })
+  }
+
+  // PDF のページの上の、引用した範囲を見せて、しばらく強調する（「出典へ」）
+  async showCitation(anchorId: string): Promise<boolean> {
+    const anchor = this.editor.workspace.getAnchor(anchorId)
+    const loc = anchor?.locator
+    if (!anchor || loc?.kind !== 'pdf') return false
+    const pageId = this.editor.index.allIds().find((id) => {
+      const node = this.editor.getNode(id)
+      return node?.type === 'pdf-page' && (node.props as PdfPageProps).fileId === anchor.fileId && (node.props as PdfPageProps).pageIndex === loc.pageIndex
+    })
+    const page = pageId ? this.editor.index.get(pageId)?.worldBounds : undefined
+    if (!page) return false
+    // ページの幅いっぱいに、範囲が画面の中ほどに来るように見せる
+    const regionY = page.y + loc.rect.y * page.h
+    const regionH = loc.rect.h * page.h
+    const h = Math.max(regionH * 1.6, page.h * 0.35)
+    const target = this.cameraFor({ x: page.x - page.w * 0.05, y: regionY + regionH / 2 - h / 2, w: page.w * 1.1, h })
+    this.emphasizedAnchor = anchorId
+    if (this.emphasisTimer !== null) window.clearTimeout(this.emphasisTimer)
+    this.emphasisTimer = window.setTimeout(() => {
+      this.emphasizedAnchor = null
+      this.emphasisTimer = null
+      this.invalidate('scene')
+    }, 2500)
+    this.invalidate('scene')
+    await this.animateCamera(target)
+    return true
+  }
+
+  // Markdown の引用の、今の行（本文が変わっていれば探し直す）。見つからなければ null
+  private quoteLine(anchorId: string): number | null {
+    const anchor = this.editor.workspace.getAnchor(anchorId)
+    if (anchor?.locator.kind !== 'markdown') return null
+    const content = this.files?.get(anchor.fileId)
+    if (!content) return anchor.locator.line
+    const cached = this.quoteLines.get(anchorId)
+    if (cached?.version === content.version) return cached.line
+    const line = locateQuote(content.text, anchor.quote, anchor.locator.line)
+    this.quoteLines.set(anchorId, { version: content.version, line })
+    return line
+  }
+
   // Undo / Redo。ほかの操作と重なって取り消せないときは、そのことを知らせる（MAI-11）
   undo(): void {
     this.tool.cancel()
@@ -508,6 +684,11 @@ export class CanvasView {
     const local = applyMat(invert(entry.worldMatrix), pointer.world)
     const href = type.linkAt(hit, local)
     if (!href) return false
+    // 引用ノートの出典の帯（MAI-33）
+    if (href.startsWith(SOURCE_LINK_PREFIX)) {
+      this.options.onOpenSource(href.slice(SOURCE_LINK_PREFIX.length))
+      return true
+    }
     // 外のページ（http・https・mailto）だけを開く
     let url: URL
     try {
@@ -608,13 +789,14 @@ export class CanvasView {
       this.images.endFrame()
     }
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId } = this.editor.session.get()
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion } = this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
         selectedIds,
         hoveredId,
         brush,
         focusedGroupId,
+        quoteRegion,
       })
     }
     // 描いたノード数は、シーンを描き直したフレームの値を表示し続ける
@@ -633,6 +815,7 @@ export class CanvasView {
       assets: this.assets,
       documents: this.documents,
       files: this.files ?? undefined,
+      citations: this.citations,
       editingId: this.editor.session.get().editingId,
     }
   }
@@ -683,6 +866,7 @@ export class CanvasView {
       state.selectedIds !== prev.selectedIds ||
       state.hoveredId !== prev.hoveredId ||
       state.brush !== prev.brush ||
+      state.quoteRegion !== prev.quoteRegion ||
       state.focusedGroupId !== prev.focusedGroupId
     ) {
       this.invalidate('overlay')

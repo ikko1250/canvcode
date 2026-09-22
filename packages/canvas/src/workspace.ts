@@ -2,6 +2,7 @@ import {
   History,
   Store,
   createId,
+  isAnchorRecord,
   isBindingRecord,
   isCanvasRecord,
   isDocumentRecord,
@@ -13,6 +14,7 @@ import {
   type FileRecord,
   type NodeRecord,
   type Patch,
+  type SourceAnchorRecord,
   type Transaction,
   type WorkspaceRecord,
 } from '@canvcode/core'
@@ -79,6 +81,57 @@ class NodeTree {
   }
 }
 
+// 引用の索引（MAI-33）：SourceAnchor → それを引用しているノート、File → その SourceAnchor。
+// NodeTree と同じく、フックと知らせの両方で更新する（どちらから当てても同じ結果になる）
+class CitationIndex {
+  private readonly notes = new Map<string, Set<string>>()
+  private readonly anchors = new Map<string, Set<string>>()
+  private readonly citationOf: (node: NodeRecord) => string | null
+
+  constructor(citationOf: (node: NodeRecord) => string | null) {
+    this.citationOf = citationOf
+  }
+
+  apply(before: WorkspaceRecord | undefined, after: WorkspaceRecord | undefined, id: string): void {
+    const beforeKey = this.keyOf(before)
+    const afterKey = this.keyOf(after)
+    if (beforeKey && (beforeKey.map !== afterKey?.map || beforeKey.key !== afterKey.key)) remove(beforeKey.map, beforeKey.key, id)
+    if (afterKey) add(afterKey.map, afterKey.key, id)
+  }
+
+  notesOf(anchorId: string): string[] {
+    return [...(this.notes.get(anchorId) ?? [])]
+  }
+
+  anchorsOf(fileId: string): string[] {
+    return [...(this.anchors.get(fileId) ?? [])]
+  }
+
+  private keyOf(record: WorkspaceRecord | undefined): { map: Map<string, Set<string>>; key: string } | null {
+    if (isAnchorRecord(record)) return { map: this.anchors, key: record.fileId }
+    if (isNodeRecord(record)) {
+      const anchorId = this.citationOf(record)
+      return anchorId ? { map: this.notes, key: anchorId } : null
+    }
+    return null
+  }
+}
+
+function add(map: Map<string, Set<string>>, key: string, id: string): void {
+  let set = map.get(key)
+  if (!set) {
+    set = new Set()
+    map.set(key, set)
+  }
+  set.add(id)
+}
+
+function remove(map: Map<string, Set<string>>, key: string, id: string): void {
+  const set = map.get(key)
+  set?.delete(id)
+  if (set && set.size === 0) map.delete(key)
+}
+
 export class Workspace implements NodeLookup {
   readonly store = new Store<WorkspaceRecord>()
   // 消すレコードに、差分に入っていない子（あとで別の操作で入れたもの。子の Canvas の中身など）が残るなら、取り消さない
@@ -86,10 +139,12 @@ export class Workspace implements NodeLookup {
   readonly types: Map<string, AnyNodeTypeDef>
   readonly bindings = new BindingIndex()
   readonly tree = new NodeTree()
+  readonly citations: CitationIndex
   readonly rootCanvasId: string
 
   constructor(options: WorkspaceOptions = {}) {
     this.types = new Map((options.types ?? builtinNodeTypes).map((type) => [type.type, type]))
+    this.citations = new CitationIndex((node) => this.types.get(node.type)?.citation?.(node) ?? null)
     this.rootCanvasId = options.rootCanvasId ?? createId('canvas')
     this.store.setHooks({
       afterCreate: (record, tx) => {
@@ -155,6 +210,7 @@ export class Workspace implements NodeLookup {
   private track(before: WorkspaceRecord | undefined, after: WorkspaceRecord | undefined, id: string): void {
     this.bindings.apply(before, after)
     this.tree.apply(before, after, id)
+    this.citations.apply(before, after, id)
   }
 
   // ---- 読み出し ----
@@ -194,6 +250,30 @@ export class Workspace implements NodeLookup {
   // ノードが参照している Canvas・File と、その持ち主か
   referenceOf(node: NodeRecord): DocumentReference | null {
     return this.types.get(node.type)?.reference?.(node) ?? null
+  }
+
+  getAnchor(id: string): SourceAnchorRecord | undefined {
+    const record = this.store.get(id)
+    return isAnchorRecord(record) ? record : undefined
+  }
+
+  // SourceAnchor を引用しているノート。trashed も渡すと、ゴミ箱の中の Canvas にあるノートも含める
+  notesOfAnchor(anchorId: string, options: { includeTrashed?: boolean } = {}): NodeRecord[] {
+    return this.citations.notesOf(anchorId).flatMap((id) => {
+      const node = this.getNode(id)
+      if (!node) return []
+      if (options.includeTrashed) return [node]
+      const canvasId = this.canvasOf(id)
+      return canvasId && this.targetStatus(canvasId) === 'ok' ? [node] : []
+    })
+  }
+
+  // File を出典にしている SourceAnchor のうち、引用しているノートが（ゴミ箱の外に）あるもの
+  anchorsOfFile(fileId: string): SourceAnchorRecord[] {
+    return this.citations.anchorsOf(fileId).flatMap((id) => {
+      const anchor = this.getAnchor(id)
+      return anchor && this.notesOfAnchor(id).length > 0 ? [anchor] : []
+    })
   }
 
   bindingsOfArrow(arrowId: string): BindingRecord[] {
@@ -394,6 +474,9 @@ export class Workspace implements NodeLookup {
       const binding = tx.get(id)
       if (isBindingRecord(binding)) unbind(tx, binding)
     }
+    // 引用ノートを消して、その SourceAnchor を引用するノートがなくなったら、SourceAnchor も消す（MAI-33）
+    const anchorId = this.types.get(record.type)?.citation?.(record)
+    if (anchorId && this.citations.notesOf(anchorId).length === 0 && tx.get(anchorId)) tx.remove(anchorId)
     // 持ち主（Portal やカード）を消したら、参照先をゴミ箱に送るか、未配置にする
     const ref = this.referenceOf(record)
     if (ref) {

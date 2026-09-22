@@ -1,5 +1,5 @@
 // ワークスペースのレコード（MAI-7）。段階 2 では Node だけを扱う。段階 6 で Asset、段階 8 で Binding、段階 9 で Canvas、
-// 段階 10 で File を加えた。
+// 段階 10 で File と SourceAnchor を加えた。
 
 export interface NodeRecord<P extends object = object> {
   typeName: 'node'
@@ -111,8 +111,30 @@ export interface FileRecord {
 // 階層に入るもの（Portal やカードの参照先）
 export type DocumentRecord = CanvasRecord | FileRecord
 
+// 引用の出典（MAI-7、MAI-10、MAI-33）。引用ノート（quote-card）がこれを参照する。同じ範囲を複数のノートが引用してよい。
+// 引用しているノートがすべて消えたら、一緒に消す（ワークスペースのフック）
+export interface SourceAnchorRecord {
+  typeName: 'anchor'
+  id: string
+  // 出典の File（PDF・Markdown）
+  fileId: string
+  locator: SourceLocator
+  // 引用した文字列（変えない）。Markdown では、行番号を付け直すときの手がかりにもする
+  quote: string
+  createdAt: number
+}
+
+// 出典の中の位置。
+// - pdf：ページ（0 から）と、ページの中の矩形（ページ全体を 0〜1 とした割合）。PDF の中身は変わらないので、ずれない
+// - markdown：引用を始めた行（1 から）。ファイルが変わったら quote を探して付け直す。見つからなければ「位置不明」
+// - canvas：Canvas のノード（旧データの取り込み用。初版では作る操作を用意しない）
+export type SourceLocator =
+  | { kind: 'pdf'; pageIndex: number; rect: { x: number; y: number; w: number; h: number } }
+  | { kind: 'markdown'; line: number }
+  | { kind: 'canvas'; canvasId: string; nodeIds: string[] }
+
 // ワークスペースのストアに入るレコード（MAI-11：ストアはワークスペースに 1 つ、履歴は Canvas ごと）
-export type WorkspaceRecord = NodeRecord | BindingRecord | CanvasRecord | FileRecord
+export type WorkspaceRecord = NodeRecord | BindingRecord | CanvasRecord | FileRecord | SourceAnchorRecord
 
 export function isNodeRecord(record: WorkspaceRecord | undefined): record is NodeRecord {
   return record?.typeName === 'node'
@@ -128,6 +150,10 @@ export function isCanvasRecord(record: WorkspaceRecord | undefined): record is C
 
 export function isFileRecord(record: WorkspaceRecord | undefined): record is FileRecord {
   return record?.typeName === 'file'
+}
+
+export function isAnchorRecord(record: WorkspaceRecord | undefined): record is SourceAnchorRecord {
+  return record?.typeName === 'anchor'
 }
 
 export function isDocumentRecord(record: WorkspaceRecord | undefined): record is DocumentRecord {
