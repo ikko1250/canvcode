@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { CanvasView, Editor, type StatsSummary, type ToolId } from '@canvcode/canvas'
+import { builtinNodeTypes } from '@canvcode/nodes'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
+import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
+import { markdownCardType } from './markdown/markdownCard.ts'
 
 // 段階 1・2 の動作確認用の画面。サイドバーやパンくずなど本来の UI は、後の段階で作る。
 
@@ -15,12 +18,13 @@ const BENCH_NODE_COUNT = 10_000
 
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [editor] = useState(() => new Editor())
+  const [editor] = useState(() => new Editor({ types: [...builtinNodeTypes, markdownCardType] }))
   const [view, setView] = useState<CanvasView | null>(null)
   const session = useSyncExternalStore(editor.session.subscribe, editor.session.getSnapshot)
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [showStats, setShowStats] = useState(true)
   const [bench, setBench] = useState<'idle' | 'running' | PhaseResult[]>('idle')
+  const [cardBench, setCardBench] = useState<'idle' | 'running' | CardBenchmarkResult>('idle')
 
   useEffect(() => {
     const container = containerRef.current
@@ -84,6 +88,25 @@ export function App() {
         <button onClick={startBenchmark} disabled={bench === 'running'}>
           {bench === 'running' ? 'ベンチマーク実行中…' : 'ベンチマーク'}
         </button>
+        <span className="separator" />
+        <button
+          onClick={() => {
+            generateMarkdownCards(editor)
+            view?.zoomToFit()
+          }}
+        >
+          Markdown カード {CARD_COUNT} 枚を追加
+        </button>
+        <button
+          disabled={cardBench === 'running' || !view}
+          onClick={async () => {
+            if (!view) return
+            setCardBench('running')
+            setCardBench(await runCardBenchmark(view))
+          }}
+        >
+          {cardBench === 'running' ? 'カードのベンチマーク実行中…' : 'カードのズームのベンチマーク'}
+        </button>
         <button onClick={() => setShowStats((v) => !v)}>{showStats ? '計測を隠す' : '計測を表示'}</button>
       </div>
 
@@ -137,6 +160,53 @@ export function App() {
           </table>
           <p>
             目標は 60FPS（フレーム間隔 16.7 ms）。描画時間はシーンとオーバーレイの描画にかかった CPU 時間。
+          </p>
+        </div>
+      )}
+
+      {typeof cardBench === 'object' && (
+        <div className="bench-result card-bench-result">
+          <div className="bench-header">
+            <strong>
+              カードのズームのベンチマーク（Markdown カード {CARD_COUNT} 枚、devicePixelRatio {cardBench.dpr}）
+            </strong>
+            <button onClick={() => setCardBench('idle')}>閉じる</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>段階</th>
+                <th>FPS</th>
+                <th>間隔 中央値</th>
+                <th>間隔 95%</th>
+                <th>間隔 最大</th>
+                <th>落ちたフレーム</th>
+                <th>作った画像</th>
+                <th>くっきりするまで</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cardBench.phases.map((phase) => (
+                <tr key={phase.name}>
+                  <td>{phase.name}</td>
+                  <td>{phase.fps.toFixed(0)}</td>
+                  <td>{phase.p50.toFixed(1)} ms</td>
+                  <td>{phase.p95.toFixed(1)} ms</td>
+                  <td>{phase.max.toFixed(1)} ms</td>
+                  <td>
+                    {phase.dropped} / {phase.frames}
+                  </td>
+                  <td>{phase.produced}</td>
+                  <td>{phase.sharpMs !== undefined ? `${(phase.sharpMs / 1000).toFixed(2)} 秒` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p>
+            画像の作り方：createImageBitmap {cardBench.raster.bitmap} 回 ／ Canvas {cardBench.raster.canvas} 回（うち
+            createImageBitmap から戻したもの {cardBench.raster.bitmapFallback} 回）。
+            最初の画像を作り終えるまで {(cardBench.warmupMs / 1000).toFixed(2)} 秒。「落ちたフレーム」は、間隔が 25 ms
+            を超えたフレームの数。
           </p>
         </div>
       )}

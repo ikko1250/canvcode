@@ -10,6 +10,22 @@ export interface RenderInfo {
   devicePixelRatio: number
   // 'full' は通常の描画、'rough' はズームアウト時の簡略描画（MAI-14）
   detail: 'full' | 'rough'
+  // 時間のかかる画像（Markdown を画像にしたものなど）を頼む先（MAI-9 の「3. 時間のかかる素材の扱い」）
+  images?: ImageRequester
+}
+
+// 作ってある画像。level は解像度の倍率（CSS ピクセル 1 つあたりの画素数）
+export interface RasterImage {
+  image: CanvasImageSource
+  width: number
+  height: number
+  level: number
+}
+
+export interface ImageRequester {
+  // key の画像を level の解像度で欲しいと頼む。手元にあるいちばん近い解像度のものを返し、
+  // 頼んだ解像度がなければ、あとで作る（できたら描き直される）。何もなければ null。
+  get(key: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null
 }
 
 export interface NodeTypeDef<P extends object> {
@@ -32,4 +48,13 @@ export type AnyNodeTypeDef = NodeTypeDef<any>
 
 export function defineNodeType<P extends object>(def: NodeTypeDef<P>): NodeTypeDef<P> {
   return def
+}
+
+// 画像の解像度の段階（MAI-22）。段階をまたいだときだけ作り直す
+export const IMAGE_LEVELS = [0.25, 0.5, 1, 2, 4] as const
+
+// 表示に必要な倍率（CSS ピクセル 1 つあたりの画素数）以上で、最も小さい段階
+export function pickImageLevel(pixelsPerUnit: number): number {
+  for (const level of IMAGE_LEVELS) if (level >= pixelsPerUnit) return level
+  return IMAGE_LEVELS[IMAGE_LEVELS.length - 1]
 }

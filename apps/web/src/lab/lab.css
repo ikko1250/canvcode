@@ -1,0 +1,74 @@
+.lab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.lab-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #d9dde3;
+}
+
+.lab-controls input[type='number'] {
+  width: 70px;
+}
+
+.lab-metrics {
+  padding: 8px 14px;
+  background: #f4f6f9;
+  border-bottom: 1px solid #d9dde3;
+  font: 12px ui-monospace, monospace;
+  line-height: 1.7;
+}
+
+.lab-metrics .good {
+  color: #2f9e44;
+}
+
+.lab-metrics .bad,
+.lab-error {
+  color: #c92a2a;
+}
+
+.lab-panels {
+  display: flex;
+  flex: 1;
+  gap: 16px;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+}
+
+.lab-panel > h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #656d76;
+}
+
+.lab-source {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 360px;
+}
+
+.lab-source textarea {
+  flex: 1;
+  min-height: 400px;
+  font: 12px ui-monospace, monospace;
+}
+
+.lab-frame {
+  overflow: hidden;
+  background: #fafbfc;
+  outline: 1px dashed #c6ccd4;
+}
+
+.lab-frame canvas {
+  display: block;
+}

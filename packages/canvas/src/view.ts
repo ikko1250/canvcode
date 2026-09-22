@@ -4,6 +4,7 @@ import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
 import { clearCanvas, drawOverlay, drawScene, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
+import { ImageCache } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
 import { GeoTool, HandTool, SelectTool, type Tool, type ToolContext, type ToolPointer } from './tools.ts'
 
@@ -49,6 +50,8 @@ export class CanvasView {
   private spaceHeld = false
   private panPointer: { id: number; last: { x: number; y: number } } | null = null
   private gestureScale = 1
+  // 時間のかかる画像（Markdown カードなど）のキャッシュ。作れたらシーンを描き直す（MAI-22）
+  readonly images = new ImageCache({ onReady: () => this.invalidate('scene') })
   private readonly stats = new FrameStats()
   private lastDrawnNodes = 0
   private readonly frameCallbacks = new Set<(now: number) => void>()
@@ -143,6 +146,7 @@ export class CanvasView {
 
   dispose(): void {
     this.tool.onExit?.()
+    this.images.dispose()
     for (const dispose of this.disposers) dispose()
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
     this.root.remove()
@@ -212,7 +216,9 @@ export class CanvasView {
       drawGrid(this.gridCtx, view.camera, view.width, view.height, view.dpr, this.options.gridColors)
     }
     if (this.dirty.has('scene')) {
+      this.images.beginFrame()
       drawn += drawScene(this.sceneCtx, this.editor, view, this.lifted)
+      this.images.endFrame()
     }
     if (this.dirty.has('overlay')) {
       const { selectedIds, hoveredId } = this.editor.session.get()
@@ -225,7 +231,13 @@ export class CanvasView {
   }
 
   private viewport(): Viewport {
-    return { camera: this.editor.session.get().camera, width: this.width, height: this.height, dpr: this.dpr }
+    return {
+      camera: this.editor.session.get().camera,
+      width: this.width,
+      height: this.height,
+      dpr: this.dpr,
+      images: this.images,
+    }
   }
 
   private resize(): void {
@@ -254,7 +266,11 @@ export class CanvasView {
   }
 
   private onSessionChange(state: SessionState, prev: SessionState): void {
-    if (state.camera !== prev.camera) this.invalidate('all')
+    if (state.camera !== prev.camera) {
+      // カメラが動いている間は、画像を作り直さない（MAI-22）
+      this.images.notifyMotion()
+      this.invalidate('all')
+    }
     if (state.selectedIds !== prev.selectedIds || state.hoveredId !== prev.hoveredId) this.invalidate('overlay')
     if (state.toolId !== prev.toolId) {
       this.tool.onExit?.()

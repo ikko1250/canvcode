@@ -2,8 +2,14 @@
   "name": "@canvcode/nodes",
   "private": true,
   "type": "module",
-  "dependencies": { "@canvcode/core": "*" },
+  "dependencies": {
+    "@canvcode/core": "*",
+    "dompurify": "^3.4.15",
+    "katex": "^0.18.7",
+    "marked": "^18.0.14"
+  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./markdown": "./src/markdown/index.ts"
   }
 }

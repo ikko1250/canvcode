@@ -1,5 +1,5 @@
 import { expandBox, unionBoxes, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
-import type { RenderInfo } from '@canvcode/nodes'
+import type { ImageRequester, RenderInfo } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
@@ -20,6 +20,7 @@ export interface Viewport {
   width: number
   height: number
   dpr: number
+  images?: ImageRequester
 }
 
 // ノードのローカル座標 → 物理ピクセルの行列を ctx に設定する。
@@ -62,7 +63,7 @@ export function drawNodes(
   view: Viewport,
   skip?: ReadonlySet<string>,
 ): number {
-  const info: RenderInfo = { zoom: view.camera.zoom, devicePixelRatio: view.dpr, detail: 'full' }
+  const info: RenderInfo = { zoom: view.camera.zoom, devicePixelRatio: view.dpr, detail: 'full', images: view.images }
   let drawn = 0
   let lastRoughColor = ''
   for (const id of ids) {
