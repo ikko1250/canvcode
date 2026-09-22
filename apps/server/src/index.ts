@@ -3,15 +3,27 @@ import { stat } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
+import { AssetStore } from './assets.ts'
 
 // CanvCode のサーバー（MAI-4）。
 // - VPS 上で 127.0.0.1 でのみ待ち受け、ローカル PC からは SSH のポートフォワードで開く
 // - 本番では、ビルドした画面（apps/web/dist）も同じサーバーから配信する
-// 永続化（MAI-13）と WebSocket での同期（MAI-11）は、後の段階で入れる。
+// - ワークスペースのフォルダ（MAI-13）の .canvcode/ に、画像の Asset を保存する（MAI-26）
+// レコードの永続化（MAI-13）と WebSocket での同期（MAI-11）は、後の段階で入れる。
 
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
 const WEB_DIST = resolve(fileURLToPath(new URL('../../web/dist', import.meta.url)))
+
+// ワークスペースのフォルダ：--workspace <フォルダ>、環境変数 CANVCODE_WORKSPACE、どちらもなければ ./workspace
+const { values: args } = parseArgs({ options: { workspace: { type: 'string' } }, strict: false })
+const WORKSPACE = resolve(
+  (typeof args.workspace === 'string' ? args.workspace : undefined) ?? process.env.CANVCODE_WORKSPACE ?? 'workspace',
+)
+const DATA_DIR = join(WORKSPACE, '.canvcode')
+const assets = new AssetStore(DATA_DIR)
+await assets.init()
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -52,6 +64,7 @@ const server = createServer(async (req, res) => {
     sendJson(res, 200, { ok: true })
     return
   }
+  if (await assets.handle(req, res, url.pathname)) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return
@@ -78,5 +91,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`CanvCode server: http://${HOST}:${PORT}`)
+  console.log(`ワークスペース: ${WORKSPACE}`)
   console.log(`手元の PC から開くとき: ssh -L ${PORT}:${HOST}:${PORT} <VPS> のあと http://localhost:${PORT}`)
 })

@@ -28,11 +28,19 @@ export function App() {
   const [showStats, setShowStats] = useState(true)
   const [bench, setBench] = useState<'idle' | 'running' | PhaseResult[]>('idle')
   const [cardBench, setCardBench] = useState<'idle' | 'running' | CardBenchmarkResult>('idle')
+  // 画面の下に短く出す知らせ（受け付けないファイルをドロップしたときなど）
+  const [notices, setNotices] = useState<{ id: number; message: string }[]>([])
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    const created = new CanvasView(editor, container)
+    let nextNoticeId = 0
+    const notify = (message: string) => {
+      const id = nextNoticeId++
+      setNotices((list) => [...list, { id, message }])
+      window.setTimeout(() => setNotices((list) => list.filter((n) => n.id !== id)), 6000)
+    }
+    const created = new CanvasView(editor, container, { notify })
     setView(created)
     // 開発者ツールや自動テストから状態を調べるための入口
     ;(window as unknown as { canvcode: unknown }).canvcode = { editor, view: created }
@@ -214,9 +222,19 @@ export function App() {
         </div>
       )}
 
+      {notices.length > 0 && (
+        <div className="notices">
+          {notices.map((notice) => (
+            <div key={notice.id} className="notice">
+              {notice.message}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="help">
         ホイール：パン ／ Ctrl+ホイール・ピンチ：ズーム ／ Space+ドラッグ・中ボタン：パン ／ Shift+1：全体表示 ／
-        Delete：削除 ／ 矢印キー：移動 ／ Esc：取り消し
+        Delete：削除 ／ 矢印キー：移動 ／ Ctrl+C・X・V：コピー・切り取り・貼り付け ／ Ctrl+D：複製 ／ Esc：取り消し
       </div>
     </div>
   )

@@ -45,7 +45,7 @@ export interface TransformSelection {
   // 1 つだけのときは、その型がリサイズできるか（group は中身を伸ばせるのでできる）。複数のときは、どれか 1 つでもできるか
   canResize: boolean
   canRotate: boolean
-  // 斜めに回転したノードや group を含む複数選択は、形が歪まないよう縦横比を保って伸ばす
+  // 斜めに回転したノードや group を含む複数選択と、縦横比を保つ型（画像）は、縦横比を保って伸ばす
   forceAspect: boolean
   minSize: { w: number; h: number }
 }
@@ -395,7 +395,10 @@ export class Editor {
       targets,
       canResize: targets.some((t) => t.type.resize || t.type.container === 'group'),
       canRotate: targets.every((t) => t.type.canRotate !== false),
-      forceAspect: !single && (hasGroup || targets.some((t) => rightAngle(t.node.rotation) === null)),
+      // 画像のように縦横比を保つ型を含むときも、縦横比を保つ（MAI-26）
+      forceAspect:
+        targets.some((t) => t.type.lockAspectRatio) ||
+        (!single && (hasGroup || targets.some((t) => rightAngle(t.node.rotation) === null))),
       minSize: single ? (targets[0].type.minSize ?? { w: 1, h: 1 }) : { w: 1, h: 1 },
     }
   }

@@ -1,4 +1,17 @@
-import { fitBox, panBy, screenToWorld, unionBoxes, zoomAt, type Camera } from '@canvcode/core'
+import { fitBox, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
+import { AssetManager, isSupportedImage } from './assets.ts'
+import {
+  CLIPBOARD_MIME,
+  copySelection,
+  duplicateSelection,
+  insertImages,
+  insertPayload,
+  insertText,
+  parsePayload,
+  payloadText,
+  payloadToHtml,
+  type ClipboardPayload,
+} from './clipboard.ts'
 import type { Editor } from './editor.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
@@ -27,6 +40,10 @@ export interface CanvasViewOptions {
   // 'pan'：ホイールでパン、Ctrl（⌘）+ホイールでズーム（既定）/ 'zoom'：ホイールで常にズーム（MAI-6）
   wheelBehavior?: 'pan' | 'zoom'
   gridColors?: { minor: string; major: string }
+  // 画像の Asset（MAI-26）。渡さなければ、このビューが自分で作る
+  assets?: AssetManager
+  // 画面に短く知らせる（受け付けないファイルをドロップしたときなど）
+  notify?: (message: string) => void
 }
 
 // 1 回のホイールイベントで変える倍率の上限。マウスの 1 段で約 0.67 倍になる
@@ -35,6 +52,10 @@ const WHEEL_ZOOM_SPEED = 0.01
 const LINE_HEIGHT_PX = 16
 const NUDGE = 1
 const NUDGE_LARGE = 10
+// 複製したノードをずらす量（CSS ピクセル）
+const DUPLICATE_OFFSET_PX = 16
+// 貼り付けた画像を、画面のこの割合に収まるよう縮める
+const IMAGE_FIT_RATIO = 0.8
 
 type Layer = 'grid' | 'scene' | 'overlay'
 
@@ -43,7 +64,8 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<CanvasViewOptions>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets'>>
+  readonly assets: AssetManager
   private readonly gridCanvas: HTMLCanvasElement
   private readonly sceneCanvas: HTMLCanvasElement
   private readonly overlayCanvas: HTMLCanvasElement
@@ -70,13 +92,20 @@ export class CanvasView {
   // 文字の編集モード（MAI-24）
   readonly textEditor: TextEditor
   private readonly disposers: (() => void)[] = []
+  // 最後にポインタがあった位置（画面座標）。Shift を押しながらの貼り付けに使う
+  private pointerScreen: Vec | null = null
+  private pasteAtPointer = false
+  // このタブで最後にコピーしたもの。プレーンテキストでしか貼り付けられなかったとき（Ctrl+Shift+V など）に使う
+  private lastCopied: { payload: ClipboardPayload; text: string } | null = null
 
   constructor(editor: Editor, container: HTMLElement, options: CanvasViewOptions = {}) {
     this.editor = editor
     this.options = {
       wheelBehavior: options.wheelBehavior ?? 'pan',
       gridColors: options.gridColors ?? { minor: '#eef0f3', major: '#dde1e7' },
+      notify: options.notify ?? ((message) => console.warn(message)),
     }
+    this.assets = options.assets ?? new AssetManager({ notify: this.options.notify })
 
     this.root = document.createElement('div')
     this.root.tabIndex = 0
@@ -174,6 +203,17 @@ export class CanvasView {
     // Safari のトラックパッドのピンチは wheel ではなく gesture イベントで届く
     this.listen(this.root, 'gesturestart' as keyof HTMLElementEventMap, (e) => this.onGesture(e, 'start'))
     this.listen(this.root, 'gesturechange' as keyof HTMLElementEventMap, (e) => this.onGesture(e, 'change'))
+    // クリップボード（MAI-26）。キーの操作ではなく copy / cut / paste のイベントで受けると、
+    // 権限を求められずに読み書きできる
+    this.listen(window, 'copy', (e) => this.onCopy(e, false))
+    this.listen(window, 'cut', (e) => this.onCopy(e, true))
+    this.listen(window, 'paste', (e) => void this.onPaste(e))
+    this.listen(this.root, 'dragover', (e) => {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    })
+    this.listen(this.root, 'drop', (e) => void this.onDrop(e))
     this.listen(window, 'keydown', (e) => this.onKeyDown(e))
     this.listen(window, 'keyup', (e) => this.onKeyUp(e))
     this.listen(window, 'blur', () => this.setSpaceHeld(false))
@@ -287,6 +327,7 @@ export class CanvasView {
       height: this.height,
       dpr: this.dpr,
       images: this.images,
+      assets: this.assets,
       editingId: this.editor.session.get().editingId,
     }
   }
@@ -372,6 +413,8 @@ export class CanvasView {
   }
 
   private onPointerMove(e: PointerEvent): void {
+    const rect = this.root.getBoundingClientRect()
+    this.pointerScreen = { x: e.clientX - rect.left, y: e.clientY - rect.top }
     if (this.panPointer && this.panPointer.id === e.pointerId) {
       const { camera } = this.editor.session.get()
       this.setCamera(panBy(camera, e.clientX - this.panPointer.last.x, e.clientY - this.panPointer.last.y))
@@ -467,6 +510,18 @@ export class CanvasView {
       editor.redo()
       return
     }
+    if (mod && e.key.toLowerCase() === 'd') {
+      e.preventDefault()
+      this.tool.cancel()
+      const zoom = editor.session.get().camera.zoom
+      duplicateSelection(editor, { x: DUPLICATE_OFFSET_PX / zoom, y: DUPLICATE_OFFSET_PX / zoom })
+      return
+    }
+    if (mod && e.key.toLowerCase() === 'v') {
+      // 貼り付けそのものは paste イベントで行う。ここでは Shift を押しているかだけを覚えておく
+      this.pasteAtPointer = e.shiftKey
+      return
+    }
     if (mod && e.key.toLowerCase() === 'a') {
       e.preventDefault()
       editor.selectAll()
@@ -514,6 +569,86 @@ export class CanvasView {
     if (toolId) editor.session.set({ toolId })
   }
 
+  // ---- クリップボードとファイル（MAI-26） ----
+
+  // 文字の入力欄（編集中の textarea など）でのコピー・貼り付けは、ブラウザに任せる
+  private ownsClipboardEvent(e: ClipboardEvent): boolean {
+    return !isEditableKeyboardTarget(e.target) && !this.textEditor.editingId && e.clipboardData !== null
+  }
+
+  private onCopy(e: ClipboardEvent, cut: boolean): void {
+    if (!this.ownsClipboardEvent(e)) return
+    const payload = copySelection(this.editor, (id) => this.assets.get(id))
+    if (!payload) return
+    e.preventDefault()
+    const text = payloadText(this.editor, payload)
+    const data = e.clipboardData!
+    data.setData(CLIPBOARD_MIME, JSON.stringify(payload))
+    data.setData('text/html', payloadToHtml(payload))
+    if (text) data.setData('text/plain', text)
+    this.lastCopied = { payload, text }
+    if (cut) {
+      this.tool.cancel()
+      this.editor.deleteSelected()
+    }
+  }
+
+  private async onPaste(e: ClipboardEvent): Promise<void> {
+    if (!this.ownsClipboardEvent(e)) return
+    e.preventDefault()
+    const data = e.clipboardData!
+    const screen = this.pasteAtPointer && this.pointerScreen ? this.pointerScreen : { x: this.width / 2, y: this.height / 2 }
+    this.pasteAtPointer = false
+    const center = screenToWorld(this.editor.session.get().camera, screen)
+    this.tool.cancel()
+
+    // 優先順（MAI-12）：アプリ内の形式 → 画像 → 文字列。表の貼り付けは段階 10 で入れる
+    const text = data.getData('text/plain')
+    const files = clipboardFiles(data)
+    let payload = parsePayload({ json: data.getData(CLIPBOARD_MIME), html: data.getData('text/html') })
+    // プレーンテキストでしか受け取れなかったが、このタブでコピーしたものと同じなら、それを使う
+    if (!payload && this.lastCopied && files.length === 0 && text === this.lastCopied.text) payload = this.lastCopied.payload
+    if (payload) {
+      for (const asset of payload.assets) this.assets.register(asset)
+      this.editor.focusGroup(null)
+      insertPayload(this.editor, payload, { center })
+      return
+    }
+    if (files.length > 0) {
+      await this.importFiles(files, center)
+      return
+    }
+    if (text) insertText(this.editor, text, center)
+  }
+
+  private async onDrop(e: DragEvent): Promise<void> {
+    const files = [...(e.dataTransfer?.files ?? [])]
+    if (files.length === 0) return
+    e.preventDefault()
+    this.root.focus({ preventScroll: true })
+    await this.importFiles(files, this.toPointer(e).world)
+  }
+
+  // 画像のファイルを Asset にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
+  private async importFiles(files: File[], center: Vec): Promise<void> {
+    const images = files.filter(isSupportedImage)
+    const rejected = files.filter((file) => !isSupportedImage(file))
+    if (rejected.length > 0) this.options.notify(rejectMessage(rejected))
+    const assets = []
+    for (const file of images) {
+      try {
+        assets.push(await this.assets.importImage(file))
+      } catch (error) {
+        console.error('Failed to import image', file.name, error)
+        this.options.notify(`画像を読み込めませんでした：${file.name}`)
+      }
+    }
+    const zoom = this.editor.session.get().camera.zoom
+    const maxSize = { w: (this.width * IMAGE_FIT_RATIO) / zoom, h: (this.height * IMAGE_FIT_RATIO) / zoom }
+    this.editor.focusGroup(null)
+    insertImages(this.editor, assets, center, maxSize)
+  }
+
   private onKeyUp(e: KeyboardEvent): void {
     if (e.code === 'Space') this.setSpaceHeld(false)
   }
@@ -554,4 +689,22 @@ export class CanvasView {
     target.addEventListener(type, listener, options)
     this.disposers.push(() => target.removeEventListener(type, listener, options))
   }
+}
+
+// 貼り付けられたファイル。files が空でも items にファイルが入っていることがあるので、そちらも見る
+function clipboardFiles(data: DataTransfer): File[] {
+  if (data.files.length > 0) return [...data.files]
+  return [...data.items].flatMap((item) => {
+    const file = item.kind === 'file' ? item.getAsFile() : null
+    return file ? [file] : []
+  })
+}
+
+// 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
+function rejectMessage(files: File[]): string {
+  const names = files.map((file) => file.name).join('、')
+  const later = files.every((file) => /\.(pdf|md|markdown|py|ricbackup)$/i.test(file.name))
+  return later
+    ? `${names}：PDF・Markdown・Python・.ricbackup の取り込みは、後の段階で対応します`
+    : `${names}：取り込めない種類のファイルです（今取り込めるのは PNG・JPEG・GIF・WebP・AVIF・BMP の画像）`
 }

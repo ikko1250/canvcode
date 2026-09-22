@@ -2,17 +2,17 @@
 
 ドキュメント管理機能と階層構造を持つ infinite canvas。設計は Linear の MAI-1（MAI-2〜MAI-16）を参照。
 
-現在は段階 5（複数選択・範囲選択・グループ・フレーム）まで。ほかに、Markdown カードを画像にして描く方法の検証ページ（`?lab=markdown`）と、試作版の Markdown カードがある。データはまだ保存されず、再読み込みで消える。
+現在は段階 6（画像の貼り付けとクリップボード）まで。ほかに、Markdown カードを画像にして描く方法の検証ページ（`?lab=markdown`）と、試作版の Markdown カードがある。ノードはまだ保存されず、再読み込みで消える（貼り付けた画像のファイルだけは、サーバーのワークスペースに保存される）。
 
 ## 構成
 
 | パス | 内容 |
 | -- | -- |
 | `packages/core` | 幾何計算・カメラ・fractional index・ID・ストア・Undo（DOM に依存しない） |
-| `packages/nodes` | ノードの型（`defineNodeType`、図形・テキスト・付箋・グループ・フレーム） |
+| `packages/nodes` | ノードの型（`defineNodeType`、図形・テキスト・付箋・画像・グループ・フレーム） |
 | `packages/canvas` | 描画（Canvas2D の 3 レイヤー）・入力・ツール・空間インデックス |
 | `apps/web` | React の画面 |
-| `apps/server` | Node のサーバー（127.0.0.1 でのみ待ち受け、ビルドした画面を配信） |
+| `apps/server` | Node のサーバー（127.0.0.1 でのみ待ち受け、ビルドした画面の配信と、画像の保存） |
 
 ## 使い方
 
@@ -23,6 +23,8 @@ npm install
 npm run build   # 型チェックと画面のビルド
 npm start       # http://127.0.0.1:8787
 ```
+
+ワークスペースのフォルダは `npm start -- --workspace <フォルダ>` か、環境変数 `CANVCODE_WORKSPACE` で指定する（既定は `./workspace`）。貼り付けた画像は `<ワークスペース>/.canvcode/assets/` に、中身の SHA-256 を名前にして保存される。
 
 VPS 上で動かし、手元の PC からは SSH のポートフォワードで開く。
 
@@ -54,6 +56,10 @@ npm run lint    # oxlint
 | 移動 | ドラッグ、矢印キー（Shift で 10） |
 | リサイズ | 選択枠の角・辺をドラッグ（Shift で縦横比を保つ、Alt で中心を基準にする） |
 | 回転 | 選択枠の上の丸いハンドルをドラッグ（Shift で 15° 刻み） |
+| コピー・切り取り・貼り付け | Ctrl+C / Ctrl+X / Ctrl+V。Shift+Ctrl+V でポインタの位置に貼り付け |
+| 複製 | Ctrl+D |
+| 画像 | 貼り付け、またはファイルをドロップ（PNG・JPEG・GIF・WebP・AVIF・BMP）。リサイズしても縦横比を保つ |
+| 文字列の貼り付け | テキストノードになる |
 | 削除 | Delete / Backspace |
 | 元に戻す / やり直す | Ctrl+Z / Ctrl+Shift+Z（Ctrl+Y） |
 | 取り消し | Esc（ドラッグ中なら開始時の状態に戻す） |

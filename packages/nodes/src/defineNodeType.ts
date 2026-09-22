@@ -1,4 +1,4 @@
-import type { Box, NodeRecord, Vec } from '@canvcode/core'
+import type { AssetRecord, Box, NodeRecord, Vec } from '@canvcode/core'
 import type { TextStyle } from './text/layout.ts'
 
 // ノードの型の定義（MAI-9）。基本図形も Portal や Markdown カードも、同じ形で定義する。
@@ -15,6 +15,14 @@ export interface RenderInfo {
   images?: ImageRequester
   // 文字を編集中のノードか（MAI-24）。編集中は textarea が文字を見せるので、型は文字だけを描かない
   editing?: boolean
+  // 画像などの Asset を引く先（MAI-26）
+  assets?: AssetResolver
+}
+
+export interface AssetResolver {
+  get(assetId: string): AssetRecord | undefined
+  // Asset の画像を、長辺 size 画素の版（縮小版か原本）で読み込む。返す RasterImage の level は size にする
+  load(assetId: string, size: number): Promise<RasterImage>
 }
 
 // 作ってある画像。level は解像度の倍率（CSS ピクセル 1 つあたりの画素数）
@@ -55,6 +63,8 @@ export interface NodeTypeDef<P extends object> {
   minSize?: { w: number; h: number }
   // 回転できるか（既定は true）
   canRotate?: boolean
+  // リサイズのとき、常に縦横比を保つか（画像など。MAI-26）
+  lockAspectRatio?: boolean
   // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く
   container?: 'group' | 'frame'
   // 文字を編集できる型は、編集のしかたを返す（MAI-24）。編集モードでは、これに合わせて textarea を重ねる

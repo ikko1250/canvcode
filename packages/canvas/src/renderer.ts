@@ -1,5 +1,5 @@
 import { expandBox, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
-import type { ImageRequester, RenderInfo } from '@canvcode/nodes'
+import type { AssetResolver, ImageRequester, RenderInfo } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import { selectionHandles } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
@@ -23,6 +23,7 @@ export interface Viewport {
   height: number
   dpr: number
   images?: ImageRequester
+  assets?: AssetResolver
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
 }
@@ -67,7 +68,13 @@ export function drawNodes(
   view: Viewport,
   skip?: ReadonlySet<string>,
 ): number {
-  const info: RenderInfo = { zoom: view.camera.zoom, devicePixelRatio: view.dpr, detail: 'full', images: view.images }
+  const info: RenderInfo = {
+    zoom: view.camera.zoom,
+    devicePixelRatio: view.dpr,
+    detail: 'full',
+    images: view.images,
+    assets: view.assets,
+  }
   let drawn = 0
   let lastRoughColor = ''
   for (const id of ids) {
