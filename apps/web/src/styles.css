@@ -1,0 +1,154 @@
+:root {
+  --panel-bg: rgba(255, 255, 255, 0.94);
+  --panel-border: #d9dde3;
+  --text: #1f2328;
+  --muted: #656d76;
+  --accent: #2f6fed;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'Noto Sans JP',
+    sans-serif;
+  font-size: 13px;
+  color: var(--text);
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #fafbfc;
+}
+
+.app {
+  position: relative;
+  height: 100%;
+}
+
+.canvas-container {
+  position: absolute;
+  inset: 0;
+}
+
+.toolbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.toolbar button:hover {
+  background: #eef1f5;
+}
+
+.toolbar button.active {
+  background: #e3ebfd;
+  border-color: #b9ccf8;
+  color: var(--accent);
+}
+
+.toolbar button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.toolbar kbd {
+  font: 11px ui-monospace, monospace;
+  color: var(--muted);
+}
+
+.toolbar .separator {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--panel-border);
+}
+
+.stats {
+  position: absolute;
+  right: 12px;
+  bottom: 44px;
+  padding: 8px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font: 12px ui-monospace, monospace;
+  line-height: 1.6;
+  pointer-events: none;
+}
+
+.bench-result {
+  position: absolute;
+  top: 64px;
+  left: 12px;
+  max-width: calc(100% - 24px);
+  padding: 10px 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.bench-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.bench-result table {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.bench-result th,
+.bench-result td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eceff3;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bench-result th:first-child,
+.bench-result td:first-child {
+  text-align: left;
+}
+
+.bench-result p {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+.help {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}

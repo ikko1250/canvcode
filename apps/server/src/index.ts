@@ -1,0 +1,82 @@
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { createServer, type ServerResponse } from 'node:http'
+import { extname, join, normalize, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// CanvCode のサーバー（MAI-4）。
+// - VPS 上で 127.0.0.1 でのみ待ち受け、ローカル PC からは SSH のポートフォワードで開く
+// - 本番では、ビルドした画面（apps/web/dist）も同じサーバーから配信する
+// 永続化（MAI-13）と WebSocket での同期（MAI-11）は、後の段階で入れる。
+
+const HOST = '127.0.0.1'
+const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
+const WEB_DIST = resolve(fileURLToPath(new URL('../../web/dist', import.meta.url)))
+
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(body))
+}
+
+async function sendFile(res: ServerResponse, path: string, cache: string): Promise<boolean> {
+  try {
+    const info = await stat(path)
+    if (!info.isFile()) return false
+    res.writeHead(200, {
+      'content-type': MIME_TYPES[extname(path)] ?? 'application/octet-stream',
+      'content-length': info.size,
+      'cache-control': cache,
+    })
+    createReadStream(path).pipe(res)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? '/', `http://${HOST}`)
+
+  if (url.pathname === '/api/health') {
+    sendJson(res, 200, { ok: true })
+    return
+  }
+  if (url.pathname.startsWith('/api/')) {
+    sendJson(res, 404, { error: 'not found' })
+    return
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendJson(res, 405, { error: 'method not allowed' })
+    return
+  }
+
+  // ビルドした画面の配信。dist の外は読ませない
+  const requested = normalize(join(WEB_DIST, decodeURIComponent(url.pathname)))
+  if (requested !== WEB_DIST && !requested.startsWith(WEB_DIST + sep)) {
+    sendJson(res, 403, { error: 'forbidden' })
+    return
+  }
+  // ファイル名にハッシュが付く assets/ は長くキャッシュさせ、それ以外は毎回確認させる
+  const cache = url.pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
+  if (url.pathname !== '/' && (await sendFile(res, requested, cache))) return
+  // それ以外は画面のルーティングに任せる（/c/<id> など。MAI-8）
+  if (await sendFile(res, join(WEB_DIST, 'index.html'), 'no-cache')) return
+  res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
+  res.end('画面がビルドされていません。先に npm run build を実行してください。\n')
+})
+
+server.listen(PORT, HOST, () => {
+  console.log(`CanvCode server: http://${HOST}:${PORT}`)
+  console.log(`手元の PC から開くとき: ssh -L ${PORT}:${HOST}:${PORT} <VPS> のあと http://localhost:${PORT}`)
+})

@@ -1,0 +1,288 @@
+import { boxFromPoints, dist, panBy, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
+import { GEO_DEFAULT_SIZE, type GeoProps } from '@canvcode/nodes'
+import type { Editor } from './editor.ts'
+import type { ToolId } from './session.ts'
+
+// ツールの状態機械（MAI-12）。各ツールは自分の状態を持ち、ポインタとキーの入力で状態を移る。
+// どの状態でも cancel（Esc）で操作を取り消して idle に戻れる。
+
+// ドラッグとみなすまでの移動量（CSS ピクセル）
+const DRAG_THRESHOLD_PX = 3
+// 当たり判定の余裕（CSS ピクセル）
+export const HIT_MARGIN_PX = 4
+
+export interface ToolPointer {
+  screen: Vec
+  world: Vec
+  button: number
+  shiftKey: boolean
+  altKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+}
+
+export interface ToolContext {
+  readonly editor: Editor
+  setTool(id: ToolId): void
+  // シーンから外してオーバーレイに描くノードを決める（ドラッグ中など）
+  lift(ids: Iterable<string>): void
+  drop(): void
+}
+
+export interface Tool {
+  readonly id: ToolId
+  readonly cursor: string
+  onPointerDown?(pointer: ToolPointer): void
+  onPointerMove?(pointer: ToolPointer): void
+  onPointerUp?(pointer: ToolPointer): void
+  // 操作の途中なら取り消して true を返す
+  cancel(): boolean
+  // 別のツールに切り替わるとき
+  onExit?(): void
+}
+
+// ---- 選択ツール ----
+
+type SelectState =
+  | { name: 'idle' }
+  | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
+  | { name: 'pointingCanvas'; start: ToolPointer }
+  | {
+      name: 'translating'
+      start: ToolPointer
+      tx: Transaction<NodeRecord>
+      initial: Map<string, NodeRecord>
+    }
+
+export class SelectTool implements Tool {
+  readonly id = 'select' as const
+  readonly cursor = 'default'
+  private state: SelectState = { name: 'idle' }
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const zoom = editor.session.get().camera.zoom
+    const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
+    const selected = editor.session.get().selectedIds
+    if (hit) {
+      const wasSelected = selected.has(hit.id)
+      if (pointer.shiftKey) {
+        if (!wasSelected) editor.setSelection([...selected, hit.id])
+      } else if (!wasSelected) {
+        editor.setSelection([hit.id])
+      }
+      this.state = { name: 'pointingNode', start: pointer, nodeId: hit.id, wasSelected }
+    } else {
+      if (!pointer.shiftKey) editor.setSelection([])
+      this.state = { name: 'pointingCanvas', start: pointer }
+    }
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const editor = this.ctx.editor
+    const state = this.state
+    switch (state.name) {
+      case 'idle': {
+        const zoom = editor.session.get().camera.zoom
+        const hoveredId = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)?.id ?? null
+        if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
+        return
+      }
+      case 'pointingNode': {
+        if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
+        this.startTranslating(state.start)
+        this.onPointerMove(pointer)
+        return
+      }
+      case 'pointingCanvas':
+        // 範囲選択は段階 5 で入れる
+        return
+      case 'translating': {
+        const dx = pointer.world.x - state.start.world.x
+        const dy = pointer.world.y - state.start.world.y
+        for (const node of state.initial.values()) {
+          state.tx.put({ ...node, x: node.x + dx, y: node.y + dy })
+        }
+        state.tx.flush()
+        return
+      }
+    }
+  }
+
+  onPointerUp(pointer: ToolPointer): void {
+    const editor = this.ctx.editor
+    const state = this.state
+    if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
+      // Shift+クリックで、選択済みのノードを選択から外す
+      const next = new Set(editor.session.get().selectedIds)
+      next.delete(state.nodeId)
+      editor.setSelection(next)
+    } else if (state.name === 'pointingNode' && !pointer.shiftKey && state.wasSelected) {
+      // 複数選択中に 1 つをクリックしたら、それだけを選ぶ
+      editor.setSelection([state.nodeId])
+    } else if (state.name === 'translating') {
+      editor.finish(state.tx)
+      this.ctx.drop()
+    }
+    this.state = { name: 'idle' }
+  }
+
+  cancel(): boolean {
+    const state = this.state
+    this.state = { name: 'idle' }
+    if (state.name === 'translating') {
+      state.tx.cancel()
+      this.ctx.drop()
+      return true
+    }
+    return state.name !== 'idle'
+  }
+
+  onExit(): void {
+    this.cancel()
+    this.ctx.editor.session.set({ hoveredId: null })
+  }
+
+  private startTranslating(start: ToolPointer): void {
+    const editor = this.ctx.editor
+    const initial = new Map<string, NodeRecord>()
+    for (const id of editor.session.get().selectedIds) {
+      const node = editor.getNode(id)
+      if (node && !node.locked) initial.set(id, node)
+    }
+    if (initial.size === 0) {
+      this.state = { name: 'idle' }
+      return
+    }
+    const tx = editor.begin('move')
+    this.ctx.lift(initial.keys())
+    editor.session.set({ hoveredId: null })
+    this.state = { name: 'translating', start, tx, initial }
+  }
+}
+
+// ---- 手のひらツール（パン） ----
+
+export class HandTool implements Tool {
+  readonly id = 'hand' as const
+  readonly cursor = 'grab'
+  private last: Vec | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    this.last = pointer.screen
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    if (!this.last) return
+    const { session } = this.ctx.editor
+    session.set({
+      camera: panBy(session.get().camera, pointer.screen.x - this.last.x, pointer.screen.y - this.last.y),
+    })
+    this.last = pointer.screen
+  }
+
+  onPointerUp(): void {
+    this.last = null
+  }
+
+  cancel(): boolean {
+    const active = this.last !== null
+    this.last = null
+    return active
+  }
+}
+
+// ---- 図形ツール（矩形・楕円） ----
+
+export class GeoTool implements Tool {
+  readonly id: 'rect' | 'ellipse'
+  readonly cursor = 'crosshair'
+  private creating: { start: ToolPointer; tx: Transaction<NodeRecord>; node: NodeRecord<GeoProps> } | null =
+    null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext, shape: 'rect' | 'ellipse') {
+    this.ctx = ctx
+    this.id = shape
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const tx = editor.begin(`create ${this.id}`)
+    const node = editor.makeNode('geo', {
+      x: pointer.world.x,
+      y: pointer.world.y,
+      props: { shape: this.id, w: 1, h: 1 },
+    }) as NodeRecord<GeoProps>
+    tx.put(node)
+    tx.flush()
+    editor.setSelection([node.id])
+    this.ctx.lift([node.id])
+    this.creating = { start: pointer, tx, node }
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const creating = this.creating
+    if (!creating) return
+    let end = pointer.world
+    if (pointer.shiftKey) {
+      // Shift で正方形・正円にする
+      const dx = end.x - creating.start.world.x
+      const dy = end.y - creating.start.world.y
+      const size = Math.max(Math.abs(dx), Math.abs(dy))
+      end = { x: creating.start.world.x + Math.sign(dx || 1) * size, y: creating.start.world.y + Math.sign(dy || 1) * size }
+    }
+    const box = boxFromPoints(creating.start.world, end)
+    creating.tx.put({
+      ...creating.node,
+      x: box.x,
+      y: box.y,
+      props: { ...creating.node.props, w: Math.max(box.w, 1), h: Math.max(box.h, 1) },
+    })
+    creating.tx.flush()
+  }
+
+  onPointerUp(pointer: ToolPointer): void {
+    const creating = this.creating
+    if (!creating) return
+    this.creating = null
+    if (dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) {
+      // クリックだけなら、既定の大きさでクリックした位置を中心に置く
+      creating.tx.put({
+        ...creating.node,
+        x: pointer.world.x - GEO_DEFAULT_SIZE / 2,
+        y: pointer.world.y - GEO_DEFAULT_SIZE / 2,
+        props: { ...creating.node.props, w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE },
+      })
+    }
+    this.ctx.editor.finish(creating.tx)
+    this.ctx.drop()
+    // 作り終えたら選択ツールに戻る
+    this.ctx.setTool('select')
+  }
+
+  cancel(): boolean {
+    const creating = this.creating
+    if (!creating) return false
+    this.creating = null
+    creating.tx.cancel()
+    this.ctx.drop()
+    return true
+  }
+
+  onExit(): void {
+    this.cancel()
+  }
+}

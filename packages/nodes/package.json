@@ -1,0 +1,9 @@
+{
+  "name": "@canvcode/nodes",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@canvcode/core": "*" },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

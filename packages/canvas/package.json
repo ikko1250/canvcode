@@ -1,0 +1,16 @@
+{
+  "name": "@canvcode/canvas",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@canvcode/core": "*",
+    "@canvcode/nodes": "*",
+    "rbush": "^4.0.1"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@types/rbush": "^4.0.0"
+  }
+}
