@@ -3,6 +3,8 @@
 // IME で変換している間・変換を確定した直後の Enter・keyCode 229 / 'Process' をすべて IME 由来として扱う。
 
 let lastCompositionEndTime = 0
+// 変換を確定した入力欄。確定直後の Enter の対策は、この入力欄で押された Enter だけに当てる
+let lastCompositionTarget: EventTarget | null = null
 let isGloballyComposing = false
 
 if (typeof window !== 'undefined') {
@@ -15,9 +17,19 @@ if (typeof window !== 'undefined') {
   )
   window.addEventListener(
     'compositionend',
-    () => {
+    (e) => {
       isGloballyComposing = false
       lastCompositionEndTime = performance.now()
+      lastCompositionTarget = e.target
+    },
+    { capture: true },
+  )
+  // 変換の途中で入力欄が消えたり、フォーカスが外れたりすると、compositionend が届かないことがある。
+  // そのままだと「変換中」のままになり、ショートカットがすべて効かなくなるので、ここで戻す
+  window.addEventListener(
+    'focusout',
+    () => {
+      isGloballyComposing = false
     },
     { capture: true },
   )
@@ -28,8 +40,13 @@ export function isImeEvent(event: KeyboardEvent, options?: { enterGuardThreshold
   if (event.isComposing) return true
   if (event.keyCode === 229 || event.key === 'Process') return true
   if (isGloballyComposing) return true
-  // WebKit では、変換を確定した直後に Enter の keydown が届くことがある
-  if (event.key === 'Enter' && performance.now() - lastCompositionEndTime < enterGuardThresholdMs) {
+  // WebKit では、変換を確定した直後に、同じ入力欄へ Enter の keydown が届くことがある。
+  // 別の場所（キャンバスなど）で押された Enter は、確定とは関係ないので対象にしない
+  if (
+    event.key === 'Enter' &&
+    event.target === lastCompositionTarget &&
+    performance.now() - lastCompositionEndTime < enterGuardThresholdMs
+  ) {
     return true
   }
   return false

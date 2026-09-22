@@ -1,0 +1,177 @@
+import { multiply, transformOf, type NodeRecord, type Transaction } from '@canvcode/core'
+import { cssFont, layoutText, type TextEditSpec } from '@canvcode/nodes'
+import type { Editor } from './editor.ts'
+import { isImeEvent } from './imeGuard.ts'
+
+// 文字の編集モード（MAI-9、MAI-24）。
+// 編集中は、ノードの位置・向き・倍率に合わせた textarea を編集用の DOM レイヤーに重ねる。
+// 文字を打つたびに、同じトランザクションの中でノードを更新する（終えたときに 1 回の Undo になる）。
+// フォント・行の高さ・折り返しの規則は、Canvas での描画（text/layout.ts）と同じにしてある。
+
+export interface TextEditorOptions {
+  editor: Editor
+  layer: HTMLElement
+  getDpr(): number
+  // 編集を始めた・終えたとき（シーンからノードを隠す・戻すため）
+  onChange(editingId: string | null): void
+}
+
+interface Session {
+  nodeId: string
+  tx: Transaction<NodeRecord>
+  textarea: HTMLTextAreaElement
+}
+
+// 打った文字のすぐ右にもカーソルを置けるよう、幅が伸びるテキストには少し余白を足す（fontSize に対する倍率）
+const AUTO_WIDTH_SLACK_EM = 0.6
+
+export class TextEditor {
+  private readonly options: TextEditorOptions
+  private session: Session | null = null
+  private finishing = false
+
+  constructor(options: TextEditorOptions) {
+    this.options = options
+  }
+
+  get editingId(): string | null {
+    return this.session?.nodeId ?? null
+  }
+
+  // tx を渡すと、そのトランザクションの続きとして編集する（作ってすぐ編集するとき。作成と編集が 1 回の Undo になる）
+  start(nodeId: string, options: { tx?: Transaction<NodeRecord>; selectAll?: boolean } = {}): boolean {
+    const editor = this.options.editor
+    if (this.session) this.finish()
+    const node = editor.getNode(nodeId)
+    const type = node && editor.getType(node)
+    if (!node || !type?.editText || node.locked) {
+      if (options.tx && !options.tx.isDone) editor.finish(options.tx)
+      return false
+    }
+    const spec = type.editText(node)
+    const tx = options.tx ?? editor.begin('edit text')
+    const textarea = document.createElement('textarea')
+    textarea.value = spec.text
+    textarea.spellcheck = false
+    textarea.setAttribute('autocomplete', 'off')
+    Object.assign(textarea.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      margin: '0',
+      padding: '0',
+      border: 'none',
+      outline: 'none',
+      background: 'transparent',
+      resize: 'none',
+      overflow: 'hidden',
+      transformOrigin: '0 0',
+      pointerEvents: 'auto',
+      // Canvas での折り返し（text/layout.ts）と同じ規則にする
+      wordBreak: 'normal',
+      overflowWrap: 'anywhere',
+      lineBreak: 'strict',
+      boxSizing: 'content-box',
+    })
+    textarea.addEventListener('input', () => this.onInput())
+    textarea.addEventListener('keydown', (e) => this.onKeyDown(e))
+    textarea.addEventListener('blur', () => this.finish())
+    // キャンバスのポインタ操作（選択・ドラッグ）に渡さない
+    textarea.addEventListener('pointerdown', (e) => e.stopPropagation())
+    textarea.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true })
+    this.options.layer.appendChild(textarea)
+    this.session = { nodeId, tx, textarea }
+    editor.setSelection([nodeId])
+    this.options.onChange(nodeId)
+    this.layout()
+    textarea.focus({ preventScroll: true })
+    if (options.selectAll) textarea.select()
+    else textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+    return true
+  }
+
+  finish(): void {
+    const session = this.session
+    if (!session || this.finishing) return
+    this.finishing = true
+    try {
+      const editor = this.options.editor
+      const node = editor.getNode(session.nodeId)
+      const spec = node ? editor.getType(node).editText?.(node) : undefined
+      // 空のまま終えたテキストは消す（同じトランザクションなので、作ってすぐ消した場合は何も残らない）
+      if (node && spec?.deleteIfEmpty && spec.text.trim() === '') session.tx.remove(node.id)
+      if (!session.tx.isDone) editor.finish(session.tx)
+      session.textarea.remove()
+      this.session = null
+      this.options.onChange(null)
+    } finally {
+      this.finishing = false
+    }
+  }
+
+  // カメラやノードが変わったときに、textarea の位置・大きさを合わせ直す
+  layout(): void {
+    const session = this.session
+    if (!session) return
+    const editor = this.options.editor
+    const entry = editor.index.get(session.nodeId)
+    const node = entry?.node
+    const spec = node ? editor.getType(node).editText?.(node) : undefined
+    if (!entry || !spec) {
+      this.finish()
+      return
+    }
+    const { textarea } = session
+    const camera = editor.session.get().camera
+    // ノードのローカル座標（文字の箱の左上）→ 画面の CSS ピクセル
+    const local = multiply(entry.worldMatrix, transformOf(spec.box.x, spec.box.y, 0))
+    const z = camera.zoom
+    textarea.style.transform = `matrix(${local.a * z}, ${local.b * z}, ${local.c * z}, ${local.d * z}, ${(local.e - camera.x) * z}, ${(local.f - camera.y) * z})`
+    applyTextStyle(textarea, spec)
+    const layout = layoutText(textarea.value, spec.style, spec.autoWidth ? null : spec.box.w)
+    const width = spec.autoWidth ? layout.width + spec.style.fontSize * AUTO_WIDTH_SLACK_EM : spec.box.w
+    textarea.style.width = `${Math.max(width, spec.style.fontSize)}px`
+    if (spec.verticalAlign === 'middle') {
+      // 上下の中央に置く：上の余白で文字の高さの分だけずらす
+      const padding = Math.max(0, (spec.box.h - layout.height) / 2)
+      textarea.style.paddingTop = `${padding}px`
+      textarea.style.height = `${Math.max(layout.height, spec.box.h - padding)}px`
+    } else {
+      textarea.style.paddingTop = '0'
+      textarea.style.height = `${Math.max(layout.height, spec.autoWidth ? 0 : spec.box.h)}px`
+    }
+  }
+
+  private onInput(): void {
+    const session = this.session
+    if (!session) return
+    const editor = this.options.editor
+    const node = editor.getNode(session.nodeId)
+    const spec = node ? editor.getType(node).editText?.(node) : undefined
+    if (!node || !spec) return
+    session.tx.put({ ...node, props: spec.update(session.textarea.value) })
+    session.tx.flush()
+    this.layout()
+  }
+
+  private onKeyDown(e: KeyboardEvent): void {
+    // IME で変換している間の Esc・Enter は、変換の操作なので編集を終えない
+    if (isImeEvent(e)) return
+    if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+      e.preventDefault()
+      e.stopPropagation()
+      this.finish()
+    }
+  }
+}
+
+function applyTextStyle(textarea: HTMLTextAreaElement, spec: TextEditSpec<object>): void {
+  const { style } = spec
+  textarea.style.font = cssFont(style)
+  textarea.style.lineHeight = String(style.lineHeight)
+  textarea.style.color = style.color
+  textarea.style.caretColor = style.color
+  textarea.style.textAlign = style.align
+  // 幅が伸びるテキストは折り返さない
+  textarea.style.whiteSpace = spec.autoWidth ? 'pre' : 'pre-wrap'
+}

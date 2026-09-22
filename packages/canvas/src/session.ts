@@ -2,13 +2,15 @@ import type { Camera } from '@canvcode/core'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse'
+export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note'
 
 export interface SessionState {
   camera: Camera
   selectedIds: ReadonlySet<string>
   hoveredId: string | null
   toolId: ToolId
+  // 文字を編集しているノード（MAI-24）
+  editingId: string | null
 }
 
 export class Session {
@@ -21,6 +23,7 @@ export class Session {
       selectedIds: new Set(),
       hoveredId: null,
       toolId: 'select',
+      editingId: null,
       ...initial,
     }
   }

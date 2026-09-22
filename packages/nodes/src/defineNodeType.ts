@@ -1,4 +1,5 @@
 import type { Box, NodeRecord, Vec } from '@canvcode/core'
+import type { TextStyle } from './text/layout.ts'
 
 // ノードの型の定義（MAI-9）。基本図形も Portal や Markdown カードも、同じ形で定義する。
 // 段階 2 で使う項目だけを先に入れている。編集モード・テキストの取り出し・右クリックメニュー・
@@ -12,6 +13,8 @@ export interface RenderInfo {
   detail: 'full' | 'rough'
   // 時間のかかる画像（Markdown を画像にしたものなど）を頼む先（MAI-9 の「3. 時間のかかる素材の扱い」）
   images?: ImageRequester
+  // 文字を編集中のノードか（MAI-24）。編集中は textarea が文字を見せるので、型は文字だけを描かない
+  editing?: boolean
 }
 
 // 作ってある画像。level は解像度の倍率（CSS ピクセル 1 つあたりの画素数）
@@ -51,6 +54,21 @@ export interface NodeTypeDef<P extends object> {
   minSize?: { w: number; h: number }
   // 回転できるか（既定は true）
   canRotate?: boolean
+  // 文字を編集できる型は、編集のしかたを返す（MAI-24）。編集モードでは、これに合わせて textarea を重ねる
+  editText?(node: NodeRecord<P>): TextEditSpec<P>
+}
+
+export interface TextEditSpec<P> {
+  text: string
+  style: TextStyle
+  // 文字を置く箱（ローカル座標）。autoWidth のときは、幅は文字に合わせて伸びる
+  box: Box
+  autoWidth: boolean
+  verticalAlign: 'top' | 'middle'
+  // 文字を変えたときの新しい props
+  update(text: string): P
+  // 空のまま編集を終えたら、ノードを消すか（テキストは消し、付箋や図形のラベルは残す）
+  deleteIfEmpty: boolean
 }
 
 export type AnyNodeTypeDef = NodeTypeDef<any>

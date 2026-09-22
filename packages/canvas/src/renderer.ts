@@ -23,6 +23,8 @@ export interface Viewport {
   height: number
   dpr: number
   images?: ImageRequester
+  // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
+  editingId?: string | null
 }
 
 // ノードのローカル座標 → 物理ピクセルの行列を ctx に設定する。
@@ -92,7 +94,7 @@ export function drawNodes(
       }
     } else {
       setNodeTransform(ctx, worldMatrix, view)
-      type.render(ctx, node, info)
+      type.render(ctx, node, id === view.editingId ? { ...info, editing: true } : info)
       lastRoughColor = ''
     }
     drawn++
@@ -144,7 +146,7 @@ export function drawOverlay(
   for (const id of state.selectedIds) outlineNode(ctx, editor, id, view)
 
   // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
-  const found = selectionHandles(editor)
+  const found = editor.session.get().editingId ? null : selectionHandles(editor)
   if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
   return drawn
 }

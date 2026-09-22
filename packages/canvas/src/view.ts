@@ -6,7 +6,8 @@ import { clearCanvas, drawOverlay, drawScene, type Viewport } from './renderer.t
 import type { SessionState, ToolId } from './session.ts'
 import { ImageCache } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
-import { GeoTool, HandTool, SelectTool, type Tool, type ToolContext, type ToolPointer } from './tools.ts'
+import { TextEditor } from './textEditor.ts'
+import { GeoTool, HandTool, NoteTool, SelectTool, TextTool, type Tool, type ToolContext, type ToolPointer } from './tools.ts'
 
 // キャンバスの表示と入力（MAI-5、MAI-6、MAI-12）。
 // レイヤーは下から、背景（グリッド）・シーン・オーバーレイの 3 枚の Canvas と、編集用の DOM。
@@ -56,6 +57,8 @@ export class CanvasView {
   private readonly stats = new FrameStats()
   private lastDrawnNodes = 0
   private readonly frameCallbacks = new Set<(now: number) => void>()
+  // 文字の編集モード（MAI-24）
+  readonly textEditor: TextEditor
   private readonly disposers: (() => void)[] = []
 
   constructor(editor: Editor, container: HTMLElement, options: CanvasViewOptions = {}) {
@@ -101,12 +104,27 @@ export class CanvasView {
         this.cursorOverride = cursor
         this.updateCursor()
       },
+      startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
     }
+    this.textEditor = new TextEditor({
+      editor,
+      layer: this.editingLayer,
+      getDpr: () => this.dpr,
+      onChange: (editingId) => {
+        editor.session.set({ editingId })
+        this.invalidate('scene')
+        this.invalidate('overlay')
+        // 編集を終えたら、キャンバスにフォーカスを戻す（ショートカットが効くように）
+        if (!editingId) this.root.focus({ preventScroll: true })
+      },
+    })
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
       ['hand', new HandTool(toolContext)],
       ['rect', new GeoTool(toolContext, 'rect')],
       ['ellipse', new GeoTool(toolContext, 'ellipse')],
+      ['text', new TextTool(toolContext)],
+      ['note', new NoteTool(toolContext)],
     ])
     this.tool = this.tools.get(editor.session.get().toolId)!
 
@@ -115,6 +133,8 @@ export class CanvasView {
       editor.store.listen((event) => {
         // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
         if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
+        // 編集中のノードが（Undo などで）変わったら、textarea の位置を合わせ直す
+        if (this.textEditor?.editingId && event.patch.has(this.textEditor.editingId)) this.textEditor.layout()
         let sceneChanged = false
         for (const id of event.patch.keys()) {
           if (!this.lifted.has(id)) {
@@ -136,6 +156,10 @@ export class CanvasView {
     })
     this.listen(this.root, 'wheel', (e) => this.onWheel(e), { passive: false })
     this.listen(this.root, 'contextmenu', (e) => e.preventDefault())
+    this.listen(this.root, 'dblclick', (e) => {
+      if (this.panPointer || this.spaceHeld) return
+      this.tool.onDoubleClick?.(this.toPointer(e))
+    })
     // Safari のトラックパッドのピンチは wheel ではなく gesture イベントで届く
     this.listen(this.root, 'gesturestart' as keyof HTMLElementEventMap, (e) => this.onGesture(e, 'start'))
     this.listen(this.root, 'gesturechange' as keyof HTMLElementEventMap, (e) => this.onGesture(e, 'change'))
@@ -153,6 +177,7 @@ export class CanvasView {
   }
 
   dispose(): void {
+    this.textEditor.finish()
     this.tool.onExit?.()
     this.images.dispose()
     for (const dispose of this.disposers) dispose()
@@ -245,6 +270,7 @@ export class CanvasView {
       height: this.height,
       dpr: this.dpr,
       images: this.images,
+      editingId: this.editor.session.get().editingId,
     }
   }
 
@@ -278,6 +304,7 @@ export class CanvasView {
       // カメラが動いている間は、画像を作り直さない（MAI-22）
       this.images.notifyMotion()
       this.invalidate('all')
+      this.textEditor.layout()
     }
     if (state.selectedIds !== prev.selectedIds || state.hoveredId !== prev.hoveredId) this.invalidate('overlay')
     if (state.toolId !== prev.toolId) {
@@ -305,6 +332,8 @@ export class CanvasView {
   }
 
   private onPointerDown(e: PointerEvent): void {
+    // 編集中にキャンバスのどこかを押したら、編集を終えてから、その操作を始める
+    if (this.textEditor.editingId && e.button === 0) this.textEditor.finish()
     this.root.focus({ preventScroll: true })
     this.root.setPointerCapture(e.pointerId)
     // 中ボタン、または Space を押しながらのドラッグはパン（MAI-6）
@@ -403,6 +432,16 @@ export class CanvasView {
       editor.selectAll()
       return
     }
+    if (e.key === 'Enter' && !mod) {
+      // 文字を持つノードを 1 つだけ選んでいれば、編集モードに入る
+      const [id, ...rest] = editor.session.get().selectedIds
+      const node = id && rest.length === 0 ? editor.getNode(id) : undefined
+      if (node && editor.getType(node).editText) {
+        e.preventDefault()
+        this.textEditor.start(node.id, { selectAll: true })
+      }
+      return
+    }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
       editor.deleteSelected()
@@ -422,7 +461,7 @@ export class CanvasView {
     }
     if (mod || e.altKey) return
     // ツールの切り替え（旧実装と同じ tldraw 風の割り当て。MAI-12）
-    const toolKeys: Record<string, ToolId> = { v: 'select', h: 'hand', r: 'rect', o: 'ellipse' }
+    const toolKeys: Record<string, ToolId> = { v: 'select', h: 'hand', r: 'rect', o: 'ellipse', t: 'text', n: 'note' }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })
   }

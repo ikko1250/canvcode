@@ -1,5 +1,5 @@
 import { boxFromPoints, dist, panBy, worldToScreen, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
-import { GEO_DEFAULT_SIZE, type GeoProps } from '@canvcode/nodes'
+import { GEO_DEFAULT_SIZE, textLayout, type GeoProps, type NoteProps, type TextProps } from '@canvcode/nodes'
 import type { Editor, TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import {
@@ -42,6 +42,8 @@ export interface ToolContext {
   drop(): void
   // ツールの既定のカーソルの代わりに使うカーソル（ハンドルの上など）。null で元に戻す
   setCursor(cursor: string | null): void
+  // 文字の編集モードに入る（MAI-24）。tx を渡すと、作成と編集が 1 回の Undo になる
+  startEditing(nodeId: string, options?: { tx?: Transaction<NodeRecord>; selectAll?: boolean }): boolean
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
@@ -62,6 +64,7 @@ export interface Tool {
   onPointerDown?(pointer: ToolPointer): void
   onPointerMove?(pointer: ToolPointer): void
   onPointerUp?(pointer: ToolPointer): void
+  onDoubleClick?(pointer: ToolPointer): void
   // 操作の途中なら取り消して true を返す
   cancel(): boolean
   // 別のツールに切り替わるとき
@@ -212,6 +215,18 @@ export class SelectTool implements Tool {
       return true
     }
     return state.name !== 'idle'
+  }
+
+  // ダブルクリック：文字を持つノードなら編集モードに入る。何もない所なら、そこにテキストを作って編集する
+  onDoubleClick(pointer: ToolPointer): void {
+    const editor = this.ctx.editor
+    const zoom = editor.session.get().camera.zoom
+    const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
+    if (hit) {
+      if (editor.getType(hit).editText) this.ctx.startEditing(hit.id, { selectAll: true })
+      return
+    }
+    createTextAt(this.ctx, pointer.world)
   }
 
   private hitSelectionHandle(pointer: ToolPointer): { hit: HandleHit; selection: TransformSelection } | null {
@@ -385,6 +400,117 @@ export class GeoTool implements Tool {
     this.creating = null
     creating.tx.cancel()
     this.ctx.drop()
+    return true
+  }
+
+  onExit(): void {
+    this.cancel()
+  }
+}
+
+// ---- テキストツール（T）と付箋ツール（N）（MAI-24） ----
+
+// クリックした位置にテキストを作り、そのまま編集する（クリックした点が 1 行目の中ほどに来るようにする）
+function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<NodeRecord>): void {
+  const editor = ctx.editor
+  const transaction = tx ?? editor.begin('create text')
+  const draft = editor.makeNode('text', { x: point.x, y: point.y }) as NodeRecord<TextProps>
+  const lineHeight = textLayout(draft.props).lineHeightPx
+  const node = { ...draft, y: point.y - lineHeight / 2 }
+  transaction.put(node)
+  ctx.startEditing(node.id, { tx: transaction })
+}
+
+export class TextTool implements Tool {
+  readonly id = 'text' as const
+  readonly cursor = 'text'
+  private creating: { start: ToolPointer; tx: Transaction<NodeRecord>; node: NodeRecord<TextProps> } | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const tx = editor.begin('create text')
+    const draft = editor.makeNode('text', { x: pointer.world.x, y: pointer.world.y }) as NodeRecord<TextProps>
+    const node = { ...draft, y: pointer.world.y - textLayout(draft.props).lineHeightPx / 2 }
+    tx.put(node)
+    tx.flush()
+    this.creating = { start: pointer, tx, node }
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const creating = this.creating
+    if (!creating || dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) return
+    // ドラッグしたら、その幅で折り返すテキストにする
+    const x = Math.min(creating.start.world.x, pointer.world.x)
+    const w = Math.max(Math.abs(pointer.world.x - creating.start.world.x), 16)
+    creating.tx.put({ ...creating.node, x, props: { ...creating.node.props, w, autoWidth: false } })
+    creating.tx.flush()
+  }
+
+  // 編集モードには、手を離してから入る（押した瞬間だと、ブラウザの既定の動作でフォーカスが移ってしまう）
+  onPointerUp(): void {
+    const creating = this.creating
+    if (!creating) return
+    this.creating = null
+    this.ctx.setTool('select')
+    this.ctx.startEditing(creating.node.id, { tx: creating.tx })
+  }
+
+  cancel(): boolean {
+    const creating = this.creating
+    if (!creating) return false
+    this.creating = null
+    creating.tx.cancel()
+    return true
+  }
+
+  onExit(): void {
+    this.cancel()
+  }
+}
+
+export class NoteTool implements Tool {
+  readonly id = 'note' as const
+  readonly cursor = 'crosshair'
+  private creating: { tx: Transaction<NodeRecord>; node: NodeRecord<NoteProps> } | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  // クリックした位置を中心に付箋を作る
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const tx = editor.begin('create note')
+    const draft = editor.makeNode('note', { x: 0, y: 0 }) as NodeRecord<NoteProps>
+    const node = { ...draft, x: pointer.world.x - draft.props.w / 2, y: pointer.world.y - draft.props.h / 2 }
+    tx.put(node)
+    tx.flush()
+    this.creating = { tx, node }
+  }
+
+  // 編集モードには、手を離してから入る。押した瞬間に入ると、そのあとのブラウザの既定の動作で
+  // フォーカスがキャンバスに移り、textarea からフォーカスが外れて編集が終わってしまう
+  onPointerUp(): void {
+    const creating = this.creating
+    if (!creating) return
+    this.creating = null
+    this.ctx.setTool('select')
+    this.ctx.startEditing(creating.node.id, { tx: creating.tx })
+  }
+
+  cancel(): boolean {
+    const creating = this.creating
+    if (!creating) return false
+    this.creating = null
+    creating.tx.cancel()
     return true
   }
 
