@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { CanvasView, Editor, type StatsSummary, type ToolId } from '@canvcode/canvas'
-import { builtinNodeTypes } from '@canvcode/nodes'
+import { DRAW_COLORS, DRAW_SIZES, builtinNodeTypes } from '@canvcode/nodes'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { markdownCardType } from './markdown/markdownCard.ts'
@@ -15,7 +15,11 @@ const TOOLS: { id: ToolId; label: string; key: string }[] = [
   { id: 'text', label: 'テキスト', key: 'T' },
   { id: 'note', label: '付箋', key: 'N' },
   { id: 'frame', label: 'フレーム', key: 'F' },
+  { id: 'draw', label: 'フリーハンド', key: 'D' },
+  { id: 'eraser', label: '消しゴム', key: 'E' },
 ]
+
+const SIZE_LABELS = ['細', '中', '太']
 
 const BENCH_NODE_COUNT = 10_000
 
@@ -120,6 +124,30 @@ export function App() {
         </button>
         <button onClick={() => setShowStats((v) => !v)}>{showStats ? '計測を隠す' : '計測を表示'}</button>
       </div>
+
+      {session.toolId === 'draw' && (
+        <div className="draw-palette">
+          {DRAW_COLORS.map((color) => (
+            <button
+              key={color}
+              className={session.drawStyle.color === color ? 'swatch active' : 'swatch'}
+              style={{ background: color }}
+              title={color}
+              onClick={() => editor.session.set({ drawStyle: { ...session.drawStyle, color } })}
+            />
+          ))}
+          <span className="separator" />
+          {DRAW_SIZES.map((size, i) => (
+            <button
+              key={size}
+              className={session.drawStyle.size === size ? 'active' : ''}
+              onClick={() => editor.session.set({ drawStyle: { ...session.drawStyle, size } })}
+            >
+              {SIZE_LABELS[i]}
+            </button>
+          ))}
+        </div>
+      )}
 
       {showStats && stats && (
         <div className="stats">

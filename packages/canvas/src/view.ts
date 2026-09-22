@@ -21,6 +21,8 @@ import { ImageCache } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
 import { TextEditor } from './textEditor.ts'
 import {
+  DrawTool,
+  EraserTool,
   FrameTool,
   GeoTool,
   HandTool,
@@ -165,6 +167,8 @@ export class CanvasView {
       ['text', new TextTool(toolContext)],
       ['note', new NoteTool(toolContext)],
       ['frame', new FrameTool(toolContext)],
+      ['draw', new DrawTool(toolContext)],
+      ['eraser', new EraserTool(toolContext)],
     ])
     this.tool = this.tools.get(editor.session.get().toolId)!
 
@@ -421,7 +425,14 @@ export class CanvasView {
       this.panPointer.last = { x: e.clientX, y: e.clientY }
       return
     }
-    this.tool.onPointerMove?.(this.toPointer(e))
+    const pointer = this.toPointer(e)
+    // まとめて届いた途中の位置（速く動かしたときのフリーハンドのため。MAI-27）
+    const coalesced = e.getCoalescedEvents?.() ?? []
+    if (coalesced.length > 1) {
+      const camera = this.editor.session.get().camera
+      pointer.coalesced = coalesced.map((c) => screenToWorld(camera, { x: c.clientX - rect.left, y: c.clientY - rect.top }))
+    }
+    this.tool.onPointerMove?.(pointer)
   }
 
   private onPointerUp(e: PointerEvent): void {
@@ -564,6 +575,8 @@ export class CanvasView {
       t: 'text',
       n: 'note',
       f: 'frame',
+      d: 'draw',
+      e: 'eraser',
     }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })

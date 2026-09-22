@@ -174,3 +174,59 @@ body,
   font-size: 13px;
   line-height: 1.5;
 }
+
+/* フリーハンドの色と太さ（MAI-27）。ツールバーが折り返しても重ならないよう、左端の中ほどに縦に並べる */
+.draw-palette {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.draw-palette button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.draw-palette button.active {
+  background: #e3ebfd;
+  border-color: #b9ccf8;
+  color: var(--accent);
+}
+
+.draw-palette button.swatch {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px var(--panel-border);
+}
+
+.draw-palette button.swatch.active {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.draw-palette .separator {
+  width: 20px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--panel-border);
+}

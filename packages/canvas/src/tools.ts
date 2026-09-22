@@ -1,6 +1,21 @@
-import { boxFromPoints, dist, panBy, worldToScreen, type Box, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
+import {
+  applyMat,
+  boxFromPoints,
+  dist,
+  expandBox,
+  invert,
+  panBy,
+  worldToScreen,
+  type Box,
+  type NodeRecord,
+  type Transaction,
+  type Vec,
+} from '@canvcode/core'
 import {
   GEO_DEFAULT_SIZE,
+  normalizeDrawPoints,
+  segmentTouchesDraw,
+  type DrawProps,
   textLayout,
   type FrameProps,
   type GeoProps,
@@ -38,6 +53,9 @@ export interface ToolPointer {
   altKey: boolean
   ctrlKey: boolean
   metaKey: boolean
+  // 前のイベントからの間にまとめて届いた位置（ワールド座標、古い順。最後は world と同じ）。
+  // 速く動かしたときも、フリーハンドの線を角張らせないために使う（MAI-27）
+  coalesced?: Vec[]
 }
 
 export interface ToolContext {
@@ -717,5 +735,189 @@ export class NoteTool implements Tool {
 
   onExit(): void {
     this.cancel()
+  }
+}
+
+// ---- フリーハンド（MAI-27） ----
+
+// 前の点からこれより近い点は捨てる（CSS ピクセル）
+const DRAW_MIN_STEP_PX = 0.75
+// Shift で引く直線の点の間隔（CSS ピクセル）。点の間隔が一定なら、真似た筆圧も一定になり、太さがそろう
+const DRAW_STRAIGHT_STEP_PX = 4
+
+export class DrawTool implements Tool {
+  readonly id = 'draw' as const
+  readonly cursor = 'crosshair'
+  private drawing: {
+    tx: Transaction<NodeRecord>
+    node: NodeRecord<DrawProps>
+    points: number[]
+    last: Vec
+    // Shift を押している間の直線の始まり（points の中の位置）。押していなければ null
+    straightFrom: number | null
+  } | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    // フレームの上で描き始めたら、フレームの中に入れる
+    const { parentId, local } = placeAt(editor, pointer.world)
+    const { color, size } = editor.session.get().drawStyle
+    const tx = editor.begin('draw')
+    const node = editor.makeNode('draw', {
+      x: local.x,
+      y: local.y,
+      parentId,
+      props: { points: [0, 0], color, size, isComplete: false },
+    }) as NodeRecord<DrawProps>
+    tx.put(node)
+    tx.flush()
+    this.ctx.lift([node.id])
+    this.drawing = { tx, node, points: [0, 0], last: pointer.world, straightFrom: pointer.shiftKey ? 0 : null }
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const drawing = this.drawing
+    if (!drawing) return
+    const editor = this.ctx.editor
+    const zoom = editor.session.get().camera.zoom
+    const toNode = (world: Vec) => {
+      const local = editor.worldToParent(drawing.node.parentId, world)
+      return { x: local.x - drawing.node.x, y: local.y - drawing.node.y }
+    }
+    // Shift を押している間は、押したときの点から今の位置までの直線にする（MAI-27）
+    if (pointer.shiftKey) {
+      if (drawing.straightFrom === null) drawing.straightFrom = drawing.points.length - 2
+      const from = drawing.straightFrom
+      const ax = drawing.points[from]
+      const ay = drawing.points[from + 1]
+      const b = toNode(pointer.world)
+      const steps = Math.max(1, Math.round((Math.hypot(b.x - ax, b.y - ay) * zoom) / DRAW_STRAIGHT_STEP_PX))
+      drawing.points.length = from + 2
+      for (let i = 1; i <= steps; i++) drawing.points.push(ax + ((b.x - ax) * i) / steps, ay + ((b.y - ay) * i) / steps)
+      drawing.last = pointer.world
+      this.update(drawing)
+      return
+    }
+    // Shift を離したら、直線の終わりからフリーハンドに戻る
+    drawing.straightFrom = null
+    const minStep = DRAW_MIN_STEP_PX / zoom
+    let added = false
+    for (const world of pointer.coalesced ?? [pointer.world]) {
+      if (dist(world, drawing.last) < minStep) continue
+      drawing.last = world
+      const local = toNode(world)
+      drawing.points.push(local.x, local.y)
+      added = true
+    }
+    if (added) this.update(drawing)
+  }
+
+  private update(drawing: NonNullable<DrawTool['drawing']>): void {
+    drawing.tx.put({ ...drawing.node, props: { ...drawing.node.props, points: [...drawing.points] } })
+    drawing.tx.flush()
+  }
+
+  onPointerUp(): void {
+    const drawing = this.drawing
+    if (!drawing) return
+    this.drawing = null
+    // 箱の左上が (0, 0) になるよう点列をずらし、その分ノードを動かす（ノードは回転していないので、そのまま足せる）
+    const { props, offset } = normalizeDrawPoints({ ...drawing.node.props, points: drawing.points, isComplete: true })
+    drawing.tx.put({ ...drawing.node, x: drawing.node.x + offset.x, y: drawing.node.y + offset.y, props })
+    this.ctx.editor.finish(drawing.tx)
+    this.ctx.drop()
+    // 続けて描けるように、ツールはフリーハンドのまま
+  }
+
+  cancel(): boolean {
+    const drawing = this.drawing
+    if (!drawing) return false
+    this.drawing = null
+    drawing.tx.cancel()
+    this.ctx.drop()
+    return true
+  }
+
+  onExit(): void {
+    // ツールを切り替えたら、描きかけの線はそのまま確定する
+    this.onPointerUp()
+  }
+}
+
+// ---- 消しゴム（MAI-12、MAI-27）。手書きの線だけを消す ----
+
+// 消しゴムの届く範囲（CSS ピクセル）
+const ERASER_RADIUS_PX = 6
+
+export class EraserTool implements Tool {
+  readonly id = 'eraser' as const
+  readonly cursor = 'crosshair'
+  private erasing: { tx: Transaction<NodeRecord>; last: Vec; erased: Set<string> } | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    this.erasing = { tx: this.ctx.editor.begin('erase'), last: pointer.world, erased: new Set() }
+    this.eraseAlong(pointer.world, pointer.world)
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const erasing = this.erasing
+    if (!erasing) return
+    for (const world of pointer.coalesced ?? [pointer.world]) {
+      this.eraseAlong(erasing.last, world)
+      erasing.last = world
+    }
+  }
+
+  onPointerUp(): void {
+    const erasing = this.erasing
+    if (!erasing) return
+    this.erasing = null
+    if (erasing.erased.size > 0) this.ctx.editor.finish(erasing.tx)
+    else erasing.tx.cancel()
+  }
+
+  cancel(): boolean {
+    const erasing = this.erasing
+    if (!erasing) return false
+    this.erasing = null
+    erasing.tx.cancel()
+    return true
+  }
+
+  onExit(): void {
+    this.onPointerUp()
+  }
+
+  // ワールド座標の線分 a–b に触れた、手書きの線を消す
+  private eraseAlong(a: Vec, b: Vec): void {
+    const erasing = this.erasing!
+    const editor = this.ctx.editor
+    const margin = ERASER_RADIUS_PX / editor.session.get().camera.zoom
+    let changed = false
+    for (const id of editor.index.search(expandBox(boxFromPoints(a, b), margin))) {
+      if (erasing.erased.has(id)) continue
+      const entry = editor.index.get(id)
+      if (!entry || entry.node.type !== 'draw' || entry.node.locked || !erasing.tx.get(id)) continue
+      // ノードの行列は回転と平行移動だけなので、ローカル座標でも余裕の大きさは同じ
+      const toLocal = invert(entry.worldMatrix)
+      const props = entry.node.props as DrawProps
+      if (!segmentTouchesDraw(props, applyMat(toLocal, a), applyMat(toLocal, b), margin)) continue
+      erasing.tx.remove(id)
+      erasing.erased.add(id)
+      changed = true
+    }
+    if (changed) erasing.tx.flush()
   }
 }

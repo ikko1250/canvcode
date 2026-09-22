@@ -6,7 +6,8 @@
     "@canvcode/core": "*",
     "dompurify": "^3.4.15",
     "katex": "^0.18.7",
-    "marked": "^18.0.14"
+    "marked": "^18.0.14",
+    "perfect-freehand": "^1.2.3"
   },
   "exports": {
     ".": "./src/index.ts",
