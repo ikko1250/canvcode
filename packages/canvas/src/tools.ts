@@ -1,7 +1,20 @@
-import { boxFromPoints, dist, panBy, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
+import { boxFromPoints, dist, panBy, worldToScreen, type NodeRecord, type Transaction, type Vec } from '@canvcode/core'
 import { GEO_DEFAULT_SIZE, type GeoProps } from '@canvcode/nodes'
-import type { Editor } from './editor.ts'
+import type { Editor, TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
+import {
+  frameCenter,
+  handleCursor,
+  hitHandle,
+  resizeFrame,
+  resizeNodes,
+  rotateNodes,
+  rotationDelta,
+  screenHandles,
+  type Handle,
+  type HandleHit,
+  type ScreenHandles,
+} from './transform.ts'
 
 // ツールの状態機械（MAI-12）。各ツールは自分の状態を持ち、ポインタとキーの入力で状態を移る。
 // どの状態でも cancel（Esc）で操作を取り消して idle に戻れる。
@@ -27,6 +40,20 @@ export interface ToolContext {
   // シーンから外してオーバーレイに描くノードを決める（ドラッグ中など）
   lift(ids: Iterable<string>): void
   drop(): void
+  // ツールの既定のカーソルの代わりに使うカーソル（ハンドルの上など）。null で元に戻す
+  setCursor(cursor: string | null): void
+}
+
+// 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
+export function selectionHandles(editor: Editor): { selection: TransformSelection; handles: ScreenHandles } | null {
+  const selection = editor.transformSelection()
+  if (!selection) return null
+  const camera = editor.session.get().camera
+  const handles = screenHandles(selection.frame, (p) => worldToScreen(camera, p), {
+    resize: selection.canResize,
+    rotate: selection.canRotate,
+  })
+  return { selection, handles }
 }
 
 export interface Tool {
@@ -53,6 +80,16 @@ type SelectState =
       tx: Transaction<NodeRecord>
       initial: Map<string, NodeRecord>
     }
+  | { name: 'resizing'; handle: Handle; tx: Transaction<NodeRecord>; selection: TransformSelection }
+  | {
+      name: 'rotating'
+      tx: Transaction<NodeRecord>
+      pivot: Vec
+      start: Vec
+      initial: NodeRecord[]
+      // 1 つだけのときはそのノードの向き（Shift で向きを 15° 刻みにする）。複数なら null
+      baseRotation: number | null
+    }
 
 export class SelectTool implements Tool {
   readonly id = 'select' as const
@@ -67,6 +104,12 @@ export class SelectTool implements Tool {
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
+    // 選択枠のハンドルは、ノードより先に調べる
+    const handleHit = this.hitSelectionHandle(pointer)
+    if (handleHit) {
+      this.startTransform(handleHit.hit, handleHit.selection, pointer)
+      return
+    }
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
@@ -89,9 +132,34 @@ export class SelectTool implements Tool {
     const state = this.state
     switch (state.name) {
       case 'idle': {
+        const handleHit = this.hitSelectionHandle(pointer)
+        if (handleHit) {
+          this.ctx.setCursor(this.cursorFor(handleHit.hit, handleHit.selection))
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          return
+        }
+        this.ctx.setCursor(null)
         const zoom = editor.session.get().camera.zoom
         const hoveredId = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)?.id ?? null
         if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
+        return
+      }
+      case 'resizing': {
+        const { selection, handle, tx } = state
+        const frame = resizeFrame(selection.frame, handle, pointer.world, {
+          keepAspect: pointer.shiftKey || selection.forceAspect,
+          fromCenter: pointer.altKey,
+          minW: selection.minSize.w,
+          minH: selection.minSize.h,
+        })
+        for (const node of resizeNodes(selection.targets, selection.frame, frame)) tx.put(node)
+        tx.flush()
+        return
+      }
+      case 'rotating': {
+        const delta = rotationDelta(state.pivot, state.start, pointer.world, pointer.shiftKey, state.baseRotation)
+        for (const node of rotateNodes(state.initial, state.pivot, delta)) state.tx.put(node)
+        state.tx.flush()
         return
       }
       case 'pointingNode': {
@@ -126,9 +194,10 @@ export class SelectTool implements Tool {
     } else if (state.name === 'pointingNode' && !pointer.shiftKey && state.wasSelected) {
       // 複数選択中に 1 つをクリックしたら、それだけを選ぶ
       editor.setSelection([state.nodeId])
-    } else if (state.name === 'translating') {
+    } else if (state.name === 'translating' || state.name === 'resizing' || state.name === 'rotating') {
       editor.finish(state.tx)
       this.ctx.drop()
+      this.ctx.setCursor(null)
     }
     this.state = { name: 'idle' }
   }
@@ -136,12 +205,49 @@ export class SelectTool implements Tool {
   cancel(): boolean {
     const state = this.state
     this.state = { name: 'idle' }
-    if (state.name === 'translating') {
+    if (state.name === 'translating' || state.name === 'resizing' || state.name === 'rotating') {
       state.tx.cancel()
       this.ctx.drop()
+      this.ctx.setCursor(null)
       return true
     }
     return state.name !== 'idle'
+  }
+
+  private hitSelectionHandle(pointer: ToolPointer): { hit: HandleHit; selection: TransformSelection } | null {
+    const found = selectionHandles(this.ctx.editor)
+    if (!found) return null
+    const hit = hitHandle(found.handles, pointer.screen)
+    return hit ? { hit, selection: found.selection } : null
+  }
+
+  private cursorFor(hit: HandleHit, selection: TransformSelection): string {
+    return hit.kind === 'rotate' ? 'grab' : handleCursor(hit.handle, selection.frame.rotation)
+  }
+
+  private startTransform(hit: HandleHit, selection: TransformSelection, pointer: ToolPointer): void {
+    const editor = this.ctx.editor
+    const ids = selection.targets.map((t) => t.node.id)
+    editor.session.set({ hoveredId: null })
+    if (hit.kind === 'resize') {
+      const tx = editor.begin('resize')
+      this.ctx.lift(ids)
+      this.ctx.setCursor(this.cursorFor(hit, selection))
+      this.state = { name: 'resizing', handle: hit.handle, tx, selection }
+    } else {
+      const tx = editor.begin('rotate')
+      this.ctx.lift(ids)
+      this.ctx.setCursor('grabbing')
+      const single = selection.targets.length === 1
+      this.state = {
+        name: 'rotating',
+        tx,
+        pivot: frameCenter(selection.frame),
+        start: pointer.world,
+        initial: selection.targets.map((t) => t.node),
+        baseRotation: single ? selection.targets[0].node.rotation : null,
+      }
+    }
   }
 
   onExit(): void {

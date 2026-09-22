@@ -1,6 +1,8 @@
-import { expandBox, unionBoxes, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
+import { expandBox, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
 import type { ImageRequester, RenderInfo } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
+import { selectionHandles } from './tools.ts'
+import type { ScreenHandles } from './transform.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
 // - 画面に見えているノードだけを、重なり順に描く
@@ -141,22 +143,9 @@ export function drawOverlay(
   }
   for (const id of state.selectedIds) outlineNode(ctx, editor, id, view)
 
-  // 選択範囲全体の枠とハンドル（ハンドルで大きさを変える操作は段階 3 で入れる）
-  const boxes = [...state.selectedIds].flatMap((id) => {
-    const entry = editor.index.get(id)
-    return entry ? [entry.worldBounds] : []
-  })
-  const bounds = unionBoxes(boxes)
-  if (bounds && boxes.length > 0) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-    const r = deviceRect(bounds, view)
-    if (boxes.length > 1) {
-      ctx.setLineDash([4 * view.dpr, 4 * view.dpr])
-      ctx.strokeRect(r.x, r.y, r.w, r.h)
-      ctx.setLineDash([])
-    }
-    drawHandles(ctx, r, view.dpr)
-  }
+  // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
+  const found = selectionHandles(editor)
+  if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
   return drawn
 }
 
@@ -185,16 +174,35 @@ function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, 
   ctx.stroke()
 }
 
-function drawHandles(ctx: CanvasRenderingContext2D, r: Box, dpr: number): void {
+function drawSelectionHandles(ctx: CanvasRenderingContext2D, handles: ScreenHandles, multiple: boolean, dpr: number): void {
+  const d = (p: { x: number; y: number }) => ({ x: p.x * dpr, y: p.y * dpr })
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  if (multiple) {
+    ctx.setLineDash([4 * dpr, 4 * dpr])
+    ctx.beginPath()
+    handles.corners.map(d).forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+    ctx.closePath()
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+  if (handles.rotate) {
+    const top = d(handles.handles.find((h) => h.handle === 'n')?.point ?? handles.corners[0])
+    const r = d(handles.rotate)
+    ctx.beginPath()
+    ctx.moveTo(top.x, top.y)
+    ctx.lineTo(r.x, r.y)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.arc(r.x, r.y, (HANDLE_SIZE_PX / 2 + 1) * dpr, 0, Math.PI * 2)
+    ctx.fillStyle = '#ffffff'
+    ctx.fill()
+    ctx.stroke()
+  }
   const size = HANDLE_SIZE_PX * dpr
-  const xs = [r.x, r.x + r.w / 2, r.x + r.w]
-  const ys = [r.y, r.y + r.h / 2, r.y + r.h]
   ctx.fillStyle = '#ffffff'
-  for (const [i, x] of xs.entries()) {
-    for (const [j, y] of ys.entries()) {
-      if (i === 1 && j === 1) continue
-      ctx.fillRect(x - size / 2, y - size / 2, size, size)
-      ctx.strokeRect(x - size / 2, y - size / 2, size, size)
-    }
+  for (const { point } of handles.handles) {
+    const p = d(point)
+    ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size)
+    ctx.strokeRect(p.x - size / 2, p.y - size / 2, size, size)
   }
 }

@@ -13,7 +13,7 @@ describe('ImageCache', () => {
   // 1 フレーム分：描画の最初と最後で beginFrame / endFrame を呼び、その間に画像を頼む
   function frame(cache: ImageCache, requests: [string, number][], produce = (level: number) => fakeImage(level)) {
     cache.beginFrame()
-    const results = requests.map(([key, level]) => cache.get(key, level, async () => produce(level)))
+    const results = requests.map(([key, level]) => cache.get(key, 'v1', level, async () => produce(level)))
     cache.endFrame()
     return results
   }
@@ -51,7 +51,7 @@ describe('ImageCache', () => {
     const produced: string[] = []
     const cache = new ImageCache({ onReady: () => {}, idleDelayMs: 0 })
     cache.beginFrame()
-    cache.get('offscreen', 1, async () => {
+    cache.get('offscreen', 'v1', 1, async () => {
       produced.push('offscreen')
       return fakeImage(1)
     })
@@ -65,6 +65,23 @@ describe('ImageCache', () => {
     await vi.advanceTimersByTimeAsync(50)
     expect(produced).toEqual(['visible'])
     expect(cache.idle).toBe(true)
+  })
+
+  it('keeps serving the old version until the new one is ready', async () => {
+    const cache = new ImageCache({ onReady: () => {}, idleDelayMs: 0 })
+    const get = (version: string) => {
+      cache.beginFrame()
+      const image = cache.get('card', version, 1, async () => ({ ...fakeImage(1), image: { version } as unknown as CanvasImageSource }))
+      cache.endFrame()
+      return image
+    }
+    get('v1')
+    await vi.advanceTimersByTimeAsync(10)
+    // 中身が変わっても、新しいものができるまでは古い版を返す
+    expect((get('v2')!.image as unknown as { version: string }).version).toBe('v1')
+    await vi.advanceTimersByTimeAsync(10)
+    expect((get('v2')!.image as unknown as { version: string }).version).toBe('v2')
+    expect(cache.stats.bytes).toBe(400)
   })
 
   it('evicts the least recently used images over the budget', async () => {

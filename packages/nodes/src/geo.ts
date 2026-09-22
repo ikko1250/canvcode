@@ -59,4 +59,7 @@ export const geoType = defineNodeType<GeoProps>({
   },
 
   roughColor: (node) => node.props.fill,
+
+  resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
+  minSize: { w: 1, h: 1 },
 })

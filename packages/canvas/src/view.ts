@@ -48,6 +48,7 @@ export class CanvasView {
   private readonly tools: Map<ToolId, Tool>
   private tool: Tool
   private spaceHeld = false
+  private cursorOverride: string | null = null
   private panPointer: { id: number; last: { x: number; y: number } } | null = null
   private gestureScale = 1
   // 時間のかかる画像（Markdown カードなど）のキャッシュ。作れたらシーンを描き直す（MAI-22）
@@ -95,6 +96,11 @@ export class CanvasView {
       setTool: (id) => editor.session.set({ toolId: id }),
       lift: (ids) => this.lift(ids),
       drop: () => this.drop(),
+      setCursor: (cursor) => {
+        if (this.cursorOverride === cursor) return
+        this.cursorOverride = cursor
+        this.updateCursor()
+      },
     }
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
@@ -107,6 +113,8 @@ export class CanvasView {
     this.disposers.push(
       editor.session.subscribe((state, prev) => this.onSessionChange(state, prev)),
       editor.store.listen((event) => {
+        // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
+        if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
         let sceneChanged = false
         for (const id of event.patch.keys()) {
           if (!this.lifted.has(id)) {
@@ -275,6 +283,7 @@ export class CanvasView {
     if (state.toolId !== prev.toolId) {
       this.tool.onExit?.()
       this.tool = this.tools.get(state.toolId)!
+      this.cursorOverride = null
       this.updateCursor()
     }
   }
@@ -429,7 +438,11 @@ export class CanvasView {
   }
 
   private updateCursor(): void {
-    this.root.style.cursor = this.panPointer ? 'grabbing' : this.spaceHeld ? 'grab' : this.tool.cursor
+    this.root.style.cursor = this.panPointer
+      ? 'grabbing'
+      : this.spaceHeld
+        ? 'grab'
+        : (this.cursorOverride ?? this.tool.cursor)
   }
 
   private listen<K extends keyof HTMLElementEventMap>(

@@ -12,6 +12,7 @@ import {
 import { builtinNodeTypes, type AnyNodeTypeDef } from '@canvcode/nodes'
 import { NodeIndex } from './nodeIndex.ts'
 import { Session } from './session.ts'
+import { nodeFrame, rightAngle, selectionFrame, type Frame, type ResizeTarget } from './transform.ts'
 
 // 1 つの Canvas を編集するための入口。ストア・履歴・セッション・索引をまとめ、
 // 名前の付いたコマンドを提供する（MAI-11）。ツールや React の UI は、ここを通して変更する。
@@ -20,6 +21,18 @@ import { Session } from './session.ts'
 export interface HistoryMeta {
   selectionBefore: string[]
   selectionAfter?: string[]
+}
+
+// 選択しているノードをリサイズ・回転するときの対象（MAI-23）
+export interface TransformSelection {
+  frame: Frame
+  targets: ResizeTarget[]
+  // 1 つだけのときは、その型がリサイズできるか。複数のときは、どれか 1 つでもできるか
+  canResize: boolean
+  canRotate: boolean
+  // 斜めに回転したノードを含む複数選択は、形が歪まないよう縦横比を保って伸ばす
+  forceAspect: boolean
+  minSize: { w: number; h: number }
 }
 
 export interface EditorOptions {
@@ -174,6 +187,30 @@ export class Editor {
     const meta = result.entry.meta as HistoryMeta | undefined
     if (meta?.selectionAfter) this.setSelection(meta.selectionAfter.filter((id) => this.store.has(id)))
     return true
+  }
+
+  // ---- リサイズ・回転の対象（MAI-23） ----
+
+  transformSelection(): TransformSelection | null {
+    const entries = [...this.session.get().selectedIds].flatMap((id) => {
+      const entry = this.index.get(id)
+      return entry && !entry.node.locked ? [entry] : []
+    })
+    const frame = selectionFrame(entries, (node) => this.getType(node))
+    if (!frame) return null
+    const targets = entries.map((entry) => {
+      const type = this.getType(entry.node)
+      return { node: entry.node, type, frame: nodeFrame(entry, type) }
+    })
+    const single = targets.length === 1
+    return {
+      frame,
+      targets,
+      canResize: targets.some((t) => t.type.resize),
+      canRotate: targets.every((t) => t.type.canRotate !== false),
+      forceAspect: !single && targets.some((t) => rightAngle(t.node.rotation) === null),
+      minSize: single ? (targets[0].type.minSize ?? { w: 1, h: 1 }) : { w: 1, h: 1 },
+    }
   }
 
   // ---- 当たり判定（MAI-12） ----

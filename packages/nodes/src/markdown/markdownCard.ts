@@ -26,15 +26,15 @@ export interface MarkdownCardOptions {
 const PLACEHOLDER_LINE_HEIGHT = 26
 
 export function createMarkdownCardType(options: MarkdownCardOptions) {
-  // 同じ中身の HTML とキャッシュのキーは、props ごとに一度だけ作る（レコードは書き換えないので props で引ける）
   const imageOutput = options.output?.() ?? 'canvas'
-  const htmlCache = new WeakMap<MarkdownCardProps, { html: string; key: string }>()
-  let nextKey = 0
+  // 同じ中身の HTML と版は、props ごとに一度だけ作る（レコードは書き換えないので props で引ける）。
+  // 版は、画像の見た目を決める値（題名・本文・大きさ）が変わったときだけ変わる
+  const htmlCache = new WeakMap<MarkdownCardProps, { html: string; version: string }>()
   const htmlFor = (props: MarkdownCardProps) => {
     let cached = htmlCache.get(props)
     if (!cached) {
       const html = buildMarkdownCardHtml(props.title, renderMarkdown(props.markdown).html)
-      cached = { html, key: `markdown-card:${nextKey++}:${props.w}x${props.h}` }
+      cached = { html, version: `${props.w}x${props.h}:${hashString(html)}` }
       htmlCache.set(props, cached)
     }
     return cached
@@ -54,8 +54,9 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
     render(ctx, node, info) {
       const { w, h } = node.props
       const level = pickImageLevel(info.zoom * info.devicePixelRatio)
-      const { html, key } = htmlFor(node.props)
-      const image = info.images?.get(key, level, async (): Promise<RasterImage> => {
+      const { html, version } = htmlFor(node.props)
+      // キーはノードごと。中身や大きさが変わっても、作り直すまでは古い画像を引き伸ばして描く
+      const image = info.images?.get(node.id, version, level, async (): Promise<RasterImage> => {
         const css = await options.embedCss(html)
         const result = await rasterizeHtml({
           html,
@@ -79,7 +80,20 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
     },
 
     roughColor: () => '#efe6cf',
+
+    resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
+    minSize: { w: 160, h: 120 },
   })
+}
+
+// 文字列の簡単なハッシュ（FNV-1a）。版の比較に使うだけなので、衝突しにくければよい
+function hashString(value: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36) + value.length.toString(36)
 }
 
 function drawPlaceholder(ctx: CanvasRenderingContext2D, w: number, h: number): void {

@@ -4,6 +4,7 @@ import type { ImageRequester, RasterImage } from '@canvcode/nodes'
 // - ノードの型は、描画のたびに「この解像度の画像が欲しい」と頼む。手元にあるいちばん近い解像度のものを返す
 // - 足りない画像は順番待ちに入れ、カメラが止まってから 1 枚ずつ作る。動いている間は作らない
 // - 作れたら onReady を呼び、シーンを描き直してもらう
+// - 中身が変わった（version が違う）ときは、新しいものができるまで古いものを返す
 // - 容量はバイト数で数え、上限を超えたら最も長く使われていないものから捨てる
 
 export interface ImageCacheOptions {
@@ -24,17 +25,23 @@ export interface ImageCacheStats {
 
 interface Job {
   key: string
+  version: string
   level: number
   produce: () => Promise<RasterImage>
   // 最後に頼まれたフレーム。画面から外れたものは作らない
   frame: number
 }
 
+interface Entry {
+  version: string
+  levels: Map<number, RasterImage>
+}
+
 const DEFAULT_IDLE_DELAY_MS = 150
 const DEFAULT_BUDGET_BYTES = 512 * 1024 * 1024
 
 export class ImageCache implements ImageRequester {
-  private readonly images = new Map<string, Map<number, RasterImage>>()
+  private readonly images = new Map<string, Entry>()
   private readonly jobs = new Map<string, Job>()
   private readonly options: Required<ImageCacheOptions>
   private bytes = 0
@@ -74,20 +81,18 @@ export class ImageCache implements ImageRequester {
     this.lastMotionAt = now
   }
 
-  get(key: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null {
-    const levels = this.images.get(key)
-    const exact = levels?.get(level)
-    if (exact) {
-      this.touch(key, levels!)
-      return exact
-    }
+  get(key: string, version: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null {
+    const entry = this.images.get(key)
+    const current = entry?.version === version
+    const exact = current ? entry.levels.get(level) : undefined
+    if (entry) this.touch(key, entry)
+    if (exact) return exact
     const jobKey = `${key}@${level}`
     const job = this.jobs.get(jobKey)
-    if (job) job.frame = this.frame
-    else this.jobs.set(jobKey, { key, level, produce, frame: this.frame })
-    if (!levels) return null
-    this.touch(key, levels)
-    return nearestLevel(levels, level)
+    if (job && job.version === version) job.frame = this.frame
+    else this.jobs.set(jobKey, { key, version, level, produce, frame: this.frame })
+    if (!entry) return null
+    return nearestLevel(entry.levels, level)
   }
 
   get stats(): ImageCacheStats {
@@ -141,7 +146,7 @@ export class ImageCache implements ImageRequester {
     try {
       const image = await job.produce()
       if (this.disposed) return
-      this.store(job.key, image)
+      this.store(job.key, job.version, image)
       this.produced++
       this.lastProduceMs = performance.now() - start
       this.options.onReady()
@@ -154,33 +159,39 @@ export class ImageCache implements ImageRequester {
     this.schedule()
   }
 
-  private store(key: string, image: RasterImage): void {
-    let levels = this.images.get(key)
-    if (!levels) {
-      levels = new Map()
-      this.images.set(key, levels)
+  private store(key: string, version: string, image: RasterImage): void {
+    let entry = this.images.get(key)
+    if (!entry || entry.version !== version) {
+      // 中身が変わったので、古い版の画像はまとめて捨てる
+      if (entry) this.release(entry)
+      entry = { version, levels: new Map() }
+      this.images.set(key, entry)
     }
-    const previous = levels.get(image.level)
+    const previous = entry.levels.get(image.level)
     if (previous) this.bytes -= sizeOf(previous)
-    levels.set(image.level, image)
+    entry.levels.set(image.level, image)
     this.bytes += sizeOf(image)
-    this.touch(key, levels)
+    this.touch(key, entry)
     this.evict()
   }
 
   // Map の順番を「最近使った順」にするため、取り出して入れ直す
-  private touch(key: string, levels: Map<number, RasterImage>): void {
+  private touch(key: string, entry: Entry): void {
     this.images.delete(key)
-    this.images.set(key, levels)
+    this.images.set(key, entry)
+  }
+
+  private release(entry: Entry): void {
+    for (const image of entry.levels.values()) {
+      this.bytes -= sizeOf(image)
+      if (typeof ImageBitmap !== 'undefined' && image.image instanceof ImageBitmap) image.image.close()
+    }
   }
 
   private evict(): void {
-    for (const [key, levels] of this.images) {
+    for (const [key, entry] of this.images) {
       if (this.bytes <= this.options.budgetBytes) return
-      for (const image of levels.values()) {
-        this.bytes -= sizeOf(image)
-        if (typeof ImageBitmap !== 'undefined' && image.image instanceof ImageBitmap) image.image.close()
-      }
+      this.release(entry)
       this.images.delete(key)
     }
   }

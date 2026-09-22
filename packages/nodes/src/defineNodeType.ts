@@ -23,9 +23,11 @@ export interface RasterImage {
 }
 
 export interface ImageRequester {
-  // key の画像を level の解像度で欲しいと頼む。手元にあるいちばん近い解像度のものを返し、
-  // 頼んだ解像度がなければ、あとで作る（できたら描き直される）。何もなければ null。
-  get(key: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null
+  // key の画像を、version の中身・level の解像度で欲しいと頼む。手元にあるいちばん近い解像度のものを返し、
+  // 頼んだものがなければ、あとで作る（できたら描き直される）。
+  // 中身が変わった（version が違う）ときも、新しいものができるまでは古いものを返す（リサイズ中の引き伸ばしなど）。
+  // 何もなければ null。
+  get(key: string, version: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null
 }
 
 export interface NodeTypeDef<P extends object> {
@@ -42,6 +44,13 @@ export interface NodeTypeDef<P extends object> {
   renderRough?(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
   // 簡略描画に使う色
   roughColor?(node: NodeRecord<P>): string
+  // リサイズしたときの新しい props（MAI-23）。定義しなければリサイズできない。
+  // リサイズできる型は、getBounds の箱の原点を (0, 0) にする
+  resize?(node: NodeRecord<P>, size: { w: number; h: number }): P
+  // リサイズで小さくできる限度（既定は 1×1）
+  minSize?: { w: number; h: number }
+  // 回転できるか（既定は true）
+  canRotate?: boolean
 }
 
 export type AnyNodeTypeDef = NodeTypeDef<any>
