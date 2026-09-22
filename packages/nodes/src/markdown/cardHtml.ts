@@ -113,6 +113,19 @@ export const MARKDOWN_CARD_CSS = `
 }
 .md-card-body pre code { padding: 0; background: transparent; }
 .md-card-body a { color: #6d43bd; text-decoration: underline; }
+/* 大きさを固定したカードで、収まらない分は下端をぼかして切る（MAI-30） */
+.md-card-body { position: relative; }
+.md-card.clipped .md-card-body::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 64px;
+  background: linear-gradient(rgba(255, 253, 247, 0), #fffdf7 85%);
+}
+/* ショートカットのカードは、種類の印に ↗ を付ける */
+.md-card-shortcut { color: #6d43bd; font-size: 11px; font-weight: 700; }
 `
 
 function escapeText(value: string): string {
@@ -120,10 +133,15 @@ function escapeText(value: string): string {
 }
 
 // bodyHtml は renderMarkdown で無害化済みのもの
-export function buildMarkdownCardHtml(title: string, bodyHtml: string): string {
+export function buildMarkdownCardHtml(
+  title: string,
+  bodyHtml: string,
+  options: { clipped?: boolean; shortcut?: boolean } = {},
+): string {
   return (
-    `<div class="md-card">` +
+    `<div class="md-card${options.clipped ? ' clipped' : ''}">` +
     `<div class="md-card-header"><span class="md-card-type">MD</span>` +
+    (options.shortcut ? `<span class="md-card-shortcut">↗</span>` : '') +
     `<span class="md-card-title">${escapeText(title)}</span></div>` +
     `<div class="md-card-body">${bodyHtml}</div>` +
     `</div>`

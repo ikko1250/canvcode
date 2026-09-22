@@ -8,7 +8,7 @@ import {
   type NodeRecord,
   type Vec,
 } from '@canvcode/core'
-import type { ArrowProps, ImageProps, PortalProps } from '@canvcode/nodes'
+import type { ArrowProps, DocumentReference, ImageProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 
@@ -100,14 +100,16 @@ export interface InsertOptions {
   parentId?: string | 'original'
 }
 
-// 持ち主の Portal を貼り付けるときの扱い（MAI-8）。
+// 持ち主（Portal やカード）を貼り付けるときの扱い（MAI-8）。
 // 参照先が未配置（切り取った直後など）なら、持ち主のまま置く（＝移動）。そうでなければショートカットにする（＝コピー）。
-// 参照先を自分自身や自分の子孫に置くことになる場合は、循環を避けるためショートカットにして、そのことを返す
-function portalRole(editor: Editor, props: PortalProps): { role: 'owner' | 'shortcut'; refused: boolean } {
-  if (props.role !== 'owner') return { role: 'shortcut', refused: false }
-  const target = editor.workspace.getCanvas(props.targetId)
-  if (!target || target.deletedAt !== null || target.ownerPortalId !== null) return { role: 'shortcut', refused: false }
-  if (editor.workspace.isSameOrInside(editor.canvasId, target.id)) return { role: 'shortcut', refused: true }
+// Canvas を自分自身や自分の子孫に置くことになる場合は、循環を避けるためショートカットにして、そのことを返す
+function pastedRole(editor: Editor, ref: DocumentReference): { role: 'owner' | 'shortcut'; refused: boolean } {
+  if (ref.role !== 'owner') return { role: 'shortcut', refused: false }
+  const target = editor.workspace.getDocument(ref.targetId)
+  if (!target || target.deletedAt !== null || target.ownerNodeId !== null) return { role: 'shortcut', refused: false }
+  if (target.typeName === 'canvas' && editor.workspace.isSameOrInside(editor.canvasId, target.id)) {
+    return { role: 'shortcut', refused: true }
+  }
   return { role: 'owner', refused: false }
 }
 
@@ -127,13 +129,14 @@ export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayloa
   // 同じ参照先の持ち主が 2 つ入らないよう、持ち主として置けるのは参照先ごとに 1 つだけ
   const ownerTaken = new Set<string>()
   const withRole = (node: NodeRecord): NodeRecord => {
-    if (node.type !== 'portal') return node
-    const props = node.props as PortalProps
-    let { role, refused } = portalRole(editor, props)
-    if (role === 'owner' && ownerTaken.has(props.targetId)) role = 'shortcut'
-    if (role === 'owner') ownerTaken.add(props.targetId)
-    if (refused) refusedOwners.push(props.targetId)
-    return role === props.role ? node : { ...node, props: { ...props, role } }
+    const type = editor.types.get(node.type)
+    const ref = type?.reference?.(node)
+    if (!type?.withRole || !ref) return node
+    let { role, refused } = pastedRole(editor, ref)
+    if (role === 'owner' && ownerTaken.has(ref.targetId)) role = 'shortcut'
+    if (role === 'owner') ownerTaken.add(ref.targetId)
+    if (refused) refusedOwners.push(ref.targetId)
+    return role === ref.role ? node : { ...node, props: type.withRole(node, role) }
   }
   const offset = options.center
     ? {

@@ -1,11 +1,13 @@
 import { useRef, useState } from 'react'
 import { PORTAL_HEADER, TEXT_FONT_FAMILY } from '@canvcode/nodes'
 
-// Portal の名前の帯に重ねる入力欄（右クリックメニューの「名前を変更」。MAI-29）。
-// 変えるのは参照先の Canvas の名前（Portal は名前のコピーを持たない）
+// Portal やカードの名前の帯に重ねる入力欄（右クリックメニューの「名前を変更」。MAI-29、MAI-30）。
+// 変えるのは参照先の Canvas・File の名前（Portal やカードは名前のコピーを持たない）
 export interface PortalRenameTarget {
-  canvasId: string
+  documentId: string
   title: string
+  // 名前の帯の寸法（ワールド座標）。既定は Portal のもの
+  header?: { height: number; padding: number; fontSize: number }
   // 名前の帯の位置（キャンバスの要素に対する画面の座標）と、倍率
   x: number
   y: number
@@ -27,7 +29,8 @@ export function PortalRename(props: { target: PortalRenameTarget; onCommit(title
     else props.onCancel()
   }
   // 小さく表示しているときでも入力しやすいよう、文字は 12px より小さくしない
-  const scale = Math.max(target.zoom, 12 / PORTAL_HEADER.fontSize)
+  const header = target.header ?? PORTAL_HEADER
+  const scale = Math.max(target.zoom, 12 / header.fontSize)
   return (
     <input
       className="portal-rename"
@@ -46,9 +49,9 @@ export function PortalRename(props: { target: PortalRenameTarget; onCommit(title
         left: target.x,
         top: target.y,
         width: Math.max(target.width, 120),
-        height: PORTAL_HEADER.height * scale,
-        padding: `0 ${PORTAL_HEADER.padding * scale}px`,
-        font: `500 ${PORTAL_HEADER.fontSize * scale}px ${TEXT_FONT_FAMILY}`,
+        height: header.height * scale,
+        padding: `0 ${header.padding * scale}px`,
+        font: `500 ${header.fontSize * scale}px ${TEXT_FONT_FAMILY}`,
       }}
     />
   )

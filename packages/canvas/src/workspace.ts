@@ -4,15 +4,19 @@ import {
   createId,
   isBindingRecord,
   isCanvasRecord,
+  isDocumentRecord,
+  isFileRecord,
   isNodeRecord,
   type BindingRecord,
   type CanvasRecord,
+  type DocumentRecord,
+  type FileRecord,
   type NodeRecord,
   type Patch,
   type Transaction,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { builtinNodeTypes, type AnyNodeTypeDef, type ArrowProps, type PortalProps } from '@canvcode/nodes'
+import { builtinNodeTypes, type AnyNodeTypeDef, type ArrowProps, type DocumentReference } from '@canvcode/nodes'
 import { BindingIndex, resolveArrow, unbind, type NodeLookup } from './bindings.ts'
 
 // ワークスペース（MAI-8、MAI-11）。
@@ -25,7 +29,7 @@ import { BindingIndex, resolveArrow, unbind, type NodeLookup } from './bindings.
 export interface HistoryMeta {
   selectionBefore: string[]
   selectionAfter?: string[]
-  // 持ち主の Portal を消したとき、参照先の Canvas をどうするか（MAI-8）。既定は 'unplace'
+  // 持ち主（Portal やカード）を消したとき、参照先の Canvas・File をどうするか（MAI-8）。既定は 'unplace'
   ownerPortalDeletion?: OwnerPortalDeletion
 }
 
@@ -90,11 +94,11 @@ export class Workspace implements NodeLookup {
     this.store.setHooks({
       afterCreate: (record, tx) => {
         this.track(undefined, record, record.id)
-        if (isNodeRecord(record) && tx.options.source === 'user') this.portalPlaced(tx, record)
+        if (isNodeRecord(record) && tx.options.source === 'user') this.ownerPlaced(tx, record)
       },
       afterUpdate: (prev, next, tx) => {
         this.track(prev, next, next.id)
-        if (isNodeRecord(next) && tx.options.source === 'user') this.portalPlaced(tx, next)
+        if (isNodeRecord(next) && tx.options.source === 'user') this.ownerPlaced(tx, next)
       },
       afterDelete: (record, tx) => {
         this.track(record, undefined, record.id)
@@ -176,6 +180,22 @@ export class Workspace implements NodeLookup {
     return isCanvasRecord(record) ? record : undefined
   }
 
+  getFile(id: string): FileRecord | undefined {
+    const record = this.store.get(id)
+    return isFileRecord(record) ? record : undefined
+  }
+
+  // Canvas か File（Portal やカードの参照先）
+  getDocument(id: string): DocumentRecord | undefined {
+    const record = this.store.get(id)
+    return isDocumentRecord(record) ? record : undefined
+  }
+
+  // ノードが参照している Canvas・File と、その持ち主か
+  referenceOf(node: NodeRecord): DocumentReference | null {
+    return this.types.get(node.type)?.reference?.(node) ?? null
+  }
+
   bindingsOfArrow(arrowId: string): BindingRecord[] {
     return this.bindings.ofArrow(arrowId).flatMap((id) => this.getBinding(id) ?? [])
   }
@@ -187,6 +207,22 @@ export class Workspace implements NodeLookup {
     return out
   }
 
+  // Canvas と File の一覧
+  documents(): DocumentRecord[] {
+    const out: DocumentRecord[] = []
+    for (const record of this.store.values()) if (isDocumentRecord(record)) out.push(record)
+    return out
+  }
+
+  // 持ち主による子の File（ゴミ箱の中のものは除く）。ツリーでは葉になる
+  childFiles(canvasId: string): FileRecord[] {
+    const out: FileRecord[] = []
+    for (const record of this.store.values()) {
+      if (isFileRecord(record) && record.parentCanvasId === canvasId && record.deletedAt === null) out.push(record)
+    }
+    return out.sort((a, b) => a.title.localeCompare(b.title, 'ja'))
+  }
+
   // 持ち主による子の Canvas（ゴミ箱の中のものは除く）
   childCanvases(canvasId: string): CanvasRecord[] {
     return this.canvases()
@@ -194,16 +230,27 @@ export class Workspace implements NodeLookup {
       .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
   }
 
-  // 未配置：持ち主の Portal がなく、ゴミ箱にも入っていない Canvas（ルートは除く）
+  // 未配置：持ち主がなく、ゴミ箱にも入っていない Canvas・File（ルートは除く）。
+  // 外で作られた .md / .py も、ここに入る（MAI-10）
+  unplacedDocuments(): DocumentRecord[] {
+    return this.documents()
+      .filter((d) => d.id !== this.rootCanvasId && d.ownerNodeId === null && d.deletedAt === null)
+      .sort((a, b) => a.title.localeCompare(b.title, 'ja'))
+  }
+
   unplacedCanvases(): CanvasRecord[] {
-    return this.canvases().filter((c) => c.id !== this.rootCanvasId && c.ownerPortalId === null && c.deletedAt === null)
+    return this.unplacedDocuments().filter(isCanvasRecord)
   }
 
   // ゴミ箱：一緒に入れたまとまりの根
-  trashedCanvases(): CanvasRecord[] {
-    return this.canvases()
-      .filter((c) => c.deletedAt !== null && isTrashRoot(this, c))
+  trashedDocuments(): DocumentRecord[] {
+    return this.documents()
+      .filter((d) => d.deletedAt !== null && isTrashRoot(this, d))
       .sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0))
+  }
+
+  trashedCanvases(): CanvasRecord[] {
+    return this.trashedDocuments().filter(isCanvasRecord)
   }
 
   // ルートから canvasId までの Canvas（パンくずリスト）。未配置なら、たどれるところまで
@@ -234,11 +281,12 @@ export class Workspace implements NodeLookup {
     return null
   }
 
-  // Portal の参照先の状態
-  targetStatus(targetId: string): 'ok' | 'trashed' | 'missing' {
-    const canvas = this.getCanvas(targetId)
-    if (!canvas) return 'missing'
-    return canvas.deletedAt === null ? 'ok' : 'trashed'
+  // Portal やカードの参照先の状態
+  targetStatus(targetId: string): 'ok' | 'trashed' | 'missing' | 'nofile' {
+    const doc = this.getDocument(targetId)
+    if (!doc) return 'missing'
+    if (doc.deletedAt !== null) return 'trashed'
+    return isFileRecord(doc) && doc.missing ? 'nofile' : 'ok'
   }
 
   nextCanvasTitle(): string {
@@ -262,15 +310,27 @@ export class Workspace implements NodeLookup {
     if (canvas && title && canvas.title !== title) tx.put({ ...canvas, title, updatedAt: Date.now() })
   }
 
-  // ゴミ箱から元に戻す。一緒に入れたものもすべて戻し、持ち主の Portal を元の場所に置き直す。
+  // サーバーから届いた File の情報を、レコードに入れる（MAI-30）。階層とゴミ箱の項目は、ブラウザ側の値を残す。
+  // サーバーが正本なので、履歴には残さない
+  applyServerFile(info: Pick<FileRecord, 'id' | 'kind' | 'title' | 'path' | 'size' | 'mtime' | 'hash' | 'missing'>): void {
+    const existing = this.getFile(info.id)
+    const now = Date.now()
+    const next: FileRecord = existing
+      ? { ...existing, ...info, updatedAt: now }
+      : { typeName: 'file', ...info, parentCanvasId: null, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null }
+    if (existing && sameServerFields(existing, next)) return
+    this.store.transact('server file', (tx) => tx.put(next), { history: 'ignore', source: 'remote' })
+  }
+
+  // ゴミ箱から元に戻す。一緒に入れたものもすべて戻し、持ち主（Portal やカード）を元の場所に置き直す。
   // 元の場所がもうなければ（その Canvas も消えた・ゴミ箱の中など）、未配置として戻す
-  restoreCanvas(tx: Transaction<WorkspaceRecord>, canvasId: string): void {
-    const root = this.getCanvas(canvasId)
+  restoreCanvas(tx: Transaction<WorkspaceRecord>, documentId: string): void {
+    const root = this.getDocument(documentId)
     if (!root?.trash) return
     const { batchId, portal } = root.trash
-    for (const canvas of this.canvases()) {
-      if (canvas.trash?.batchId !== batchId) continue
-      tx.put({ ...canvas, deletedAt: null, trash: null, ...(canvas.id === root.id ? { parentCanvasId: null, ownerPortalId: null } : {}) })
+    for (const doc of this.documents()) {
+      if (doc.trash?.batchId !== batchId) continue
+      tx.put({ ...doc, deletedAt: null, trash: null, ...(doc.id === root.id ? { parentCanvasId: null, ownerNodeId: null } : {}) })
     }
     if (portal) {
       const parentCanvas = this.canvasOfParent(portal.parentId)
@@ -281,13 +341,18 @@ export class Workspace implements NodeLookup {
     }
   }
 
-  // ゴミ箱から完全に削除する。一緒に入れたものと、その中身をすべて消す。これを指すショートカットは「リンク切れ」になる
-  deleteCanvasForever(tx: Transaction<WorkspaceRecord>, canvasId: string): void {
-    const root = this.getCanvas(canvasId)
-    if (!root?.trash) return
-    for (const canvas of this.canvases()) {
-      if (canvas.trash?.batchId === root.trash.batchId) tx.remove(canvas.id)
+  // ゴミ箱から完全に削除する。一緒に入れたものと、その中身をすべて消す。これを指すショートカットは「リンク切れ」になる。
+  // 消した File の id を返す（呼び出し側が、サーバーに実ファイルの退避を頼む）
+  deleteCanvasForever(tx: Transaction<WorkspaceRecord>, documentId: string): string[] {
+    const root = this.getDocument(documentId)
+    if (!root?.trash) return []
+    const files: string[] = []
+    for (const doc of this.documents()) {
+      if (doc.trash?.batchId !== root.trash.batchId) continue
+      tx.remove(doc.id)
+      if (isFileRecord(doc)) files.push(doc.id)
     }
+    return files
   }
 
   private canvasOfParent(parentId: string): string | null {
@@ -296,18 +361,17 @@ export class Workspace implements NodeLookup {
 
   // ---- フック ----
 
-  // 持ち主の Portal が置かれた・動いた：参照先の持ち主と親を付け直す（MAI-8）
-  private portalPlaced(tx: Transaction<WorkspaceRecord>, node: NodeRecord): void {
-    if (node.type !== 'portal') return
-    const props = node.props as PortalProps
-    if (props.role !== 'owner') return
-    const target = this.getCanvas(props.targetId)
+  // 持ち主（Portal やカード）が置かれた・動いた：参照先の持ち主と親を付け直す（MAI-8）
+  private ownerPlaced(tx: Transaction<WorkspaceRecord>, node: NodeRecord): void {
+    const ref = this.referenceOf(node)
+    if (!ref || ref.role !== 'owner') return
+    const target = this.getDocument(ref.targetId)
     const parentCanvasId = this.canvasOf(node.id)
     if (!target || !parentCanvasId) return
-    if (target.ownerPortalId === node.id && target.parentCanvasId === parentCanvasId) return
+    if (target.ownerNodeId === node.id && target.parentCanvasId === parentCanvasId) return
     // 持ち主は 1 つだけ。別の持ち主がすでにあるなら、何もしない（貼り付けではショートカットにしてから置く）
-    if (target.ownerPortalId !== null && target.ownerPortalId !== node.id) return
-    tx.put({ ...target, ownerPortalId: node.id, parentCanvasId, updatedAt: Date.now() })
+    if (target.ownerNodeId !== null && target.ownerNodeId !== node.id) return
+    tx.put({ ...target, ownerNodeId: node.id, parentCanvasId, updatedAt: Date.now() })
   }
 
   private nodeDeleted(tx: Transaction<WorkspaceRecord>, record: NodeRecord): void {
@@ -322,29 +386,31 @@ export class Workspace implements NodeLookup {
       const binding = tx.get(id)
       if (isBindingRecord(binding)) unbind(tx, binding)
     }
-    // 持ち主の Portal を消したら、参照先をゴミ箱に送るか、未配置にする
-    if (record.type === 'portal') {
-      const props = record.props as PortalProps
-      const target = this.getCanvas(props.targetId)
-      if (props.role !== 'owner' || !target || target.ownerPortalId !== record.id) return
+    // 持ち主（Portal やカード）を消したら、参照先をゴミ箱に送るか、未配置にする
+    const ref = this.referenceOf(record)
+    if (ref) {
+      const target = this.getDocument(ref.targetId)
+      if (ref.role !== 'owner' || !target || target.ownerNodeId !== record.id) return
       const mode = (tx.options.meta as HistoryMeta | undefined)?.ownerPortalDeletion ?? 'unplace'
       if (mode === 'trash') this.trash(tx, target, record)
-      else tx.put({ ...target, ownerPortalId: null, parentCanvasId: null, updatedAt: Date.now() })
+      else tx.put({ ...target, ownerNodeId: null, parentCanvasId: null, updatedAt: Date.now() })
     }
   }
 
-  // 参照先とその子孫を、1 つのまとまりとしてゴミ箱に送る
-  private trash(tx: Transaction<WorkspaceRecord>, target: CanvasRecord, portal: NodeRecord): void {
+  // 参照先とその子孫（子の Canvas と、そこに置いた File）を、1 つのまとまりとしてゴミ箱に送る。実ファイルは動かさない（MAI-13）
+  private trash(tx: Transaction<WorkspaceRecord>, target: DocumentRecord, owner: NodeRecord): void {
     const batchId = createId('canvas')
     const now = Date.now()
-    const visit = (canvas: CanvasRecord, isRoot: boolean) => {
+    const visit = (doc: DocumentRecord, isRoot: boolean) => {
       tx.put({
-        ...canvas,
+        ...doc,
         deletedAt: now,
-        trash: { batchId, portal: isRoot ? portal : null },
-        ...(isRoot ? { ownerPortalId: null } : {}),
+        trash: { batchId, portal: isRoot ? owner : null },
+        ...(isRoot ? { ownerNodeId: null } : {}),
       })
-      for (const child of this.childCanvases(canvas.id)) visit(child, false)
+      if (!isCanvasRecord(doc)) return
+      for (const child of this.childCanvases(doc.id)) visit(child, false)
+      for (const file of this.childFiles(doc.id)) visit(file, false)
     }
     visit(target, true)
   }
@@ -384,7 +450,7 @@ function makeCanvas(id: string, title: string): CanvasRecord {
     id,
     title,
     parentCanvasId: null,
-    ownerPortalId: null,
+    ownerNodeId: null,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -392,10 +458,22 @@ function makeCanvas(id: string, title: string): CanvasRecord {
   }
 }
 
-// まとまりの根か（持ち主の Portal の写しを持つもの。ただし、Portal なしで入れたものは、親が同じまとまりにないもの）
-function isTrashRoot(workspace: Workspace, canvas: CanvasRecord): boolean {
-  if (!canvas.trash) return false
-  if (canvas.trash.portal) return true
-  const parent = canvas.parentCanvasId ? workspace.getCanvas(canvas.parentCanvasId) : undefined
-  return parent?.trash?.batchId !== canvas.trash.batchId
+// まとまりの根か（持ち主の写しを持つもの。ただし、持ち主なしで入れたものは、親が同じまとまりにないもの）
+function isTrashRoot(workspace: Workspace, doc: DocumentRecord): boolean {
+  if (!doc.trash) return false
+  if (doc.trash.portal) return true
+  const parent = doc.parentCanvasId ? workspace.getCanvas(doc.parentCanvasId) : undefined
+  return parent?.trash?.batchId !== doc.trash.batchId
+}
+
+function sameServerFields(a: FileRecord, b: FileRecord): boolean {
+  return (
+    a.kind === b.kind &&
+    a.title === b.title &&
+    a.path === b.path &&
+    a.size === b.size &&
+    a.mtime === b.mtime &&
+    a.hash === b.hash &&
+    a.missing === b.missing
+  )
 }

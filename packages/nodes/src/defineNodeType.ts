@@ -17,15 +17,28 @@ export interface RenderInfo {
   editing?: boolean
   // 画像などの Asset を引く先（MAI-26）
   assets?: AssetResolver
-  // Portal の参照先（Canvas など）を引く先（MAI-29）
+  // Portal やカードの参照先（Canvas・File）を引く先（MAI-29、MAI-30）
   documents?: DocumentResolver
+  // File の本文を引く先（MAI-30）
+  files?: FileContentSource
 }
 
 export interface DocumentInfo {
   title: string
-  kind: 'canvas'
-  // 'trashed'：ゴミ箱の中 / 'missing'：完全に削除された（リンク切れ）
-  status: 'ok' | 'trashed' | 'missing'
+  kind: 'canvas' | 'markdown' | 'code'
+  // 'trashed'：ゴミ箱の中 / 'missing'：完全に削除された（リンク切れ）/ 'nofile'：File はあるが実ファイルが見つからない
+  status: 'ok' | 'trashed' | 'missing' | 'nofile'
+}
+
+// File の本文（MAI-30）。まだ読み込んでいなければ null を返し、読み込みを始める（読み込めたら描き直される）
+export interface FileContentSource {
+  get(fileId: string): { text: string; version: string } | null
+}
+
+// ノードが参照している Canvas・File と、その持ち主か（MAI-8）。持ち主は参照先に 1 つだけ
+export interface DocumentReference {
+  targetId: string
+  role: 'owner' | 'shortcut'
 }
 
 export interface DocumentResolver {
@@ -84,6 +97,12 @@ export interface NodeTypeDef<P extends object> {
   canBind?: boolean
   // 矢印の端を止める縁（ローカル座標の多角形）。定義しなければ getBounds の箱
   outline?(node: NodeRecord<P>): Vec[]
+  // Canvas・File を参照するノード（Portal、Markdown カードなど）は、その参照先と役割を返す（MAI-8、MAI-30）
+  reference?(node: NodeRecord<P>): DocumentReference | null
+  // role を変えた props（貼り付けで持ち主をショートカットにするときなど）
+  withRole?(node: NodeRecord<P>, role: 'owner' | 'shortcut'): P
+  // ローカル座標の点にあるリンク（Ctrl（⌘）+クリックで開く。MAI-21）
+  linkAt?(node: NodeRecord<P>, point: Vec): string | null
   // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く
   container?: 'group' | 'frame'
   // 文字を編集できる型は、編集のしかたを返す（MAI-24）。編集モードでは、これに合わせて textarea を重ねる

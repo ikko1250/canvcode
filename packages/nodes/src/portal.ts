@@ -120,4 +120,6 @@ export const portalType = defineNodeType<PortalProps>({
 
   resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
   minSize: { w: 80, h: 60 },
+  reference: (node) => ({ targetId: node.props.targetId, role: node.props.role }),
+  withRole: (node, role) => ({ ...node.props, role }),
 })

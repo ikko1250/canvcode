@@ -1,16 +1,18 @@
 import { useState } from 'react'
-import type { CanvasRecord } from '@canvcode/core'
+import type { CanvasRecord, DocumentRecord, FileRecord } from '@canvcode/core'
 import type { Workspace } from '@canvcode/canvas'
 
 // サイドバー（MAI-8 の「3. ナビゲーション」、MAI-29）。
-// - ツリー：持ち主による木構造をそのまま表示する。ダブルクリックで名前を変える
-// - 未配置：持ち主の Portal がなくなった Canvas。今の Canvas に置き直せる
+// - ツリー：持ち主による木構造をそのまま表示する。File は葉として表示する（MAI-30）
+// - 未配置：持ち主（Portal やカード）がない Canvas・File。今の Canvas に置き直せる。外で作られた .md もここに入る
 // - ゴミ箱：元に戻す・完全に削除する
 
 export interface SidebarProps {
   workspace: Workspace
   currentId: string
   onOpen(canvasId: string): void
+  // File を全画面のエディタで開く
+  onOpenFile(fileId: string): void
   onRename(canvasId: string, title: string): void
   onPlace(canvasId: string): void
   onRestore(canvasId: string): void
@@ -21,8 +23,8 @@ export interface SidebarProps {
 export function Sidebar(props: SidebarProps) {
   const { workspace } = props
   const root = workspace.getCanvas(workspace.rootCanvasId)
-  const unplaced = workspace.unplacedCanvases()
-  const trashed = workspace.trashedCanvases()
+  const unplaced = workspace.unplacedDocuments()
+  const trashed = workspace.trashedDocuments()
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -35,10 +37,10 @@ export function Sidebar(props: SidebarProps) {
       {unplaced.length > 0 && (
         <section className="sidebar-section">
           <h3>未配置</h3>
-          {unplaced.map((canvas) => (
-            <div key={canvas.id} className="sidebar-row">
-              <CanvasTitle {...props} canvas={canvas} />
-              <button className="sidebar-action" onClick={() => props.onPlace(canvas.id)} title="今のキャンバスの中央に置く">
+          {unplaced.map((doc) => (
+            <div key={doc.id} className="sidebar-row">
+              {doc.typeName === 'canvas' ? <CanvasTitle {...props} canvas={doc} /> : <FileTitle {...props} file={doc} />}
+              <button className="sidebar-action" onClick={() => props.onPlace(doc.id)} title="今のキャンバスの中央に置く">
                 ここに置く
               </button>
             </div>
@@ -48,13 +50,16 @@ export function Sidebar(props: SidebarProps) {
       <section className="sidebar-section">
         <h3>ゴミ箱</h3>
         {trashed.length === 0 && <div className="sidebar-empty">空です</div>}
-        {trashed.map((canvas) => (
-          <div key={canvas.id} className="sidebar-row trashed">
-            <span className="sidebar-title">{canvas.title}</span>
-            <button className="sidebar-action" onClick={() => props.onRestore(canvas.id)}>
+        {trashed.map((doc) => (
+          <div key={doc.id} className="sidebar-row trashed">
+            <span className="sidebar-title">
+              <KindMark doc={doc} />
+              {doc.title}
+            </span>
+            <button className="sidebar-action" onClick={() => props.onRestore(doc.id)}>
               元に戻す
             </button>
-            <button className="sidebar-action danger" onClick={() => props.onDeleteForever(canvas.id)}>
+            <button className="sidebar-action danger" onClick={() => props.onDeleteForever(doc.id)}>
               削除
             </button>
           </div>
@@ -66,6 +71,7 @@ export function Sidebar(props: SidebarProps) {
 
 function TreeItem(props: SidebarProps & { canvas: CanvasRecord; depth: number }) {
   const children = props.workspace.childCanvases(props.canvas.id)
+  const files = props.workspace.childFiles(props.canvas.id)
   return (
     <>
       <div className="sidebar-row" style={{ paddingLeft: 8 + props.depth * 14 }}>
@@ -74,7 +80,33 @@ function TreeItem(props: SidebarProps & { canvas: CanvasRecord; depth: number })
       {children.map((child) => (
         <TreeItem key={child.id} {...props} canvas={child} depth={props.depth + 1} />
       ))}
+      {files.map((file) => (
+        <div key={file.id} className="sidebar-row" style={{ paddingLeft: 8 + (props.depth + 1) * 14 }}>
+          <FileTitle {...props} file={file} />
+        </div>
+      ))}
     </>
+  )
+}
+
+// File の種類の印（Canvas には付けない）
+function KindMark(props: { doc: DocumentRecord }) {
+  if (props.doc.typeName === 'canvas') return null
+  return <span className="sidebar-kind">{props.doc.kind === 'markdown' ? 'MD' : 'PY'}</span>
+}
+
+// File の名前。クリックで全画面のエディタを開く。ファイルが見つからなければ、そのことを表示する
+function FileTitle(props: SidebarProps & { file: FileRecord }) {
+  const { file } = props
+  return (
+    <button
+      className={file.missing ? 'sidebar-title missing' : 'sidebar-title'}
+      onClick={() => props.onOpenFile(file.id)}
+      title={file.missing ? `${file.path}（ファイルが見つかりません）` : file.path}
+    >
+      <KindMark doc={file} />
+      {file.title}
+    </button>
   )
 }
 

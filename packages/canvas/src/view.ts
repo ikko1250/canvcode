@@ -1,4 +1,4 @@
-import { clampZoom, fitBox, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
+import { applyMat, clampZoom, fitBox, invert, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
 import type { DocumentResolver, RasterImage } from '@canvcode/nodes'
 import { AssetManager, isSupportedImage } from './assets.ts'
 import {
@@ -13,7 +13,10 @@ import {
   payloadToHtml,
   type ClipboardPayload,
 } from './clipboard.ts'
+import { DocumentEditor } from './documentEditor.ts'
 import type { Editor } from './editor.ts'
+import type { FileManager } from './files.ts'
+import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
@@ -30,6 +33,7 @@ import {
   GeoTool,
   HIT_MARGIN_PX,
   HandTool,
+  MarkdownTool,
   NoteTool,
   PortalTool,
   SelectTool,
@@ -57,6 +61,10 @@ export interface CanvasViewOptions {
   confirmOwnerPortalDeletion?: (portals: { title: string; descendants: number }[]) => Promise<OwnerPortalDeletion | null>
   // 右クリック（画面の座標。ブラウザのウィンドウ基準）
   onContextMenu?: (point: { clientX: number; clientY: number }) => void
+  // Markdown などの File（MAI-30）。渡さなければ、カードの本文は編集できない
+  files?: FileManager
+  // File を全画面のエディタで開く（Ctrl+Enter）
+  onOpenFile?: (fileId: string) => void
 }
 
 // 1 回のホイールイベントで変える倍率の上限。マウスの 1 段で約 0.67 倍になる
@@ -80,7 +88,10 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<Omit<CanvasViewOptions, 'assets'>>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files'>>
+  readonly files: FileManager | null
+  // カードの上での本文の編集（MAI-30）
+  readonly documentEditor: DocumentEditor | null
   readonly assets: AssetManager
   private readonly gridCanvas: HTMLCanvasElement
   private readonly sceneCanvas: HTMLCanvasElement
@@ -128,12 +139,15 @@ export class CanvasView {
       onOpenPortal: options.onOpenPortal ?? (() => {}),
       confirmOwnerPortalDeletion: options.confirmOwnerPortalDeletion ?? (async () => 'trash'),
       onContextMenu: options.onContextMenu ?? (() => {}),
+      onOpenFile: options.onOpenFile ?? (() => {}),
     }
+    this.files = options.files ?? null
     this.documents = {
       get: (id) => {
-        const canvas = this.editor.workspace.getCanvas(id)
-        if (!canvas) return { title: '', kind: 'canvas', status: 'missing' }
-        return { title: canvas.title, kind: 'canvas', status: canvas.deletedAt === null ? 'ok' : 'trashed' }
+        const workspace = this.editor.workspace
+        const doc = workspace.getDocument(id)
+        if (!doc) return { title: '', kind: 'canvas', status: 'missing' }
+        return { title: doc.title, kind: doc.typeName === 'canvas' ? 'canvas' : doc.kind, status: workspace.targetStatus(id) }
       },
       thumbnail: (id) => this.thumbnails.get(id) ?? null,
     }
@@ -177,6 +191,31 @@ export class CanvasView {
         if (!editingId) this.root.focus({ preventScroll: true })
       },
     })
+    this.documentEditor = this.files
+      ? new DocumentEditor({
+          getEditor: () => this.editor,
+          layer: this.editingLayer,
+          files: this.files,
+          onChange: (editingId) => {
+            this.editor.session.set({ editingId })
+            this.invalidate('scene')
+            this.invalidate('overlay')
+            if (!editingId) this.root.focus({ preventScroll: true })
+          },
+          onFullscreen: (fileId) => this.options.onOpenFile(fileId),
+        })
+      : null
+    // 本文を読み込めた・編集した・外で変わったら、そのカードの形（高さ）と絵を描き直す
+    if (this.files) {
+      this.disposers.push(
+        this.files.onChange((fileId) => {
+          this.editor.refreshReferences(fileId)
+          this.documentEditor?.layout()
+          this.invalidate('scene')
+          this.invalidate('overlay')
+        }),
+      )
+    }
     this.attachEditor()
 
     this.listen(this.root, 'pointerdown', (e) => this.onPointerDown(e))
@@ -221,6 +260,7 @@ export class CanvasView {
 
   dispose(): void {
     this.textEditor.finish()
+    this.documentEditor?.finish()
     this.tool.onExit?.()
     this.images.dispose()
     for (const dispose of this.editorDisposers) dispose()
@@ -237,6 +277,7 @@ export class CanvasView {
   setEditor(editor: Editor): void {
     if (editor === this.editorRef) return
     this.textEditor.finish()
+    this.documentEditor?.finish()
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
@@ -265,6 +306,8 @@ export class CanvasView {
       },
       startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
       openPortal: (portalId) => this.options.onOpenPortal(portalId),
+      editDocument: (nodeId) => this.editDocument(nodeId),
+      createMarkdownAt: (center, width) => void this.createMarkdownAt(center, width),
     }
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
@@ -278,6 +321,7 @@ export class CanvasView {
       ['eraser', new EraserTool(toolContext)],
       ['arrow', new ArrowTool(toolContext)],
       ['portal', new PortalTool(toolContext)],
+      ['markdown', new MarkdownTool(toolContext)],
     ])
     this.tool = this.tools.get(editor.session.get().toolId)!
     this.editorDisposers = [
@@ -287,6 +331,8 @@ export class CanvasView {
         if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
         // 編集中のノードが（Undo などで）変わったら、textarea の位置を合わせ直す
         if (this.textEditor.editingId && event.patch.has(this.textEditor.editingId)) this.textEditor.layout()
+        const documentEditing = this.documentEditor?.editingId
+        if (documentEditing && event.patch.has(documentEditing)) this.documentEditor?.layout()
         let sceneChanged = false
         for (const id of event.patch.keys()) {
           if (!this.lifted.has(id)) {
@@ -325,6 +371,7 @@ export class CanvasView {
       images: this.images,
       assets: this.assets,
       documents: this.documents,
+      files: this.files ?? undefined,
     }
     drawNodes(ctx, editor, visibleIds(editor, viewport), viewport)
     const image = await createImageBitmap(canvas)
@@ -369,6 +416,31 @@ export class CanvasView {
     }
   }
 
+  // カードの本文をその場で編集する（MAI-30）。編集できるノードなら true
+  editDocument(nodeId: string): boolean {
+    if (!this.documentEditor?.canEdit(nodeId)) return false
+    this.textEditor.finish()
+    void this.documentEditor.start(nodeId)
+    return true
+  }
+
+  // 新しい Markdown の File（「無題.md」）とカードを作り、その場で編集する（MAI-30）
+  async createMarkdownAt(top: Vec, width?: number, options: { title?: string; content?: string; edit?: boolean } = {}): Promise<string | null> {
+    if (!this.files) return null
+    const editor = this.editor
+    try {
+      const file = await this.files.create('markdown', options.title ?? '無題', options.content ?? '')
+      if (this.editor !== editor) return null
+      const nodeId = editor.createFileCard(file.id, top, { width })
+      if (nodeId && options.edit !== false) this.editDocument(nodeId)
+      return nodeId
+    } catch (error) {
+      console.error('Failed to create a Markdown file', error)
+      this.options.notify('Markdown のファイルを作れませんでした')
+      return null
+    }
+  }
+
   // Undo / Redo。ほかの操作と重なって取り消せないときは、そのことを知らせる（MAI-11）
   undo(): void {
     this.tool.cancel()
@@ -389,18 +461,17 @@ export class CanvasView {
     const editor = this.editor
     const ids = [...editor.session.get().selectedIds]
     if (ids.length === 0) return
-    const owners = editor.ownerPortalsIn(ids)
+    const owners = editor.ownersIn(ids)
     if (owners.length === 0) {
       editor.deleteNodes(ids)
       return
     }
     const workspace = editor.workspace
+    // 中にある Canvas と File の数（一緒にゴミ箱に入る）
+    const count = (id: string): number =>
+      workspace.childFiles(id).length + workspace.childCanvases(id).reduce((n, c) => n + 1 + count(c.id), 0)
     const choice = await this.options.confirmOwnerPortalDeletion(
-      owners.map((portal) => {
-        const targetId = (portal.props as { targetId: string }).targetId
-        const count = (id: string): number => workspace.childCanvases(id).reduce((n, c) => n + 1 + count(c.id), 0)
-        return { title: workspace.getCanvas(targetId)?.title ?? '', descendants: count(targetId) }
-      }),
+      owners.map(({ targetId }) => ({ title: workspace.getDocument(targetId)?.title ?? '', descendants: count(targetId) })),
     )
     if (!choice || this.editor !== editor) return
     editor.deleteNodes(ids, { ownerPortals: choice })
@@ -416,6 +487,32 @@ export class CanvasView {
     this.tool.cancel()
     const zoom = this.editor.session.get().camera.zoom
     duplicateSelection(this.editor, { x: DUPLICATE_OFFSET_PX / zoom, y: DUPLICATE_OFFSET_PX / zoom })
+  }
+
+  // ポインタの下のカードにリンクがあれば、新しいタブで開いて true を返す
+  private openLinkAt(e: PointerEvent): boolean {
+    const editor = this.editor
+    const pointer = this.toPointer(e)
+    const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / editor.session.get().camera.zoom)
+    const type = hit && editor.getType(hit)
+    const entry = hit && editor.index.get(hit.id)
+    if (!type?.linkAt || !entry) return false
+    const local = applyMat(invert(entry.worldMatrix), pointer.world)
+    const href = type.linkAt(hit, local)
+    if (!href) return false
+    // 外のページ（http・https・mailto）だけを開く
+    let url: URL
+    try {
+      url = new URL(href, location.href)
+    } catch {
+      return false
+    }
+    if (!['http:', 'https:', 'mailto:'].includes(url.protocol)) {
+      this.options.notify(`このリンクは開けません：${href}`)
+      return true
+    }
+    window.open(url.href, '_blank', 'noopener,noreferrer')
+    return true
   }
 
   private onContextMenu(e: MouseEvent): void {
@@ -527,6 +624,7 @@ export class CanvasView {
       images: this.images,
       assets: this.assets,
       documents: this.documents,
+      files: this.files ?? undefined,
       editingId: this.editor.session.get().editingId,
     }
   }
@@ -571,6 +669,7 @@ export class CanvasView {
       this.images.notifyMotion()
       this.invalidate('all')
       this.textEditor.layout()
+      this.documentEditor?.layout()
     }
     if (
       state.selectedIds !== prev.selectedIds ||
@@ -607,6 +706,9 @@ export class CanvasView {
   private onPointerDown(e: PointerEvent): void {
     // 編集中にキャンバスのどこかを押したら、編集を終えてから、その操作を始める
     if (this.textEditor.editingId && e.button === 0) this.textEditor.finish()
+    if (this.documentEditor?.editingId && e.button === 0) this.documentEditor.finish()
+    // Ctrl（⌘）+クリックで、カードの中のリンクを開く（MAI-21）
+    if (e.button === 0 && (e.ctrlKey || e.metaKey) && this.openLinkAt(e)) return
     this.root.focus({ preventScroll: true })
     this.root.setPointerCapture(e.pointerId)
     // 中ボタン、または Space を押しながらのドラッグはパン（MAI-6）
@@ -747,6 +849,17 @@ export class CanvasView {
       editor.selectAll()
       return
     }
+    // Ctrl（⌘）+Enter：選んでいるカードの File を全画面のエディタで開く（MAI-9）
+    if (e.key === 'Enter' && mod) {
+      const [id, ...rest] = editor.session.get().selectedIds
+      const node = id && rest.length === 0 ? editor.getNode(id) : undefined
+      const ref = node && editor.workspace.referenceOf(node)
+      if (ref && editor.workspace.getFile(ref.targetId)) {
+        e.preventDefault()
+        this.options.onOpenFile(ref.targetId)
+      }
+      return
+    }
     if (e.key === 'Enter' && !mod) {
       // 文字を持つノードを 1 つだけ選んでいれば、編集モードに入る
       const [id, ...rest] = editor.session.get().selectedIds
@@ -755,6 +868,11 @@ export class CanvasView {
       if (node?.type === 'portal') {
         e.preventDefault()
         this.options.onOpenPortal(node.id)
+        return
+      }
+      // 本文を持つカードなら、その場で編集する
+      if (node && this.editDocument(node.id)) {
+        e.preventDefault()
         return
       }
       if (node && editor.getType(node).editText) {
@@ -794,6 +912,7 @@ export class CanvasView {
       e: 'eraser',
       a: 'arrow',
       p: 'portal',
+      m: 'markdown',
     }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })
@@ -803,7 +922,12 @@ export class CanvasView {
 
   // 文字の入力欄（編集中の textarea など）でのコピー・貼り付けは、ブラウザに任せる
   private ownsClipboardEvent(e: ClipboardEvent): boolean {
-    return !isEditableKeyboardTarget(e.target) && !this.textEditor.editingId && e.clipboardData !== null
+    return (
+      !isEditableKeyboardTarget(e.target) &&
+      !this.textEditor.editingId &&
+      !this.documentEditor?.editingId &&
+      e.clipboardData !== null
+    )
   }
 
   private onCopy(e: ClipboardEvent, cut: boolean): void {
@@ -852,6 +976,12 @@ export class CanvasView {
       await this.importFiles(files, center)
       return
     }
+    // 表は Markdown の表にして、「貼り付けた表.md」のカードにする（MAI-12、MAI-30）
+    const table = this.files ? markdownTableFromClipboard(data.getData('text/html'), text) : null
+    if (table) {
+      await this.createMarkdownAt({ x: center.x, y: center.y - 60 }, undefined, { title: '貼り付けた表', content: table, edit: false })
+      return
+    }
     if (text) insertText(this.editor, text, center)
   }
 
@@ -863,10 +993,20 @@ export class CanvasView {
     await this.importFiles(files, this.toPointer(e).world)
   }
 
-  // 画像のファイルを Asset にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
+  // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
   private async importFiles(files: File[], center: Vec): Promise<void> {
-    const images = files.filter(isSupportedImage)
-    const rejected = files.filter((file) => !isSupportedImage(file))
+    const markdown = this.files ? files.filter((file) => /\.(md|markdown)$/i.test(file.name)) : []
+    for (const [i, file] of markdown.entries()) {
+      const title = file.name.replace(/\.(md|markdown)$/i, '')
+      await this.createMarkdownAt({ x: center.x + i * 40, y: center.y + i * 40 }, undefined, {
+        title,
+        content: await file.text(),
+        edit: false,
+      })
+    }
+    const rest = files.filter((file) => !markdown.includes(file))
+    const images = rest.filter(isSupportedImage)
+    const rejected = rest.filter((file) => !isSupportedImage(file))
     if (rejected.length > 0) this.options.notify(rejectMessage(rejected))
     const assets = []
     for (const file of images) {
@@ -937,8 +1077,8 @@ function clipboardFiles(data: DataTransfer): File[] {
 // 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
-  const later = files.every((file) => /\.(pdf|md|markdown|py|ricbackup)$/i.test(file.name))
+  const later = files.every((file) => /\.(pdf|py|ricbackup)$/i.test(file.name))
   return later
-    ? `${names}：PDF・Markdown・Python・.ricbackup の取り込みは、後の段階で対応します`
-    : `${names}：取り込めない種類のファイルです（今取り込めるのは PNG・JPEG・GIF・WebP・AVIF・BMP の画像）`
+    ? `${names}：PDF・Python・.ricbackup の取り込みは、後の段階で対応します`
+    : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）と Markdown（.md））`
 }

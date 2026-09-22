@@ -4,7 +4,9 @@ import { createServer, type ServerResponse } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { WebSocketServer, type WebSocket } from 'ws'
 import { AssetStore } from './assets.ts'
+import { FileStore, type FileEvent } from './files.ts'
 
 // CanvCode のサーバー（MAI-4）。
 // - VPS 上で 127.0.0.1 でのみ待ち受け、ローカル PC からは SSH のポートフォワードで開く
@@ -16,6 +18,9 @@ const HOST = '127.0.0.1'
 const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
 const WEB_DIST = resolve(fileURLToPath(new URL('../../web/dist', import.meta.url)))
 
+// 裏で走らせた処理が失敗しても、サーバーは止めずに記録だけする（個人用のサーバーなので、止まるほうが困る）
+process.on('unhandledRejection', (error) => console.error('unhandled rejection', error))
+
 // ワークスペースのフォルダ：--workspace <フォルダ>、環境変数 CANVCODE_WORKSPACE、どちらもなければ ./workspace
 const { values: args } = parseArgs({ options: { workspace: { type: 'string' } }, strict: false })
 const WORKSPACE = resolve(
@@ -24,6 +29,30 @@ const WORKSPACE = resolve(
 const DATA_DIR = join(WORKSPACE, '.canvcode')
 const assets = new AssetStore(DATA_DIR)
 await assets.init()
+
+// ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）。段階 11 でレコードの同期にも使う（MAI-11）
+const sockets = new WebSocketServer({ noServer: true })
+const clients = new Set<WebSocket>()
+sockets.on('connection', (socket) => {
+  clients.add(socket)
+  socket.on('close', () => clients.delete(socket))
+})
+function broadcast(event: FileEvent): void {
+  const message = JSON.stringify(event)
+  for (const client of clients) client.send(message)
+}
+const files = new FileStore(WORKSPACE, DATA_DIR, broadcast)
+await files.init()
+
+// 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
+// DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1)(:\d+)?$/
+const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
+function trusted(req: import('node:http').IncomingMessage): boolean {
+  if (!LOCAL_HOST.test(req.headers.host ?? '')) return false
+  const origin = req.headers.origin
+  return origin === undefined || LOCAL_ORIGIN.test(origin)
+}
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -64,7 +93,12 @@ const server = createServer(async (req, res) => {
     sendJson(res, 200, { ok: true })
     return
   }
+  if (url.pathname.startsWith('/api/') && !trusted(req)) {
+    sendJson(res, 403, { error: 'forbidden origin' })
+    return
+  }
   if (await assets.handle(req, res, url.pathname)) return
+  if (await files.handle(req, res, url.pathname)) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return
@@ -87,6 +121,15 @@ const server = createServer(async (req, res) => {
   if (await sendFile(res, join(WEB_DIST, 'index.html'), 'no-cache')) return
   res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
   res.end('画面がビルドされていません。先に npm run build を実行してください。\n')
+})
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url ?? '/', `http://${HOST}`)
+  if (url.pathname !== '/api/events' || !trusted(req)) {
+    socket.destroy()
+    return
+  }
+  sockets.handleUpgrade(req, socket, head, (ws) => sockets.emit('connection', ws, req))
 })
 
 server.listen(PORT, HOST, () => {

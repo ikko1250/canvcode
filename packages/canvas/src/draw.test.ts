@@ -18,6 +18,8 @@ function setup() {
     setCursor: () => {},
     startEditing: () => false,
     openPortal: () => {},
+    editDocument: () => false,
+    createMarkdownAt: () => {},
   }
   const pointer = (x: number, y: number, coalesced?: Vec[], shiftKey = false): ToolPointer => ({
     screen: { x, y },

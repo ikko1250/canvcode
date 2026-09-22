@@ -4,6 +4,7 @@ import {
   type ArrowProps,
   type AssetResolver,
   type DocumentResolver,
+  type FileContentSource,
   type ImageRequester,
   type RenderInfo,
 } from '@canvcode/nodes'
@@ -33,6 +34,7 @@ export interface Viewport {
   images?: ImageRequester
   assets?: AssetResolver
   documents?: DocumentResolver
+  files?: FileContentSource
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
 }
@@ -84,6 +86,7 @@ export function drawNodes(
     images: view.images,
     assets: view.assets,
     documents: view.documents,
+    files: view.files,
   }
   let drawn = 0
   let lastRoughColor = ''

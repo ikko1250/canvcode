@@ -46,6 +46,9 @@ export function nodeIn(tx: Transaction<WorkspaceRecord>, id: string): NodeRecord
 
 export type { HistoryMeta } from './workspace.ts'
 
+// File の種類ごとの、カードの型（MAI-7）。Python のコードカードは段階 10-2 で加える
+const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card' }
+
 // 選択しているノードをリサイズ・回転するときの対象（MAI-23）
 export interface TransformSelection {
   frame: Frame
@@ -273,15 +276,16 @@ export class Editor {
     this.deleteNodes(this.session.get().selectedIds, options)
   }
 
-  // ids とその子孫に含まれる、持ち主の Portal（消す前に、参照先をどうするか尋ねるため）
-  ownerPortalsIn(ids: Iterable<string>): NodeRecord[] {
-    const out: NodeRecord[] = []
+  // ids とその子孫に含まれる、持ち主（Portal やカード）とその参照先（消す前に、参照先をどうするか尋ねるため）
+  ownersIn(ids: Iterable<string>): { node: NodeRecord; targetId: string }[] {
+    const out: { node: NodeRecord; targetId: string }[] = []
     for (const id of ids) {
       for (const nodeId of [id, ...this.index.descendantsOf(id)]) {
         const node = this.getNode(nodeId)
-        if (node?.type !== 'portal') continue
-        const props = node.props as { targetId: string; role: string }
-        if (props.role === 'owner' && this.workspace.getCanvas(props.targetId)?.ownerPortalId === node.id) out.push(node)
+        const ref = node && this.workspace.referenceOf(node)
+        if (node && ref?.role === 'owner' && this.workspace.getDocument(ref.targetId)?.ownerNodeId === node.id) {
+          out.push({ node, targetId: ref.targetId })
+        }
       }
     }
     return out
@@ -377,6 +381,17 @@ export class Editor {
     })
   }
 
+  // documentId を参照しているノード（Portal やカード）の形を計算し直す。変わったものの id を返す（MAI-30）
+  refreshReferences(documentId: string): string[] {
+    const ids: string[] = []
+    for (const id of this.index.nodeIds()) {
+      const node = this.getNode(id)
+      if (node && this.workspace.referenceOf(node)?.targetId === documentId) ids.push(id)
+    }
+    if (ids.length > 0) this.index.refresh(ids)
+    return ids
+  }
+
   // ---- Portal と階層（MAI-8、MAI-29） ----
 
   // ワールド座標の点を中心に、新しい子の Canvas と、その持ち主の Portal を作る。フレームの上なら、フレームの中に置く
@@ -390,15 +405,34 @@ export class Editor {
     })
   }
 
-  // 未配置の Canvas を、この Canvas に置く（持ち主の Portal を作る）。自分自身や自分の祖先は置けない
-  placeCanvas(canvasId: string, center: Vec): string | null {
-    const canvas = this.workspace.getCanvas(canvasId)
-    if (!canvas || canvas.ownerPortalId !== null || canvas.deletedAt !== null) return null
-    if (this.workspace.isSameOrInside(this.canvasId, canvasId)) return null
+  // 未配置の Canvas・File を、この Canvas に置く（持ち主の Portal・カードを作る）。Canvas は自分自身や自分の祖先には置けない
+  placeCanvas(documentId: string, center: Vec): string | null {
+    const doc = this.workspace.getDocument(documentId)
+    if (!doc || doc.ownerNodeId !== null || doc.deletedAt !== null) return null
+    if (doc.typeName === 'file') return this.createFileCard(documentId, center)
+    if (this.workspace.isSameOrInside(this.canvasId, documentId)) return null
     return this.transact('place canvas', (tx) => {
-      const portalId = this.putPortal(tx, canvasId, 'owner', center, PORTAL_DEFAULT_SIZE)
+      const portalId = this.putPortal(tx, documentId, 'owner', center, PORTAL_DEFAULT_SIZE)
       this.setSelection([portalId])
       return portalId
+    })
+  }
+
+  // File のカード（Markdown カードなど）を、上端の中央が top になるように置く（MAI-30）。
+  // 参照先にまだ持ち主がいなければ持ち主、いればショートカットになる。フレームの上なら、フレームの中に置く
+  createFileCard(fileId: string, top: Vec, options: { width?: number } = {}): string | null {
+    const file = this.workspace.getFile(fileId)
+    const type = file ? FILE_CARD_TYPES[file.kind] : undefined
+    if (!file || !type || !this.types.has(type)) return null
+    const role = file.ownerNodeId === null && file.deletedAt === null ? 'owner' : 'shortcut'
+    const w = options.width ?? (this.types.get(type)!.defaultProps() as { w: number }).w
+    return this.transact('create card', (tx) => {
+      const parentId = this.frameAt(top) ?? this.canvasId
+      const local = this.worldToParent(parentId, top)
+      const node = this.makeNode(type, { x: local.x - w / 2, y: local.y, parentId, props: { fileId, w, role } })
+      tx.put(node)
+      this.setSelection([node.id])
+      return node.id
     })
   }
 

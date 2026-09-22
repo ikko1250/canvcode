@@ -26,7 +26,7 @@ describe('portals and the canvas tree', () => {
   it('creates a child canvas owned by the new portal, in one undo step', () => {
     const { workspace, root, canvas } = setup()
     const { portalId, canvasId } = root.createPortal({ x: 0, y: 0 })
-    expect(canvas(canvasId)).toMatchObject({ parentCanvasId: 'canvas:root', ownerPortalId: portalId, title: '新しいキャンバス 1' })
+    expect(canvas(canvasId)).toMatchObject({ parentCanvasId: 'canvas:root', ownerNodeId: portalId, title: '新しいキャンバス 1' })
     expect(workspace.childCanvases('canvas:root').map((c) => c.id)).toEqual([canvasId])
     root.undo()
     expect(workspace.getCanvas(canvasId)).toBeUndefined()
@@ -56,7 +56,7 @@ describe('portals and the canvas tree', () => {
     // 子の Canvas の中の持ち主の Portal はそのまま（元に戻すときに使う）
     expect(portal(b.portalId)).toBeDefined()
     root.undo()
-    expect(canvas(a.canvasId)).toMatchObject({ deletedAt: null, ownerPortalId: a.portalId })
+    expect(canvas(a.canvasId)).toMatchObject({ deletedAt: null, ownerNodeId: a.portalId })
     expect(portal(a.portalId)).toBeDefined()
   })
 
@@ -67,7 +67,7 @@ describe('portals and the canvas tree', () => {
     const before = root.getNode(a.portalId)!
     root.deleteNodes([a.portalId], { ownerPortals: 'trash' })
     root.transact('restore', (tx) => workspace.restoreCanvas(tx, a.canvasId))
-    expect(canvas(a.canvasId)).toMatchObject({ deletedAt: null, trash: null, parentCanvasId: 'canvas:root', ownerPortalId: a.portalId })
+    expect(canvas(a.canvasId)).toMatchObject({ deletedAt: null, trash: null, parentCanvasId: 'canvas:root', ownerNodeId: a.portalId })
     expect(canvas(b.canvasId).deletedAt).toBeNull()
     expect(root.getNode(a.portalId)).toEqual(before)
     expect(workspace.trashedCanvases()).toHaveLength(0)
@@ -83,7 +83,7 @@ describe('portals and the canvas tree', () => {
     // 自分の中（子孫の Canvas）には置けない
     expect(open(b.canvasId).placeCanvas(a.canvasId, { x: 0, y: 0 })).toBeNull()
     const placed = root.placeCanvas(a.canvasId, { x: 0, y: 0 })!
-    expect(canvas(a.canvasId)).toMatchObject({ ownerPortalId: placed, parentCanvasId: 'canvas:root' })
+    expect(canvas(a.canvasId)).toMatchObject({ ownerNodeId: placed, parentCanvasId: 'canvas:root' })
   })
 
   it('deletes a canvas forever with its contents, leaving shortcuts to it broken', () => {
@@ -110,7 +110,7 @@ describe('copying and moving portals', () => {
     root.setSelection([a.portalId])
     const { ids } = insertPayloadWithResult(root, copySelection(root)!, { offset: { x: 300, y: 0 } })
     expect((root.getNode(ids[0])!.props as PortalProps).role).toBe('shortcut')
-    expect(canvas(a.canvasId).ownerPortalId).toBe(a.portalId)
+    expect(canvas(a.canvasId).ownerNodeId).toBe(a.portalId)
   })
 
   it('moves a canvas when its owner portal is cut and pasted elsewhere', () => {
@@ -123,7 +123,7 @@ describe('copying and moving portals', () => {
     const target = open(b.canvasId)
     const { ids, refusedOwners } = insertPayloadWithResult(target, payload, { center: { x: 0, y: 0 } })
     expect(refusedOwners).toEqual([])
-    expect(canvas(a.canvasId)).toMatchObject({ ownerPortalId: ids[0], parentCanvasId: b.canvasId })
+    expect(canvas(a.canvasId)).toMatchObject({ ownerNodeId: ids[0], parentCanvasId: b.canvasId })
   })
 
   it('refuses to move a canvas into itself, pasting a shortcut instead', () => {
@@ -135,7 +135,7 @@ describe('copying and moving portals', () => {
     const { ids, refusedOwners } = insertPayloadWithResult(open(a.canvasId), payload, { center: { x: 0, y: 0 } })
     expect(refusedOwners).toEqual([a.canvasId])
     expect((open(a.canvasId).getNode(ids[0])!.props as PortalProps).role).toBe('shortcut')
-    expect(canvas(a.canvasId).ownerPortalId).toBeNull()
+    expect(canvas(a.canvasId).ownerNodeId).toBeNull()
   })
 })
 
@@ -161,7 +161,7 @@ describe('promoting a selection to a canvas', () => {
     expect(child.index.get(x)!.worldBounds).toEqual(before)
     // 選択に含まれていた持ち主の Portal の参照先は、新しい Canvas の子になる
     expect(canvas(inner.canvasId).parentCanvasId).toBe(canvasId)
-    expect(canvas(canvasId)).toMatchObject({ parentCanvasId: 'canvas:root', ownerPortalId: portalId })
+    expect(canvas(canvasId)).toMatchObject({ parentCanvasId: 'canvas:root', ownerNodeId: portalId })
     // 残ったノードへのつながりは外れ、一緒に移ったノードへのつながりは残る
     expect(workspace.bindingsOfArrow(arrow.id).map((b) => b.toId)).toEqual([x])
     root.undo()

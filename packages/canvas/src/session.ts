@@ -2,7 +2,7 @@ import type { Box, Camera } from '@canvcode/core'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow' | 'portal'
+export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow' | 'portal' | 'markdown'
 
 export interface SessionState {
   camera: Camera

@@ -1,0 +1,167 @@
+import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
+import { createCodeEditor, type CodeEditorHandle } from './codeEditor.ts'
+import type { Editor } from './editor.ts'
+import type { FileManager } from './files.ts'
+
+// カードの上での本文の編集（MAI-9 の「5. 編集モードの挙動」、MAI-30）。
+// ダブルクリック（または選んで Enter）で、カードの位置と倍率に合わせた CodeMirror を編集用の DOM レイヤーに重ねる。
+// 本文は File に直接書く（少し待ってまとめて保存する）。キャンバスの履歴には入れない。
+// Esc かカードの外をクリックで終える。Ctrl（⌘）+Enter で全画面のエディタに切り替える。
+
+export interface DocumentEditorOptions {
+  getEditor: () => Editor
+  layer: HTMLElement
+  files: FileManager
+  // 編集を始めた・終えたとき（カードの本文を隠す・戻すため）
+  onChange(editingId: string | null): void
+  // 全画面のエディタで開く
+  onFullscreen(fileId: string): void
+}
+
+interface Session {
+  nodeId: string
+  fileId: string
+  host: HTMLDivElement
+  editor: CodeEditorHandle
+  unlisten: () => void
+}
+
+// 編集するときの最小の高さ（ワールド座標）。短い本文でも打ちやすいように
+const MIN_EDIT_HEIGHT = 220
+const HEADER_H = 36
+
+export class DocumentEditor {
+  private readonly options: DocumentEditorOptions
+  private session: Session | null = null
+
+  constructor(options: DocumentEditorOptions) {
+    this.options = options
+  }
+
+  get editingId(): string | null {
+    return this.session?.nodeId ?? null
+  }
+
+  // 編集できるノード（本文を持つカード）か
+  canEdit(nodeId: string): boolean {
+    const node = this.options.getEditor().getNode(nodeId)
+    return node?.type === 'markdown-card' && Boolean((node.props as MarkdownCardProps).fileId) && !node.locked
+  }
+
+  async start(nodeId: string): Promise<boolean> {
+    if (this.session) this.finish()
+    const editor = this.options.getEditor()
+    const node = editor.getNode(nodeId)
+    if (!node || !this.canEdit(nodeId)) return false
+    const fileId = (node.props as MarkdownCardProps).fileId
+    if (editor.workspace.targetStatus(fileId) !== 'ok') return false
+    const text = await this.options.files.text(fileId)
+    if (text === null || this.options.getEditor() !== editor || !editor.getNode(nodeId)) return false
+
+    const host = document.createElement('div')
+    host.className = 'canvcode-document-editor'
+    Object.assign(host.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      transformOrigin: '0 0',
+      pointerEvents: 'auto',
+      display: 'flex',
+      flexDirection: 'column',
+      background: '#ffffff',
+      border: '2px solid #2f6fed',
+      borderRadius: '10px',
+      boxSizing: 'border-box',
+      overflow: 'hidden',
+      boxShadow: '0 4px 18px rgba(0, 0, 0, 0.12)',
+    })
+    const header = document.createElement('div')
+    Object.assign(header.style, {
+      flexShrink: '0',
+      height: `${HEADER_H}px`,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '0 12px',
+      background: 'rgba(245, 231, 197, 0.55)',
+      borderBottom: '1px solid rgba(80, 66, 45, 0.16)',
+      font: "600 13px 'Noto Sans JP', sans-serif",
+      color: '#2b2930',
+    })
+    const title = document.createElement('span')
+    title.textContent = editor.workspace.getFile(fileId)?.title ?? ''
+    const hint = document.createElement('span')
+    hint.textContent = 'Esc で終える ／ Ctrl+Enter で全画面'
+    Object.assign(hint.style, { fontWeight: '400', fontSize: '11px', color: '#8c959f' })
+    header.append(title, hint)
+    const body = document.createElement('div')
+    Object.assign(body.style, { flex: '1', minHeight: '0' })
+    host.append(header, body)
+    // キャンバスのポインタ操作と、ホイールでのパンに渡さない（ホイールはエディタの中のスクロールに使う）。
+    // Ctrl（⌘）+ホイールとトラックパッドのピンチ（ブラウザは ctrlKey 付きの wheel として送る）は、
+    // キャンバスのズームに渡す。止めてしまうと、ブラウザがページごと拡大してしまう
+    host.addEventListener('pointerdown', (e) => e.stopPropagation())
+    host.addEventListener('wheel', stopUnlessZoom, { passive: true })
+    host.addEventListener('dblclick', (e) => e.stopPropagation())
+    this.options.layer.appendChild(host)
+
+    const code = createCodeEditor({
+      parent: body,
+      doc: text,
+      language: 'markdown',
+      placeholder: 'Markdown を書く…',
+      onChange: (value) => this.options.files.edit(fileId, value),
+      onEscape: () => this.finish(),
+      onModEnter: () => {
+        this.finish()
+        this.options.onFullscreen(fileId)
+      },
+    })
+    // 外で本文が変わったら（衝突で「外の内容を使う」を選んだときなど）、エディタにも反映する
+    const unlisten = this.options.files.onChange((changed) => {
+      if (changed !== fileId || !this.session) return
+      const latest = this.options.files.get(fileId)
+      if (latest && latest.text !== code.text()) code.replace(latest.text)
+    })
+    this.session = { nodeId, fileId, host, editor: code, unlisten }
+    editor.setSelection([nodeId])
+    this.options.onChange(nodeId)
+    this.layout()
+    code.focus()
+    return true
+  }
+
+  finish(): void {
+    const session = this.session
+    if (!session) return
+    this.session = null
+    session.unlisten()
+    session.editor.destroy()
+    session.host.remove()
+    void this.options.files.flush(session.fileId)
+    this.options.onChange(null)
+  }
+
+  // カードの位置と倍率に合わせる（カメラやカードが動いたときに呼ぶ）
+  layout(): void {
+    const session = this.session
+    if (!session) return
+    const editor = this.options.getEditor()
+    const entry = editor.index.get(session.nodeId)
+    if (!entry) {
+      this.finish()
+      return
+    }
+    const camera = editor.session.get().camera
+    const m = entry.worldMatrix
+    const z = camera.zoom
+    const { host } = session
+    host.style.transform = `matrix(${m.a * z}, ${m.b * z}, ${m.c * z}, ${m.d * z}, ${(m.e - camera.x) * z}, ${(m.f - camera.y) * z})`
+    host.style.width = `${entry.localBounds.w}px`
+    host.style.height = `${Math.max(entry.localBounds.h, MIN_EDIT_HEIGHT)}px`
+  }
+}
+
+export function stopUnlessZoom(e: WheelEvent): void {
+  if (!e.ctrlKey && !e.metaKey) e.stopPropagation()
+}

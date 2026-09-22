@@ -23,7 +23,8 @@ export function generateMarkdownCards(editor: Editor, count = CARD_COUNT): void 
       x: (i % COLUMNS) * (CARD_W + GAP),
       y: Math.floor(i / COLUMNS) * (CARD_H + GAP),
       index: indices[i],
-      props: { w: CARD_W, h: CARD_H, title: `カード ${i + 1}.md`, markdown },
+      // File を使わず、本文をカードに直接持たせる（ベンチマーク用）
+      props: { w: CARD_W, h: CARD_H, sizing: 'fixed', inlineText: markdown },
     }),
   )
   editor.store.transact(

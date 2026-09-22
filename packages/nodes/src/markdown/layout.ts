@@ -73,6 +73,23 @@ export function measureLinks(options: MeasureOptions): LinkRegion[] {
   }
 }
 
+// カードの幅を width にしたとき、中身に合わせた高さ（CSS ピクセル）。高さを中身に合わせるカードで使う（MAI-30）
+export function measureCardHeight(options: { html: string; css: string; width: number }): number {
+  const { root } = getMeasureHost(options.css)
+  root.style.width = `${options.width}px`
+  root.style.height = 'auto'
+  root.innerHTML = options.html
+  try {
+    const card = root.firstElementChild as HTMLElement | null
+    if (!card) return 0
+    // .md-card は高さ 100% なので、測るときだけ中身の高さにする
+    card.style.height = 'auto'
+    return Math.ceil(card.getBoundingClientRect().height)
+  } finally {
+    root.innerHTML = ''
+  }
+}
+
 export function hitLink(regions: LinkRegion[], x: number, y: number): LinkRegion | null {
   for (const region of regions) {
     for (const r of region.rects) {

@@ -106,6 +106,16 @@ export class NodeIndex {
     for (const root of roots) this.rebuildTree(root)
   }
 
+  // レコードは変わっていないが、形が変わったノード（本文を読み込んで高さが決まったカードなど）を計算し直す（MAI-30）
+  refresh(ids: Iterable<string>): void {
+    const roots = new Set<string>()
+    for (const id of ids) {
+      const root = this.entries.get(id)?.root
+      if (root) roots.add(root)
+    }
+    for (const root of roots) this.rebuildTree(root)
+  }
+
   get(id: string): IndexEntry | undefined {
     return this.entries.get(id)
   }
@@ -156,6 +166,11 @@ export class NodeIndex {
   topmost(parentId = this.canvasId): NodeRecord | undefined {
     const id = this.childrenOf(parentId).at(-1)
     return id ? this.nodes.get(id) : undefined
+  }
+
+  // この Canvas のすべてのノード（入れ子の中も含む。順番は決まっていない）
+  nodeIds(): IterableIterator<string> {
+    return this.entries.keys()
   }
 
   // Canvas 直下のノード（重なり順）

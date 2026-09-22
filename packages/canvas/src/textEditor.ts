@@ -1,6 +1,7 @@
 import { multiply, transformOf, type WorkspaceRecord, type Transaction } from '@canvcode/core'
 import { cssFont, layoutText, type TextEditSpec } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
+import { stopUnlessZoom } from './documentEditor.ts'
 import { isImeEvent } from './imeGuard.ts'
 
 // 文字の編集モード（MAI-9、MAI-24）。
@@ -79,7 +80,8 @@ export class TextEditor {
     textarea.addEventListener('blur', () => this.finish())
     // キャンバスのポインタ操作（選択・ドラッグ）に渡さない
     textarea.addEventListener('pointerdown', (e) => e.stopPropagation())
-    textarea.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true })
+    // ピンチと Ctrl（⌘）+ホイールはキャンバスのズームに渡す（止めると、ブラウザがページごと拡大してしまう）
+    textarea.addEventListener('wheel', stopUnlessZoom, { passive: true })
     this.options.layer.appendChild(textarea)
     this.session = { nodeId, tx, textarea }
     editor.setSelection([nodeId])
