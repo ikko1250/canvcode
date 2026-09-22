@@ -17,6 +17,7 @@ function setup() {
     drop: () => {},
     setCursor: () => {},
     startEditing: () => false,
+    openPortal: () => {},
   }
   const pointer = (x: number, y: number, coalesced?: Vec[], shiftKey = false): ToolPointer => ({
     screen: { x, y },
@@ -34,7 +35,7 @@ function setup() {
     for (const p of points.slice(1)) tool.onPointerMove(pointer(p.x, p.y))
     tool.onPointerUp()
   }
-  const draws = () => [...editor.store.values()].filter((n) => n.type === 'draw') as NodeRecord<DrawProps>[]
+  const draws = () => [...editor.store.values()].filter((n) => n.typeName === 'node' && n.type === 'draw') as NodeRecord<DrawProps>[]
   return { editor, ctx, pointer, stroke, draws }
 }
 

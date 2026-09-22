@@ -1,5 +1,12 @@
 import { expandBox, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
-import { arrowPolyline, type ArrowProps, type AssetResolver, type ImageRequester, type RenderInfo } from '@canvcode/nodes'
+import {
+  arrowPolyline,
+  type ArrowProps,
+  type AssetResolver,
+  type DocumentResolver,
+  type ImageRequester,
+  type RenderInfo,
+} from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import { arrowHandles, selectionHandles } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
@@ -25,6 +32,7 @@ export interface Viewport {
   dpr: number
   images?: ImageRequester
   assets?: AssetResolver
+  documents?: DocumentResolver
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
 }
@@ -75,6 +83,7 @@ export function drawNodes(
     detail: 'full',
     images: view.images,
     assets: view.assets,
+    documents: view.documents,
   }
   let drawn = 0
   let lastRoughColor = ''

@@ -1,19 +1,17 @@
 import {
-  History,
-  Store,
   applyMat,
   boxContains,
   createId,
   indexBetween,
   indicesBetween,
   invert,
-  isBindingRecord,
   isNodeRecord,
   multiply,
   transformOf,
+  unionBoxes,
   type BindingRecord,
   type Box,
-  type CanvasRecord,
+  type WorkspaceRecord,
   type Change,
   type Mat,
   type NodeRecord,
@@ -21,8 +19,8 @@ import {
   type Transaction,
   type Vec,
 } from '@canvcode/core'
-import { builtinNodeTypes, type AnyNodeTypeDef, type ArrowProps } from '@canvcode/nodes'
-import { BindingIndex, resolveArrow, unbind } from './bindings.ts'
+import { PORTAL_DEFAULT_SIZE, type AnyNodeTypeDef } from '@canvcode/nodes'
+import { unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
 import { Session } from './session.ts'
 import {
@@ -34,21 +32,19 @@ import {
   type Frame,
   type ResizeTarget,
 } from './transform.ts'
+import { Workspace, type HistoryMeta, type OwnerPortalDeletion } from './workspace.ts'
 
-// 1 つの Canvas を編集するための入口。ストア・履歴・セッション・索引をまとめ、
-// 名前の付いたコマンドを提供する（MAI-11）。ツールや React の UI は、ここを通して変更する。
-// 段階 11 までは永続化せず、ブラウザのメモリ内だけで動く。
+// 1 つの Canvas を編集するための入口（MAI-11）。ストアと履歴はワークスペース（Workspace）が持ち、
+// Editor はその Canvas のセッション（カメラ・選択など）と空間の索引を持って、名前の付いたコマンドを提供する。
+// ツールや React の UI は、ここを通して変更する。Undo はこの Canvas の操作だけを取り消す。
 
 // トランザクションの中での、今のノード（Binding は除く）
-export function nodeIn(tx: Transaction<CanvasRecord>, id: string): NodeRecord | undefined {
+export function nodeIn(tx: Transaction<WorkspaceRecord>, id: string): NodeRecord | undefined {
   const record = tx.get(id)
   return isNodeRecord(record) ? record : undefined
 }
 
-export interface HistoryMeta {
-  selectionBefore: string[]
-  selectionAfter?: string[]
-}
+export type { HistoryMeta } from './workspace.ts'
 
 // 選択しているノードをリサイズ・回転するときの対象（MAI-23）
 export interface TransformSelection {
@@ -64,70 +60,32 @@ export interface TransformSelection {
 }
 
 export interface EditorOptions {
+  // 渡さなければ、この Canvas をルートにしたワークスペースを作る（テストや、1 枚だけ使うとき）
+  workspace?: Workspace
   canvasId?: string
   types?: AnyNodeTypeDef[]
 }
 
 export class Editor {
+  readonly workspace: Workspace
   readonly canvasId: string
-  readonly store = new Store<CanvasRecord>()
-  readonly history = new History(this.store)
   readonly session = new Session()
-  readonly types: Map<string, AnyNodeTypeDef>
   readonly index: NodeIndex
-  readonly bindings = new BindingIndex()
+  private readonly unlisten: () => void
 
   constructor(options: EditorOptions = {}) {
-    this.canvasId = options.canvasId ?? createId('canvas')
-    this.types = new Map((options.types ?? builtinNodeTypes).map((type) => [type.type, type]))
+    this.workspace = options.workspace ?? new Workspace({ rootCanvasId: options.canvasId, types: options.types })
+    this.canvasId = options.canvasId ?? this.workspace.rootCanvasId
     this.index = new NodeIndex(this.canvasId, this.types)
-    this.store.setHooks({
-      // Binding の索引は、トランザクションの途中でも引けるよう、ここでも更新する（MAI-28）
-      afterCreate: (record) => this.bindings.apply(undefined, record),
-      afterUpdate: (prev, next) => this.bindings.apply(prev, next),
-      afterDelete: (record, tx) => {
-        this.bindings.apply(record, undefined)
-        if (!isNodeRecord(record)) return
-        // 親を消したら、子孫もまとめて消す（同じトランザクションの中なので、Undo で一緒に戻る）。
-        // 子は索引から引く（ストアを全部調べると、1 万ノードを消すときに遅すぎる）
-        for (const childId of this.index.childrenOf(record.id)) {
-          if (nodeIn(tx, childId)?.parentId === record.id) tx.remove(childId)
-        }
-        // 矢印を消したら、その Binding も消す。つながっている先を消したら、矢印の端をその場に固定して外す
-        for (const id of this.bindings.ofArrow(record.id)) tx.remove(id)
-        for (const id of this.bindings.toTarget(record.id)) {
-          const binding = tx.get(id)
-          if (isBindingRecord(binding)) unbind(tx, binding)
-        }
-      },
-      // 子がいなくなった group は消す（MAI-25）
-      beforeCommit: (patch, tx) => {
-        const groups = new Set<string>()
-        for (const change of patch.values()) {
-          if (!isNodeRecord(change.before)) continue
-          const parentId = change.before.parentId
-          if (parentId !== (isNodeRecord(change.after) ? change.after.parentId : undefined)) groups.add(parentId)
-        }
-        for (const id of groups) {
-          const group = this.getNode(id)
-          if (group && this.types.get(group.type)?.container === 'group' && this.childrenInStore(id).length === 0) {
-            tx.remove(id)
-          }
-        }
-      },
-      // 変わったノードにつながっている矢印の端を、知らせる前に合わせ直す（MAI-28）
-      beforeFlush: (pending, tx) => this.updateArrows(pending, tx),
-    })
-    this.store.listen((event) => {
+    const nodes: NodeRecord[] = []
+    for (const record of this.store.values()) if (isNodeRecord(record)) nodes.push(record)
+    this.index.load(nodes)
+    this.unlisten = this.store.listen((event) => {
       const nodes: Patch<NodeRecord> = new Map()
       for (const [id, change] of event.patch) {
-        // 取り消し（cancel）はフックを通らないので、Binding の索引はここでも合わせる
-        this.bindings.apply(change.before, change.after)
-        if (isNodeRecord(change.before) || isNodeRecord(change.after)) {
-          nodes.set(id, change as Change<NodeRecord>)
-        }
+        if (isNodeRecord(change.before) || isNodeRecord(change.after)) nodes.set(id, change as Change<NodeRecord>)
       }
-      this.index.applyPatch(nodes)
+      if (nodes.size > 0) this.index.applyPatch(nodes)
       // 消えたノードを選択から外す
       const { selectedIds, hoveredId, focusedGroupId } = this.session.get()
       let changed = false
@@ -148,15 +106,33 @@ export class Editor {
     })
   }
 
+  // 使い終わったら呼ぶ（ストアの購読をやめる）
+  dispose(): void {
+    this.unlisten()
+  }
+
+  get store() {
+    return this.workspace.store
+  }
+
+  get history() {
+    return this.workspace.history
+  }
+
+  get types(): Map<string, AnyNodeTypeDef> {
+    return this.workspace.types
+  }
+
+  get bindings() {
+    return this.workspace.bindings
+  }
+
   getNode(id: string): NodeRecord | undefined {
-    const record = this.store.get(id)
-    return isNodeRecord(record) ? record : undefined
+    return this.workspace.getNode(id)
   }
 
   getType(node: NodeRecord): AnyNodeTypeDef {
-    const type = this.types.get(node.type)
-    if (!type) throw new Error(`Unknown node type: ${node.type}`)
-    return type
+    return this.workspace.getType(node)
   }
 
   isContainer(node: NodeRecord, kind?: 'group' | 'frame'): boolean {
@@ -164,54 +140,19 @@ export class Editor {
     return kind ? container === kind : container !== undefined
   }
 
-  // ストアの中で、親が parentId のノード（トランザクションの途中の変更も含む）
-  private childrenInStore(parentId: string): NodeRecord[] {
-    const out: NodeRecord[] = []
-    for (const node of this.store.values()) if (isNodeRecord(node) && node.parentId === parentId) out.push(node)
-    return out
-  }
-
   // ---- 矢印とつながり（MAI-28） ----
 
   getBinding(id: string): BindingRecord | undefined {
-    const record = this.store.get(id)
-    return isBindingRecord(record) ? record : undefined
+    return this.workspace.getBinding(id)
   }
 
   // 矢印の端の Binding
   bindingsOfArrow(arrowId: string): BindingRecord[] {
-    return this.bindings.ofArrow(arrowId).flatMap((id) => this.getBinding(id) ?? [])
-  }
-
-  private updateArrows(pending: Patch<CanvasRecord>, tx: Transaction<CanvasRecord>): void {
-    const arrows = new Set<string>()
-    const hasBindings = !this.bindings.isEmpty
-    for (const [id, change] of [...pending]) {
-      for (const record of [change.before, change.after]) {
-        if (isBindingRecord(record)) arrows.add(record.fromId)
-      }
-      const node = change.after
-      if (!isNodeRecord(node)) continue
-      if (node.type === 'arrow') arrows.add(id)
-      if (!hasBindings) continue
-      // 動いたノードと、その子孫（group ごと動かしたときなど）につながっている矢印
-      for (const nodeId of [id, ...this.index.descendantsOf(id)]) {
-        for (const bindingId of this.bindings.toTarget(nodeId)) {
-          const binding = this.getBinding(bindingId)
-          if (binding) arrows.add(binding.fromId)
-        }
-      }
-    }
-    for (const arrowId of arrows) {
-      const arrow = this.getNode(arrowId)
-      if (!arrow || arrow.type !== 'arrow') continue
-      const next = resolveArrow(this, arrow as NodeRecord<ArrowProps>, this.bindingsOfArrow(arrowId))
-      if (next) tx.put({ ...arrow, props: next })
-    }
+    return this.workspace.bindingsOfArrow(arrowId)
   }
 
   // 動かすノードに含まれる矢印のうち、つながっている先が一緒に動かないものは、つながりを外す（tldraw と同じ）
-  detachArrows(tx: Transaction<CanvasRecord>, ids: Iterable<string>): void {
+  detachArrows(tx: Transaction<WorkspaceRecord>, ids: Iterable<string>): void {
     if (this.bindings.isEmpty) return
     const moving = new Set<string>()
     for (const id of ids) {
@@ -228,20 +169,20 @@ export class Editor {
 
   // ---- トランザクション ----
 
-  // 長く続く操作（ドラッグなど）用。終えるときは finish か cancel を呼ぶ
-  begin(label: string): Transaction<CanvasRecord> {
-    const meta: HistoryMeta = { selectionBefore: [...this.session.get().selectedIds] }
+  // 長く続く操作（ドラッグなど）用。終えるときは finish か cancel を呼ぶ。履歴はこの Canvas に入る
+  begin(label: string, extra: Partial<HistoryMeta> = {}): Transaction<WorkspaceRecord> {
+    const meta: HistoryMeta = { selectionBefore: [...this.session.get().selectedIds], ...extra }
     return this.store.begin(label, { scope: this.canvasId, meta })
   }
 
-  finish(tx: Transaction<CanvasRecord>): void {
+  finish(tx: Transaction<WorkspaceRecord>): void {
     const meta = tx.options.meta as HistoryMeta | undefined
     tx.commit()
     if (meta) meta.selectionAfter = [...this.session.get().selectedIds]
   }
 
-  transact<T>(label: string, fn: (tx: Transaction<CanvasRecord>) => T): T {
-    const tx = this.begin(label)
+  transact<T>(label: string, fn: (tx: Transaction<WorkspaceRecord>) => T, extra: Partial<HistoryMeta> = {}): T {
+    const tx = this.begin(label, extra)
     try {
       const result = fn(tx)
       this.finish(tx)
@@ -315,16 +256,35 @@ export class Editor {
     })
   }
 
-  deleteNodes(ids: Iterable<string>): void {
+  // ownerPortals：消すものに持ち主の Portal が含まれるとき、参照先をゴミ箱に送るか、未配置にするか（MAI-8）
+  deleteNodes(ids: Iterable<string>, options: { ownerPortals?: OwnerPortalDeletion; label?: string } = {}): void {
     const list = [...ids].filter((id) => this.store.has(id))
     if (list.length === 0) return
-    this.transact('delete', (tx) => {
-      for (const id of list) tx.remove(id)
-    })
+    this.transact(
+      options.label ?? 'delete',
+      (tx) => {
+        for (const id of list) tx.remove(id)
+      },
+      { ownerPortalDeletion: options.ownerPortals },
+    )
   }
 
-  deleteSelected(): void {
-    this.deleteNodes(this.session.get().selectedIds)
+  deleteSelected(options: { ownerPortals?: OwnerPortalDeletion } = {}): void {
+    this.deleteNodes(this.session.get().selectedIds, options)
+  }
+
+  // ids とその子孫に含まれる、持ち主の Portal（消す前に、参照先をどうするか尋ねるため）
+  ownerPortalsIn(ids: Iterable<string>): NodeRecord[] {
+    const out: NodeRecord[] = []
+    for (const id of ids) {
+      for (const nodeId of [id, ...this.index.descendantsOf(id)]) {
+        const node = this.getNode(nodeId)
+        if (node?.type !== 'portal') continue
+        const props = node.props as { targetId: string; role: string }
+        if (props.role === 'owner' && this.workspace.getCanvas(props.targetId)?.ownerPortalId === node.id) out.push(node)
+      }
+    }
+    return out
   }
 
   moveNodes(ids: Iterable<string>, dx: number, dy: number, label = 'move'): void {
@@ -343,7 +303,7 @@ export class Editor {
   }
 
   // ノードの親を付け替える（ワールドでの位置と向きは変えない）。親の中では最も手前に置く
-  reparent(tx: Transaction<CanvasRecord>, ids: string[], parentId: string): void {
+  reparent(tx: Transaction<WorkspaceRecord>, ids: string[], parentId: string): void {
     const nodes = ids.flatMap((id) => {
       const node = nodeIn(tx, id)
       return node && node.parentId !== parentId && !this.isAncestorOrSelf(id, parentId) ? [node] : []
@@ -417,6 +377,100 @@ export class Editor {
     })
   }
 
+  // ---- Portal と階層（MAI-8、MAI-29） ----
+
+  // ワールド座標の点を中心に、新しい子の Canvas と、その持ち主の Portal を作る。フレームの上なら、フレームの中に置く
+  createPortal(center: Vec, options: { title?: string; size?: { w: number; h: number } } = {}): { portalId: string; canvasId: string } {
+    const size = options.size ?? PORTAL_DEFAULT_SIZE
+    return this.transact('create portal', (tx) => {
+      const canvas = this.workspace.createCanvas(tx, options.title)
+      const portalId = this.putPortal(tx, canvas.id, 'owner', center, size)
+      this.setSelection([portalId])
+      return { portalId, canvasId: canvas.id }
+    })
+  }
+
+  // 未配置の Canvas を、この Canvas に置く（持ち主の Portal を作る）。自分自身や自分の祖先は置けない
+  placeCanvas(canvasId: string, center: Vec): string | null {
+    const canvas = this.workspace.getCanvas(canvasId)
+    if (!canvas || canvas.ownerPortalId !== null || canvas.deletedAt !== null) return null
+    if (this.workspace.isSameOrInside(this.canvasId, canvasId)) return null
+    return this.transact('place canvas', (tx) => {
+      const portalId = this.putPortal(tx, canvasId, 'owner', center, PORTAL_DEFAULT_SIZE)
+      this.setSelection([portalId])
+      return portalId
+    })
+  }
+
+  private putPortal(
+    tx: Transaction<WorkspaceRecord>,
+    targetId: string,
+    role: 'owner' | 'shortcut',
+    center: Vec,
+    size: { w: number; h: number },
+    parentId = this.frameAt(center) ?? this.canvasId,
+    index?: string,
+  ): string {
+    const local = this.worldToParent(parentId, center)
+    const portal = this.makeNode('portal', {
+      x: local.x - size.w / 2,
+      y: local.y - size.h / 2,
+      parentId,
+      index,
+      props: { targetId, role, w: size.w, h: size.h },
+    })
+    tx.put(portal)
+    return portal.id
+  }
+
+  // 選んでいるノードを、新しい Canvas に切り出す（MAI-8 の「選択範囲を Canvas に昇格」）。
+  // 元の場所には、その Canvas の持ち主の Portal を置く。選択に含まれる持ち主の Portal は、新しい Canvas の子になる。
+  // 切り出すノードと残るノードの間の矢印のつながりは外す（矢印は最後の位置のまま）
+  promoteSelection(title?: string): { portalId: string; canvasId: string } | null {
+    const selected = new Set(this.session.get().selectedIds)
+    const roots = this.index.sortByOrder(
+      [...selected].filter((id) => {
+        const node = this.getNode(id)
+        return node && !node.locked && !this.index.ancestorsOf(id).some((a) => selected.has(a))
+      }),
+    )
+    if (roots.length === 0) return null
+    const boxes = roots.flatMap((id) => this.index.get(id)?.worldBounds ?? [])
+    const bounds = unionBoxes(boxes)!
+    const center = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
+    const moving = new Set(roots.flatMap((id) => [id, ...this.index.descendantsOf(id)]))
+    // すべて同じ親（フレームなど）の中にあれば、Portal もそこに置く
+    const parents = new Set(roots.map((id) => this.getNode(id)!.parentId))
+    const [onlyParent] = parents
+    const portalParent = parents.size === 1 && !this.isGroupId(onlyParent) ? onlyParent : this.canvasId
+    const topmost = this.getNode(roots.at(-1)!)!
+    return this.transact('promote', (tx) => {
+      const canvas = this.workspace.createCanvas(tx, title)
+      // つながりのうち、片方だけが切り出されるものを外す
+      for (const id of moving) {
+        for (const binding of this.bindingsOfArrow(id)) if (!moving.has(binding.toId)) unbind(tx, binding)
+        for (const bindingId of this.bindings.toTarget(id)) {
+          const binding = this.getBinding(bindingId)
+          if (binding && !moving.has(binding.fromId)) unbind(tx, binding)
+        }
+      }
+      // ワールドでの位置のまま、新しい Canvas の直下に移す（子孫は親のローカル座標のままでよい）
+      const indices = indicesBetween(null, null, roots.length)
+      for (const [i, id] of roots.entries()) {
+        const world = this.toWorld(nodeIn(tx, id)!)
+        tx.put({ ...world, parentId: canvas.id, index: indices[i] })
+      }
+      const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE, portalParent, portalParent === topmost.parentId ? topmost.index : undefined)
+      this.setSelection([portalId])
+      return { portalId, canvasId: canvas.id }
+    })
+  }
+
+  private isGroupId(id: string | undefined): boolean {
+    const node = id ? this.getNode(id) : undefined
+    return node !== undefined && this.isContainer(node, 'group')
+  }
+
   // ---- 選択 ----
 
   setSelection(ids: Iterable<string>): void {
@@ -452,8 +506,12 @@ export class Editor {
 
   // ---- Undo / Redo（Canvas ごと） ----
 
+  // 最後の Undo / Redo ができなかった理由。'conflict' は、そのあとの別の操作（ほかの Canvas での編集など）と重なるため
+  lastHistoryFailure: 'empty' | 'conflict' | null = null
+
   undo(): boolean {
     const result = this.history.undo(this.canvasId)
+    this.lastHistoryFailure = result.ok ? null : result.reason
     if (!result.ok) return false
     const meta = result.entry.meta as HistoryMeta | undefined
     if (meta) this.setSelection(meta.selectionBefore.filter((id) => this.store.has(id)))
@@ -462,6 +520,7 @@ export class Editor {
 
   redo(): boolean {
     const result = this.history.redo(this.canvasId)
+    this.lastHistoryFailure = result.ok ? null : result.reason
     if (!result.ok) return false
     const meta = result.entry.meta as HistoryMeta | undefined
     if (meta?.selectionAfter) this.setSelection(meta.selectionAfter.filter((id) => this.store.has(id)))

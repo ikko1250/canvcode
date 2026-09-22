@@ -1,11 +1,12 @@
-import { fitBox, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
+import { clampZoom, fitBox, panBy, screenToWorld, unionBoxes, zoomAt, type Camera, type Vec } from '@canvcode/core'
+import type { DocumentResolver, RasterImage } from '@canvcode/nodes'
 import { AssetManager, isSupportedImage } from './assets.ts'
 import {
   CLIPBOARD_MIME,
   copySelection,
   duplicateSelection,
   insertImages,
-  insertPayload,
+  insertPayloadWithResult,
   insertText,
   parsePayload,
   payloadText,
@@ -13,9 +14,10 @@ import {
   type ClipboardPayload,
 } from './clipboard.ts'
 import type { Editor } from './editor.ts'
+import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
-import { clearCanvas, drawOverlay, drawScene, type Viewport } from './renderer.ts'
+import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
 import { ImageCache } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
@@ -26,8 +28,10 @@ import {
   EraserTool,
   FrameTool,
   GeoTool,
+  HIT_MARGIN_PX,
   HandTool,
   NoteTool,
+  PortalTool,
   SelectTool,
   TextTool,
   type Tool,
@@ -47,6 +51,12 @@ export interface CanvasViewOptions {
   assets?: AssetManager
   // 画面に短く知らせる（受け付けないファイルをドロップしたときなど）
   notify?: (message: string) => void
+  // Portal の参照先に入る（ダブルクリック・Portal を作ったとき。MAI-29）
+  onOpenPortal?: (portalId: string) => void
+  // 持ち主の Portal を消す前に、参照先をどうするか尋ねる（MAI-8）。null ならやめる
+  confirmOwnerPortalDeletion?: (portals: { title: string; descendants: number }[]) => Promise<OwnerPortalDeletion | null>
+  // 右クリック（画面の座標。ブラウザのウィンドウ基準）
+  onContextMenu?: (point: { clientX: number; clientY: number }) => void
 }
 
 // 1 回のホイールイベントで変える倍率の上限。マウスの 1 段で約 0.67 倍になる
@@ -59,11 +69,14 @@ const NUDGE_LARGE = 10
 const DUPLICATE_OFFSET_PX = 16
 // 貼り付けた画像を、画面のこの割合に収まるよう縮める
 const IMAGE_FIT_RATIO = 0.8
+// Portal のサムネイルの大きさの上限（画素）
+const THUMBNAIL_MAX = { w: 480, h: 320 }
+const CAMERA_ANIMATION_MS = 300
 
 type Layer = 'grid' | 'scene' | 'overlay'
 
 export class CanvasView {
-  readonly editor: Editor
+  private editorRef: Editor
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
@@ -81,8 +94,13 @@ export class CanvasView {
   private readonly dirty = new Set<Layer>(['grid', 'scene', 'overlay'])
   private frameHandle: number | null = null
   private lifted = new Set<string>()
-  private readonly tools: Map<ToolId, Tool>
-  private tool: Tool
+  private tools!: Map<ToolId, Tool>
+  private tool!: Tool
+  // 今の Editor にだけ関係する購読（Canvas を移ると付け替える）
+  private editorDisposers: (() => void)[] = []
+  // Canvas のサムネイル（Portal に見せる。MAI-8 の「4. 親の Canvas 上でのプレビュー」）。段階 11 まではこのタブの中だけ
+  private readonly thumbnails = new Map<string, RasterImage>()
+  private readonly documents: DocumentResolver
   private spaceHeld = false
   private cursorOverride: string | null = null
   private panPointer: { id: number; last: { x: number; y: number } } | null = null
@@ -102,11 +120,22 @@ export class CanvasView {
   private lastCopied: { payload: ClipboardPayload; text: string } | null = null
 
   constructor(editor: Editor, container: HTMLElement, options: CanvasViewOptions = {}) {
-    this.editor = editor
+    this.editorRef = editor
     this.options = {
       wheelBehavior: options.wheelBehavior ?? 'pan',
       gridColors: options.gridColors ?? { minor: '#eef0f3', major: '#dde1e7' },
       notify: options.notify ?? ((message) => console.warn(message)),
+      onOpenPortal: options.onOpenPortal ?? (() => {}),
+      confirmOwnerPortalDeletion: options.confirmOwnerPortalDeletion ?? (async () => 'trash'),
+      onContextMenu: options.onContextMenu ?? (() => {}),
+    }
+    this.documents = {
+      get: (id) => {
+        const canvas = this.editor.workspace.getCanvas(id)
+        if (!canvas) return { title: '', kind: 'canvas', status: 'missing' }
+        return { title: canvas.title, kind: 'canvas', status: canvas.deletedAt === null ? 'ok' : 'trashed' }
+      },
+      thumbnail: (id) => this.thumbnails.get(id) ?? null,
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify })
 
@@ -136,72 +165,29 @@ export class CanvasView {
     this.root.appendChild(this.editingLayer)
     container.appendChild(this.root)
 
-    const toolContext: ToolContext = {
-      editor,
-      setTool: (id) => editor.session.set({ toolId: id }),
-      lift: (ids) => this.lift(ids),
-      drop: () => this.drop(),
-      setCursor: (cursor) => {
-        if (this.cursorOverride === cursor) return
-        this.cursorOverride = cursor
-        this.updateCursor()
-      },
-      startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
-    }
     this.textEditor = new TextEditor({
-      editor,
+      getEditor: () => this.editor,
       layer: this.editingLayer,
       getDpr: () => this.dpr,
       onChange: (editingId) => {
-        editor.session.set({ editingId })
+        this.editor.session.set({ editingId })
         this.invalidate('scene')
         this.invalidate('overlay')
         // 編集を終えたら、キャンバスにフォーカスを戻す（ショートカットが効くように）
         if (!editingId) this.root.focus({ preventScroll: true })
       },
     })
-    this.tools = new Map<ToolId, Tool>([
-      ['select', new SelectTool(toolContext)],
-      ['hand', new HandTool(toolContext)],
-      ['rect', new GeoTool(toolContext, 'rect')],
-      ['ellipse', new GeoTool(toolContext, 'ellipse')],
-      ['text', new TextTool(toolContext)],
-      ['note', new NoteTool(toolContext)],
-      ['frame', new FrameTool(toolContext)],
-      ['draw', new DrawTool(toolContext)],
-      ['eraser', new EraserTool(toolContext)],
-      ['arrow', new ArrowTool(toolContext)],
-    ])
-    this.tool = this.tools.get(editor.session.get().toolId)!
-
-    this.disposers.push(
-      editor.session.subscribe((state, prev) => this.onSessionChange(state, prev)),
-      editor.store.listen((event) => {
-        // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
-        if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
-        // 編集中のノードが（Undo などで）変わったら、textarea の位置を合わせ直す
-        if (this.textEditor?.editingId && event.patch.has(this.textEditor.editingId)) this.textEditor.layout()
-        let sceneChanged = false
-        for (const id of event.patch.keys()) {
-          if (!this.lifted.has(id)) {
-            sceneChanged = true
-            break
-          }
-        }
-        if (sceneChanged) this.invalidate('scene')
-        this.invalidate('overlay')
-      }),
-    )
+    this.attachEditor()
 
     this.listen(this.root, 'pointerdown', (e) => this.onPointerDown(e))
     this.listen(this.root, 'pointermove', (e) => this.onPointerMove(e))
     this.listen(this.root, 'pointerup', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointercancel', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointerleave', () => {
-      if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+      if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
     })
     this.listen(this.root, 'wheel', (e) => this.onWheel(e), { passive: false })
-    this.listen(this.root, 'contextmenu', (e) => e.preventDefault())
+    this.listen(this.root, 'contextmenu', (e) => this.onContextMenu(e))
     this.listen(this.root, 'dblclick', (e) => {
       if (this.panPointer || this.spaceHeld) return
       this.tool.onDoubleClick?.(this.toPointer(e))
@@ -237,9 +223,215 @@ export class CanvasView {
     this.textEditor.finish()
     this.tool.onExit?.()
     this.images.dispose()
+    for (const dispose of this.editorDisposers) dispose()
     for (const dispose of this.disposers) dispose()
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
     this.root.remove()
+  }
+
+  get editor(): Editor {
+    return this.editorRef
+  }
+
+  // 別の Canvas の Editor に切り替える（MAI-29）。次に作る図形のスタイルは引き継ぐ
+  setEditor(editor: Editor): void {
+    if (editor === this.editorRef) return
+    this.textEditor.finish()
+    this.tool.onExit?.()
+    for (const dispose of this.editorDisposers) dispose()
+    const { drawStyle, arrowStyle } = this.editorRef.session.get()
+    this.editorRef.session.set({ hoveredId: null, brush: null })
+    this.editorRef = editor
+    editor.session.set({ toolId: 'select', drawStyle, arrowStyle, editingId: null, hoveredId: null, brush: null })
+    this.lifted = new Set()
+    this.panPointer = null
+    this.cursorOverride = null
+    this.attachEditor()
+    this.updateCursor()
+    this.invalidate('all')
+  }
+
+  private attachEditor(): void {
+    const editor = this.editorRef
+    const toolContext: ToolContext = {
+      editor,
+      setTool: (id) => editor.session.set({ toolId: id }),
+      lift: (ids) => this.lift(ids),
+      drop: () => this.drop(),
+      setCursor: (cursor) => {
+        if (this.cursorOverride === cursor) return
+        this.cursorOverride = cursor
+        this.updateCursor()
+      },
+      startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
+      openPortal: (portalId) => this.options.onOpenPortal(portalId),
+    }
+    this.tools = new Map<ToolId, Tool>([
+      ['select', new SelectTool(toolContext)],
+      ['hand', new HandTool(toolContext)],
+      ['rect', new GeoTool(toolContext, 'rect')],
+      ['ellipse', new GeoTool(toolContext, 'ellipse')],
+      ['text', new TextTool(toolContext)],
+      ['note', new NoteTool(toolContext)],
+      ['frame', new FrameTool(toolContext)],
+      ['draw', new DrawTool(toolContext)],
+      ['eraser', new EraserTool(toolContext)],
+      ['arrow', new ArrowTool(toolContext)],
+      ['portal', new PortalTool(toolContext)],
+    ])
+    this.tool = this.tools.get(editor.session.get().toolId)!
+    this.editorDisposers = [
+      editor.session.subscribe((state, prev) => this.onSessionChange(state, prev)),
+      editor.store.listen((event) => {
+        // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
+        if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
+        // 編集中のノードが（Undo などで）変わったら、textarea の位置を合わせ直す
+        if (this.textEditor.editingId && event.patch.has(this.textEditor.editingId)) this.textEditor.layout()
+        let sceneChanged = false
+        for (const id of event.patch.keys()) {
+          if (!this.lifted.has(id)) {
+            sceneChanged = true
+            break
+          }
+        }
+        if (sceneChanged) this.invalidate('scene')
+        this.invalidate('overlay')
+      }),
+    ]
+  }
+
+  // 今の Canvas のサムネイルを作る（その Canvas を離れるときに呼ぶ）。中身がなければ消す
+  async captureThumbnail(): Promise<void> {
+    const editor = this.editor
+    const bounds = unionBoxes(editor.index.allIds().flatMap((id) => editor.index.get(id)?.worldBounds ?? []))
+    if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
+      this.thumbnails.delete(editor.canvasId)
+      return
+    }
+    const scale = Math.min(THUMBNAIL_MAX.w / bounds.w, THUMBNAIL_MAX.h / bounds.h, 2)
+    const width = Math.max(1, Math.round(bounds.w * scale))
+    const height = Math.max(1, Math.round(bounds.h * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, width, height)
+    const viewport: Viewport = {
+      camera: { x: bounds.x, y: bounds.y, zoom: scale },
+      width,
+      height,
+      dpr: 1,
+      images: this.images,
+      assets: this.assets,
+      documents: this.documents,
+    }
+    drawNodes(ctx, editor, visibleIds(editor, viewport), viewport)
+    const image = await createImageBitmap(canvas)
+    const previous = this.thumbnails.get(editor.canvasId)?.image
+    if (previous instanceof ImageBitmap) previous.close()
+    this.thumbnails.set(editor.canvasId, { image, width, height, level: 1 })
+    this.invalidate('scene')
+  }
+
+  // カメラを滑らかに動かす（Portal に入る・出るとき。MAI-6）
+  animateCamera(to: Camera, durationMs = CAMERA_ANIMATION_MS): Promise<void> {
+    const from = this.editor.session.get().camera
+    const editor = this.editor
+    return new Promise((resolve) => {
+      const start = performance.now()
+      const step = (now: number) => {
+        // 途中で Canvas を移ったら、そこでやめる
+        if (this.editor !== editor) return resolve()
+        const t = Math.min(1, (now - start) / durationMs)
+        const e = 1 - Math.pow(1 - t, 3)
+        // 倍率は対数で補間すると、ズームの速さが一定に見える
+        const zoom = Math.exp(Math.log(from.zoom) + (Math.log(to.zoom) - Math.log(from.zoom)) * e)
+        // 画面の中心が直線的に動くようにする
+        const cx = (c: Camera, size: number, axis: 'x' | 'y') => c[axis] + size / 2 / c.zoom
+        const mx = cx(from, this.width, 'x') + (cx(to, this.width, 'x') - cx(from, this.width, 'x')) * e
+        const my = cx(from, this.height, 'y') + (cx(to, this.height, 'y') - cx(from, this.height, 'y')) * e
+        this.setCamera({ x: mx - this.width / 2 / zoom, y: my - this.height / 2 / zoom, zoom })
+        if (t < 1) requestAnimationFrame(step)
+        else resolve()
+      }
+      requestAnimationFrame(step)
+    })
+  }
+
+  // ワールド座標の箱が画面いっぱいになるカメラ（zoomToFit と違い、等倍より大きくもする）
+  cameraFor(box: { x: number; y: number; w: number; h: number }): Camera {
+    const zoom = clampZoom(Math.min(this.width / Math.max(box.w, 1), this.height / Math.max(box.h, 1)))
+    return {
+      x: box.x + box.w / 2 - this.width / 2 / zoom,
+      y: box.y + box.h / 2 - this.height / 2 / zoom,
+      zoom,
+    }
+  }
+
+  // Undo / Redo。ほかの操作と重なって取り消せないときは、そのことを知らせる（MAI-11）
+  undo(): void {
+    this.tool.cancel()
+    if (!this.editor.undo() && this.editor.lastHistoryFailure === 'conflict') {
+      this.options.notify('このあとに別の Canvas などで変更があったため、取り消せません')
+    }
+  }
+
+  redo(): void {
+    this.tool.cancel()
+    if (!this.editor.redo() && this.editor.lastHistoryFailure === 'conflict') {
+      this.options.notify('このあとに別の Canvas などで変更があったため、やり直せません')
+    }
+  }
+
+  // 選んでいるノードを消す。持ち主の Portal が含まれていれば、参照先をどうするか尋ねる（MAI-8）
+  async deleteSelection(): Promise<void> {
+    const editor = this.editor
+    const ids = [...editor.session.get().selectedIds]
+    if (ids.length === 0) return
+    const owners = editor.ownerPortalsIn(ids)
+    if (owners.length === 0) {
+      editor.deleteNodes(ids)
+      return
+    }
+    const workspace = editor.workspace
+    const choice = await this.options.confirmOwnerPortalDeletion(
+      owners.map((portal) => {
+        const targetId = (portal.props as { targetId: string }).targetId
+        const count = (id: string): number => workspace.childCanvases(id).reduce((n, c) => n + 1 + count(c.id), 0)
+        return { title: workspace.getCanvas(targetId)?.title ?? '', descendants: count(targetId) }
+      }),
+    )
+    if (!choice || this.editor !== editor) return
+    editor.deleteNodes(ids, { ownerPortals: choice })
+  }
+
+  // 選んでいるノードを、新しい Canvas に切り出す（MAI-8）
+  promoteSelection(): void {
+    this.tool.cancel()
+    if (!this.editor.promoteSelection()) this.options.notify('昇格するノードを選んでください')
+  }
+
+  duplicateSelection(): void {
+    this.tool.cancel()
+    const zoom = this.editor.session.get().camera.zoom
+    duplicateSelection(this.editor, { x: DUPLICATE_OFFSET_PX / zoom, y: DUPLICATE_OFFSET_PX / zoom })
+  }
+
+  private onContextMenu(e: MouseEvent): void {
+    e.preventDefault()
+    if (this.textEditor.editingId) return
+    const editor = this.editor
+    const pointer = this.toPointer(e)
+    const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / editor.session.get().camera.zoom)
+    // 選んでいないノードの上なら、それを選んでからメニューを出す（tldraw と同じ）
+    if (hit) {
+      const target = editor.selectableFor(hit.id)
+      if (!editor.session.get().selectedIds.has(target)) editor.setSelection([target])
+    } else {
+      editor.setSelection([])
+    }
+    this.options.onContextMenu({ clientX: e.clientX, clientY: e.clientY })
   }
 
   get size(): { width: number; height: number } {
@@ -334,6 +526,7 @@ export class CanvasView {
       dpr: this.dpr,
       images: this.images,
       assets: this.assets,
+      documents: this.documents,
       editingId: this.editor.session.get().editingId,
     }
   }
@@ -490,7 +683,10 @@ export class CanvasView {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
-    if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
+    if (isImeEvent(e) || isEditableKeyboardTarget(e.target) || e.defaultPrevented) return
+    // ダイアログの中のキーと、ボタンの上での Enter・Space（ボタン自身が押される）は、キャンバスでは扱わない
+    if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
+    if (e.target instanceof HTMLButtonElement && (e.key === 'Enter' || e.key === ' ')) return
     const editor = this.editor
     const mod = e.ctrlKey || e.metaKey
 
@@ -521,21 +717,24 @@ export class CanvasView {
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       this.tool.cancel()
-      if (e.shiftKey) editor.redo()
-      else editor.undo()
+      if (e.shiftKey) this.redo()
+      else this.undo()
       return
     }
     if (mod && e.key.toLowerCase() === 'y') {
       e.preventDefault()
-      this.tool.cancel()
-      editor.redo()
+      this.redo()
       return
     }
     if (mod && e.key.toLowerCase() === 'd') {
       e.preventDefault()
-      this.tool.cancel()
-      const zoom = editor.session.get().camera.zoom
-      duplicateSelection(editor, { x: DUPLICATE_OFFSET_PX / zoom, y: DUPLICATE_OFFSET_PX / zoom })
+      this.duplicateSelection()
+      return
+    }
+    // 選択範囲を Canvas に昇格（MAI-8）。Ctrl+Shift+P は Firefox が新しいプライベートウィンドウに使うので、Alt を使う
+    if (mod && e.altKey && e.code === 'KeyP') {
+      e.preventDefault()
+      this.promoteSelection()
       return
     }
     if (mod && e.key.toLowerCase() === 'v') {
@@ -552,6 +751,12 @@ export class CanvasView {
       // 文字を持つノードを 1 つだけ選んでいれば、編集モードに入る
       const [id, ...rest] = editor.session.get().selectedIds
       const node = id && rest.length === 0 ? editor.getNode(id) : undefined
+      // Portal なら中に入る
+      if (node?.type === 'portal') {
+        e.preventDefault()
+        this.options.onOpenPortal(node.id)
+        return
+      }
       if (node && editor.getType(node).editText) {
         e.preventDefault()
         this.textEditor.start(node.id, { selectAll: true })
@@ -560,7 +765,7 @@ export class CanvasView {
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
-      editor.deleteSelected()
+      void this.deleteSelection()
       return
     }
     if (e.key.startsWith('Arrow')) {
@@ -588,6 +793,7 @@ export class CanvasView {
       d: 'draw',
       e: 'eraser',
       a: 'arrow',
+      p: 'portal',
     }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })
@@ -613,7 +819,8 @@ export class CanvasView {
     this.lastCopied = { payload, text }
     if (cut) {
       this.tool.cancel()
-      this.editor.deleteSelected()
+      // 切り取った持ち主の Portal の参照先は、ゴミ箱に送らず未配置にする。貼り付けると、そこへ移る（MAI-8）
+      this.editor.deleteSelected({ ownerPortals: 'unplace' })
     }
   }
 
@@ -635,7 +842,10 @@ export class CanvasView {
     if (payload) {
       for (const asset of payload.assets) this.assets.register(asset)
       this.editor.focusGroup(null)
-      insertPayload(this.editor, payload, { center })
+      const { refusedOwners } = insertPayloadWithResult(this.editor, payload, { center })
+      if (refusedOwners.length > 0) {
+        this.options.notify('キャンバスを、それ自身やその中には移せないので、ショートカットとして貼り付けました')
+      }
       return
     }
     if (files.length > 0) {

@@ -94,9 +94,9 @@ describe('copy and paste', () => {
     editor.createNodes([a])
     editor.setSelection([a.id])
     insertPayload(editor, copySelection(editor)!, { center: { x: 0, y: 0 } })
-    expect(editor.store.size).toBe(2)
+    expect(editor.index.size).toBe(2)
     editor.undo()
-    expect(editor.store.size).toBe(1)
+    expect(editor.index.size).toBe(1)
     expect([...editor.session.get().selectedIds]).toEqual([a.id])
   })
 

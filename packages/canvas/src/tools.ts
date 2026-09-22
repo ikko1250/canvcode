@@ -7,13 +7,14 @@ import {
   panBy,
   worldToScreen,
   type Box,
-  type CanvasRecord,
+  type WorkspaceRecord,
   type NodeRecord,
   type Transaction,
   type Vec,
 } from '@canvcode/core'
 import {
   GEO_DEFAULT_SIZE,
+  PORTAL_DEFAULT_SIZE,
   arrowLabelPoint,
   arcGeometry,
   arcPoint,
@@ -74,7 +75,9 @@ export interface ToolContext {
   // ツールの既定のカーソルの代わりに使うカーソル（ハンドルの上など）。null で元に戻す
   setCursor(cursor: string | null): void
   // 文字の編集モードに入る（MAI-24）。tx を渡すと、作成と編集が 1 回の Undo になる
-  startEditing(nodeId: string, options?: { tx?: Transaction<CanvasRecord>; selectAll?: boolean }): boolean
+  startEditing(nodeId: string, options?: { tx?: Transaction<WorkspaceRecord>; selectAll?: boolean }): boolean
+  // Portal の参照先に入る（MAI-29）
+  openPortal(portalId: string): void
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
@@ -159,16 +162,16 @@ type SelectState =
   | {
       name: 'translating'
       start: ToolPointer
-      tx: Transaction<CanvasRecord>
+      tx: Transaction<WorkspaceRecord>
       // ワールドでの形にした、動かし始めのノード
       initial: Map<string, NodeRecord>
     }
-  | { name: 'resizing'; handle: Handle; tx: Transaction<CanvasRecord>; selection: TransformSelection }
-  | { name: 'draggingArrowEnd'; tx: Transaction<CanvasRecord>; drag: ArrowTerminalDrag }
-  | { name: 'bendingArrow'; tx: Transaction<CanvasRecord>; arrowId: string }
+  | { name: 'resizing'; handle: Handle; tx: Transaction<WorkspaceRecord>; selection: TransformSelection }
+  | { name: 'draggingArrowEnd'; tx: Transaction<WorkspaceRecord>; drag: ArrowTerminalDrag }
+  | { name: 'bendingArrow'; tx: Transaction<WorkspaceRecord>; arrowId: string }
   | {
       name: 'rotating'
-      tx: Transaction<CanvasRecord>
+      tx: Transaction<WorkspaceRecord>
       selection: TransformSelection
       pivot: Vec
       start: Vec
@@ -390,6 +393,11 @@ export class SelectTool implements Tool {
       editor.setSelection([editor.selectableFor(hit.id)])
       return
     }
+    // Portal はダブルクリックで参照先に入る（MAI-9 の「ダブルクリックしたときの動作」）
+    if (hit.type === 'portal') {
+      this.ctx.openPortal(hit.id)
+      return
+    }
     if (editor.getType(hit).editText) this.ctx.startEditing(hit.id, { selectAll: true })
   }
 
@@ -469,7 +477,7 @@ export class SelectTool implements Tool {
 
   // 動かし終えたノードを、中心の下にあるフレームの子にする（フレームの外に出したら Canvas に戻す）。
   // group の中のノードは、group から勝手に出さない
-  private dropIntoFrames(tx: Transaction<CanvasRecord>, ids: string[]): void {
+  private dropIntoFrames(tx: Transaction<WorkspaceRecord>, ids: string[]): void {
     const editor = this.ctx.editor
     const moving = new Set(ids)
     const byParent = new Map<string, string[]>()
@@ -528,7 +536,7 @@ export class HandTool implements Tool {
 
 interface BoxCreation<P extends object> {
   start: ToolPointer
-  tx: Transaction<CanvasRecord>
+  tx: Transaction<WorkspaceRecord>
   node: NodeRecord<P>
   parentId: string
   // 親のローカル座標でのドラッグの始点
@@ -643,7 +651,7 @@ export class FrameTool implements Tool {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
     const { parentId, local } = placeAt(editor, pointer.world)
-    const count = [...editor.store.values()].filter((n) => n.type === 'frame').length
+    const count = [...editor.store.values()].filter((n) => n.typeName === 'node' && n.type === 'frame').length
     const tx = editor.begin('create frame')
     const node = editor.makeNode('frame', {
       x: local.x,
@@ -720,7 +728,7 @@ function containsBox(outer: Box, inner: Box): boolean {
 // ---- テキストツール（T）と付箋ツール（N）（MAI-24） ----
 
 // クリックした位置にテキストを作り、そのまま編集する（クリックした点が 1 行目の中ほどに来るようにする）
-function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<CanvasRecord>): void {
+function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<WorkspaceRecord>): void {
   const editor = ctx.editor
   const { parentId, local } = placeAt(editor, point)
   const transaction = tx ?? editor.begin('create text')
@@ -734,7 +742,7 @@ function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<CanvasRecor
 export class TextTool implements Tool {
   readonly id = 'text' as const
   readonly cursor = 'text'
-  private creating: { start: ToolPointer; tx: Transaction<CanvasRecord>; node: NodeRecord<TextProps>; parentId: string } | null =
+  private creating: { start: ToolPointer; tx: Transaction<WorkspaceRecord>; node: NodeRecord<TextProps>; parentId: string } | null =
     null
   private readonly ctx: ToolContext
 
@@ -792,7 +800,7 @@ export class TextTool implements Tool {
 export class NoteTool implements Tool {
   readonly id = 'note' as const
   readonly cursor = 'crosshair'
-  private creating: { tx: Transaction<CanvasRecord>; node: NodeRecord<NoteProps> } | null = null
+  private creating: { tx: Transaction<WorkspaceRecord>; node: NodeRecord<NoteProps> } | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
@@ -846,7 +854,7 @@ export class DrawTool implements Tool {
   readonly id = 'draw' as const
   readonly cursor = 'crosshair'
   private drawing: {
-    tx: Transaction<CanvasRecord>
+    tx: Transaction<WorkspaceRecord>
     node: NodeRecord<DrawProps>
     points: number[]
     last: Vec
@@ -955,7 +963,7 @@ const ERASER_RADIUS_PX = 6
 export class EraserTool implements Tool {
   readonly id = 'eraser' as const
   readonly cursor = 'crosshair'
-  private erasing: { tx: Transaction<CanvasRecord>; last: Vec; erased: Set<string> } | null = null
+  private erasing: { tx: Transaction<WorkspaceRecord>; last: Vec; erased: Set<string> } | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
@@ -1030,7 +1038,7 @@ const PRECISE_STILL_PX = 3
 // 矢印の端をドラッグして、つながる先を決める。矢印を作るときと、選んだ矢印の端を動かすときに使う
 export class ArrowTerminalDrag {
   private readonly ctx: ToolContext
-  private readonly tx: Transaction<CanvasRecord>
+  private readonly tx: Transaction<WorkspaceRecord>
   private readonly arrowId: string
   private readonly terminal: 'start' | 'end'
   private target: string | null = null
@@ -1039,7 +1047,7 @@ export class ArrowTerminalDrag {
   private stillAt: Vec | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(ctx: ToolContext, tx: Transaction<CanvasRecord>, arrowId: string, terminal: 'start' | 'end') {
+  constructor(ctx: ToolContext, tx: Transaction<WorkspaceRecord>, arrowId: string, terminal: 'start' | 'end') {
     this.ctx = ctx
     this.tx = tx
     this.arrowId = arrowId
@@ -1125,7 +1133,7 @@ export class ArrowTerminalDrag {
 export class ArrowTool implements Tool {
   readonly id = 'arrow' as const
   readonly cursor = 'crosshair'
-  private creating: { tx: Transaction<CanvasRecord>; start: ToolPointer; arrowId: string; drag: ArrowTerminalDrag; moved: boolean } | null =
+  private creating: { tx: Transaction<WorkspaceRecord>; start: ToolPointer; arrowId: string; drag: ArrowTerminalDrag; moved: boolean } | null =
     null
   private readonly ctx: ToolContext
 
@@ -1193,3 +1201,45 @@ export class ArrowTool implements Tool {
     this.cancel()
   }
 }
+
+// ---- Portal（MAI-29） ----
+
+// ドラッグした大きさ（クリックなら既定の大きさ）で、新しい子の Canvas とその持ち主の Portal を作り、そのまま中に入る
+export class PortalTool implements Tool {
+  readonly id = 'portal' as const
+  readonly cursor = 'crosshair'
+  private start: ToolPointer | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button === 0) this.start = pointer
+  }
+
+  onPointerUp(pointer: ToolPointer): void {
+    const start = this.start
+    if (!start) return
+    this.start = null
+    const editor = this.ctx.editor
+    const dragged = dist(pointer.screen, start.screen) >= DRAG_THRESHOLD_PX
+    const box = boxFromPoints(start.world, pointer.world)
+    const size = dragged
+      ? { w: Math.max(box.w, PORTAL_MIN_SIZE.w), h: Math.max(box.h, PORTAL_MIN_SIZE.h) }
+      : PORTAL_DEFAULT_SIZE
+    const center = dragged ? { x: box.x + box.w / 2, y: box.y + box.h / 2 } : start.world
+    const { portalId } = editor.createPortal(center, { size })
+    this.ctx.setTool('select')
+    this.ctx.openPortal(portalId)
+  }
+
+  cancel(): boolean {
+    const had = this.start !== null
+    this.start = null
+    return had
+  }
+}
+
+const PORTAL_MIN_SIZE = { w: 80, h: 60 }

@@ -1,4 +1,4 @@
-import { multiply, transformOf, type CanvasRecord, type Transaction } from '@canvcode/core'
+import { multiply, transformOf, type WorkspaceRecord, type Transaction } from '@canvcode/core'
 import { cssFont, layoutText, type TextEditSpec } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import { isImeEvent } from './imeGuard.ts'
@@ -9,7 +9,8 @@ import { isImeEvent } from './imeGuard.ts'
 // フォント・行の高さ・折り返しの規則は、Canvas での描画（text/layout.ts）と同じにしてある。
 
 export interface TextEditorOptions {
-  editor: Editor
+  // 今の Canvas の Editor（Canvas を移ると変わる）
+  getEditor: () => Editor
   layer: HTMLElement
   getDpr(): number
   // 編集を始めた・終えたとき（シーンからノードを隠す・戻すため）
@@ -18,7 +19,7 @@ export interface TextEditorOptions {
 
 interface Session {
   nodeId: string
-  tx: Transaction<CanvasRecord>
+  tx: Transaction<WorkspaceRecord>
   textarea: HTMLTextAreaElement
 }
 
@@ -39,8 +40,8 @@ export class TextEditor {
   }
 
   // tx を渡すと、そのトランザクションの続きとして編集する（作ってすぐ編集するとき。作成と編集が 1 回の Undo になる）
-  start(nodeId: string, options: { tx?: Transaction<CanvasRecord>; selectAll?: boolean } = {}): boolean {
-    const editor = this.options.editor
+  start(nodeId: string, options: { tx?: Transaction<WorkspaceRecord>; selectAll?: boolean } = {}): boolean {
+    const editor = this.options.getEditor()
     if (this.session) this.finish()
     const node = editor.getNode(nodeId)
     const type = node && editor.getType(node)
@@ -95,7 +96,7 @@ export class TextEditor {
     if (!session || this.finishing) return
     this.finishing = true
     try {
-      const editor = this.options.editor
+      const editor = this.options.getEditor()
       const node = editor.getNode(session.nodeId)
       const spec = node ? editor.getType(node).editText?.(node) : undefined
       // 空のまま終えたテキストは消す（同じトランザクションなので、作ってすぐ消した場合は何も残らない）
@@ -113,7 +114,7 @@ export class TextEditor {
   layout(): void {
     const session = this.session
     if (!session) return
-    const editor = this.options.editor
+    const editor = this.options.getEditor()
     const entry = editor.index.get(session.nodeId)
     const node = entry?.node
     const spec = node ? editor.getType(node).editText?.(node) : undefined
@@ -145,7 +146,7 @@ export class TextEditor {
   private onInput(): void {
     const session = this.session
     if (!session) return
-    const editor = this.options.editor
+    const editor = this.options.getEditor()
     const node = editor.getNode(session.nodeId)
     const spec = node ? editor.getType(node).editText?.(node) : undefined
     if (!node || !spec) return

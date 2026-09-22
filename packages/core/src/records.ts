@@ -1,5 +1,5 @@
-// キャンバス内のレコード（MAI-7）。段階 2 では Node だけを扱う。段階 6 で Asset、段階 8 で Binding を加えた。
-// Canvas・File などは、必要になる段階で追加する。
+// ワークスペースのレコード（MAI-7）。段階 2 では Node だけを扱う。段階 6 で Asset、段階 8 で Binding、段階 9 で Canvas を加えた。
+// File は段階 10 で追加する。
 
 export interface NodeRecord<P extends object = object> {
   typeName: 'node'
@@ -59,15 +59,36 @@ export interface ArrowBindingProps {
   isPrecise: boolean
 }
 
-// 1 つの Canvas のストアに入るレコード
-export type CanvasRecord = NodeRecord | BindingRecord
+// Canvas（MAI-7、MAI-8）。キャンバスを持つのは Canvas だけ。
+// 階層は木構造：持ち主の Portal が 1 つだけあり、それが置かれている Canvas が親になる
+export interface CanvasRecord {
+  typeName: 'canvas'
+  id: string
+  title: string
+  // 持ち主の Portal が置かれている Canvas。ルートと、未配置・ゴミ箱の中のものは null
+  parentCanvasId: string | null
+  // 持ち主の Portal。ルートと、未配置・ゴミ箱の中のものは null
+  ownerPortalId: string | null
+  createdAt: number
+  updatedAt: number
+  // ゴミ箱に入れた時刻。入っていなければ null
+  deletedAt: number | null
+  // ゴミ箱に一緒に入れたもののまとまり。まとまりの根（持ち主の Portal を消されたもの）は、その Portal の写しを持ち、
+  // 元に戻すときに同じ場所へ置き直す
+  trash: { batchId: string; portal: NodeRecord | null } | null
+}
 
-export function isNodeRecord(record: CanvasRecord | undefined): record is NodeRecord {
+// ワークスペースのストアに入るレコード（MAI-11：ストアはワークスペースに 1 つ、履歴は Canvas ごと）
+export type WorkspaceRecord = NodeRecord | BindingRecord | CanvasRecord
+
+export function isNodeRecord(record: WorkspaceRecord | undefined): record is NodeRecord {
   return record?.typeName === 'node'
 }
 
-export function isBindingRecord(record: CanvasRecord | undefined): record is BindingRecord {
+export function isBindingRecord(record: WorkspaceRecord | undefined): record is BindingRecord {
   return record?.typeName === 'binding'
 }
 
-export type WorkspaceRecord = CanvasRecord
+export function isCanvasRecord(record: WorkspaceRecord | undefined): record is CanvasRecord {
+  return record?.typeName === 'canvas'
+}

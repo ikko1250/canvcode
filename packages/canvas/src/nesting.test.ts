@@ -84,7 +84,7 @@ describe('grouping', () => {
     editor.setSelection([a.id, b.id])
     const groupId = editor.groupSelected()!
     editor.deleteSelected()
-    expect(editor.store.size).toBe(0)
+    expect(editor.index.size).toBe(0)
     editor.undo()
     expect(editor.getNode(a.id)!.parentId).toBe(groupId)
     expect(editor.index.childrenOf(groupId)).toHaveLength(2)

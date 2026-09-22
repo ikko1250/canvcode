@@ -17,6 +17,21 @@ export interface RenderInfo {
   editing?: boolean
   // 画像などの Asset を引く先（MAI-26）
   assets?: AssetResolver
+  // Portal の参照先（Canvas など）を引く先（MAI-29）
+  documents?: DocumentResolver
+}
+
+export interface DocumentInfo {
+  title: string
+  kind: 'canvas'
+  // 'trashed'：ゴミ箱の中 / 'missing'：完全に削除された（リンク切れ）
+  status: 'ok' | 'trashed' | 'missing'
+}
+
+export interface DocumentResolver {
+  get(id: string): DocumentInfo
+  // 親の Canvas で見せるサムネイル。まだなければ null（MAI-8 の「4. 親の Canvas 上でのプレビュー」）
+  thumbnail(id: string): RasterImage | null
 }
 
 export interface AssetResolver {

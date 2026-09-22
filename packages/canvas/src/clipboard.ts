@@ -8,7 +8,7 @@ import {
   type NodeRecord,
   type Vec,
 } from '@canvcode/core'
-import type { ArrowProps, ImageProps } from '@canvcode/nodes'
+import type { ArrowProps, ImageProps, PortalProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 
@@ -100,8 +100,41 @@ export interface InsertOptions {
   parentId?: string | 'original'
 }
 
+// 持ち主の Portal を貼り付けるときの扱い（MAI-8）。
+// 参照先が未配置（切り取った直後など）なら、持ち主のまま置く（＝移動）。そうでなければショートカットにする（＝コピー）。
+// 参照先を自分自身や自分の子孫に置くことになる場合は、循環を避けるためショートカットにして、そのことを返す
+function portalRole(editor: Editor, props: PortalProps): { role: 'owner' | 'shortcut'; refused: boolean } {
+  if (props.role !== 'owner') return { role: 'shortcut', refused: false }
+  const target = editor.workspace.getCanvas(props.targetId)
+  if (!target || target.deletedAt !== null || target.ownerPortalId !== null) return { role: 'shortcut', refused: false }
+  if (editor.workspace.isSameOrInside(editor.canvasId, target.id)) return { role: 'shortcut', refused: true }
+  return { role: 'owner', refused: false }
+}
+
+export interface InsertResult {
+  ids: string[]
+  // 循環になるので、持ち主として置けなかった Canvas（ショートカットにした）
+  refusedOwners: string[]
+}
+
 // クリップボードの中身を、新しい id を振ってキャンバスに入れる。入れたノード（選んだノードに当たるもの）の id を返す
 export function insertPayload(editor: Editor, payload: ClipboardPayload, options: InsertOptions, label = 'paste'): string[] {
+  return insertPayloadWithResult(editor, payload, options, label).ids
+}
+
+export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayload, options: InsertOptions, label = 'paste'): InsertResult {
+  const refusedOwners: string[] = []
+  // 同じ参照先の持ち主が 2 つ入らないよう、持ち主として置けるのは参照先ごとに 1 つだけ
+  const ownerTaken = new Set<string>()
+  const withRole = (node: NodeRecord): NodeRecord => {
+    if (node.type !== 'portal') return node
+    const props = node.props as PortalProps
+    let { role, refused } = portalRole(editor, props)
+    if (role === 'owner' && ownerTaken.has(props.targetId)) role = 'shortcut'
+    if (role === 'owner') ownerTaken.add(props.targetId)
+    if (refused) refusedOwners.push(props.targetId)
+    return role === props.role ? node : { ...node, props: { ...props, role } }
+  }
   const offset = options.center
     ? {
         x: options.center.x - (payload.bounds.x + payload.bounds.w / 2),
@@ -132,7 +165,7 @@ export function insertPayload(editor: Editor, payload: ClipboardPayload, options
     for (const [parentId, roots] of rootsByParent) {
       const indices = indicesBetween(editor.index.topmost(parentId)?.index ?? null, null, roots.length)
       for (const [i, root] of roots.entries()) {
-        const world = { ...root, id: idMap.get(root.id)!, x: root.x + offset.x, y: root.y + offset.y }
+        const world = { ...withRole(root), id: idMap.get(root.id)!, x: root.x + offset.x, y: root.y + offset.y }
         tx.put({ ...editor.fromWorld(world, parentId), index: indices[i] })
         inserted.push(world.id)
       }
@@ -142,7 +175,7 @@ export function insertPayload(editor: Editor, payload: ClipboardPayload, options
       const parentId = idMap.get(node.parentId)
       // 親がコピーに入っていない子孫はない（copySelection が子孫ごと入れる）が、念のため飛ばす
       if (!parentId) continue
-      tx.put({ ...node, id: idMap.get(node.id)!, parentId })
+      tx.put({ ...withRole(node), id: idMap.get(node.id)!, parentId })
     }
     for (const binding of payload.bindings) {
       const fromId = idMap.get(binding.fromId)
@@ -151,7 +184,7 @@ export function insertPayload(editor: Editor, payload: ClipboardPayload, options
     }
     editor.setSelection(inserted)
   })
-  return inserted
+  return { ids: inserted, refusedOwners }
 }
 
 // 選んでいるノードを複製する（Ctrl+D）。元の親の中の最も手前に、少しずらして置く

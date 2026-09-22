@@ -23,16 +23,25 @@ interface Stacks<R> {
   redo: HistoryEntry<R>[]
 }
 
+export interface HistoryOptions<R> {
+  limit?: number
+  // 当てようとしている差分を、ほかの理由で拒むか（ストアの決まりごと。例：まだ中身のある Canvas を消す取り消し）。
+  // false を返すと、取り消さずに conflict を返す
+  validate?: (patch: Patch<R>) => boolean
+}
+
 export class History<R extends BaseRecord> {
   private readonly store: Store<R>
   private readonly limit: number
+  private readonly validate: ((patch: Patch<R>) => boolean) | undefined
   private readonly scopes = new Map<string, Stacks<R>>()
   private readonly listeners = new Set<() => void>()
   private readonly unlisten: () => void
 
-  constructor(store: Store<R>, options: { limit?: number } = {}) {
+  constructor(store: Store<R>, options: HistoryOptions<R> = {}) {
     this.store = store
     this.limit = options.limit ?? DEFAULT_LIMIT
+    this.validate = options.validate
     this.unlisten = store.listen((event) => {
       if (event.phase !== 'commit') return
       if (event.options.history === 'ignore' || event.options.source !== 'user') return
@@ -86,6 +95,7 @@ export class History<R extends BaseRecord> {
     for (const [id, change] of patch) {
       if (this.store.get(id) !== change.before) return { ok: false, reason: 'conflict' }
     }
+    if (this.validate && !this.validate(patch)) return { ok: false, reason: 'conflict' }
 
     from.pop()
     this.store.transact(`${direction}: ${entry.label}`, (tx) => tx.applyPatch(patch), {

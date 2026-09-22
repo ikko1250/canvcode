@@ -8,14 +8,21 @@ import {
   transformOf,
   type ArrowBindingProps,
   type BindingRecord,
-  type CanvasRecord,
+  type WorkspaceRecord,
   type Mat,
   type NodeRecord,
   type Transaction,
   type Vec,
 } from '@canvcode/core'
 import { arcGeometry, arcPoint, bendThrough, type ArcGeometry, type ArrowProps } from '@canvcode/nodes'
+import type { AnyNodeTypeDef } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
+
+// ノードとその型を引く先（Workspace と Editor のどちらでもよい）
+export interface NodeLookup {
+  getNode(id: string): NodeRecord | undefined
+  getType(node: NodeRecord): AnyNodeTypeDef
+}
 
 // 矢印とノードのつながり（MAI-7 の Binding、MAI-28）。
 // - 矢印の「曲げる前の端」は、つながっている先のノードの中心（isPrecise なら anchor）に合わせる
@@ -31,7 +38,7 @@ export class BindingIndex {
   private readonly byArrow = new Map<string, Set<string>>()
   private readonly byTarget = new Map<string, Set<string>>()
 
-  apply(before: CanvasRecord | undefined, after: CanvasRecord | undefined): void {
+  apply(before: WorkspaceRecord | undefined, after: WorkspaceRecord | undefined): void {
     if (isBindingRecord(before)) {
       remove(this.byArrow, before.fromId, before.id)
       remove(this.byTarget, before.toId, before.id)
@@ -73,27 +80,28 @@ function add(map: Map<string, Set<string>>, key: string, value: string): void {
 
 // ---- 位置の計算 ----
 
-// ストアの今の値から、ノードのローカル座標 → ワールド座標の行列を作る（索引は途中経過の知らせまで古いままなので使わない）
-function liveWorldMatrix(editor: Editor, id: string): Mat | null {
-  let node = editor.getNode(id)
+// ストアの今の値から、ノードのローカル座標 → ワールド座標の行列を作る（索引は途中経過の知らせまで古いままなので使わない）。
+// 親をたどって、ノードでないもの（Canvas）に着いたら終わる
+function liveWorldMatrix(lookup: NodeLookup, id: string): Mat | null {
+  let node = lookup.getNode(id)
   if (!node) return null
   let m = transformOf(node.x, node.y, node.rotation)
-  for (let guard = 0; guard < 10_000 && node.parentId !== editor.canvasId; guard++) {
-    const parent = editor.getNode(node.parentId)
-    if (!parent) return null
+  for (let guard = 0; guard < 10_000; guard++) {
+    const parent = lookup.getNode(node.parentId)
+    if (!parent) return m
     m = multiply(transformOf(parent.x, parent.y, parent.rotation), m)
     node = parent
   }
   return m
 }
 
-function liveParentMatrix(editor: Editor, node: NodeRecord): Mat {
-  return node.parentId === editor.canvasId ? IDENTITY : (liveWorldMatrix(editor, node.parentId) ?? IDENTITY)
+function liveParentMatrix(lookup: NodeLookup, node: NodeRecord): Mat {
+  return lookup.getNode(node.parentId) ? (liveWorldMatrix(lookup, node.parentId) ?? IDENTITY) : IDENTITY
 }
 
 // ノードの縁（ローカル座標の多角形）
-function outlineOf(editor: Editor, node: NodeRecord): Vec[] {
-  const type = editor.getType(node)
+function outlineOf(lookup: NodeLookup, node: NodeRecord): Vec[] {
+  const type = lookup.getType(node)
   if (type.outline) return type.outline(node)
   const b = type.getBounds(node)
   return [
@@ -115,10 +123,10 @@ function insidePolygon(polygon: Vec[], p: Vec): boolean {
 }
 
 // ワールド座標の点を、つながっている先のノードの箱の中での位置（0〜1）にする
-export function normalizedAnchorAt(editor: Editor, target: NodeRecord, world: Vec): Vec {
-  const m = liveWorldMatrix(editor, target.id) ?? IDENTITY
+export function normalizedAnchorAt(lookup: NodeLookup, target: NodeRecord, world: Vec): Vec {
+  const m = liveWorldMatrix(lookup, target.id) ?? IDENTITY
   const local = applyMat(invert(m), world)
-  const b = editor.getType(target).getBounds(target)
+  const b = lookup.getType(target).getBounds(target)
   return {
     x: b.w > 0 ? Math.max(0, Math.min(1, (local.x - b.x) / b.w)) : 0.5,
     y: b.h > 0 ? Math.max(0, Math.min(1, (local.y - b.y) / b.h)) : 0.5,
@@ -126,10 +134,10 @@ export function normalizedAnchorAt(editor: Editor, target: NodeRecord, world: Ve
 }
 
 // Binding が向いている点（ワールド座標）
-function bindingPoint(editor: Editor, target: NodeRecord, props: ArrowBindingProps): Vec | null {
-  const m = liveWorldMatrix(editor, target.id)
+function bindingPoint(lookup: NodeLookup, target: NodeRecord, props: ArrowBindingProps): Vec | null {
+  const m = liveWorldMatrix(lookup, target.id)
   if (!m) return null
-  const b = editor.getType(target).getBounds(target)
+  const b = lookup.getType(target).getBounds(target)
   const anchor = props.isPrecise ? props.normalizedAnchor : { x: 0.5, y: 0.5 }
   return applyMat(m, { x: b.x + b.w * anchor.x, y: b.y + b.h * anchor.y })
 }
@@ -161,17 +169,17 @@ function exitParam(g: ArcGeometry, from: 0 | 1, inside: (p: Vec) => boolean): nu
 }
 
 // 矢印の Binding から、曲げる前の端と見える範囲を計算し直す。変わらなければ null
-export function resolveArrow(editor: Editor, arrow: NodeRecord<ArrowProps>, bindings: BindingRecord[]): ArrowProps | null {
+export function resolveArrow(lookup: NodeLookup, arrow: NodeRecord<ArrowProps>, bindings: BindingRecord[]): ArrowProps | null {
   const props = arrow.props
-  const toLocal = invert(multiply(liveParentMatrix(editor, arrow), transformOf(arrow.x, arrow.y, arrow.rotation)))
+  const toLocal = invert(multiply(liveParentMatrix(lookup, arrow), transformOf(arrow.x, arrow.y, arrow.rotation)))
   const toWorld = invert(toLocal)
   let start = props.start
   let end = props.end
   const targets: { terminal: 'start' | 'end'; node: NodeRecord }[] = []
   for (const binding of bindings) {
-    const target = editor.getNode(binding.toId)
+    const target = lookup.getNode(binding.toId)
     if (!target) continue
-    const point = bindingPoint(editor, target, binding.props)
+    const point = bindingPoint(lookup, target, binding.props)
     if (!point) continue
     const local = applyMat(toLocal, point)
     if (binding.props.terminal === 'start') start = local
@@ -186,8 +194,8 @@ export function resolveArrow(editor: Editor, arrow: NodeRecord<ArrowProps>, bind
     let t1 = 1
     for (const { terminal, node } of targets) {
       // 矢印のローカル座標の点を、つながっている先のノードのローカル座標にして、縁の内側かを調べる
-      const m = multiply(invert(liveWorldMatrix(editor, node.id) ?? IDENTITY), toWorld)
-      const polygon = outlineOf(editor, node)
+      const m = multiply(invert(liveWorldMatrix(lookup, node.id) ?? IDENTITY), toWorld)
+      const polygon = outlineOf(lookup, node)
       const inside = (p: Vec) => insidePolygon(polygon, applyMat(m, p))
       const t = exitParam(g, terminal === 'start' ? 0 : 1, inside)
       if (t === null) continue
@@ -230,7 +238,7 @@ export function makeBinding(arrowId: string, toId: string, props: ArrowBindingPr
 }
 
 // Binding を外す。矢印が残っていれば、その端を今見えている位置に固定する
-export function unbind(tx: Transaction<CanvasRecord>, binding: BindingRecord): void {
+export function unbind(tx: Transaction<WorkspaceRecord>, binding: BindingRecord): void {
   const arrow = tx.get(binding.fromId)
   if (arrow?.typeName === 'node' && arrow.type === 'arrow') {
     const node = arrow as NodeRecord<ArrowProps>

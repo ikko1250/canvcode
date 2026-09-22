@@ -24,8 +24,15 @@ body,
 }
 
 .app {
-  position: relative;
+  display: flex;
   height: 100%;
+}
+
+/* キャンバスと、その上に重ねる UI */
+.main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
 }
 
 .canvas-container {
@@ -35,8 +42,10 @@ body,
 
 .toolbar {
   position: absolute;
-  top: 12px;
+  bottom: 12px;
   left: 12px;
+  right: 12px;
+  width: fit-content;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -91,7 +100,7 @@ body,
 .stats {
   position: absolute;
   right: 12px;
-  bottom: 44px;
+  top: 52px;
   padding: 8px 10px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
@@ -156,7 +165,7 @@ body,
 .notices {
   position: absolute;
   left: 50%;
-  bottom: 40px;
+  bottom: 120px;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
@@ -229,4 +238,301 @@ body,
   height: 1px;
   margin: 2px 0;
   background: var(--panel-border);
+}
+
+/* ---- ワークスペース（MAI-29） ---- */
+
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: #f6f7f9;
+  border-right: 1px solid var(--panel-border);
+  font-size: 13px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px;
+}
+
+.sidebar-header button,
+.sidebar-open {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.sidebar-header button:hover,
+.sidebar-open:hover {
+  background: #e8ebef;
+}
+
+.sidebar-section {
+  padding: 4px 0 12px;
+}
+
+.sidebar-section h3 {
+  margin: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.sidebar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-title:hover {
+  background: #e8ebef;
+}
+
+.sidebar-title.current {
+  background: #e3ebfd;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.sidebar-row.trashed .sidebar-title {
+  color: var(--muted);
+  cursor: default;
+}
+
+.sidebar-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  font: inherit;
+}
+
+.sidebar-action {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sidebar-action.danger {
+  color: #cf222e;
+}
+
+.sidebar-empty {
+  padding: 2px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.topbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.topbar > * {
+  pointer-events: auto;
+}
+
+.sidebar-open {
+  background: var(--panel-bg);
+  border-color: var(--panel-border);
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 5px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.breadcrumb button {
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.breadcrumb button:hover {
+  background: #eef1f5;
+}
+
+.breadcrumb strong {
+  padding: 2px 4px;
+  font-weight: 600;
+}
+
+.breadcrumb-sep {
+  margin: 0 2px;
+  color: var(--muted);
+}
+
+.breadcrumb-note {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #fff4d6;
+  color: #7d5a00;
+  font-size: 11px;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 220px;
+  padding: 4px;
+  background: #ffffff;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.context-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu button:hover {
+  background: #eef1f5;
+}
+
+.context-menu button.danger {
+  color: #cf222e;
+}
+
+.context-menu kbd {
+  font: 11px ui-monospace, monospace;
+  color: var(--muted);
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--panel-border);
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(31, 35, 40, 0.28);
+}
+
+.dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 18px 20px;
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.dialog h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.dialog p {
+  margin: 0 0 16px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-buttons button {
+  padding: 6px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dialog-buttons button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.dialog-buttons button.primary.danger {
+  background: #cf222e;
+  border-color: #cf222e;
+}
+
+.dialog-buttons button.danger:not(.primary) {
+  color: #cf222e;
+}
+
+/* Portal の名前を変える入力欄。Portal の名前の帯に重ねる */
+.portal-rename {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  margin: 0;
+  border: 2px solid var(--accent);
+  border-radius: 8px 8px 0 0;
+  background: #ffffff;
+  color: var(--text);
+  outline: none;
 }
