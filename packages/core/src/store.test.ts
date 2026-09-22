@@ -127,3 +127,42 @@ describe('history', () => {
     expect(store.has('c')).toBe(true)
   })
 })
+
+describe('beforeFlush', () => {
+  it('derives values before listeners hear about a change, and includes them in the same event', () => {
+    const { store, history } = setup()
+    // b は、いつも a の 2 倍になる
+    store.setHooks({
+      beforeFlush: (pending, tx) => {
+        const a = pending.get('a')?.after
+        if (a && store.get('b')?.value !== a.value * 2) tx.put({ id: 'b', value: a.value * 2 })
+      },
+    })
+    const events: StoreEvent<Item>[] = []
+    store.listen((event) => events.push(event))
+    store.transact('create', (tx) => tx.put({ id: 'a', value: 1 }))
+    expect(store.get('b')!.value).toBe(2)
+    expect([...events.at(-1)!.patch.keys()].sort()).toEqual(['a', 'b'])
+
+    // ドラッグの途中経過でも合わせ直され、Undo で一緒に戻る
+    const tx = store.begin('drag')
+    tx.put({ id: 'a', value: 5 })
+    tx.flush()
+    expect(store.get('b')!.value).toBe(10)
+    tx.commit()
+    history.undo()
+    expect(store.get('b')!.value).toBe(2)
+  })
+
+  it('is not called when a transaction is cancelled', () => {
+    const { store } = setup()
+    let calls = 0
+    store.setHooks({ beforeFlush: () => void calls++ })
+    const tx = store.begin('drag')
+    tx.put({ id: 'a', value: 1 })
+    tx.flush()
+    tx.cancel()
+    expect(calls).toBe(1)
+    expect(store.has('a')).toBe(false)
+  })
+})

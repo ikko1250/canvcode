@@ -1,5 +1,15 @@
-import { createId, indicesBetween, unionBoxes, type AssetRecord, type Box, type NodeRecord, type Vec } from '@canvcode/core'
-import type { ImageProps } from '@canvcode/nodes'
+import {
+  createId,
+  indicesBetween,
+  unionBoxes,
+  type AssetRecord,
+  type BindingRecord,
+  type Box,
+  type NodeRecord,
+  type Vec,
+} from '@canvcode/core'
+import type { ArrowProps, ImageProps } from '@canvcode/nodes'
+import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 
 // コピー・貼り付け・複製（MAI-12 の「8. クリップボード」、MAI-26）。
@@ -19,6 +29,8 @@ export interface ClipboardPayload {
   bounds: Box
   // 画像ノードが参照している Asset（別のタブに貼り付けても読めるように）
   assets: AssetRecord[]
+  // 矢印の Binding のうち、両端がコピーに入っているもの（MAI-28）
+  bindings: BindingRecord[]
 }
 
 // 選んでいるノードを、クリップボードに載せる形にする。何も選んでいなければ null
@@ -37,6 +49,19 @@ export function copySelection(editor: Editor, resolveAsset?: (id: string) => Ass
     const entry = editor.index.get(id)
     if (entry) boxes.push(entry.worldBounds)
   }
+  // 矢印の Binding は、つながっている先もコピーに入っていれば一緒に持っていく。
+  // 入っていなければ、その端を今見えている位置に固定する
+  const copied = new Set(nodes.map((n) => n.id))
+  const bindings: BindingRecord[] = []
+  for (const [i, node] of nodes.entries()) {
+    if (node.type !== 'arrow') continue
+    let props = node.props as ArrowProps
+    for (const binding of editor.bindingsOfArrow(node.id)) {
+      if (copied.has(binding.toId)) bindings.push(binding)
+      else props = freezeTerminal(props, binding.props.terminal)
+    }
+    if (props !== node.props) nodes[i] = { ...node, props }
+  }
   const assets = new Map<string, AssetRecord>()
   for (const node of nodes) {
     if (node.type !== 'image') continue
@@ -51,6 +76,7 @@ export function copySelection(editor: Editor, resolveAsset?: (id: string) => Ass
     roots,
     bounds: unionBoxes(boxes) ?? { x: 0, y: 0, w: 0, h: 0 },
     assets: [...assets.values()],
+    bindings,
   }
 }
 
@@ -118,6 +144,11 @@ export function insertPayload(editor: Editor, payload: ClipboardPayload, options
       if (!parentId) continue
       tx.put({ ...node, id: idMap.get(node.id)!, parentId })
     }
+    for (const binding of payload.bindings) {
+      const fromId = idMap.get(binding.fromId)
+      const toId = idMap.get(binding.toId)
+      if (fromId && toId) tx.put({ ...binding, id: createId('binding'), fromId, toId })
+    }
     editor.setSelection(inserted)
   })
   return inserted
@@ -153,7 +184,7 @@ export function parsePayload(data: { json?: string; html?: string }): ClipboardP
 function validPayload(value: unknown): ClipboardPayload | null {
   const p = value as ClipboardPayload
   if (p?.kind !== 'canvcode/nodes' || p.version !== 1 || !Array.isArray(p.nodes) || !Array.isArray(p.roots)) return null
-  return { ...p, assets: Array.isArray(p.assets) ? p.assets : [] }
+  return { ...p, assets: Array.isArray(p.assets) ? p.assets : [], bindings: Array.isArray(p.bindings) ? p.bindings : [] }
 }
 
 function encodeBase64(text: string): string {

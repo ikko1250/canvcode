@@ -1,4 +1,4 @@
-import { multiply, transformOf, type NodeRecord, type Transaction } from '@canvcode/core'
+import { multiply, transformOf, type CanvasRecord, type Transaction } from '@canvcode/core'
 import { cssFont, layoutText, type TextEditSpec } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import { isImeEvent } from './imeGuard.ts'
@@ -18,7 +18,7 @@ export interface TextEditorOptions {
 
 interface Session {
   nodeId: string
-  tx: Transaction<NodeRecord>
+  tx: Transaction<CanvasRecord>
   textarea: HTMLTextAreaElement
 }
 
@@ -39,7 +39,7 @@ export class TextEditor {
   }
 
   // tx を渡すと、そのトランザクションの続きとして編集する（作ってすぐ編集するとき。作成と編集が 1 回の Undo になる）
-  start(nodeId: string, options: { tx?: Transaction<NodeRecord>; selectAll?: boolean } = {}): boolean {
+  start(nodeId: string, options: { tx?: Transaction<CanvasRecord>; selectAll?: boolean } = {}): boolean {
     const editor = this.options.editor
     if (this.session) this.finish()
     const node = editor.getNode(nodeId)

@@ -7,15 +7,22 @@ import {
   indexBetween,
   indicesBetween,
   invert,
+  isBindingRecord,
+  isNodeRecord,
   multiply,
   transformOf,
+  type BindingRecord,
   type Box,
+  type CanvasRecord,
+  type Change,
   type Mat,
   type NodeRecord,
+  type Patch,
   type Transaction,
   type Vec,
 } from '@canvcode/core'
-import { builtinNodeTypes, type AnyNodeTypeDef } from '@canvcode/nodes'
+import { builtinNodeTypes, type AnyNodeTypeDef, type ArrowProps } from '@canvcode/nodes'
+import { BindingIndex, resolveArrow, unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
 import { Session } from './session.ts'
 import {
@@ -31,6 +38,12 @@ import {
 // 1 つの Canvas を編集するための入口。ストア・履歴・セッション・索引をまとめ、
 // 名前の付いたコマンドを提供する（MAI-11）。ツールや React の UI は、ここを通して変更する。
 // 段階 11 までは永続化せず、ブラウザのメモリ内だけで動く。
+
+// トランザクションの中での、今のノード（Binding は除く）
+export function nodeIn(tx: Transaction<CanvasRecord>, id: string): NodeRecord | undefined {
+  const record = tx.get(id)
+  return isNodeRecord(record) ? record : undefined
+}
 
 export interface HistoryMeta {
   selectionBefore: string[]
@@ -57,41 +70,64 @@ export interface EditorOptions {
 
 export class Editor {
   readonly canvasId: string
-  readonly store = new Store<NodeRecord>()
+  readonly store = new Store<CanvasRecord>()
   readonly history = new History(this.store)
   readonly session = new Session()
   readonly types: Map<string, AnyNodeTypeDef>
   readonly index: NodeIndex
+  readonly bindings = new BindingIndex()
 
   constructor(options: EditorOptions = {}) {
     this.canvasId = options.canvasId ?? createId('canvas')
     this.types = new Map((options.types ?? builtinNodeTypes).map((type) => [type.type, type]))
     this.index = new NodeIndex(this.canvasId, this.types)
     this.store.setHooks({
-      // 親を消したら、子孫もまとめて消す（同じトランザクションの中なので、Undo で一緒に戻る）
-      afterDelete: (node, tx) => {
+      // Binding の索引は、トランザクションの途中でも引けるよう、ここでも更新する（MAI-28）
+      afterCreate: (record) => this.bindings.apply(undefined, record),
+      afterUpdate: (prev, next) => this.bindings.apply(prev, next),
+      afterDelete: (record, tx) => {
+        this.bindings.apply(record, undefined)
+        if (!isNodeRecord(record)) return
+        // 親を消したら、子孫もまとめて消す（同じトランザクションの中なので、Undo で一緒に戻る）。
         // 子は索引から引く（ストアを全部調べると、1 万ノードを消すときに遅すぎる）
-        for (const childId of this.index.childrenOf(node.id)) {
-          if (tx.get(childId)?.parentId === node.id) tx.remove(childId)
+        for (const childId of this.index.childrenOf(record.id)) {
+          if (nodeIn(tx, childId)?.parentId === record.id) tx.remove(childId)
+        }
+        // 矢印を消したら、その Binding も消す。つながっている先を消したら、矢印の端をその場に固定して外す
+        for (const id of this.bindings.ofArrow(record.id)) tx.remove(id)
+        for (const id of this.bindings.toTarget(record.id)) {
+          const binding = tx.get(id)
+          if (isBindingRecord(binding)) unbind(tx, binding)
         }
       },
       // 子がいなくなった group は消す（MAI-25）
       beforeCommit: (patch, tx) => {
         const groups = new Set<string>()
         for (const change of patch.values()) {
-          const parentId = change.before?.parentId
-          if (parentId && parentId !== change.after?.parentId) groups.add(parentId)
+          if (!isNodeRecord(change.before)) continue
+          const parentId = change.before.parentId
+          if (parentId !== (isNodeRecord(change.after) ? change.after.parentId : undefined)) groups.add(parentId)
         }
         for (const id of groups) {
-          const group = this.store.get(id)
+          const group = this.getNode(id)
           if (group && this.types.get(group.type)?.container === 'group' && this.childrenInStore(id).length === 0) {
             tx.remove(id)
           }
         }
       },
+      // 変わったノードにつながっている矢印の端を、知らせる前に合わせ直す（MAI-28）
+      beforeFlush: (pending, tx) => this.updateArrows(pending, tx),
     })
     this.store.listen((event) => {
-      this.index.applyPatch(event.patch)
+      const nodes: Patch<NodeRecord> = new Map()
+      for (const [id, change] of event.patch) {
+        // 取り消し（cancel）はフックを通らないので、Binding の索引はここでも合わせる
+        this.bindings.apply(change.before, change.after)
+        if (isNodeRecord(change.before) || isNodeRecord(change.after)) {
+          nodes.set(id, change as Change<NodeRecord>)
+        }
+      }
+      this.index.applyPatch(nodes)
       // 消えたノードを選択から外す
       const { selectedIds, hoveredId, focusedGroupId } = this.session.get()
       let changed = false
@@ -113,7 +149,8 @@ export class Editor {
   }
 
   getNode(id: string): NodeRecord | undefined {
-    return this.store.get(id)
+    const record = this.store.get(id)
+    return isNodeRecord(record) ? record : undefined
   }
 
   getType(node: NodeRecord): AnyNodeTypeDef {
@@ -130,25 +167,80 @@ export class Editor {
   // ストアの中で、親が parentId のノード（トランザクションの途中の変更も含む）
   private childrenInStore(parentId: string): NodeRecord[] {
     const out: NodeRecord[] = []
-    for (const node of this.store.values()) if (node.parentId === parentId) out.push(node)
+    for (const node of this.store.values()) if (isNodeRecord(node) && node.parentId === parentId) out.push(node)
     return out
+  }
+
+  // ---- 矢印とつながり（MAI-28） ----
+
+  getBinding(id: string): BindingRecord | undefined {
+    const record = this.store.get(id)
+    return isBindingRecord(record) ? record : undefined
+  }
+
+  // 矢印の端の Binding
+  bindingsOfArrow(arrowId: string): BindingRecord[] {
+    return this.bindings.ofArrow(arrowId).flatMap((id) => this.getBinding(id) ?? [])
+  }
+
+  private updateArrows(pending: Patch<CanvasRecord>, tx: Transaction<CanvasRecord>): void {
+    const arrows = new Set<string>()
+    const hasBindings = !this.bindings.isEmpty
+    for (const [id, change] of [...pending]) {
+      for (const record of [change.before, change.after]) {
+        if (isBindingRecord(record)) arrows.add(record.fromId)
+      }
+      const node = change.after
+      if (!isNodeRecord(node)) continue
+      if (node.type === 'arrow') arrows.add(id)
+      if (!hasBindings) continue
+      // 動いたノードと、その子孫（group ごと動かしたときなど）につながっている矢印
+      for (const nodeId of [id, ...this.index.descendantsOf(id)]) {
+        for (const bindingId of this.bindings.toTarget(nodeId)) {
+          const binding = this.getBinding(bindingId)
+          if (binding) arrows.add(binding.fromId)
+        }
+      }
+    }
+    for (const arrowId of arrows) {
+      const arrow = this.getNode(arrowId)
+      if (!arrow || arrow.type !== 'arrow') continue
+      const next = resolveArrow(this, arrow as NodeRecord<ArrowProps>, this.bindingsOfArrow(arrowId))
+      if (next) tx.put({ ...arrow, props: next })
+    }
+  }
+
+  // 動かすノードに含まれる矢印のうち、つながっている先が一緒に動かないものは、つながりを外す（tldraw と同じ）
+  detachArrows(tx: Transaction<CanvasRecord>, ids: Iterable<string>): void {
+    if (this.bindings.isEmpty) return
+    const moving = new Set<string>()
+    for (const id of ids) {
+      moving.add(id)
+      for (const child of this.index.descendantsOf(id)) moving.add(child)
+    }
+    for (const id of moving) {
+      for (const binding of this.bindingsOfArrow(id)) {
+        const follows = moving.has(binding.toId) || this.index.ancestorsOf(binding.toId).some((a) => moving.has(a))
+        if (!follows) unbind(tx, binding)
+      }
+    }
   }
 
   // ---- トランザクション ----
 
   // 長く続く操作（ドラッグなど）用。終えるときは finish か cancel を呼ぶ
-  begin(label: string): Transaction<NodeRecord> {
+  begin(label: string): Transaction<CanvasRecord> {
     const meta: HistoryMeta = { selectionBefore: [...this.session.get().selectedIds] }
     return this.store.begin(label, { scope: this.canvasId, meta })
   }
 
-  finish(tx: Transaction<NodeRecord>): void {
+  finish(tx: Transaction<CanvasRecord>): void {
     const meta = tx.options.meta as HistoryMeta | undefined
     tx.commit()
     if (meta) meta.selectionAfter = [...this.session.get().selectedIds]
   }
 
-  transact<T>(label: string, fn: (tx: Transaction<NodeRecord>) => T): T {
+  transact<T>(label: string, fn: (tx: Transaction<CanvasRecord>) => T): T {
     const tx = this.begin(label)
     try {
       const result = fn(tx)
@@ -237,11 +329,12 @@ export class Editor {
 
   moveNodes(ids: Iterable<string>, dx: number, dy: number, label = 'move'): void {
     const list = [...ids].flatMap((id) => {
-      const node = this.store.get(id)
+      const node = this.getNode(id)
       return node && !node.locked ? [node] : []
     })
     if (list.length === 0) return
     this.transact(label, (tx) => {
+      this.detachArrows(tx, list.map((n) => n.id))
       for (const node of list) {
         const world = this.toWorld(node)
         tx.put(this.fromWorld({ ...world, x: world.x + dx, y: world.y + dy }))
@@ -250,9 +343,9 @@ export class Editor {
   }
 
   // ノードの親を付け替える（ワールドでの位置と向きは変えない）。親の中では最も手前に置く
-  reparent(tx: Transaction<NodeRecord>, ids: string[], parentId: string): void {
+  reparent(tx: Transaction<CanvasRecord>, ids: string[], parentId: string): void {
     const nodes = ids.flatMap((id) => {
-      const node = tx.get(id)
+      const node = nodeIn(tx, id)
       return node && node.parentId !== parentId && !this.isAncestorOrSelf(id, parentId) ? [node] : []
     })
     if (nodes.length === 0) return
@@ -260,7 +353,7 @@ export class Editor {
     const ordered = this.index.sortByOrder(nodes.map((n) => n.id))
     const indices = indicesBetween(this.index.topmost(parentId)?.index ?? null, null, ordered.length)
     for (const [i, id] of ordered.entries()) {
-      const node = tx.get(id)!
+      const node = nodeIn(tx, id)!
       tx.put({ ...this.fromWorld(this.toWorld(node), parentId), index: indices[i] })
     }
   }
@@ -273,14 +366,14 @@ export class Editor {
   // 選んでいるノードを group にまとめる（Ctrl+G）。親が同じものだけをまとめる
   groupSelected(): string | null {
     const selected = [...this.session.get().selectedIds].flatMap((id) => {
-      const node = this.store.get(id)
+      const node = this.getNode(id)
       return node ? [node] : []
     })
     if (selected.length < 2) return null
     const parentId = selected[0].parentId
     const members = this.index.sortByOrder(selected.filter((n) => n.parentId === parentId).map((n) => n.id))
     if (members.length < 2) return null
-    const topmost = this.store.get(members.at(-1)!)!
+    const topmost = this.getNode(members.at(-1)!)!
     // group は親の原点に置く（回転なし）。そうすれば、子は座標を変えずにそのまま入れられる
     const group = this.makeNode('group', { x: 0, y: 0, parentId, index: topmost.index })
     this.transact('group', (tx) => {
@@ -288,7 +381,7 @@ export class Editor {
       tx.put(group)
       const indices = indicesBetween(null, null, members.length)
       for (const [i, id] of members.entries()) {
-        const node = tx.get(id)!
+        const node = nodeIn(tx, id)!
         tx.put({ ...node, parentId: group.id, index: indices[i] })
       }
       this.setSelection([group.id])
@@ -299,7 +392,7 @@ export class Editor {
   // 選んでいる group を解除する（Ctrl+Shift+G）。子は、ワールドでの位置を保ったまま group の親に戻す
   ungroupSelected(): void {
     const groups = [...this.session.get().selectedIds].flatMap((id) => {
-      const node = this.store.get(id)
+      const node = this.getNode(id)
       return node && this.isContainer(node, 'group') ? [node] : []
     })
     if (groups.length === 0) return
@@ -310,11 +403,11 @@ export class Editor {
         // group があった重なり順の位置に、子を並べる
         const siblings = this.index.childrenOf(group.parentId)
         const at = siblings.indexOf(group.id)
-        const before = at > 0 ? this.store.get(siblings[at - 1])!.index : null
-        const after = at >= 0 && at < siblings.length - 1 ? this.store.get(siblings[at + 1])!.index : null
+        const before = at > 0 ? this.getNode(siblings[at - 1])!.index : null
+        const after = at >= 0 && at < siblings.length - 1 ? this.getNode(siblings[at + 1])!.index : null
         const indices = indicesBetween(before, after, children.length)
         for (const [i, id] of children.entries()) {
-          const child = tx.get(id)!
+          const child = nodeIn(tx, id)!
           tx.put({ ...this.fromWorld(this.toWorld(child), group.parentId), index: indices[i] })
           released.push(id)
         }
@@ -333,7 +426,7 @@ export class Editor {
   // 今の階層（中に入っている group の中、そうでなければ Canvas 直下）のノードをすべて選ぶ
   selectAll(): void {
     const parent = this.session.get().focusedGroupId ?? this.canvasId
-    this.setSelection(this.index.childrenOf(parent).filter((id) => !this.store.get(id)?.locked))
+    this.setSelection(this.index.childrenOf(parent).filter((id) => !this.getNode(id)?.locked))
   }
 
   // group の中に入る（ダブルクリック）・出る（Esc）
@@ -349,7 +442,7 @@ export class Editor {
     let target = id
     for (const ancestor of this.index.ancestorsOf(id)) {
       if (ancestor === focus) break
-      const node = this.store.get(ancestor)
+      const node = this.getNode(ancestor)
       if (node && this.isContainer(node, 'group')) target = ancestor
     }
     // 中に入っている group の外のノードをクリックしたら、中から出る
@@ -506,7 +599,7 @@ export class Editor {
       if (!entry || !this.isContainer(entry.node, 'frame')) continue
       if ([ordered[i], ...this.index.ancestorsOf(ordered[i])].some((id) => exclude.has(id))) continue
       // group の中のフレームには入れない（group の子を勝手に動かさない）
-      if (this.index.ancestorsOf(ordered[i]).some((id) => this.isContainer(this.store.get(id)!, 'group'))) continue
+      if (this.index.ancestorsOf(ordered[i]).some((id) => this.isContainer(this.getNode(id)!, 'group'))) continue
       const local = applyMat(invert(entry.worldMatrix), point)
       if (boxContains(entry.localBounds, local)) return ordered[i]
     }
@@ -536,7 +629,7 @@ export class Editor {
       let target = id
       for (const ancestor of this.index.ancestorsOf(id)) {
         if (ancestor === focus) break
-        const node = this.store.get(ancestor)
+        const node = this.getNode(ancestor)
         if (node && this.isContainer(node, 'group')) target = ancestor
       }
       out.add(target)

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { CanvasView, Editor, type StatsSummary, type ToolId } from '@canvcode/canvas'
-import { DRAW_COLORS, DRAW_SIZES, builtinNodeTypes } from '@canvcode/nodes'
+import { CanvasView, Editor, type ArrowStyle, type StatsSummary, type ToolId } from '@canvcode/canvas'
+import { ARROW_COLORS, ARROW_SIZES, DRAW_COLORS, DRAW_SIZES, builtinNodeTypes, type ArrowProps } from '@canvcode/nodes'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { markdownCardType } from './markdown/markdownCard.ts'
@@ -17,9 +17,15 @@ const TOOLS: { id: ToolId; label: string; key: string }[] = [
   { id: 'frame', label: 'フレーム', key: 'F' },
   { id: 'draw', label: 'フリーハンド', key: 'D' },
   { id: 'eraser', label: '消しゴム', key: 'E' },
+  { id: 'arrow', label: '矢印', key: 'A' },
 ]
 
 const SIZE_LABELS = ['細', '中', '太']
+const ARROWHEADS: { label: string; title: string; start: ArrowStyle['arrowheadStart']; end: ArrowStyle['arrowheadEnd'] }[] = [
+  { label: '—', title: '矢じりなし', start: 'none', end: 'none' },
+  { label: '→', title: '終点に矢じり', start: 'none', end: 'arrow' },
+  { label: '↔', title: '両端に矢じり', start: 'arrow', end: 'arrow' },
+]
 
 const BENCH_NODE_COUNT = 10_000
 
@@ -56,6 +62,33 @@ export function App() {
     const timer = window.setInterval(() => setStats(view.getStats()), 500)
     return () => window.clearInterval(timer)
   }, [view, showStats])
+
+  // 矢印のパレット（MAI-28）。矢印のツールのとき、または矢印だけを選んでいるときに出し、選んでいる矢印にも当てる
+  const selectedArrows = [...session.selectedIds].flatMap((id) => {
+    const node = editor.getNode(id)
+    return node?.type === 'arrow' ? [node] : []
+  })
+  const arrowPalette =
+    session.toolId === 'arrow' || (selectedArrows.length > 0 && selectedArrows.length === session.selectedIds.size)
+  const arrowStyle: ArrowStyle = selectedArrows.length > 0 ? (selectedArrows[0].props as ArrowProps) : session.arrowStyle
+  const setArrowStyle = (patch: Partial<ArrowStyle>) => {
+    const pick = (props: ArrowStyle): ArrowStyle => ({
+      color: props.color,
+      size: props.size,
+      arrowheadStart: props.arrowheadStart,
+      arrowheadEnd: props.arrowheadEnd,
+    })
+    if (selectedArrows.length > 0) {
+      editor.transact('arrow style', (tx) => {
+        // 画面を描いたあとで矢印が変わっている（曲げたなど）ことがあるので、今の値を読み直す
+        for (const { id } of selectedArrows) {
+          const node = editor.getNode(id)
+          if (node) tx.put({ ...node, props: { ...node.props, ...patch } })
+        }
+      })
+    }
+    editor.session.set({ arrowStyle: { ...pick(arrowStyle), ...patch } })
+  }
 
   const startBenchmark = () => {
     if (!view) return
@@ -126,7 +159,7 @@ export function App() {
       </div>
 
       {session.toolId === 'draw' && (
-        <div className="draw-palette">
+        <div className="style-palette">
           {DRAW_COLORS.map((color) => (
             <button
               key={color}
@@ -144,6 +177,37 @@ export function App() {
               onClick={() => editor.session.set({ drawStyle: { ...session.drawStyle, size } })}
             >
               {SIZE_LABELS[i]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {arrowPalette && (
+        <div className="style-palette">
+          {ARROW_COLORS.map((color) => (
+            <button
+              key={color}
+              className={arrowStyle.color === color ? 'swatch active' : 'swatch'}
+              style={{ background: color }}
+              title={color}
+              onClick={() => setArrowStyle({ color })}
+            />
+          ))}
+          <span className="separator" />
+          {ARROW_SIZES.map((size, i) => (
+            <button key={size} className={arrowStyle.size === size ? 'active' : ''} onClick={() => setArrowStyle({ size })}>
+              {SIZE_LABELS[i]}
+            </button>
+          ))}
+          <span className="separator" />
+          {ARROWHEADS.map((head) => (
+            <button
+              key={head.title}
+              title={head.title}
+              className={arrowStyle.arrowheadStart === head.start && arrowStyle.arrowheadEnd === head.end ? 'active' : ''}
+              onClick={() => setArrowStyle({ arrowheadStart: head.start, arrowheadEnd: head.end })}
+            >
+              {head.label}
             </button>
           ))}
         </div>

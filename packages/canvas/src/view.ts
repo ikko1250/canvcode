@@ -21,6 +21,7 @@ import { ImageCache } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
 import { TextEditor } from './textEditor.ts'
 import {
+  ArrowTool,
   DrawTool,
   EraserTool,
   FrameTool,
@@ -169,6 +170,7 @@ export class CanvasView {
       ['frame', new FrameTool(toolContext)],
       ['draw', new DrawTool(toolContext)],
       ['eraser', new EraserTool(toolContext)],
+      ['arrow', new ArrowTool(toolContext)],
     ])
     this.tool = this.tools.get(editor.session.get().toolId)!
 
@@ -349,8 +351,16 @@ export class CanvasView {
   }
 
   private lift(ids: Iterable<string>): void {
-    // group やフレームを動かすときは、子孫も一緒にシーンから外す（行列が変わるのは子孫も同じなので）
-    this.lifted = new Set([...ids].flatMap((id) => [id, ...this.editor.index.descendantsOf(id)]))
+    // group やフレームを動かすときは、子孫も一緒にシーンから外す（行列が変わるのは子孫も同じなので）。
+    // つながっている矢印も一緒に動くので、外しておく（シーンを描き直さずに済む。MAI-28）
+    const lifted = new Set([...ids].flatMap((id) => [id, ...this.editor.index.descendantsOf(id)]))
+    for (const id of [...lifted]) {
+      for (const bindingId of this.editor.bindings.toTarget(id)) {
+        const binding = this.editor.getBinding(bindingId)
+        if (binding) lifted.add(binding.fromId)
+      }
+    }
+    this.lifted = lifted
     this.invalidate('scene')
     this.invalidate('overlay')
   }
@@ -577,6 +587,7 @@ export class CanvasView {
       f: 'frame',
       d: 'draw',
       e: 'eraser',
+      a: 'arrow',
     }
     const toolId = toolKeys[e.key.toLowerCase()]
     if (toolId) editor.session.set({ toolId })

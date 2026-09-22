@@ -2,7 +2,7 @@ import type { Box, Camera } from '@canvcode/core'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note' | 'frame' | 'draw' | 'eraser'
+export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow'
 
 export interface SessionState {
   camera: Camera
@@ -17,6 +17,15 @@ export interface SessionState {
   brush: Box | null
   // フリーハンドで描く線の色と太さ（MAI-27）
   drawStyle: { color: string; size: number }
+  // 矢印の色・太さ・矢じり（MAI-28）
+  arrowStyle: ArrowStyle
+}
+
+export interface ArrowStyle {
+  color: string
+  size: number
+  arrowheadStart: 'none' | 'arrow'
+  arrowheadEnd: 'none' | 'arrow'
 }
 
 export class Session {
@@ -33,6 +42,7 @@ export class Session {
       focusedGroupId: null,
       brush: null,
       drawStyle: { color: '#1f2328', size: 4 },
+      arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },
       ...initial,
     }
   }

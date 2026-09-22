@@ -65,6 +65,10 @@ export interface NodeTypeDef<P extends object> {
   canRotate?: boolean
   // リサイズのとき、常に縦横比を保つか（画像など。MAI-26）
   lockAspectRatio?: boolean
+  // 矢印をつなげられるか（既定は true。MAI-28）
+  canBind?: boolean
+  // 矢印の端を止める縁（ローカル座標の多角形）。定義しなければ getBounds の箱
+  outline?(node: NodeRecord<P>): Vec[]
   // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く
   container?: 'group' | 'frame'
   // 文字を編集できる型は、編集のしかたを返す（MAI-24）。編集モードでは、これに合わせて textarea を重ねる

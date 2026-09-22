@@ -44,6 +44,10 @@ export interface StoreHooks<R extends BaseRecord> {
   afterDelete?: (record: R, tx: Transaction<R>) => void
   // commit の直前に、トランザクション全体の差分を受け取る
   beforeCommit?: (patch: Patch<R>, tx: Transaction<R>) => void
+  // 購読者に知らせる直前に、まだ知らせていない差分を受け取る（途中経過でも commit でも呼ばれる）。
+  // ほかのレコードから計算して決まる値（矢印の端など）を、ここで合わせ直す。
+  // ここで変えたものも同じ知らせに入る。取り消し（cancel）のときは呼ばない
+  beforeFlush?: (pending: Patch<R>, tx: Transaction<R>) => void
 }
 
 export function invertPatch<R>(patch: Patch<R>): Patch<R> {
@@ -125,8 +129,13 @@ export class Transaction<R extends BaseRecord> {
 
   // 途中経過を購読者に知らせる（ドラッグ中の再描画など）
   flush(): void {
+    this.flushPending(true)
+  }
+
+  private flushPending(runHooks: boolean): void {
     this.assertOpen()
     if (this.pending.size === 0) return
+    if (runHooks) this.store._hooks.beforeFlush?.(this.pending, this)
     const patch = this.pending
     this.pending = new Map()
     this.store._emit({ label: this.label, patch, options: this.options, phase: 'progress' })
@@ -150,7 +159,7 @@ export class Transaction<R extends BaseRecord> {
     const revert = invertPatch(this.total)
     for (const [id, change] of revert) this.store._write(id, change.after)
     this.pending = mergePatch(this.pending, revert)
-    this.flush()
+    this.flushPending(false)
     this.done = true
     this.store._endTransaction(this)
   }

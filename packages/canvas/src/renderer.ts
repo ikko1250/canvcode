@@ -1,7 +1,7 @@
 import { expandBox, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
-import type { AssetResolver, ImageRequester, RenderInfo } from '@canvcode/nodes'
+import { arrowPolyline, type ArrowProps, type AssetResolver, type ImageRequester, type RenderInfo } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
-import { selectionHandles } from './tools.ts'
+import { arrowHandles, selectionHandles } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
@@ -16,6 +16,7 @@ const CULL_MARGIN_PX = 16
 
 const SELECTION_COLOR = '#2f6fed'
 const HANDLE_SIZE_PX = 8
+const ARROW_HANDLE_RADIUS_PX = 5
 
 export interface Viewport {
   camera: Camera
@@ -192,6 +193,23 @@ export function drawOverlay(
   // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
   const found = editor.session.get().editingId ? null : selectionHandles(editor)
   if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
+  // 矢印の端と曲がりのハンドル（MAI-28）
+  const arrow = editor.session.get().editingId ? null : arrowHandles(editor)
+  if (arrow) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.fillStyle = '#ffffff'
+    for (const [point, radius] of [
+      [arrow.start, ARROW_HANDLE_RADIUS_PX],
+      [arrow.end, ARROW_HANDLE_RADIUS_PX],
+      [arrow.bend, ARROW_HANDLE_RADIUS_PX - 1.5],
+    ] as const) {
+      const s = view.camera.zoom * view.dpr
+      ctx.beginPath()
+      ctx.arc((point.x - view.camera.x) * s, (point.y - view.camera.y) * s, radius * view.dpr, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+    }
+  }
 
   // 範囲選択の枠
   if (state.brush) {
@@ -217,6 +235,15 @@ function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, 
     x: (m.a * x + m.c * y + m.e - view.camera.x) * s,
     y: (m.b * x + m.d * y + m.f - view.camera.y) * s,
   })
+  if (entry.node.type === 'arrow') {
+    // 矢印は箱ではなく、線そのものをなぞる
+    const line = arrowPolyline(entry.node.props as ArrowProps).map((p) => corner(p.x, p.y))
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.beginPath()
+    line.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+    ctx.stroke()
+    return
+  }
   const points = [
     corner(local.x, local.y),
     corner(local.x + local.w, local.y),

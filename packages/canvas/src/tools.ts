@@ -7,14 +7,20 @@ import {
   panBy,
   worldToScreen,
   type Box,
+  type CanvasRecord,
   type NodeRecord,
   type Transaction,
   type Vec,
 } from '@canvcode/core'
 import {
   GEO_DEFAULT_SIZE,
+  arrowLabelPoint,
+  arcGeometry,
+  arcPoint,
+  bendThrough,
   normalizeDrawPoints,
   segmentTouchesDraw,
+  type ArrowProps,
   type DrawProps,
   textLayout,
   type FrameProps,
@@ -22,7 +28,8 @@ import {
   type NoteProps,
   type TextProps,
 } from '@canvcode/nodes'
-import type { Editor, TransformSelection } from './editor.ts'
+import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
+import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import {
   frameCenter,
@@ -67,11 +74,13 @@ export interface ToolContext {
   // ツールの既定のカーソルの代わりに使うカーソル（ハンドルの上など）。null で元に戻す
   setCursor(cursor: string | null): void
   // 文字の編集モードに入る（MAI-24）。tx を渡すと、作成と編集が 1 回の Undo になる
-  startEditing(nodeId: string, options?: { tx?: Transaction<NodeRecord>; selectAll?: boolean }): boolean
+  startEditing(nodeId: string, options?: { tx?: Transaction<CanvasRecord>; selectAll?: boolean }): boolean
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
 export function selectionHandles(editor: Editor): { selection: TransformSelection; handles: ScreenHandles } | null {
+  // 矢印を 1 つだけ選んでいるときは、枠ではなく端と曲がりのハンドルを出す（arrowHandles）
+  if (arrowHandles(editor)) return null
   const selection = editor.transformSelection()
   if (!selection) return null
   const camera = editor.session.get().camera
@@ -80,6 +89,45 @@ export function selectionHandles(editor: Editor): { selection: TransformSelectio
     rotate: selection.canRotate,
   })
   return { selection, handles }
+}
+
+// 1 つだけ選んでいる矢印の、始点・終点・曲がりのハンドル（ワールド座標。MAI-28）
+export interface ArrowHandles {
+  arrowId: string
+  start: Vec
+  end: Vec
+  bend: Vec
+}
+
+export function arrowHandles(editor: Editor): ArrowHandles | null {
+  const { selectedIds, editingId } = editor.session.get()
+  if (selectedIds.size !== 1 || editingId) return null
+  const [id] = selectedIds
+  const entry = editor.index.get(id)
+  if (!entry || entry.node.type !== 'arrow' || entry.node.locked) return null
+  const props = entry.node.props as ArrowProps
+  const g = arcGeometry(props.start, props.end, props.bend)
+  const m = entry.worldMatrix
+  return {
+    arrowId: id,
+    start: applyMat(m, arcPoint(g, props.clip[0])),
+    end: applyMat(m, arcPoint(g, props.clip[1])),
+    bend: applyMat(m, arrowLabelPoint(props)),
+  }
+}
+
+// ハンドルをつかめる範囲（CSS ピクセル）
+const ARROW_HANDLE_HIT_PX = 8
+
+function hitArrowHandle(editor: Editor, pointer: ToolPointer): { handles: ArrowHandles; handle: 'start' | 'end' | 'bend' } | null {
+  const handles = arrowHandles(editor)
+  if (!handles) return null
+  const camera = editor.session.get().camera
+  // 端を先に調べる（短い矢印では、曲がりのハンドルと重なるので）
+  for (const handle of ['start', 'end', 'bend'] as const) {
+    if (dist(worldToScreen(camera, handles[handle]), pointer.screen) <= ARROW_HANDLE_HIT_PX) return { handles, handle }
+  }
+  return null
 }
 
 export interface Tool {
@@ -111,14 +159,16 @@ type SelectState =
   | {
       name: 'translating'
       start: ToolPointer
-      tx: Transaction<NodeRecord>
+      tx: Transaction<CanvasRecord>
       // ワールドでの形にした、動かし始めのノード
       initial: Map<string, NodeRecord>
     }
-  | { name: 'resizing'; handle: Handle; tx: Transaction<NodeRecord>; selection: TransformSelection }
+  | { name: 'resizing'; handle: Handle; tx: Transaction<CanvasRecord>; selection: TransformSelection }
+  | { name: 'draggingArrowEnd'; tx: Transaction<CanvasRecord>; drag: ArrowTerminalDrag }
+  | { name: 'bendingArrow'; tx: Transaction<CanvasRecord>; arrowId: string }
   | {
       name: 'rotating'
-      tx: Transaction<NodeRecord>
+      tx: Transaction<CanvasRecord>
       selection: TransformSelection
       pivot: Vec
       start: Vec
@@ -139,6 +189,18 @@ export class SelectTool implements Tool {
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
+    // 矢印の端と曲がりのハンドル（MAI-28）
+    const arrowHit = hitArrowHandle(editor, pointer)
+    if (arrowHit) {
+      const { arrowId } = arrowHit.handles
+      const tx = editor.begin(arrowHit.handle === 'bend' ? 'bend arrow' : 'move arrow end')
+      this.ctx.lift([arrowId])
+      this.state =
+        arrowHit.handle === 'bend'
+          ? { name: 'bendingArrow', tx, arrowId }
+          : { name: 'draggingArrowEnd', tx, drag: new ArrowTerminalDrag(this.ctx, tx, arrowId, arrowHit.handle) }
+      return
+    }
     // 選択枠のハンドルは、ノードより先に調べる
     const handleHit = this.hitSelectionHandle(pointer)
     if (handleHit) {
@@ -172,6 +234,11 @@ export class SelectTool implements Tool {
     const state = this.state
     switch (state.name) {
       case 'idle': {
+        if (hitArrowHandle(editor, pointer)) {
+          this.ctx.setCursor('pointer')
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          return
+        }
         const handleHit = this.hitSelectionHandle(pointer)
         if (handleHit) {
           this.ctx.setCursor(this.cursorFor(handleHit.hit, handleHit.selection))
@@ -184,6 +251,22 @@ export class SelectTool implements Tool {
         // ホバーの表示も、クリックしたら選ばれるもの（group 全体など）に合わせる
         const hoveredId = hit ? this.selectableWithoutSideEffects(hit.id) : null
         if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
+        return
+      }
+      case 'draggingArrowEnd': {
+        state.drag.move(pointer)
+        return
+      }
+      case 'bendingArrow': {
+        const arrow = nodeIn(state.tx, state.arrowId) as NodeRecord<ArrowProps> | undefined
+        const entry = editor.index.get(state.arrowId)
+        if (!arrow || !entry) return
+        const local = applyMat(invert(entry.worldMatrix), pointer.world)
+        let bend = bendThrough(arrow.props.start, arrow.props.end, local)
+        // 直線の近くでは、直線に吸い付かせる
+        if (Math.abs(bend) * editor.session.get().camera.zoom < ARROW_STRAIGHT_SNAP_PX) bend = 0
+        state.tx.put({ ...arrow, props: { ...arrow.props, bend } })
+        state.tx.flush()
         return
       }
       case 'resizing': {
@@ -257,6 +340,10 @@ export class SelectTool implements Tool {
       editor.finish(state.tx)
       this.ctx.drop()
       this.ctx.setCursor(null)
+    } else if (state.name === 'draggingArrowEnd' || state.name === 'bendingArrow') {
+      if (state.name === 'draggingArrowEnd') state.drag.end()
+      editor.finish(state.tx)
+      this.ctx.drop()
     }
     this.state = { name: 'idle' }
   }
@@ -264,7 +351,14 @@ export class SelectTool implements Tool {
   cancel(): boolean {
     const state = this.state
     this.state = { name: 'idle' }
-    if (state.name === 'translating' || state.name === 'resizing' || state.name === 'rotating') {
+    if (state.name === 'draggingArrowEnd') state.drag.end()
+    if (
+      state.name === 'translating' ||
+      state.name === 'resizing' ||
+      state.name === 'rotating' ||
+      state.name === 'draggingArrowEnd' ||
+      state.name === 'bendingArrow'
+    ) {
       state.tx.cancel()
       this.ctx.drop()
       this.ctx.setCursor(null)
@@ -355,16 +449,19 @@ export class SelectTool implements Tool {
 
   private startTranslating(start: ToolPointer): void {
     const editor = this.ctx.editor
-    const initial = new Map<string, NodeRecord>()
-    for (const id of editor.session.get().selectedIds) {
+    const ids = [...editor.session.get().selectedIds].filter((id) => {
       const node = editor.getNode(id)
-      if (node && !node.locked) initial.set(id, editor.toWorld(node))
-    }
-    if (initial.size === 0) {
+      return node && !node.locked
+    })
+    if (ids.length === 0) {
       this.state = { name: 'idle' }
       return
     }
     const tx = editor.begin('move')
+    // つながっている先を一緒に動かさない矢印は、つながりを外してから動かす（MAI-28）
+    editor.detachArrows(tx, ids)
+    const initial = new Map<string, NodeRecord>()
+    for (const id of ids) initial.set(id, editor.toWorld(nodeIn(tx, id)!))
     this.ctx.lift(initial.keys())
     editor.session.set({ hoveredId: null })
     this.state = { name: 'translating', start, tx, initial }
@@ -372,12 +469,12 @@ export class SelectTool implements Tool {
 
   // 動かし終えたノードを、中心の下にあるフレームの子にする（フレームの外に出したら Canvas に戻す）。
   // group の中のノードは、group から勝手に出さない
-  private dropIntoFrames(tx: Transaction<NodeRecord>, ids: string[]): void {
+  private dropIntoFrames(tx: Transaction<CanvasRecord>, ids: string[]): void {
     const editor = this.ctx.editor
     const moving = new Set(ids)
     const byParent = new Map<string, string[]>()
     for (const id of ids) {
-      const node = tx.get(id)
+      const node = nodeIn(tx, id)
       const entry = editor.index.get(id)
       if (!node || !entry) continue
       const parent = node.parentId === editor.canvasId ? null : editor.getNode(node.parentId)
@@ -431,7 +528,7 @@ export class HandTool implements Tool {
 
 interface BoxCreation<P extends object> {
   start: ToolPointer
-  tx: Transaction<NodeRecord>
+  tx: Transaction<CanvasRecord>
   node: NodeRecord<P>
   parentId: string
   // 親のローカル座標でのドラッグの始点
@@ -623,7 +720,7 @@ function containsBox(outer: Box, inner: Box): boolean {
 // ---- テキストツール（T）と付箋ツール（N）（MAI-24） ----
 
 // クリックした位置にテキストを作り、そのまま編集する（クリックした点が 1 行目の中ほどに来るようにする）
-function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<NodeRecord>): void {
+function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<CanvasRecord>): void {
   const editor = ctx.editor
   const { parentId, local } = placeAt(editor, point)
   const transaction = tx ?? editor.begin('create text')
@@ -637,7 +734,7 @@ function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<NodeRecord>
 export class TextTool implements Tool {
   readonly id = 'text' as const
   readonly cursor = 'text'
-  private creating: { start: ToolPointer; tx: Transaction<NodeRecord>; node: NodeRecord<TextProps>; parentId: string } | null =
+  private creating: { start: ToolPointer; tx: Transaction<CanvasRecord>; node: NodeRecord<TextProps>; parentId: string } | null =
     null
   private readonly ctx: ToolContext
 
@@ -695,7 +792,7 @@ export class TextTool implements Tool {
 export class NoteTool implements Tool {
   readonly id = 'note' as const
   readonly cursor = 'crosshair'
-  private creating: { tx: Transaction<NodeRecord>; node: NodeRecord<NoteProps> } | null = null
+  private creating: { tx: Transaction<CanvasRecord>; node: NodeRecord<NoteProps> } | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
@@ -749,7 +846,7 @@ export class DrawTool implements Tool {
   readonly id = 'draw' as const
   readonly cursor = 'crosshair'
   private drawing: {
-    tx: Transaction<NodeRecord>
+    tx: Transaction<CanvasRecord>
     node: NodeRecord<DrawProps>
     points: number[]
     last: Vec
@@ -858,7 +955,7 @@ const ERASER_RADIUS_PX = 6
 export class EraserTool implements Tool {
   readonly id = 'eraser' as const
   readonly cursor = 'crosshair'
-  private erasing: { tx: Transaction<NodeRecord>; last: Vec; erased: Set<string> } | null = null
+  private erasing: { tx: Transaction<CanvasRecord>; last: Vec; erased: Set<string> } | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
@@ -909,7 +1006,7 @@ export class EraserTool implements Tool {
     for (const id of editor.index.search(expandBox(boxFromPoints(a, b), margin))) {
       if (erasing.erased.has(id)) continue
       const entry = editor.index.get(id)
-      if (!entry || entry.node.type !== 'draw' || entry.node.locked || !erasing.tx.get(id)) continue
+      if (!entry || entry.node.type !== 'draw' || entry.node.locked || !nodeIn(erasing.tx, id)) continue
       // ノードの行列は回転と平行移動だけなので、ローカル座標でも余裕の大きさは同じ
       const toLocal = invert(entry.worldMatrix)
       const props = entry.node.props as DrawProps
@@ -919,5 +1016,180 @@ export class EraserTool implements Tool {
       changed = true
     }
     if (changed) erasing.tx.flush()
+  }
+}
+
+// ---- 矢印（MAI-28） ----
+
+// 曲がりのハンドルを、直線からこれより近くで離したら直線にする（CSS ピクセル）
+const ARROW_STRAIGHT_SNAP_PX = 6
+// つながる先のノードの上で、これだけ止まっていたら、そのノードの中心ではなく指している点につなぐ（tldraw と同じ）
+const PRECISE_DELAY_MS = 400
+const PRECISE_STILL_PX = 3
+
+// 矢印の端をドラッグして、つながる先を決める。矢印を作るときと、選んだ矢印の端を動かすときに使う
+export class ArrowTerminalDrag {
+  private readonly ctx: ToolContext
+  private readonly tx: Transaction<CanvasRecord>
+  private readonly arrowId: string
+  private readonly terminal: 'start' | 'end'
+  private target: string | null = null
+  private precise = false
+  private lastPointer: ToolPointer | null = null
+  private stillAt: Vec | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+
+  constructor(ctx: ToolContext, tx: Transaction<CanvasRecord>, arrowId: string, terminal: 'start' | 'end') {
+    this.ctx = ctx
+    this.tx = tx
+    this.arrowId = arrowId
+    this.terminal = terminal
+    const existing = this.binding()
+    if (existing) {
+      this.target = existing.toId
+      this.precise = existing.props.isPrecise
+    }
+  }
+
+  move(pointer: ToolPointer): void {
+    const editor = this.ctx.editor
+    this.lastPointer = pointer
+    // Ctrl（⌘）を押している間は、どこにもつながない（tldraw と同じ）
+    const candidate = pointer.ctrlKey || pointer.metaKey ? null : bindTargetAt(editor, pointer.world, this.arrowId)
+    if (candidate !== this.target) {
+      this.target = candidate
+      this.precise = false
+      this.restartStillTimer(pointer)
+    } else if (!this.stillAt || dist(this.stillAt, pointer.screen) > PRECISE_STILL_PX) {
+      this.restartStillTimer(pointer)
+    }
+    this.apply()
+  }
+
+  end(): void {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+    this.ctx.editor.session.set({ hoveredId: null })
+  }
+
+  private binding() {
+    return this.ctx.editor.bindingsOfArrow(this.arrowId).find((b) => b.props.terminal === this.terminal)
+  }
+
+  private restartStillTimer(pointer: ToolPointer): void {
+    this.stillAt = pointer.screen
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+    if (!this.target || this.precise) return
+    this.timer = setTimeout(() => {
+      this.timer = null
+      if (!this.target || this.tx.isDone) return
+      this.precise = true
+      this.apply()
+    }, PRECISE_DELAY_MS)
+  }
+
+  private apply(): void {
+    const editor = this.ctx.editor
+    const pointer = this.lastPointer
+    const arrow = nodeIn(this.tx, this.arrowId) as NodeRecord<ArrowProps> | undefined
+    if (!pointer || !arrow) return
+    const existing = this.binding()
+    const target = this.target ? nodeIn(this.tx, this.target) : undefined
+    // 端を今の位置に置いておく（つながっていれば、知らせる前に基盤がつながる先に合わせ直す）
+    const local = editor.worldToParent(arrow.parentId, pointer.world)
+    const point = { x: local.x - arrow.x, y: local.y - arrow.y }
+    this.tx.put({
+      ...arrow,
+      props: { ...arrow.props, [this.terminal]: point, clip: [0, 1] as [number, number] },
+    })
+    if (target) {
+      // 両端が同じノードなら、中心どうしになって見えなくなるので、指している点につなぐ
+      const other = editor.bindingsOfArrow(this.arrowId).find((b) => b.props.terminal !== this.terminal)
+      const isPrecise = this.precise || other?.toId === target.id
+      const props = {
+        terminal: this.terminal,
+        normalizedAnchor: isPrecise ? normalizedAnchorAt(editor, target, pointer.world) : { x: 0.5, y: 0.5 },
+        isPrecise,
+      }
+      if (existing) this.tx.put({ ...existing, toId: target.id, props })
+      else this.tx.put(makeBinding(this.arrowId, target.id, props))
+    } else if (existing) {
+      this.tx.remove(existing.id)
+    }
+    editor.session.set({ hoveredId: target?.id ?? null })
+    this.tx.flush()
+  }
+}
+
+export class ArrowTool implements Tool {
+  readonly id = 'arrow' as const
+  readonly cursor = 'crosshair'
+  private creating: { tx: Transaction<CanvasRecord>; start: ToolPointer; arrowId: string; drag: ArrowTerminalDrag; moved: boolean } | null =
+    null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext) {
+    this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const startTarget = pointer.ctrlKey || pointer.metaKey ? null : bindTargetAt(editor, pointer.world, null)
+    const { parentId, local } = placeAt(editor, pointer.world)
+    const { color, size, arrowheadStart, arrowheadEnd } = editor.session.get().arrowStyle
+    const tx = editor.begin('create arrow')
+    const arrow = editor.makeNode('arrow', {
+      x: local.x,
+      y: local.y,
+      parentId,
+      props: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 }, color, size, arrowheadStart, arrowheadEnd },
+    })
+    tx.put(arrow)
+    if (startTarget) {
+      tx.put(makeBinding(arrow.id, startTarget, { terminal: 'start', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+    }
+    this.creating = { tx, start: pointer, arrowId: arrow.id, drag: new ArrowTerminalDrag(this.ctx, tx, arrow.id, 'end'), moved: false }
+    this.ctx.lift([arrow.id])
+  }
+
+  onPointerMove(pointer: ToolPointer): void {
+    const creating = this.creating
+    if (!creating) return
+    if (!creating.moved && dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) return
+    creating.moved = true
+    creating.drag.move(pointer)
+  }
+
+  onPointerUp(): void {
+    const creating = this.creating
+    if (!creating) return
+    this.creating = null
+    creating.drag.end()
+    // ドラッグせずにクリックしただけなら、何も作らない
+    if (!creating.moved) {
+      creating.tx.cancel()
+      this.ctx.drop()
+      return
+    }
+    this.ctx.editor.setSelection([creating.arrowId])
+    this.ctx.editor.finish(creating.tx)
+    this.ctx.drop()
+    this.ctx.setTool('select')
+  }
+
+  cancel(): boolean {
+    const creating = this.creating
+    if (!creating) return false
+    this.creating = null
+    creating.drag.end()
+    creating.tx.cancel()
+    this.ctx.drop()
+    return true
+  }
+
+  onExit(): void {
+    this.cancel()
   }
 }

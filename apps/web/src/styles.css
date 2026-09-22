@@ -175,8 +175,8 @@ body,
   line-height: 1.5;
 }
 
-/* フリーハンドの色と太さ（MAI-27）。ツールバーが折り返しても重ならないよう、左端の中ほどに縦に並べる */
-.draw-palette {
+/* フリーハンドと矢印の色・太さ（MAI-27、MAI-28）。ツールバーが折り返しても重ならないよう、左端の中ほどに縦に並べる */
+.style-palette {
   position: absolute;
   left: 12px;
   top: 50%;
@@ -192,7 +192,7 @@ body,
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
-.draw-palette button {
+.style-palette button {
   min-width: 28px;
   height: 28px;
   padding: 0 6px;
@@ -204,13 +204,13 @@ body,
   cursor: pointer;
 }
 
-.draw-palette button.active {
+.style-palette button.active {
   background: #e3ebfd;
   border-color: #b9ccf8;
   color: var(--accent);
 }
 
-.draw-palette button.swatch {
+.style-palette button.swatch {
   width: 22px;
   min-width: 22px;
   height: 22px;
@@ -220,11 +220,11 @@ body,
   box-shadow: 0 0 0 1px var(--panel-border);
 }
 
-.draw-palette button.swatch.active {
+.style-palette button.swatch.active {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
-.draw-palette .separator {
+.style-palette .separator {
   width: 20px;
   height: 1px;
   margin: 2px 0;

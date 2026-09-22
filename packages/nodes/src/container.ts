@@ -17,6 +17,7 @@ export const groupType = defineNodeType<GroupProps>({
   hitTest: () => false,
   render: () => {},
   container: 'group',
+  canBind: false,
 })
 
 // ---- frame ----

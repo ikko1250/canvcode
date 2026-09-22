@@ -1,5 +1,5 @@
-// キャンバス内のレコード（MAI-7）。段階 2 では Node だけを扱う。段階 6 で Asset を加えた。
-// Binding・Canvas・File などは、必要になる段階で追加する。
+// キャンバス内のレコード（MAI-7）。段階 2 では Node だけを扱う。段階 6 で Asset、段階 8 で Binding を加えた。
+// Canvas・File などは、必要になる段階で追加する。
 
 export interface NodeRecord<P extends object = object> {
   typeName: 'node'
@@ -39,4 +39,35 @@ export function assetIdFromHash(hash: string): string {
   return `asset:${hash}`
 }
 
-export type WorkspaceRecord = NodeRecord
+// 矢印の端がどのノードのどこにつながっているか（MAI-7、MAI-28）
+export interface BindingRecord {
+  typeName: 'binding'
+  id: string
+  type: 'arrow'
+  // 矢印のノード
+  fromId: string
+  // つながっている先のノード
+  toId: string
+  props: ArrowBindingProps
+}
+
+export interface ArrowBindingProps {
+  terminal: 'start' | 'end'
+  // つながっている先のノードの箱の中での位置（0〜1）
+  normalizedAnchor: { x: number; y: number }
+  // true なら矢印は anchor を向く。false なら箱の中心を向く（tldraw と同じ）
+  isPrecise: boolean
+}
+
+// 1 つの Canvas のストアに入るレコード
+export type CanvasRecord = NodeRecord | BindingRecord
+
+export function isNodeRecord(record: CanvasRecord | undefined): record is NodeRecord {
+  return record?.typeName === 'node'
+}
+
+export function isBindingRecord(record: CanvasRecord | undefined): record is BindingRecord {
+  return record?.typeName === 'binding'
+}
+
+export type WorkspaceRecord = CanvasRecord

@@ -17,6 +17,7 @@ export interface GeoProps {
 export type GeoNode = NodeRecord<GeoProps>
 
 export const GEO_DEFAULT_SIZE = 120
+const ELLIPSE_OUTLINE_POINTS = 64
 
 export const geoType = defineNodeType<GeoProps>({
   type: 'geo',
@@ -69,6 +70,18 @@ export const geoType = defineNodeType<GeoProps>({
   },
 
   roughColor: (node) => node.props.fill,
+
+  // 楕円は、矢印が縁で止まるよう多角形で近似する（MAI-28）
+  outline(node) {
+    const { w, h, shape } = node.props
+    if (shape === 'rect') return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }]
+    const points = []
+    for (let i = 0; i < ELLIPSE_OUTLINE_POINTS; i++) {
+      const a = (i / ELLIPSE_OUTLINE_POINTS) * Math.PI * 2
+      points.push({ x: w / 2 + (w / 2) * Math.cos(a), y: h / 2 + (h / 2) * Math.sin(a) })
+    }
+    return points
+  },
 
   resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
   minSize: { w: 1, h: 1 },
