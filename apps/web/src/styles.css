@@ -40,61 +40,92 @@ body,
   inset: 0;
 }
 
-.toolbar {
+/* パイメニュー（MAI-39）。中心はキーを押したときのポインタの位置 */
+.pie-menu {
+  position: fixed;
+  z-index: 25;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pie-hub {
   position: absolute;
-  bottom: 12px;
-  left: 12px;
-  right: 12px;
-  width: fit-content;
+  left: 0;
+  top: 0;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 6px;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  transform: translate(-50%, -50%);
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  border-radius: 50%;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
-.toolbar button {
-  display: inline-flex;
+/* 中心の丸の名前（メニューと、入っているサブメニュー）は、丸の下に出す */
+.pie-hub span {
+  position: absolute;
+  top: calc(100% + 4px);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 向けている項目の方向を指す印 */
+.pie-pointer {
+  position: absolute;
+  inset: 0;
+}
+
+.pie-pointer::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.pie-item {
+  position: absolute;
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 9px;
-  border: 1px solid transparent;
+  padding: 5px 10px;
+  background: #ffffff;
+  border: 1px solid var(--panel-border);
   border-radius: 6px;
-  background: transparent;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
   color: var(--text);
-  font: inherit;
-  cursor: pointer;
+  white-space: nowrap;
 }
 
-.toolbar button:hover {
-  background: #eef1f5;
-}
-
-.toolbar button.active {
+.pie-item.active {
   background: #e3ebfd;
   border-color: #b9ccf8;
   color: var(--accent);
 }
 
-.toolbar button:disabled {
-  color: var(--muted);
-  cursor: default;
+.pie-item.highlight {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
 }
 
-.toolbar kbd {
-  font: 11px ui-monospace, monospace;
+.pie-item.disabled {
   color: var(--muted);
 }
 
-.toolbar .separator {
-  width: 1px;
-  height: 20px;
-  margin: 0 4px;
-  background: var(--panel-border);
+.pie-more {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 .stats {
