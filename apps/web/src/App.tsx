@@ -201,7 +201,7 @@ export function App(props: { initial: InitialRecords }) {
   const [cardBench, setCardBench] = useState<'idle' | 'running' | CardBenchmarkResult>('idle')
   // 画面の下に短く出す知らせ（受け付けないファイルをドロップしたときなど）
   const [notices, setNotices] = useState<{ id: number; message: string }[]>([])
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; items: (MenuItem | 'separator')[]; onClose?: () => void } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   // Portal の名前を、その場で変えているとき（右クリックメニューの「名前を変更」）
