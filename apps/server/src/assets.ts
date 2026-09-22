@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 
@@ -8,7 +8,7 @@ import { join } from 'node:path'
 // - 実体は <ワークスペース>/.canvcode/assets/<ハッシュ>.<拡張子> に置く。名前が中身の SHA-256 なので、
 //   同じファイルを 2 回受け取っても 1 つにまとまり、中身が変わることもない（ブラウザに長くキャッシュさせる）
 // - 縮小版（長辺 256px・1024px）はブラウザが作って送ってくる（MAI-14）。<ハッシュ>.<長辺>.<拡張子> に置く
-// - 種類や縮小版の一覧は <ハッシュ>.json に書いておく。段階 11 で Asset のレコードを SQLite に入れたら、そちらに移す
+// - 種類・大きさ・縮小版の一覧は <ハッシュ>.json に書いておく。画面を開いたときに、一覧（GET /api/assets）を返す
 // - PDF は、受け取ったあとで検索用のテキストをページごとに取り出し、<ハッシュ>.pages.json に置く（MAI-10 の「4. PDF」）。
 //   全文検索の画面は初版の範囲外なので、取り出しておくだけ
 
@@ -30,6 +30,9 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/
 interface AssetMeta {
   mime: string
   size: number
+  // 画像の大きさ（画素。PDF は 0）。段階 11-1 より前に受け取ったものにはない
+  width?: number
+  height?: number
   // 長辺 → 縮小版の種類
   variants: Record<string, string>
 }
@@ -51,7 +54,10 @@ export class AssetStore {
     if (parts[0] !== 'api' || parts[1] !== 'assets') return false
     const [, , hash, size] = parts
     try {
-      if (req.method === 'POST' && parts.length === 2) {
+      if (req.method === 'GET' && parts.length === 2) {
+        // Asset の一覧（画面を開いたときに読む）
+        sendJson(res, 200, { assets: await this.list() })
+      } else if (req.method === 'POST' && parts.length === 2) {
         await this.receiveOriginal(req, res)
       } else if (req.method === 'PUT' && parts.length === 4) {
         await this.receiveVariant(req, res, hash, Number(size))
@@ -82,7 +88,7 @@ export class AssetStore {
     if (typeof claimed === 'string' && claimed !== hash) throw new HttpError(400, 'hash mismatch')
     if (!(await this.readMeta(hash))) {
       await writeAtomic(join(this.dir, `${hash}.${ext}`), body)
-      await this.writeMeta(hash, { mime, size: body.length, variants: {} })
+      await this.writeMeta(hash, { mime, size: body.length, width: headerNumber(req, 'x-canvcode-width'), height: headerNumber(req, 'x-canvcode-height'), variants: {} })
       // 応答を待たせないよう、裏で行う
       if (mime === 'application/pdf') void this.extractPdfText(hash, body)
     }
@@ -151,6 +157,19 @@ export class AssetStore {
     }
   }
 
+  private async list(): Promise<{ hash: string; mime: string; size: number; width: number; height: number; variants: number[] }[]> {
+    const names = await readdir(this.dir)
+    const out = []
+    for (const name of names) {
+      const match = /^([0-9a-f]{64})\.json$/.exec(name)
+      if (!match) continue
+      const meta = await this.readMeta(match[1])
+      if (!meta) continue
+      out.push({ hash: match[1], mime: meta.mime, size: meta.size, width: meta.width ?? 0, height: meta.height ?? 0, variants: Object.keys(meta.variants).map(Number) })
+    }
+    return out
+  }
+
   private async readMeta(hash: string): Promise<AssetMeta | null> {
     try {
       return JSON.parse(await readFile(join(this.dir, `${hash}.json`), 'utf8')) as AssetMeta
@@ -170,6 +189,11 @@ class HttpError extends Error {
     super(message)
     this.status = status
   }
+}
+
+function headerNumber(req: IncomingMessage, name: string): number {
+  const value = Number(req.headers[name])
+  return Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 function contentType(req: IncomingMessage): string {

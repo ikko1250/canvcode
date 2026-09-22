@@ -26,7 +26,7 @@ import { BindingIndex, resolveArrow, unbind, type NodeLookup } from './bindings.
 // - どの Canvas にも関係する決まりごと（子孫の削除、矢印のつながり、空の group、Portal と階層、ゴミ箱）は、
 //   ここのストアのフックで守る。フックで起きた変更は、操作したトランザクションに入り、1 回の Undo で戻る
 // - 1 つの Canvas を編集する入口は Editor。Editor はこのワークスペースを共有する
-// 段階 11 までは永続化せず、ブラウザのメモリ内だけで動く。
+// 保存とサーバーとの同期は SyncClient（sync.ts）が、このストアの差分を送り受けして行う。
 
 export interface HistoryMeta {
   selectionBefore: string[]

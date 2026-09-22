@@ -12,7 +12,8 @@
     "start": "node apps/server/src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "snapshot": "node apps/server/src/snapshot.ts"
   },
   "devDependencies": {
     "@types/node": "^24.13.6",

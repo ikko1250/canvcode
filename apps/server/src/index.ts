@@ -7,12 +7,15 @@ import { parseArgs } from 'node:util'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { AssetStore } from './assets.ts'
 import { FileStore, type FileEvent } from './files.ts'
+import { RecordStore } from './records.ts'
+import { SyncHub } from './sync.ts'
+import { ThumbnailStore } from './thumbnails.ts'
 
 // CanvCode のサーバー（MAI-4）。
 // - VPS 上で 127.0.0.1 でのみ待ち受け、ローカル PC からは SSH のポートフォワードで開く
 // - 本番では、ビルドした画面（apps/web/dist）も同じサーバーから配信する
 // - ワークスペースのフォルダ（MAI-13）の .canvcode/ に、画像の Asset を保存する（MAI-26）
-// レコードの永続化（MAI-13）と WebSocket での同期（MAI-11）は、後の段階で入れる。
+// - レコードは .canvcode/workspace.db（SQLite）に保存し、/api/sync の WebSocket で同期する（MAI-11、MAI-13）
 
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
@@ -29,8 +32,12 @@ const WORKSPACE = resolve(
 const DATA_DIR = join(WORKSPACE, '.canvcode')
 const assets = new AssetStore(DATA_DIR)
 await assets.init()
+const thumbnails = new ThumbnailStore(DATA_DIR)
+await thumbnails.init()
+const records = new RecordStore(DATA_DIR)
+const sync = new SyncHub(records)
 
-// ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）。段階 11 でレコードの同期にも使う（MAI-11）
+// ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）
 const sockets = new WebSocketServer({ noServer: true })
 const clients = new Set<WebSocket>()
 sockets.on('connection', (socket) => {
@@ -99,6 +106,8 @@ const server = createServer(async (req, res) => {
     sendJson(res, 403, { error: 'forbidden origin' })
     return
   }
+  if (sync.handle(req, res, url.pathname)) return
+  if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return
   if (url.pathname.startsWith('/api/')) {
@@ -127,11 +136,13 @@ const server = createServer(async (req, res) => {
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', `http://${HOST}`)
-  if (url.pathname !== '/api/events' || !trusted(req)) {
+  if (!trusted(req)) {
     socket.destroy()
     return
   }
-  sockets.handleUpgrade(req, socket, head, (ws) => sockets.emit('connection', ws, req))
+  if (url.pathname === '/api/events') sockets.handleUpgrade(req, socket, head, (ws) => sockets.emit('connection', ws, req))
+  else if (url.pathname === '/api/sync') sync.server.handleUpgrade(req, socket, head, (ws) => sync.server.emit('connection', ws, req))
+  else socket.destroy()
 })
 
 server.listen(PORT, HOST, () => {

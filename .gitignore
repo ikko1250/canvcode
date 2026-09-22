@@ -3,3 +3,4 @@ dist/
 .canvcode/
 *.log
 /workspace/
+/temp/

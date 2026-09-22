@@ -6,7 +6,7 @@ import type { PdfTextItem } from './quotes.ts'
 // - 取り込むとき、ブラウザで中身の SHA-256 と縮小版（長辺 256px・1024px）を作り、すぐに使えるようにしてから、
 //   裏でサーバーへアップロードする（ノードはアップロードを待たずに置ける）
 // - アップロードが済むまでは手元の Blob から、済んだらサーバーから読む
-// - 段階 11 で Asset のレコードをサーバーに保存するまでは、レコードはこのタブの中だけにある
+// - レコードはサーバーの <ハッシュ>.json が正本。画面を開いたときに一覧（GET /api/assets）を読む（段階 11）
 
 export interface AssetManagerOptions {
   // API の場所（既定は /api/assets）
@@ -127,6 +127,14 @@ export class AssetManager implements AssetResolver {
     if (!this.records.has(record.id)) this.records.set(record.id, record)
   }
 
+  // サーバーにある Asset の一覧を読んで登録する（画面を開いたとき）
+  async loadList(): Promise<void> {
+    const response = await fetch(this.baseUrl)
+    if (!response.ok) throw new Error(`Failed to list assets: ${response.status}`)
+    const { assets } = (await response.json()) as { assets: Omit<AssetRecord, 'typeName' | 'id'>[] }
+    for (const asset of assets) this.register({ typeName: 'asset', id: assetIdFromHash(asset.hash), ...asset })
+  }
+
   // すべてのアップロードが終わるまで待つ（テスト用）
   async settled(): Promise<void> {
     await Promise.allSettled([...this.uploads.values()])
@@ -198,7 +206,12 @@ export class AssetManager implements AssetResolver {
     // record.variants が空（PDF など）なら、原本だけを送る
     const response = await fetch(this.baseUrl, {
       method: 'POST',
-      headers: { 'content-type': record.mime, 'x-canvcode-sha256': record.hash },
+      headers: {
+        'content-type': record.mime,
+        'x-canvcode-sha256': record.hash,
+        'x-canvcode-width': String(record.width),
+        'x-canvcode-height': String(record.height),
+      },
       body: original,
     })
     if (!response.ok) throw new Error(`Upload failed: ${response.status} ${await response.text()}`)

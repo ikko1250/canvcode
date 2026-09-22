@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { Camera } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
   FileManager,
+  SyncClient,
   Workspace,
+  type InitialRecords,
   type ConflictChoice,
   type ArrowStyle,
   type OwnerPortalDeletion,
   type QuoteDraft,
   type QuoteRequest,
   type StatsSummary,
+  type SyncStatus,
   type ToolId,
 } from '@canvcode/canvas'
 import {
@@ -82,21 +86,47 @@ function fileIdFromUrl(): string | null {
 
 // ワークスペースと File の本文の読み書き。Markdown カードの型は本文を引く先を必要とし、
 // 本文を引く先（FileManager）はワークスペースを必要とするので、間に引く先を 1 つ挟んで作る
-function createWorkspace() {
+// 保存されていたレコード（initial）を当ててから、サーバーとの同期を始める（MAI-11、MAI-13）
+function createWorkspace(initial: InitialRecords) {
   let manager: FileManager | null = null
   const content: FileContentSource = { get: (fileId) => manager?.get(fileId) ?? null }
   const workspace = new Workspace({
+    rootCanvasId: initial.rootCanvasId,
     types: [...builtinNodeTypes, createAppMarkdownCardType(content), createCodeCardType({ files: content })],
   })
+  const sync = new SyncClient(workspace, initial)
   manager = new FileManager({ workspace })
-  return { workspace, files: manager }
+  return { workspace, files: manager, sync }
 }
+
+// Canvas ごとの最後のカメラ（端末ごとに、ブラウザに覚える）
+const CAMERA_KEY = 'canvcode.camera.'
+
+function savedCamera(canvasId: string): Camera | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(CAMERA_KEY + canvasId) ?? 'null') as Camera | null
+    return value && Number.isFinite(value.x) && Number.isFinite(value.y) && value.zoom > 0 ? value : null
+  } catch {
+    return null
+  }
+}
+
+function saveCamera(canvasId: string, camera: Camera): void {
+  try {
+    localStorage.setItem(CAMERA_KEY + canvasId, JSON.stringify(camera))
+  } catch {
+    // 覚えられなくても困らない
+  }
+}
+
+const SYNC_LABELS: Record<SyncStatus, string> = { saved: '保存済み', saving: '保存中…', offline: 'サーバーにつながっていません（つながったら送ります）' }
 
 type Dialog = { title: string; message: string; choices: DialogChoice<string>[]; resolve(value: string | null): void }
 
-export function App() {
+export function App(props: { initial: InitialRecords }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [{ workspace, files }] = useState(createWorkspace)
+  const [{ workspace, files, sync }] = useState(() => createWorkspace(props.initial))
+  const syncStatus = useSyncExternalStore(sync.subscribeStatus, sync.getStatus)
   // 全画面のエディタで開いている File（MAI-30）と、開いたときに選んで見せる引用（「出典へ」。MAI-33）
   const [openFileId, setOpenFileId] = useState<string | null>(null)
   const [fileFocus, setFileFocus] = useState<{ quote: string; line: number } | null>(null)
@@ -109,10 +139,24 @@ export function App() {
       if (!editor) {
         editor = new Editor({ workspace, canvasId })
         editors.set(canvasId, editor)
+        // 前に開いたときのカメラに戻す（全体表示はしない）
+        const camera = savedCamera(canvasId)
+        if (camera) {
+          editor.session.set({ camera })
+          visited.add(canvasId)
+        }
+        // カメラが止まったら覚える
+        let timer: number | null = null
+        const target = editor
+        editor.session.subscribe((state, prev) => {
+          if (state.camera === prev.camera) return
+          if (timer !== null) window.clearTimeout(timer)
+          timer = window.setTimeout(() => saveCamera(canvasId, target.session.get().camera), 500)
+        })
       }
       return editor
     },
-    [workspace, editors],
+    [workspace, editors, visited],
   )
   const [canvasId, setCanvasId] = useState(workspace.rootCanvasId)
   const editor = getEditor(canvasId)
@@ -551,12 +595,17 @@ export function App() {
       console.error('Failed to load files', error)
       notify('ファイルの一覧を読み込めませんでした')
     })
-    // 開いた URL の Canvas に入る（段階 11 まではデータを保存しないので、再読み込みするとルートだけになる）
+    // 保存されている Asset（画像・PDF）の一覧を読む
+    void created.assets.loadList().catch((error: unknown) => console.error('Failed to load assets', error))
+    // 開いた URL の Canvas に入る
     const initial = canvasIdFromUrl()
     if (initial && initial !== workspace.rootCanvasId && workspace.getCanvas(initial)) void navigate(initial, { push: false })
     else history.replaceState({ canvasId: workspace.rootCanvasId }, '', `/c/${encodeURIComponent(workspace.rootCanvasId)}`)
     // ページを閉じる・隠すときは、保存していない編集をすぐ保存する
-    const onHide = () => void files.flush()
+    const onHide = () => {
+      void files.flush()
+      sync.flush()
+    }
     window.addEventListener('pagehide', onHide)
     const onPop = (e: PopStateEvent) => {
       // 全画面のエディタの開け閉め
@@ -577,7 +626,7 @@ export function App() {
       files.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource])
+  }, [workspace, files, sync, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
@@ -889,6 +938,10 @@ export function App() {
             </p>
           </div>
         )}
+
+        <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
+          {syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
+        </div>
 
         {notices.length > 0 && (
           <div className="notices">

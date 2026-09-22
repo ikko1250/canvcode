@@ -709,3 +709,47 @@ body,
   background: rgba(56, 139, 253, 0.16);
   color: #0550ae;
 }
+
+/* 保存の状態（段階 11-1） */
+.sync-status {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  padding: 4px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.sync-status.saving {
+  color: var(--accent);
+}
+
+.sync-status.offline {
+  color: #cf222e;
+  border-color: #f5c2c7;
+  background: #fff5f5;
+}
+
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.loading-screen button {
+  padding: 6px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}

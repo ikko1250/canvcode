@@ -132,8 +132,10 @@ export class CanvasView {
   private tool!: Tool
   // 今の Editor にだけ関係する購読（Canvas を移ると付け替える）
   private editorDisposers: (() => void)[] = []
-  // Canvas のサムネイル（Portal に見せる。MAI-8 の「4. 親の Canvas 上でのプレビュー」）。段階 11 まではこのタブの中だけ
+  // Canvas のサムネイル（Portal に見せる。MAI-8 の「4. 親の Canvas 上でのプレビュー」）。
+  // 作ったらサーバーにも保存し（.canvcode/thumbnails/）、まだ手元にないものは初めて描くときにサーバーから読む
   private readonly thumbnails = new Map<string, RasterImage>()
+  private readonly thumbnailRequests = new Set<string>()
   private readonly documents: DocumentResolver
   private spaceHeld = false
   private cursorOverride: string | null = null
@@ -175,7 +177,7 @@ export class CanvasView {
         if (!doc) return { title: '', kind: 'canvas', status: 'missing' }
         return { title: doc.title, kind: doc.typeName === 'canvas' ? 'canvas' : doc.kind, status: workspace.targetStatus(id) }
       },
-      thumbnail: (id) => this.thumbnails.get(id) ?? null,
+      thumbnail: (id) => this.thumbnails.get(id) ?? this.requestThumbnail(id),
     }
     this.citations = {
       location: (anchorId) => {
@@ -402,7 +404,7 @@ export class CanvasView {
     const editor = this.editor
     const bounds = unionBoxes(editor.index.allIds().flatMap((id) => editor.index.get(id)?.worldBounds ?? []))
     if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
-      this.thumbnails.delete(editor.canvasId)
+      if (this.thumbnails.delete(editor.canvasId)) void this.storeThumbnail(editor.canvasId, null)
       return
     }
     const scale = Math.min(THUMBNAIL_MAX.w / bounds.w, THUMBNAIL_MAX.h / bounds.h, 2)
@@ -431,6 +433,38 @@ export class CanvasView {
     if (previous instanceof ImageBitmap) previous.close()
     this.thumbnails.set(editor.canvasId, { image, width, height, level: 1 })
     this.invalidate('scene')
+    void this.storeThumbnail(editor.canvasId, canvas)
+  }
+
+  // サムネイルをサーバーに保存する（null なら消す）。失敗しても、このタブでは見えているので知らせない
+  private async storeThumbnail(canvasId: string, canvas: HTMLCanvasElement | null): Promise<void> {
+    const url = `/api/thumbnails/${encodeURIComponent(canvasId)}`
+    try {
+      if (!canvas) {
+        await fetch(url, { method: 'DELETE' })
+        return
+      }
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+      if (blob) await fetch(url, { method: 'PUT', headers: { 'content-type': 'image/png' }, body: blob })
+    } catch (error) {
+      console.warn('Failed to save a thumbnail', canvasId, error)
+    }
+  }
+
+  // まだ手元にないサムネイルを、サーバーから読む（一度だけ）。読めたら描き直す
+  private requestThumbnail(canvasId: string): null {
+    if (this.thumbnailRequests.has(canvasId) || typeof fetch === 'undefined') return null
+    this.thumbnailRequests.add(canvasId)
+    void fetch(`/api/thumbnails/${encodeURIComponent(canvasId)}`)
+      .then(async (response) => {
+        if (response.status !== 200 || this.thumbnails.has(canvasId)) return
+        const image = await createImageBitmap(await response.blob())
+        if (this.thumbnails.has(canvasId)) return image.close()
+        this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
+        this.invalidate('scene')
+      })
+      .catch(() => {})
+    return null
   }
 
   // カメラを滑らかに動かす（Portal に入る・出るとき。MAI-6）
@@ -1242,6 +1276,11 @@ export class CanvasView {
         const image = await doc.render(0, scale)
         this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
         this.invalidate('scene')
+        const canvas = document.createElement('canvas')
+        canvas.width = image.width
+        canvas.height = image.height
+        canvas.getContext('2d')!.drawImage(image, 0, 0)
+        void this.storeThumbnail(canvasId, canvas)
       }
       return portalId
     } catch (error) {
@@ -1310,6 +1349,6 @@ function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
   const later = files.every((file) => /\.ricbackup$/i.test(file.name))
   return later
-    ? `${names}：.ricbackup の取り込みは、段階 11 で対応します`
+    ? `${names}：.ricbackup の取り込みは、段階 11-2 で対応します`
     : `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、PDF）`
 }
