@@ -39,6 +39,7 @@ import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
 import { buildPieMenus } from './pie/menus.ts'
 import { PieMenus } from './pie/PieMenu.tsx'
+import { ArrangePalette } from './palette/ArrangePalette.tsx'
 import { DrawPalette } from './palette/DrawPalette.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
@@ -608,6 +609,42 @@ export function App(props: { initial: InitialRecords }) {
           },
         })
         items.push({ label: '複製', shortcut: 'Ctrl+D', onSelect: () => view.duplicateSelection() })
+        // 整列・等間隔（MAI-54）：2 つ以上（等間隔は 3 つ以上）を選んでいるとき、次の階層で向きを選ばせる
+        const arrangeCount = editor.arrangeTargets().length
+        if (arrangeCount >= 2) {
+          items.push({
+            label: '整列 ›',
+            onSelect: () =>
+              setMenu({
+                x: at.x,
+                y: at.y,
+                items: (
+                  [
+                    ['left', '左揃え'],
+                    ['hcenter', '左右中央揃え'],
+                    ['right', '右揃え'],
+                    ['top', '上揃え'],
+                    ['vcenter', '上下中央揃え'],
+                    ['bottom', '下揃え'],
+                  ] as const
+                ).map(([edge, label]) => ({ label, onSelect: () => editor.alignSelection(edge) })),
+              }),
+          })
+        }
+        if (arrangeCount >= 3) {
+          items.push({
+            label: '等間隔に配置 ›',
+            onSelect: () =>
+              setMenu({
+                x: at.x,
+                y: at.y,
+                items: [
+                  { label: '横に等間隔', onSelect: () => editor.distributeSelection('x') },
+                  { label: '縦に等間隔', onSelect: () => editor.distributeSelection('y') },
+                ],
+              }),
+          })
+        }
         if (selected.length > 1) items.push({ label: 'グループにする', shortcut: 'Ctrl+G', onSelect: () => editor.groupSelected() })
         if (selected.some((n) => n.type === 'group')) {
           items.push({ label: 'グループを解除', shortcut: 'Ctrl+Shift+G', onSelect: () => editor.ungroupSelected() })
@@ -869,6 +906,14 @@ export function App(props: { initial: InitialRecords }) {
     return node?.type === 'text' || node?.type === 'note' ? [node] : []
   })
   const textPalette = selectedTextNodes.length > 0 && selectedTextNodes.length === session.selectedIds.size
+  // 整列・間隔のパレット（MAI-54）。2 つ以上（固定していないもの。group は 1 つ）を選んでいるときに出す。
+  // 選ぶものが変わったら key で作り直し、入力中の間隔を既定値に戻す
+  const arrangeTargets = editor.arrangeTargets()
+  const arrangePalette = arrangeTargets.length >= 2 && !session.editingId
+  const arrangeKey = arrangeTargets
+    .map((t) => t.id)
+    .sort()
+    .join(',')
   const textStyleProps = selectedTextNodes[0]?.props as TextProps | NoteProps | undefined
   const setTextStyle = (patch: Partial<{ fontSize: number; align: TextAlign }> | ((props: TextProps | NoteProps) => Partial<TextProps | NoteProps>)) => {
     // 画面を描いたあとで変わっている（編集中の文字など）ことがあるので、今の値を読み直す
@@ -953,68 +998,80 @@ export function App(props: { initial: InitialRecords }) {
           })}
         />
 
-        {session.toolId === 'draw' && (
-          <DrawPalette
-            style={session.drawStyle}
-            onChange={(patch) => editor.session.set({ drawStyle: { ...editor.session.get().drawStyle, ...patch } })}
-          />
-        )}
+        {/* 左端のパレット。複数出るときは縦に並べる（MAI-54） */}
+        <div className="palette-column">
+          {session.toolId === 'draw' && (
+            <DrawPalette
+              style={session.drawStyle}
+              onChange={(patch) => editor.session.set({ drawStyle: { ...editor.session.get().drawStyle, ...patch } })}
+            />
+          )}
 
-        {arrowPalette && (
-          <div className="style-palette">
-            {ARROW_COLORS.map((color) => (
-              <button
-                key={color}
-                className={arrowStyle.color === color ? 'swatch active' : 'swatch'}
-                style={{ background: color }}
-                title={color}
-                onClick={() => setArrowStyle({ color })}
-              />
-            ))}
-            <span className="separator" />
-            {ARROW_SIZES.map((size, i) => (
-              <button key={size} className={arrowStyle.size === size ? 'active' : ''} onClick={() => setArrowStyle({ size })}>
-                {SIZE_LABELS[i]}
-              </button>
-            ))}
-            <span className="separator" />
-            {ARROWHEADS.map((head) => (
-              <button
-                key={head.title}
-                title={head.title}
-                className={arrowStyle.arrowheadStart === head.start && arrowStyle.arrowheadEnd === head.end ? 'active' : ''}
-                onClick={() => setArrowStyle({ arrowheadStart: head.start, arrowheadEnd: head.end })}
-              >
-                {head.label}
-              </button>
-            ))}
-          </div>
-        )}
+          {arrowPalette && (
+            <div className="style-palette">
+              {ARROW_COLORS.map((color) => (
+                <button
+                  key={color}
+                  className={arrowStyle.color === color ? 'swatch active' : 'swatch'}
+                  style={{ background: color }}
+                  title={color}
+                  onClick={() => setArrowStyle({ color })}
+                />
+              ))}
+              <span className="separator" />
+              {ARROW_SIZES.map((size, i) => (
+                <button key={size} className={arrowStyle.size === size ? 'active' : ''} onClick={() => setArrowStyle({ size })}>
+                  {SIZE_LABELS[i]}
+                </button>
+              ))}
+              <span className="separator" />
+              {ARROWHEADS.map((head) => (
+                <button
+                  key={head.title}
+                  title={head.title}
+                  className={arrowStyle.arrowheadStart === head.start && arrowStyle.arrowheadEnd === head.end ? 'active' : ''}
+                  onClick={() => setArrowStyle({ arrowheadStart: head.start, arrowheadEnd: head.end })}
+                >
+                  {head.label}
+                </button>
+              ))}
+            </div>
+          )}
 
-        {textPalette && textStyleProps && (
-          <div className="style-palette" onPointerDown={(e) => e.preventDefault()}>
-            <button title="文字を大きく" onClick={() => setTextStyle((props) => ({ fontSize: stepFontSize(props.fontSize, 1) }))}>
-              A+
-            </button>
-            <span className="value" title="文字の大きさ">
-              {textStyleProps.fontSize}
-            </span>
-            <button title="文字を小さく" onClick={() => setTextStyle((props) => ({ fontSize: stepFontSize(props.fontSize, -1) }))}>
-              A−
-            </button>
-            <span className="separator" />
-            {TEXT_ALIGNS.map((item) => (
-              <button
-                key={item.align}
-                title={item.title}
-                className={textAlignOf(textStyleProps.align) === item.align ? 'active' : ''}
-                onClick={() => setTextStyle({ align: item.align })}
-              >
-                <AlignIcon lines={item.lines} />
+          {textPalette && textStyleProps && (
+            <div className="style-palette" onPointerDown={(e) => e.preventDefault()}>
+              <button title="文字を大きく" onClick={() => setTextStyle((props) => ({ fontSize: stepFontSize(props.fontSize, 1) }))}>
+                A+
               </button>
-            ))}
-          </div>
-        )}
+              <span className="value" title="文字の大きさ">
+                {textStyleProps.fontSize}
+              </span>
+              <button title="文字を小さく" onClick={() => setTextStyle((props) => ({ fontSize: stepFontSize(props.fontSize, -1) }))}>
+                A−
+              </button>
+              <span className="separator" />
+              {TEXT_ALIGNS.map((item) => (
+                <button
+                  key={item.align}
+                  title={item.title}
+                  className={textAlignOf(textStyleProps.align) === item.align ? 'active' : ''}
+                  onClick={() => setTextStyle({ align: item.align })}
+                >
+                  <AlignIcon lines={item.lines} />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {arrangePalette && (
+            <ArrangePalette
+              key={arrangeKey}
+              editor={editor}
+              count={arrangeTargets.length}
+              onDone={() => view?.root.focus({ preventScroll: true })}
+            />
+          )}
+        </div>
 
         {showStats && stats && (
           <div className="stats">

@@ -352,9 +352,20 @@ export class CanvasView {
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
-    this.editorRef.session.set({ hoveredId: null, brush: null, quoteRegion: null, quoteArmed: false })
+    this.editorRef.session.set({ hoveredId: null, brush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null })
     this.editorRef = editor
-    editor.session.set({ toolId: 'select', drawStyle, arrowStyle, editingId: null, hoveredId: null, brush: null, quoteRegion: null, quoteArmed: false })
+    editor.session.set({
+      toolId: 'select',
+      drawStyle,
+      arrowStyle,
+      editingId: null,
+      hoveredId: null,
+      brush: null,
+      quoteRegion: null,
+      quoteArmed: false,
+      hoveredSpacing: null,
+      spacingDrag: null,
+    })
     this.lifted = new Set()
     this.panPointer = null
     this.cursorOverride = null
@@ -882,7 +893,7 @@ export class CanvasView {
       this.images.endFrame()
     }
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides } = this.editor.session.get()
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides, hoveredSpacing, spacingDrag } = this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
         selectedIds,
@@ -891,6 +902,8 @@ export class CanvasView {
         focusedGroupId,
         quoteRegion,
         snapGuides,
+        hoveredSpacing,
+        spacingDrag,
       })
     }
     // 描いたノード数は、シーンを描き直したフレームの値を表示し続ける
@@ -962,7 +975,9 @@ export class CanvasView {
       state.brush !== prev.brush ||
       state.quoteRegion !== prev.quoteRegion ||
       state.focusedGroupId !== prev.focusedGroupId ||
-      state.snapGuides !== prev.snapGuides
+      state.snapGuides !== prev.snapGuides ||
+      state.hoveredSpacing !== prev.hoveredSpacing ||
+      state.spacingDrag !== prev.spacingDrag
     ) {
       this.invalidate('overlay')
     }

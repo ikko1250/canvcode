@@ -30,11 +30,13 @@ import {
   type NoteProps,
   type TextProps,
 } from '@canvcode/nodes'
+import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import { SNAP_CANDIDATE_LIMIT, SNAP_THRESHOLD_PX, nearestBoxes, sameGuides, snapTranslation, type SnapGuide } from './snapping.ts'
 import {
+  distanceToSegment,
   frameCenter,
   handleCursor,
   hitHandle,
@@ -136,6 +138,42 @@ export function arrowHandles(editor: Editor): ArrowHandles | null {
 // ハンドルをつかめる範囲（CSS ピクセル）
 const ARROW_HANDLE_HIT_PX = 8
 
+// 間隔のハンドル（MAI-54）：等間隔に並んだ選択の、隙間ごとのピンクの棒（画面上の位置）。描画と当たり判定で同じものを使う
+export interface SpacingHandle {
+  axis: Axis
+  // その軸の隙間の通し番号（0 始まり。ホバーの印に使う）
+  gapIndex: number
+  // 行（列）の中で何番目の隙間か（1 始まり。ドラッグの量を間隔に換算するのに使う）
+  k: number
+  // 今の間隔（ワールド単位）
+  gap: number
+  // 棒の両端（CSS ピクセル）。隣どうしの重なりの範囲に、隙間の真ん中で軸と直角に引く
+  a: Vec
+  b: Vec
+}
+
+export function spacingHandles(editor: Editor): SpacingHandle[] {
+  if (editor.session.get().editingId) return []
+  const camera = editor.session.get().camera
+  return editor.spacingHandlesWorld().flatMap(({ axis, gap, gaps }) =>
+    gaps.map(({ box, k }, gapIndex) => {
+      const a = axis === 'x' ? { x: box.x + box.w / 2, y: box.y } : { x: box.x, y: box.y + box.h / 2 }
+      const b = axis === 'x' ? { x: box.x + box.w / 2, y: box.y + box.h } : { x: box.x + box.w, y: box.y + box.h / 2 }
+      return { axis, gapIndex, k, gap, a: worldToScreen(camera, a), b: worldToScreen(camera, b) }
+    }),
+  )
+}
+
+// 棒をつかめる範囲（CSS ピクセル）
+const SPACING_HIT_PX = 6
+
+function hitSpacingHandle(editor: Editor, pointer: ToolPointer): SpacingHandle | null {
+  for (const handle of spacingHandles(editor)) {
+    if (distanceToSegment(pointer.screen, handle.a, handle.b) <= SPACING_HIT_PX) return handle
+  }
+  return null
+}
+
 function hitArrowHandle(editor: Editor, pointer: ToolPointer): { handles: ArrowHandles; handle: 'start' | 'end' | 'bend' } | null {
   const handles = arrowHandles(editor)
   if (!handles) return null
@@ -188,6 +226,18 @@ type SelectState =
       snapCandidates: Box[]
     }
   | { name: 'resizing'; handle: Handle; tx: Transaction<WorkspaceRecord>; selection: TransformSelection }
+  // 間隔のハンドルをドラッグしている（MAI-54）。boxes はつかんだときのワールドの箱、initial はワールドでの形にしたノード
+  | {
+      name: 'spacing'
+      axis: Axis
+      gapIndex: number
+      k: number
+      initialGap: number
+      start: ToolPointer
+      tx: Transaction<WorkspaceRecord>
+      initial: Map<string, NodeRecord>
+      boxes: ArrangeBox[]
+    }
   | { name: 'draggingArrowEnd'; tx: Transaction<WorkspaceRecord>; drag: ArrowTerminalDrag }
   | { name: 'bendingArrow'; tx: Transaction<WorkspaceRecord>; arrowId: string }
   | {
@@ -248,6 +298,12 @@ export class SelectTool implements Tool {
       this.startTransform(handleHit.hit, handleHit.selection, pointer)
       return
     }
+    // 間隔のハンドル（MAI-54）。選択枠のハンドルの次、ノードより先に調べる
+    const spacingHit = hitSpacingHandle(editor, pointer)
+    if (spacingHit) {
+      this.startSpacing(spacingHit, pointer)
+      return
+    }
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
@@ -278,14 +334,24 @@ export class SelectTool implements Tool {
         if (hitArrowHandle(editor, pointer)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          this.setHoveredSpacing(null)
           return
         }
         const handleHit = this.hitSelectionHandle(pointer)
         if (handleHit) {
           this.ctx.setCursor(this.cursorFor(handleHit.hit, handleHit.selection))
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          this.setHoveredSpacing(null)
           return
         }
+        const spacingHit = hitSpacingHandle(editor, pointer)
+        if (spacingHit) {
+          this.ctx.setCursor(spacingHit.axis === 'x' ? 'col-resize' : 'row-resize')
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          this.setHoveredSpacing({ axis: spacingHit.axis, gapIndex: spacingHit.gapIndex })
+          return
+        }
+        this.setHoveredSpacing(null)
         const zoom = editor.session.get().camera.zoom
         const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
         // 引用の範囲を選ぶ前は十字、PDF のページの上の引用した範囲の上では指のカーソル（MAI-33）
@@ -340,6 +406,23 @@ export class SelectTool implements Tool {
         })
         for (const node of editor.resizeSelection(selection, frame)) tx.put(node)
         tx.flush()
+        return
+      }
+      case 'spacing': {
+        // k 番目の隙間をつかんでいるので、棒がポインタについてくるように、動かした量の 1/k だけ間隔を変える
+        const along = state.axis === 'x' ? pointer.world.x - state.start.world.x : pointer.world.y - state.start.world.y
+        const gap = Math.round(state.initialGap + along / state.k)
+        const moved = new Set<string>()
+        for (const move of spaceBoxes(state.boxes, state.axis, gap)) {
+          const world = state.initial.get(move.id)
+          if (!world) continue
+          state.tx.put(editor.fromWorld({ ...world, x: world.x + move.dx, y: world.y + move.dy }))
+          moved.add(move.id)
+        }
+        // 間隔が元に戻った箱は、始めの形に戻す
+        for (const [id, world] of state.initial) if (!moved.has(id)) state.tx.put(editor.fromWorld(world))
+        state.tx.flush()
+        editor.session.set({ spacingDrag: { axis: state.axis, gap } })
         return
       }
       case 'rotating': {
@@ -439,6 +522,11 @@ export class SelectTool implements Tool {
       editor.finish(state.tx)
       this.ctx.drop()
       this.ctx.setCursor(null)
+    } else if (state.name === 'spacing') {
+      editor.finish(state.tx)
+      this.ctx.drop()
+      this.ctx.setCursor(null)
+      editor.session.set({ spacingDrag: null })
     } else if (state.name === 'draggingArrowEnd' || state.name === 'bendingArrow') {
       if (state.name === 'draggingArrowEnd') state.drag.end()
       editor.finish(state.tx)
@@ -461,6 +549,7 @@ export class SelectTool implements Tool {
       state.name === 'translating' ||
       state.name === 'resizing' ||
       state.name === 'rotating' ||
+      state.name === 'spacing' ||
       state.name === 'draggingArrowEnd' ||
       state.name === 'bendingArrow'
     ) {
@@ -471,6 +560,7 @@ export class SelectTool implements Tool {
       if (state.name === 'translating' && state.dropTarget) session.set({ hoveredId: null })
       // 吸い付いた線を消す（MAI-53）
       if (state.name === 'translating' && session.get().snapGuides.length > 0) session.set({ snapGuides: [] })
+      if (state.name === 'spacing') session.set({ spacingDrag: null, hoveredSpacing: null })
       return true
     }
     if (state.name === 'brushing') {
@@ -511,7 +601,43 @@ export class SelectTool implements Tool {
 
   onExit(): void {
     this.cancel()
-    this.ctx.editor.session.set({ hoveredId: null })
+    this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null })
+  }
+
+  private setHoveredSpacing(next: { axis: Axis; gapIndex: number } | null): void {
+    const session = this.ctx.editor.session
+    const current = session.get().hoveredSpacing
+    if (current === next || (current && next && current.axis === next.axis && current.gapIndex === next.gapIndex)) return
+    session.set({ hoveredSpacing: next })
+  }
+
+  // 間隔のハンドルをつかんだ（MAI-54）。先頭の箱はそのままに、すべての隙間を同じ間隔にする。1 回の Undo で戻る
+  private startSpacing(handle: SpacingHandle, pointer: ToolPointer): void {
+    const editor = this.ctx.editor
+    const boxes = editor.arrangeTargets()
+    const tx = editor.begin('spacing')
+    // つながっている先を一緒に動かさない矢印は、つながりを外してから動かす（MAI-28）
+    editor.detachArrows(tx, boxes.map((b) => b.id))
+    const initial = new Map<string, NodeRecord>()
+    for (const { id } of boxes) initial.set(id, editor.toWorld(nodeIn(tx, id)!))
+    this.ctx.lift(initial.keys())
+    this.ctx.setCursor(handle.axis === 'x' ? 'col-resize' : 'row-resize')
+    editor.session.set({
+      hoveredId: null,
+      hoveredSpacing: { axis: handle.axis, gapIndex: handle.gapIndex },
+      spacingDrag: { axis: handle.axis, gap: Math.round(handle.gap) },
+    })
+    this.state = {
+      name: 'spacing',
+      axis: handle.axis,
+      gapIndex: handle.gapIndex,
+      k: handle.k,
+      initialGap: handle.gap,
+      start: pointer,
+      tx,
+      initial,
+      boxes,
+    }
   }
 
   // selectableFor と同じ選び方で、中に入っている group から出る処理はしないもの（ホバーの表示用）

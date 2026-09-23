@@ -215,12 +215,27 @@ body,
   line-height: 1.5;
 }
 
-/* フリーハンドと矢印の色・太さ（MAI-27、MAI-28）。ツールバーが折り返しても重ならないよう、左端の中ほどに縦に並べる */
-.style-palette {
+/* 左端のパレットの置き場（MAI-54）。ツールバーが折り返しても重ならないよう、左端の中ほどに縦に並べる。
+   複数のパレット（文字の大きさと整列など）が出るときは、縦に積む */
+.palette-column {
   position: absolute;
   left: 12px;
   top: 50%;
   transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.palette-column > * {
+  pointer-events: auto;
+}
+
+/* フリーハンドと矢印の色・太さ（MAI-27、MAI-28） */
+.style-palette {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -282,6 +297,37 @@ body,
   height: 1px;
   margin: 2px 0;
   background: var(--panel-border);
+}
+
+/* 整列・等間隔・間隔（MAI-54）。横に並べる行と、間隔の数字の入力 */
+.style-palette .row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.style-palette button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.style-palette input.gap {
+  width: 52px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.style-palette input.gap:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 /* フリーハンドの透過率（MAI-49）。選んでいる色をもう一度クリックすると、色のアイコンのまわりにリングのスライダーが出る */
