@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
 import { builtinNodeTypes, createCodeCardType, type CodeCardProps } from '@canvcode/nodes'
+import { createMarkdownCardType } from '@canvcode/nodes/markdown'
 import { Editor } from './editor.ts'
 import { Workspace } from './workspace.ts'
 
 // Python の Canvas（MAI-37）
 
 function setup() {
-  const workspace = new Workspace({ rootCanvasId: 'canvas:root', types: [...builtinNodeTypes, createCodeCardType()] })
+  const workspace = new Workspace({ rootCanvasId: 'canvas:root', types: [...builtinNodeTypes, createCodeCardType(), createMarkdownCardType({ embedCss: async () => '', measureCss: '' })] })
   const root = new Editor({ workspace })
   workspace.applyServerFile({ id: 'file:py', kind: 'code', title: 'main', path: 'main.py', size: 0, mtime: 0, hash: 'h', missing: false })
   const result = root.createPythonCanvas('file:py', { x: 0, y: 0 })!
@@ -39,6 +40,16 @@ describe('a Python canvas', () => {
     expect(workspace.getNode(result.portalId)).toBeUndefined()
     expect(workspace.getNode(result.cardId)).toBeUndefined()
     expect(workspace.unplacedDocuments().map((d) => d.id)).toEqual(['file:py'])
+  })
+
+  it('makes a Markdown canvas the same way through createFileCanvas (MAI-42)', () => {
+    const { workspace, root } = setup()
+    workspace.applyServerFile({ id: 'file:md', kind: 'markdown', title: 'メモ', path: 'メモ.md', size: 0, mtime: 0, hash: 'h', missing: false })
+    const result = root.createFileCanvas('file:md', { x: 10, y: 20 })!
+    expect(workspace.getCanvas(result.canvasId)).toMatchObject({ title: 'メモ', ownerNodeId: result.portalId })
+    expect(workspace.getNode(result.cardId)).toMatchObject({ type: 'markdown-card', parentId: result.canvasId, x: 0, y: 0 })
+    expect(workspace.getFile('file:md')).toMatchObject({ parentCanvasId: result.canvasId, ownerNodeId: result.cardId })
+    expect(root.createFileCanvas('file:none', { x: 0, y: 0 })).toBeNull()
   })
 
   it('only takes Python files', () => {

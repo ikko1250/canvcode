@@ -187,6 +187,8 @@ describe('buildPieMenus', () => {
   const context = (toolId: ToolId = 'select'): PieMenuContext => ({
     toolId,
     setTool: vi.fn(),
+    importPdf: vi.fn(),
+    createFileCanvas: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     showStats: true,
@@ -209,11 +211,50 @@ describe('buildPieMenus', () => {
   })
 
   it('has every tool once in the tools menu, and no ring with more than 8 items', () => {
-    const menus = buildPieMenus(context())
-    const labels = flatten(menus[0].items).map((e) => e.label)
-    expect([...labels].sort()).toEqual(Object.values(TOOL_LABELS).sort())
+    const ctx = context()
+    const menus = buildPieMenus(ctx)
+    for (const entry of flatten(menus[0].items)) if (!isSubmenu(entry)) entry.onSelect()
+    const tools = vi.mocked(ctx.setTool).mock.calls.map(([id]) => id)
+    expect([...tools].sort()).toEqual(Object.keys(TOOL_LABELS).sort())
     const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
     for (const menu of menus) for (const size of rings(menu.items)) expect(size).toBeLessThanOrEqual(8)
+  })
+
+  it('puts freehand and the eraser at the top level, the arrow in shapes, and Portal / Card groups (MAI-42)', () => {
+    const [tools] = buildPieMenus(context())
+    const labels = (items: PieEntry[]) => items.map((e) => e.label)
+    expect(labels(tools.items)).toEqual(['選択', '手のひら', 'フリーハンド', '消しゴム', '図形', '文字', 'Portal', 'Card'])
+    const sub = (label: string) => {
+      const entry = tools.items.find((e) => e.label === label)!
+      return isSubmenu(entry) ? entry.items : []
+    }
+    expect(labels(sub('図形'))).toEqual(['矩形', '楕円', 'フレーム', '矢印'])
+    expect(labels(sub('文字'))).toEqual(['テキスト', '付箋'])
+    expect(labels(sub('Portal'))).toEqual(['空', 'PDF', 'Python', 'Markdown'])
+    expect(labels(sub('Card'))).toEqual(['Python', 'Markdown'])
+  })
+
+  it('creates canvases from the Portal group and switches tools from the Card group', () => {
+    const ctx = context()
+    const [tools] = buildPieMenus(ctx)
+    const leafIn = (group: string, label: string) => {
+      const entry = tools.items.find((e) => e.label === group)!
+      const leaf = isSubmenu(entry) ? entry.items.find((e) => e.label === label) : undefined
+      return leaf && !isSubmenu(leaf) ? leaf : undefined
+    }
+    leafIn('Portal', '空')!.onSelect()
+    expect(ctx.setTool).toHaveBeenLastCalledWith('portal')
+    leafIn('Portal', 'PDF')!.onSelect()
+    expect(ctx.importPdf).toHaveBeenCalledTimes(1)
+    leafIn('Portal', 'Python')!.onSelect()
+    expect(ctx.createFileCanvas).toHaveBeenLastCalledWith('code')
+    leafIn('Portal', 'Markdown')!.onSelect()
+    expect(ctx.createFileCanvas).toHaveBeenLastCalledWith('markdown')
+    leafIn('Card', 'Python')!.onSelect()
+    expect(ctx.setTool).toHaveBeenLastCalledWith('code')
+    leafIn('Card', 'Markdown')!.onSelect()
+    expect(ctx.setTool).toHaveBeenLastCalledWith('markdown')
+    expect(ctx.createFileCanvas).toHaveBeenCalledTimes(2)
   })
 
   it('marks the current tool and switches tools', () => {
@@ -223,9 +264,9 @@ describe('buildPieMenus', () => {
     const ellipse = all.find((e) => e.label === '楕円')!
     expect(!isSubmenu(ellipse) && ellipse.active).toBe(true)
     expect(all.filter((e) => !isSubmenu(e) && e.active)).toHaveLength(1)
-    const python = all.find((e) => e.label === 'Python')!
-    if (!isSubmenu(python)) python.onSelect()
-    expect(ctx.setTool).toHaveBeenCalledWith('code')
+    const rect = all.find((e) => e.label === '矩形')!
+    if (!isSubmenu(rect)) rect.onSelect()
+    expect(ctx.setTool).toHaveBeenCalledWith('rect')
   })
 
   it('disables a benchmark while it runs', () => {
