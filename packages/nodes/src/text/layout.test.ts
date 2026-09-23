@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { breakUnits, layoutText, type TextStyle } from './layout.ts'
+import { TEXT_FONT_SIZES, breakUnits, layoutText, stepFontSize, type TextStyle } from './layout.ts'
 
 // Node には Canvas がないので、概算の文字幅（全角 = fontSize、半角 = 0.55 × fontSize、空白 = 0.3 × fontSize）で測る
 const style: TextStyle = { fontSize: 10, lineHeight: 1.5, fontWeight: 400, color: '#000', align: 'left' }
@@ -52,5 +52,24 @@ describe('layoutText', () => {
     const layout = layoutText('上\n\n下', style, 100)
     expect(layout.lines.map((l) => l.text)).toEqual(['上', '', '下'])
     expect(layout.height).toBe(45)
+  })
+})
+
+describe('stepFontSize (MAI-50)', () => {
+  it('moves one preset up or down', () => {
+    expect(stepFontSize(24, 1)).toBe(32)
+    expect(stepFontSize(24, -1)).toBe(20)
+  })
+
+  it('snaps sizes that are not presets to the nearest preset in that direction', () => {
+    expect(stepFontSize(18, 1)).toBe(20)
+    expect(stepFontSize(18, -1)).toBe(16)
+  })
+
+  it('stays at the ends', () => {
+    const largest = TEXT_FONT_SIZES[TEXT_FONT_SIZES.length - 1]
+    expect(stepFontSize(largest, 1)).toBe(largest)
+    expect(stepFontSize(TEXT_FONT_SIZES[0], -1)).toBe(TEXT_FONT_SIZES[0])
+    expect(stepFontSize(200, 1)).toBe(200)
   })
 })

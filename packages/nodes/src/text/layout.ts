@@ -9,13 +9,30 @@
 export const TEXT_FONT_FAMILY =
   "'Noto Sans JP', 'Noto Sans CJK JP', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', sans-serif"
 
+export type TextAlign = 'left' | 'center' | 'right'
+
 export interface TextStyle {
   fontSize: number
   // 行の高さ（fontSize に対する倍率）
   lineHeight: number
   fontWeight: 400 | 700
   color: string
-  align: 'left' | 'center' | 'right'
+  align: TextAlign
+}
+
+// テキストと付箋の文字の大きさの段階（MAI-50）。パレットの「大きく」「小さく」で、この中を行き来する
+export const TEXT_FONT_SIZES = [12, 16, 20, 24, 32, 48, 64] as const
+
+// 今の大きさから、1 段階大きい（direction が 1）か小さい（-1）大きさ。
+// 段階にない大きさ（取り込んだものなど）からは、その向きで最も近い段階へ移る。端に達していればそのまま
+export function stepFontSize(fontSize: number, direction: 1 | -1): number {
+  if (direction === 1) return TEXT_FONT_SIZES.find((size) => size > fontSize) ?? fontSize
+  return [...TEXT_FONT_SIZES].reverse().find((size) => size < fontSize) ?? fontSize
+}
+
+// 古いレコードには align がないので、なければ左揃えとして扱う（MAI-50）
+export function textAlignOf(align: TextAlign | undefined): TextAlign {
+  return align ?? 'left'
 }
 
 export interface TextLine {

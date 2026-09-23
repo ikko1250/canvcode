@@ -111,7 +111,7 @@ function backup(): string {
       shape('p2', 'portal', { w: 320, h: 160, targetDocumentId: 'child', targetKind: 'canvas' }, { index: 'a2' }),
       shape('p3', 'portal', { w: 320, h: 160, targetDocumentId: 'trashed', targetKind: 'canvas' }),
       shape('p4', 'portal', { w: 320, h: 160, targetDocumentId: 'paper', targetKind: 'pdf' }, { index: 'a3' }),
-      shape('n1', 'note', { color: 'black', size: 's', richText: rich('付箋', true), scale: 1 }, { meta: { noteWidth: 300, noteHeight: 150 } }),
+      shape('n1', 'note', { color: 'black', size: 's', align: 'middle', richText: rich('付箋', true), scale: 1 }, { meta: { noteWidth: 300, noteHeight: 150 } }),
     ]),
     'tldraw/1/database.json': tldraw('child', [
       shape('md', 'portal', { w: 320, h: 160, targetDocumentId: 'memo', targetKind: 'markdown' }),
@@ -212,7 +212,9 @@ describe('converting a .ricbackup', () => {
   it('converts text, notes and bookmarks, and reports what was lost', async () => {
     const { records, report, thumbnails } = await convert()
     expect(find(records, 'node:t1')).toMatchObject({ type: 'text', props: { text: 'テキスト', fontSize: 24, align: 'center', color: '#e03131' } })
-    expect(find(records, 'node:n1')).toMatchObject({ type: 'note', props: { text: '付箋', w: 300, h: 150 } })
+    expect(find(records, 'node:n1')).toMatchObject({ type: 'note', props: { text: '付箋', w: 300, h: 150, align: 'center' } })
+    // 揃えのない旧の付箋は左揃え
+    expect(records.find((r) => r.type === 'note' && props(r).text === 'メモのキャンバスの付箋')?.props).toMatchObject({ align: 'left' })
     expect(props(find(records, 'node:bm')).text).toBe('例\nhttps://example.com')
     expect(report.lostFormatting).toBe(1)
     expect(report.lostPortalLabels).toBe(1)
