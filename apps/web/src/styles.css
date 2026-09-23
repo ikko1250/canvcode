@@ -292,10 +292,17 @@ body,
   justify-content: center;
   width: 22px;
   height: 22px;
+  /* 色どうしの間隔を少し広げる（MAI-51） */
+  margin: 2px 0;
+  transition:
+    margin 120ms ease,
+    transform 120ms ease;
 }
 
+/* リングが出ている色は少し右にせり出す。上下の余白は DrawPalette がリングの大きさから決める（MAI-51） */
 .style-palette .swatch-slot.ring-open {
   z-index: 1;
+  transform: translateX(8px);
 }
 
 .style-palette .opacity-ring {
@@ -311,7 +318,7 @@ body,
 
 .style-palette .opacity-label {
   position: absolute;
-  left: calc(100% + 14px);
+  left: calc(100% + 22px);
   top: 50%;
   transform: translateY(-50%);
   padding: 1px 6px;

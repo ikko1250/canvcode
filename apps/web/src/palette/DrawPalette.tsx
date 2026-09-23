@@ -10,9 +10,11 @@ import {
   snapDrawOpacity,
 } from '@canvcode/nodes'
 
-// フリーハンドの色・太さ・透過率のパレット（MAI-27、MAI-49）。
+// フリーハンドの色・太さ・透過率のパレット（MAI-27、MAI-49、MAI-51）。
 // 選んでいる色をもう一度クリックすると、その色のまわりにリングのスライダーが出る。
-// リングをなぞって透過率を決める。100 / 75 / 50 / 25 / 0 % に吸い付き、⌘（Ctrl）を押している間は自由
+// リングをなぞって透過率を決める。100 / 75 / 50 / 25 / 0 % に吸い付き、⌘（Ctrl）を押している間は自由。
+// リングが出ている間は、その色を少し右にせり出させ、上下の色はリングに重ならないところまで離す。
+// リングが出ているときに色をもう一度クリックすると、透過率は変えずにリングを閉じるだけ
 
 const SIZE_LABELS = ['細', '中', '太']
 
@@ -47,7 +49,12 @@ export function DrawPalette(props: { style: DrawStyle; onChange: (patch: Partial
       {DRAW_COLORS.map((color) => {
         const active = style.color === color
         return (
-          <span key={color} className={active && ringOpen ? 'swatch-slot ring-open' : 'swatch-slot'}>
+          <span
+            key={color}
+            className={active && ringOpen ? 'swatch-slot ring-open' : 'swatch-slot'}
+            // 上下の色がリングに重ならないよう、リングの大きさから余白を決める
+            style={active && ringOpen ? { margin: `${RING_CLEARANCE}px 0` } : undefined}
+          >
             <button
               className={active ? 'swatch active' : 'swatch'}
               style={{ background: color }}
@@ -87,13 +94,18 @@ export function DrawPalette(props: { style: DrawStyle; onChange: (patch: Partial
   )
 }
 
-// リングの寸法（px）。色のアイコン（22px）のすぐ外側に沿わせる
-const RING_SIZE = 40
-const RING_RADIUS = 15
-const RING_WIDTH = 4
+// リングの寸法（px）。色のアイコン（22px）から少し離して、なぞりやすい大きさにする（MAI-51）。
+// 当たり判定の帯（半径 RING_RADIUS ± HIT_WIDTH / 2）は色のアイコン（選択枠込みで半径 13）にかからないようにする。
+// こうしておくと、リングが出ているときに色をクリックしても透過率は変わらず、ボタンの閉じる処理だけが動く
+const SWATCH_SIZE = 22
+const RING_SIZE = 56
+const RING_RADIUS = 21
+const RING_WIDTH = 5
 const HIT_WIDTH = 14
-const KNOB_RADIUS = 4.5
+const KNOB_RADIUS = 5.5
 const TRACK_COLOR = 'rgba(0, 0, 0, 0.14)'
+// 上下の色を離す量。リングの見た目の外側 + 少しの隙間が、色のアイコンの枠より外に出るぶん
+const RING_CLEARANCE = Math.ceil(RING_RADIUS + RING_WIDTH / 2 + 3 - SWATCH_SIZE / 2)
 
 function polar(angleDeg: number, radius = RING_RADIUS): { x: number; y: number } {
   const a = (angleDeg * Math.PI) / 180
@@ -118,10 +130,24 @@ function OpacityRing(props: {
   const svgRef = useRef<SVGSVGElement>(null)
   const pointerId = useRef<number | null>(null)
 
-  const apply = (e: ReactPointerEvent) => {
+  const offset = (e: ReactPointerEvent): { dx: number; dy: number } | null => {
     const rect = svgRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const angle = drawOpacityAngleFromPoint(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2))
+    if (!rect) return null
+    return { dx: e.clientX - (rect.left + rect.width / 2), dy: e.clientY - (rect.top + rect.height / 2) }
+  }
+
+  // 押した場所がリングの帯の上か。内側（色のアイコン）を押したときは透過率を変えない（MAI-51）
+  const onTrack = (e: ReactPointerEvent): boolean => {
+    const o = offset(e)
+    if (!o) return false
+    const r = Math.hypot(o.dx, o.dy)
+    return r >= RING_RADIUS - HIT_WIDTH / 2 && r <= RING_RADIUS + HIT_WIDTH / 2
+  }
+
+  const apply = (e: ReactPointerEvent) => {
+    const o = offset(e)
+    if (!o) return
+    const angle = drawOpacityAngleFromPoint(o.dx, o.dy)
     const next = snapDrawOpacity(drawOpacityFromAngle(angle), e.metaKey || e.ctrlKey)
     if (next !== opacity) onChange(next)
   }
@@ -144,7 +170,7 @@ function OpacityRing(props: {
       aria-valuemax={100}
       aria-valuenow={Math.round(opacity * 100)}
       onPointerDown={(e) => {
-        if (e.button !== 0) return
+        if (e.button !== 0 || !onTrack(e)) return
         e.preventDefault()
         e.stopPropagation()
         pointerId.current = e.pointerId
@@ -175,7 +201,7 @@ function OpacityRing(props: {
       {/* 吸い付き先の印 */}
       {DRAW_OPACITY_STOPS.map((stop) => {
         const p = polar(drawOpacityToAngle(stop))
-        return <circle key={stop} cx={p.x} cy={p.y} r={1.1} fill="#ffffff" pointerEvents="none" />
+        return <circle key={stop} cx={p.x} cy={p.y} r={1.3} fill="#ffffff" pointerEvents="none" />
       })}
       <circle cx={knob.x} cy={knob.y} r={KNOB_RADIUS} fill="#ffffff" stroke={color} strokeWidth={2} pointerEvents="none" />
     </svg>
