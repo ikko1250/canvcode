@@ -60,6 +60,24 @@ describe('importing a PDF', () => {
   })
 })
 
+describe('portal thumbnail', () => {
+  it('covers only the first page of a pages canvas (MAI-46)', () => {
+    const { pagesEditor, pageNodes } = setup()
+    const first = pageNodes()[0]
+    // 書き込み（付箋）があっても、1 ページ目の範囲のまま
+    pagesEditor.createNodes([pagesEditor.makeNode('note', { x: 3000, y: 3000 })])
+    expect(pagesEditor.thumbnailBounds()).toEqual({ x: first.x, y: first.y, w: first.props.w, h: first.props.h })
+  })
+
+  it('covers all the content of an ordinary canvas', () => {
+    const { root, result } = setup()
+    const portal = root.index.get(result.portalId)!.worldBounds
+    expect(root.thumbnailBounds()).toEqual(portal)
+    const empty = new Editor({ workspace: new Workspace({ rootCanvasId: 'canvas:root' }) })
+    expect(empty.thumbnailBounds()).toBeNull()
+  })
+})
+
 describe('locking', () => {
   it('skips locked pages in hit tests unless asked, and unlocks them', () => {
     const { pagesEditor, pageNodes } = setup()

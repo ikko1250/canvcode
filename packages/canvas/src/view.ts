@@ -406,10 +406,11 @@ export class CanvasView {
     ]
   }
 
-  // 今の Canvas のサムネイルを作る（その Canvas を離れるときに呼ぶ）。中身がなければ消す
+  // 今の Canvas のサムネイルを作る（その Canvas を離れるときに呼ぶ）。中身がなければ消す。
+  // PDF のページの Canvas なら、1 ページ目だけを描く（MAI-46）
   async captureThumbnail(): Promise<void> {
     const editor = this.editor
-    const bounds = unionBoxes(editor.index.allIds().flatMap((id) => editor.index.get(id)?.worldBounds ?? []))
+    const bounds = editor.thumbnailBounds()
     if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
       if (this.thumbnails.delete(editor.canvasId)) void this.storeThumbnail(editor.canvasId, null)
       return
