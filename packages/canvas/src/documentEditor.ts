@@ -126,17 +126,19 @@ export class DocumentEditor {
     host.append(header, body)
     // キャンバスのポインタ操作に渡さない。
     // ホイールは、カードの高さが固定（sizing: 'fixed'）のときだけエディタの中のスクロールに使い、キャンバスのパンに渡さない。
-    // 高さを中身に合わせているとき（'auto'）は、エディタも中身の高さに伸ばして中でスクロールしないので、
-    // キャンバスのパン・ズームにそのまま渡す（止めると、見切れているカードへ動けなくなる。MAI-45）。
+    // 高さを中身に合わせているとき（'auto'）は、ブラウザ既定のエディタ内スクロールを止めつつ、
+    // イベントは伝播させてキャンバスのパン・ズームに渡す（止めると、見切れているカードへ動けなくなる。MAI-45）。
     // Ctrl（⌘）+ホイールとトラックパッドのピンチ（ブラウザは ctrlKey 付きの wheel として送る）は、
     // いつもキャンバスのズームに渡す。止めてしまうと、ブラウザがページごと拡大してしまう
     host.addEventListener('pointerdown', (e) => e.stopPropagation())
     host.addEventListener(
       'wheel',
       (e) => {
-        if (this.session?.host === host && this.session.sizing === 'fixed') stopUnlessZoom(e)
+        if (this.session?.host !== host) return
+        if (this.session.sizing === 'fixed') stopUnlessZoom(e)
+        else e.preventDefault()
       },
-      { passive: true },
+      { passive: false },
     )
     host.addEventListener('dblclick', (e) => e.stopPropagation())
     this.options.layer.appendChild(host)
