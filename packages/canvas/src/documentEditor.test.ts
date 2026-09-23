@@ -176,6 +176,25 @@ afterEach(() => {
   createCodeEditorMock.mockReset()
 })
 
+describe('DocumentEditor host layout', () => {
+  // 枠を border で描くと中身が 2px 内側へずれる。outline なら中身の位置は変わらない（MAI-55）
+  it('frames the host with an outline instead of a border and keeps the header at the card header height', async () => {
+    const { documentEditor, layer } = createDocumentEditor('auto')
+    await documentEditor.start('card:1')
+
+    const host = layer.children[0]
+    expect(host.style.border).toBeUndefined()
+    expect(host.style.outline).toBe('2px solid #2f6fed')
+    expect(host.style.transform).toBe('matrix(1, 0, 0, 1, 20, 30)')
+    expect(host.style.width).toBe('500px')
+
+    const header = host.children[0]
+    expect(header.style.height).toBe('36px')
+    expect(header.style.boxSizing).toBe('border-box')
+    documentEditor.finish()
+  })
+})
+
 describe('DocumentEditor pointer handling', () => {
   it('passes middle-button and Space+left-button drags to the canvas without passing ordinary clicks', async () => {
     let spaceHeld = false

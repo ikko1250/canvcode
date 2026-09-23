@@ -5,6 +5,7 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { EditorState, RangeSetBuilder, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, keymap, lineNumbers, placeholder, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
+import { CODE_CARD_METRICS, CODE_FONT_FAMILY } from '@canvcode/nodes'
 
 // CodeMirror の設定（MAI-9、MAI-30）。カードの上での編集と、全画面のエディタで同じものを使う。
 // 本文の履歴（Undo）は CodeMirror 自身が持つ。キャンバスの履歴には入れない（MAI-11）
@@ -67,7 +68,8 @@ const baseTheme = EditorView.theme({
 // 折り返した行も、元の行のインデントの位置から続ける（MAI-31：コードカードと同じ折り返し）。
 // 行ごとに、行頭の空白の分だけ左の余白を増やし、1 行目だけ字下げを戻す
 const TAB_SIZE = 4
-const LINE_PADDING = 16
+// 本文の左の余白（行番号との間。コードカードと同じ。MAI-55）
+const LINE_PADDING = CODE_CARD_METRICS.gutterGap
 function indentWidth(text: string): number {
   let width = 0
   for (const char of text) {
@@ -109,9 +111,15 @@ const hangingIndent = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations },
 )
 
+// コードの見た目。文字の大きさ・行の高さ・余白・行番号の位置をコードカードの描画（nodes/code/codeCard.ts）と同じにして、
+// カードの上で編集を始めても文字がずれないようにする（MAI-55）。
+// 行番号は、左端の余白 paddingX の右に桁数ぶんの幅で右揃え、本文はその gutterGap（LINE_PADDING）だけ右から始める
 const codeTheme = EditorView.theme({
-  '.cm-scroller': { fontFamily: "ui-monospace, 'SFMono-Regular', Menlo, 'DejaVu Sans Mono', 'Noto Sans Mono CJK JP', monospace", fontSize: '13px' },
-  '.cm-gutters': { backgroundColor: '#fbfcfd', color: '#8c959f', border: 'none' },
+  '.cm-scroller': { fontFamily: CODE_FONT_FAMILY, fontSize: `${CODE_CARD_METRICS.fontSize}px`, lineHeight: `${CODE_CARD_METRICS.lineHeight}px` },
+  '.cm-content': { padding: `${CODE_CARD_METRICS.paddingY}px 0` },
+  '.cm-line': { padding: `0 ${CODE_CARD_METRICS.paddingX}px 0 ${LINE_PADDING}px` },
+  '.cm-gutters': { backgroundColor: CODE_CARD_METRICS.background, color: CODE_CARD_METRICS.lineNumberColor, border: 'none' },
+  '.cm-lineNumbers .cm-gutterElement': { padding: `0 0 0 ${CODE_CARD_METRICS.paddingX}px`, minWidth: '0' },
 })
 
 export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
@@ -143,11 +151,13 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
         history(),
         EditorView.lineWrapping,
         syntaxHighlighting(highlight),
-        baseTheme,
+        // 見た目は、先に並べたものほど優先される（CodeMirror はテーマのスタイルを逆順に差し込む）。
+        // 呼び出し側のテーマ → 言語ごとのテーマ → 共通のテーマの順にする（MAI-55）
         options.theme ?? [],
         options.language === 'markdown' ? markdown() : [],
         // コードは、行番号とインデントを保つ折り返し、等幅フォント
         options.language === 'python' ? [python(), lineNumbers(), hangingIndent, codeTheme, EditorState.tabSize.of(TAB_SIZE)] : [],
+        baseTheme,
         options.placeholder ? placeholder(options.placeholder) : [],
         EditorView.updateListener.of((update) => {
           if (update.docChanged) options.onChange(update.state.doc.toString())

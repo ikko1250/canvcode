@@ -279,6 +279,11 @@ export class CanvasView {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
     })
     this.listen(this.root, 'wheel', (e) => this.onWheel(e), { passive: false })
+    // overflow: clip が効かないブラウザ向けの保険。root がスクロールされたら 0 に戻す（MAI-55）
+    this.listen(this.root, 'scroll', () => {
+      if (this.root.scrollTop !== 0) this.root.scrollTop = 0
+      if (this.root.scrollLeft !== 0) this.root.scrollLeft = 0
+    })
     this.listen(this.root, 'contextmenu', (e) => this.onContextMenu(e))
     this.listen(this.root, 'dblclick', (e) => {
       if (this.panPointer || this.spaceHeld) return

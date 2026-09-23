@@ -66,6 +66,10 @@ interface Fixture {
   setSizing(value: 'auto' | 'fixed'): void
   setText(value: string): void
   resetCamera(): void
+  // Move the card to another world position (MAI-55: cards sticking out of the viewport).
+  moveCard(x: number, y: number): void
+  // Create a sticky note and start editing its text in the textarea (MAI-55).
+  startNote(x: number, y: number, text: string): string
 }
 const fixture: Fixture = {
   editor, view, cardId, events,
@@ -76,5 +80,15 @@ const fixture: Fixture = {
   },
   setText: (value) => files.edit(fileId, value),
   resetCamera: () => view.setCamera({ x: 0, y: 0, zoom: 1 }),
+  moveCard(x, y) {
+    const current = editor.getNode(cardId)!
+    editor.transact('move fixture', (tx) => tx.put({ ...current, x, y }))
+  },
+  startNote(x, y, value) {
+    const note = editor.makeNode('note', { x, y, props: { text: value } })
+    editor.createNodes([note])
+    view.textEditor.start(note.id)
+    return note.id
+  },
 }
 Object.assign(window, { canvasInputFixture: fixture })

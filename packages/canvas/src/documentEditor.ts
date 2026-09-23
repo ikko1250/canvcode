@@ -1,3 +1,4 @@
+import { CODE_CARD_METRICS } from '@canvcode/nodes'
 import { createCodeEditor, type CodeEditorHandle } from './codeEditor.ts'
 import type { Editor } from './editor.ts'
 import type { FileManager } from './files.ts'
@@ -33,7 +34,8 @@ interface Session {
 
 // 編集するときの最小の高さ（ワールド座標）。短い本文でも打ちやすいように
 const MIN_EDIT_HEIGHT = 220
-const HEADER_H = 36
+// 名前の帯の高さ。Markdown・コードのカードの帯（HEADER_H = 36）と同じ
+const HEADER_H = CODE_CARD_METRICS.headerHeight
 const EDITABLE_CARDS = new Set(['markdown-card', 'code-card'])
 
 export class DocumentEditor {
@@ -79,7 +81,8 @@ export class DocumentEditor {
       display: 'flex',
       flexDirection: 'column',
       background: '#ffffff',
-      border: '2px solid #2f6fed',
+      // 枠は border ではなく outline（箱の外側）で描く。border だと中身が枠の太さだけ内側へずれ、描いたカードの文字と合わなくなる（MAI-55）
+      outline: '2px solid #2f6fed',
       borderRadius: '10px',
       boxSizing: 'border-box',
       overflow: 'hidden',
@@ -88,7 +91,9 @@ export class DocumentEditor {
     const header = document.createElement('div')
     Object.assign(header.style, {
       flexShrink: '0',
+      // 下の線も含めてカードの帯（HEADER_H）と同じ高さにする（MAI-55）
       height: `${HEADER_H}px`,
+      boxSizing: 'border-box',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',

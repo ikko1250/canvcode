@@ -21,21 +21,37 @@ export type CodeCardNode = NodeRecord<CodeCardProps>
 
 export const CODE_FONT_FAMILY = "ui-monospace, 'SFMono-Regular', Menlo, 'DejaVu Sans Mono', 'Noto Sans Mono CJK JP', monospace"
 export const CODE_CARD_DEFAULT_WIDTH = 560
-const FONT_SIZE = 13
-const LINE_HEIGHT = 20
-const HEADER_H = 36
-const PADDING_Y = 10
-const PADDING_X = 14
-const GUTTER_GAP = 12
+
+// カードを描くときの寸法と色。カードの上で編集する CodeMirror（canvas/codeEditor.ts）も同じ値を使い、
+// 描いた文字と編集中の文字が同じ位置に来るようにする（MAI-55）。
+// 行番号は、左端から paddingX + 桁数 × 文字幅 のところに右揃えで置き、本文はその gutterGap だけ右から始める
+export const CODE_CARD_METRICS = {
+  fontSize: 13,
+  lineHeight: 20,
+  headerHeight: 36,
+  paddingY: 10,
+  paddingX: 14,
+  gutterGap: 12,
+  background: '#fbfcfd',
+  headerBackground: '#eef2f7',
+  lineNumberColor: '#8c959f',
+} as const
+
+const FONT_SIZE = CODE_CARD_METRICS.fontSize
+const LINE_HEIGHT = CODE_CARD_METRICS.lineHeight
+const HEADER_H = CODE_CARD_METRICS.headerHeight
+const PADDING_Y = CODE_CARD_METRICS.paddingY
+const PADDING_X = CODE_CARD_METRICS.paddingX
+const GUTTER_GAP = CODE_CARD_METRICS.gutterGap
 const MIN_HEIGHT = 80
 // 文字が画面上でこれより小さいときは、行を帯で描く（CSS ピクセル）
 const BAR_THRESHOLD_PX = 5
 const FADE_H = 48
 
-const BACKGROUND = '#fbfcfd'
-const HEADER_BG = '#eef2f7'
+const BACKGROUND = CODE_CARD_METRICS.background
+const HEADER_BG = CODE_CARD_METRICS.headerBackground
 const BORDER = 'rgba(31, 35, 40, 0.18)'
-const LINE_NUMBER = '#8c959f'
+const LINE_NUMBER = CODE_CARD_METRICS.lineNumberColor
 
 export interface CodeCardOptions {
   files?: FileContentSource
