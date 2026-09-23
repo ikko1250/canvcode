@@ -5,6 +5,7 @@ import {
   expandBox,
   invert,
   panBy,
+  unionBoxes,
   worldToScreen,
   type Box,
   type WorkspaceRecord,
@@ -32,6 +33,7 @@ import {
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
+import { SNAP_CANDIDATE_LIMIT, SNAP_THRESHOLD_PX, nearestBoxes, sameGuides, snapTranslation, type SnapGuide } from './snapping.ts'
 import {
   frameCenter,
   handleCursor,
@@ -88,6 +90,8 @@ export interface ToolContext {
   openCitations(anchorIds: string[], screen: Vec): void
   // ノードを Portal の上に落とした：確かめてから、参照先の Canvas に移す（MAI-38）
   moveToCanvas(ids: string[], canvasId: string): void
+  // 画面に見えている範囲（ワールド座標）。吸い付きの候補を絞る（MAI-53）。ないときはすべてのノードが候補
+  viewportBox?(): Box
 }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
@@ -179,6 +183,9 @@ type SelectState =
       initial: Map<string, NodeRecord>
       // ポインタの下にある、落とせば中に移せる Portal（MAI-38）
       dropTarget: { portalId: string; canvasId: string } | null
+      // 吸い付き（MAI-53）：動かし始めの選択全体のワールドの外接矩形と、吸い付く相手の箱（動かし始めに一度だけ集める）
+      bounds: Box | null
+      snapCandidates: Box[]
     }
   | { name: 'resizing'; handle: Handle; tx: Transaction<WorkspaceRecord>; selection: TransformSelection }
   | { name: 'draggingArrowEnd'; tx: Transaction<WorkspaceRecord>; drag: ArrowTerminalDrag }
@@ -362,8 +369,18 @@ export class SelectTool implements Tool {
         return
       }
       case 'translating': {
-        const dx = pointer.world.x - state.start.world.x
-        const dy = pointer.world.y - state.start.world.y
+        let dx = pointer.world.x - state.start.world.x
+        let dy = pointer.world.y - state.start.world.y
+        // ほかのノードの辺・中心に吸い付く（MAI-53）。Ctrl（⌘）を押している間は自由（矢印のつながりと同じ）
+        let guides: SnapGuide[] = []
+        if (state.bounds && !(pointer.ctrlKey || pointer.metaKey)) {
+          const moving = { ...state.bounds, x: state.bounds.x + dx, y: state.bounds.y + dy }
+          const snap = snapTranslation(moving, state.snapCandidates, SNAP_THRESHOLD_PX / editor.session.get().camera.zoom)
+          dx += snap.dx
+          dy += snap.dy
+          guides = snap.guides
+        }
+        if (!sameGuides(guides, editor.session.get().snapGuides)) editor.session.set({ snapGuides: guides })
         for (const world of state.initial.values()) {
           state.tx.put(editor.fromWorld({ ...world, x: world.x + dx, y: world.y + dy }))
         }
@@ -380,6 +397,8 @@ export class SelectTool implements Tool {
   onPointerUp(pointer: ToolPointer): void {
     const editor = this.ctx.editor
     const state = this.state
+    // 吸い付いた線を消す（MAI-53）
+    if (state.name === 'translating' && editor.session.get().snapGuides.length > 0) editor.session.set({ snapGuides: [] })
     if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
       const next = new Set(editor.session.get().selectedIds)
@@ -450,6 +469,8 @@ export class SelectTool implements Tool {
       this.ctx.setCursor(null)
       // 落とす先の Portal の枠を消す（MAI-38）
       if (state.name === 'translating' && state.dropTarget) session.set({ hoveredId: null })
+      // 吸い付いた線を消す（MAI-53）
+      if (state.name === 'translating' && session.get().snapGuides.length > 0) session.set({ snapGuides: [] })
       return true
     }
     if (state.name === 'brushing') {
@@ -559,7 +580,38 @@ export class SelectTool implements Tool {
     for (const id of ids) initial.set(id, editor.toWorld(nodeIn(tx, id)!))
     this.ctx.lift(initial.keys())
     editor.session.set({ hoveredId: null })
-    this.state = { name: 'translating', start, tx, initial, dropTarget: null }
+    const bounds = unionBoxes(ids.flatMap((id) => editor.index.get(id)?.worldBounds ?? []))
+    const snapCandidates = bounds ? this.snapCandidates(ids, bounds) : []
+    this.state = { name: 'translating', start, tx, initial, dropTarget: null, bounds, snapCandidates }
+  }
+
+  // 吸い付く相手の箱（MAI-53）：画面に見えているノードのうち、動かすもの（とその子孫）と矢印を除いたもの。
+  // 固定したノード（PDF のページなど）も相手にする。group の中のノードは、いちばん外の group の箱にまとめる。
+  // 動かしている箱に近い順に SNAP_CANDIDATE_LIMIT 個まで
+  private snapCandidates(ids: string[], bounds: Box): Box[] {
+    const editor = this.ctx.editor
+    const viewport = this.ctx.viewportBox?.()
+    const moving = new Set(ids.flatMap((id) => [id, ...editor.index.descendantsOf(id)]))
+    // 動かすものの祖先（group や frame）は、動かすものを含んでいるので相手にしない
+    const movingAncestors = new Set(ids.flatMap((id) => editor.index.ancestorsOf(id)))
+    const seen = new Set<string>()
+    const boxes: Box[] = []
+    for (const id of viewport ? editor.index.search(viewport) : editor.index.allIds()) {
+      if (moving.has(id)) continue
+      const entry = editor.index.get(id)
+      if (!entry || entry.node.type === 'arrow') continue
+      let target = id
+      for (const ancestor of editor.index.ancestorsOf(id)) {
+        if (movingAncestors.has(ancestor)) break
+        const node = editor.getNode(ancestor)
+        if (node && editor.isContainer(node, 'group')) target = ancestor
+      }
+      if (seen.has(target)) continue
+      seen.add(target)
+      const box = editor.index.get(target)?.worldBounds
+      if (box) boxes.push(box)
+    }
+    return nearestBoxes(bounds, boxes, SNAP_CANDIDATE_LIMIT)
   }
 
   // 動かし終えたノードを、中心の下にあるフレームの子にする（フレームの外に出したら Canvas に戻す）。

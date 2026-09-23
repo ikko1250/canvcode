@@ -10,6 +10,7 @@ import {
   type RenderInfo,
 } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
+import type { SnapGuide } from './snapping.ts'
 import { arrowHandles, selectionHandles } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
 
@@ -26,6 +27,8 @@ const CULL_MARGIN_PX = 16
 const SELECTION_COLOR = '#2f6fed'
 const HANDLE_SIZE_PX = 8
 const ARROW_HANDLE_RADIUS_PX = 5
+// 吸い付いた線の色（MAI-53）
+const SNAP_GUIDE_COLOR = '#e64980'
 
 export interface Viewport {
   camera: Camera
@@ -176,6 +179,8 @@ export interface OverlayState {
   focusedGroupId: string | null
   // 引用する範囲（MAI-33）
   quoteRegion?: Box | null
+  // 移動中に吸い付いた線（MAI-53）
+  snapGuides?: readonly SnapGuide[]
 }
 
 export function drawOverlay(
@@ -248,6 +253,26 @@ export function drawOverlay(
     ctx.setLineDash([5 * view.dpr, 3 * view.dpr])
     ctx.strokeRect(r.x, r.y, r.w, r.h)
     ctx.setLineDash([])
+  }
+  // 吸い付いた線（MAI-53）。倍率によらず 1 CSS ピクセルの線
+  if (state.snapGuides && state.snapGuides.length > 0) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.strokeStyle = SNAP_GUIDE_COLOR
+    ctx.lineWidth = view.dpr
+    ctx.beginPath()
+    for (const guide of state.snapGuides) {
+      const span =
+        guide.axis === 'x'
+          ? { x: guide.position, y: guide.from, w: 0, h: guide.to - guide.from }
+          : { x: guide.from, y: guide.position, w: guide.to - guide.from, h: 0 }
+      const r = deviceRect(span, view)
+      // 半ピクセルに寄せて、にじまないようにする
+      const x = Math.round(r.x) + 0.5
+      const y = Math.round(r.y) + 0.5
+      ctx.moveTo(x, y)
+      ctx.lineTo(x + Math.round(r.w), y + Math.round(r.h))
+    }
+    ctx.stroke()
   }
   return drawn
 }

@@ -1,4 +1,5 @@
 import type { Box, Camera } from '@canvcode/core'
+import type { SnapGuide } from './snapping.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
@@ -23,6 +24,8 @@ export interface SessionState {
   drawStyle: DrawStyle
   // 矢印の色・太さ・矢じり（MAI-28）
   arrowStyle: ArrowStyle
+  // 移動中に吸い付いた線（ワールド座標。MAI-53）。ドラッグを終えると空になる
+  snapGuides: readonly SnapGuide[]
 }
 
 export interface DrawStyle {
@@ -56,6 +59,7 @@ export class Session {
       // フリーハンドの既定は赤・透過率 50%（MAI-49）
       drawStyle: { color: '#e03131', size: 4, opacity: 0.5 },
       arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },
+      snapGuides: [],
       ...initial,
     }
   }
