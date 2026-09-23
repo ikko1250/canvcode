@@ -216,9 +216,9 @@ describe('buildPieMenus', () => {
   })
   const flatten = (items: PieEntry[]): PieEntry[] => items.flatMap((e) => (isSubmenu(e) ? flatten(e.items) : [e]))
 
-  it('opens the tools menu with "-" and the others with ".", and has no actions menu when nothing applies', () => {
+  it('opens the tools menu with "a" and the others with ".", and has no actions menu when nothing applies', () => {
     const menus = buildPieMenus(context())
-    expect(menus.map((m) => m.key)).toEqual(['-', '.'])
+    expect(menus.map((m) => m.key)).toEqual(['a', '.'])
   })
 
   it('has every tool once in the tools menu, and no ring with more than 8 items', () => {

@@ -140,7 +140,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
   return [
     {
       id: 'tools',
-      key: '-',
+      key: 'a',
       label: 'ツール',
       items: [
         tool('select'),
