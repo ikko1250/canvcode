@@ -11,6 +11,8 @@ export interface DocumentEditorOptions {
   getEditor: () => Editor
   layer: HTMLElement
   files: FileManager
+  // キャンバス側で Space を押しているときは、カード上のドラッグをパンに渡す
+  isSpaceHeld?: () => boolean
   // 編集を始めた・終えたとき（カードの本文を隠す・戻すため）
   onChange(editingId: string | null): void
   // 全画面のエディタで開く
@@ -130,7 +132,10 @@ export class DocumentEditor {
     // イベントは伝播させてキャンバスのパン・ズームに渡す（止めると、見切れているカードへ動けなくなる。MAI-45）。
     // Ctrl（⌘）+ホイールとトラックパッドのピンチ（ブラウザは ctrlKey 付きの wheel として送る）は、
     // いつもキャンバスのズームに渡す。止めてしまうと、ブラウザがページごと拡大してしまう
-    host.addEventListener('pointerdown', (e) => e.stopPropagation())
+    host.addEventListener('pointerdown', (e) => {
+      if (e.button === 1 || (e.button === 0 && this.options.isSpaceHeld?.())) return
+      e.stopPropagation()
+    })
     host.addEventListener(
       'wheel',
       (e) => {

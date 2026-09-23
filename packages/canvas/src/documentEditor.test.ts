@@ -40,11 +40,19 @@ class FakeElement {
   }
 
   dispatchWheel(event: FakeWheelEvent): void {
+    this.dispatch('wheel', event)
+  }
+
+  dispatchPointerDown(event: FakePointerEvent): void {
+    this.dispatch('pointerdown', event)
+  }
+
+  private dispatch(type: string, event: FakeWheelEvent | FakePointerEvent): void {
     let current: FakeElement | null = this
     event.target = this as unknown as EventTarget
     while (current) {
       event.currentTarget = current as unknown as EventTarget
-      for (const listener of current.listeners.get('wheel') ?? []) listener(event as unknown as Event)
+      for (const listener of current.listeners.get(type) ?? []) listener(event as unknown as Event)
       if (event.propagationStopped) return
       current = current.parent
     }
@@ -81,7 +89,23 @@ class FakeWheelEvent {
   }
 }
 
-function createDocumentEditor(sizing: 'auto' | 'fixed') {
+class FakePointerEvent {
+  readonly type = 'pointerdown'
+  target: EventTarget | null = null
+  currentTarget: EventTarget | null = null
+  propagationStopped = false
+  readonly button: number
+
+  constructor(button: number) {
+    this.button = button
+  }
+
+  stopPropagation(): void {
+    this.propagationStopped = true
+  }
+}
+
+function createDocumentEditor(sizing: 'auto' | 'fixed', isSpaceHeld: () => boolean = () => false) {
   const node = { id: 'card:1', type: 'code-card', props: { sizing } }
   const editor = {
     getNode: () => node,
@@ -124,6 +148,8 @@ function createDocumentEditor(sizing: 'auto' | 'fixed') {
     parent.appendChild(editorViewDom)
     return codeEditor
   })
+  const canvasPointerEvents: Event[] = []
+  root.addEventListener('pointerdown', (event) => canvasPointerEvents.push(event))
   const canvasWheelEvents: Event[] = []
   root.addEventListener('wheel', (event) => {
     canvasWheelEvents.push(event)
@@ -133,11 +159,12 @@ function createDocumentEditor(sizing: 'auto' | 'fixed') {
     getEditor: () => editor,
     layer: layer as unknown as HTMLElement,
     files,
+    isSpaceHeld,
     onChange: () => {},
     onFullscreen: () => {},
   })
 
-  return { documentEditor, layer, scrollDOM, editorViewDom, canvasWheelEvents }
+  return { documentEditor, layer, scrollDOM, editorViewDom, canvasWheelEvents, canvasPointerEvents }
 }
 
 beforeEach(() => {
@@ -147,6 +174,27 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   createCodeEditorMock.mockReset()
+})
+
+describe('DocumentEditor pointer handling', () => {
+  it('passes middle-button and Space+left-button drags to the canvas without passing ordinary clicks', async () => {
+    let spaceHeld = false
+    const { documentEditor, scrollDOM, canvasPointerEvents } = createDocumentEditor('auto', () => spaceHeld)
+    await documentEditor.start('card:1')
+
+    scrollDOM.dispatchPointerDown(new FakePointerEvent(0))
+    expect(canvasPointerEvents).toHaveLength(0)
+
+    scrollDOM.dispatchPointerDown(new FakePointerEvent(1))
+    expect(canvasPointerEvents).toHaveLength(1)
+    expect(documentEditor.editingId).toBe('card:1')
+
+    spaceHeld = true
+    scrollDOM.dispatchPointerDown(new FakePointerEvent(0))
+    expect(canvasPointerEvents).toHaveLength(2)
+    expect(documentEditor.editingId).toBe('card:1')
+    documentEditor.finish()
+  })
 })
 
 describe('DocumentEditor wheel handling', () => {

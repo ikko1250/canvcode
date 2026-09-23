@@ -244,6 +244,7 @@ export class CanvasView {
           getEditor: () => this.editor,
           layer: this.editingLayer,
           files: this.files,
+          isSpaceHeld: () => this.spaceHeld,
           onChange: (editingId) => {
             this.editor.session.set({ editingId })
             this.invalidate('scene')
@@ -963,15 +964,19 @@ export class CanvasView {
   }
 
   private onPointerDown(e: PointerEvent): void {
-    // 編集中にキャンバスのどこかを押したら、編集を終えてから、その操作を始める
-    if (this.textEditor.editingId && e.button === 0) this.textEditor.finish()
-    if (this.documentEditor?.editingId && e.button === 0) this.documentEditor.finish()
-    // Ctrl（⌘）+クリックで、カードの中のリンクを開く（MAI-21）
-    if (e.button === 0 && (e.ctrlKey || e.metaKey) && this.openLinkAt(e)) return
-    this.root.focus({ preventScroll: true })
+    const panning = e.button === 1 || (e.button === 0 && this.spaceHeld)
+    // パン中は編集中のカードとフォーカスを維持する
+    if (!panning) {
+      // 編集中にキャンバスのどこかを押したら、編集を終えてから、その操作を始める
+      if (this.textEditor.editingId && e.button === 0) this.textEditor.finish()
+      if (this.documentEditor?.editingId && e.button === 0) this.documentEditor.finish()
+      // Ctrl（⌘）+クリックで、カードの中のリンクを開く（MAI-21）
+      if (e.button === 0 && (e.ctrlKey || e.metaKey) && this.openLinkAt(e)) return
+      this.root.focus({ preventScroll: true })
+    }
     this.root.setPointerCapture(e.pointerId)
     // 中ボタン、または Space を押しながらのドラッグはパン（MAI-6）
-    if (e.button === 1 || (e.button === 0 && this.spaceHeld)) {
+    if (panning) {
       e.preventDefault()
       this.panPointer = { id: e.pointerId, last: { x: e.clientX, y: e.clientY } }
       this.updateCursor()
