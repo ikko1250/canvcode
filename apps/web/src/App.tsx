@@ -202,7 +202,8 @@ export function App(props: { initial: InitialRecords }) {
   const session = useSyncExternalStore(editor.session.subscribe, editor.session.getSnapshot)
   useWorkspaceVersion(workspace)
   const [stats, setStats] = useState<StatsSummary | null>(null)
-  const [showStats, setShowStats] = useState(true)
+  // 描画の計測（FPS など）は最初は隠しておき、パイメニューの「計測を表示」で出す（MAI-48）
+  const [showStats, setShowStats] = useState(false)
   const [bench, setBench] = useState<'idle' | 'running' | PhaseResult[]>('idle')
   const [cardBench, setCardBench] = useState<'idle' | 'running' | CardBenchmarkResult>('idle')
   // 画面の下に短く出す知らせ（受け付けないファイルをドロップしたときなど）
