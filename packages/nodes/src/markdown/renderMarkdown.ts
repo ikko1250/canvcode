@@ -2,14 +2,19 @@
 // marked で HTML にし、KaTeX で数式を描き、DOMPurify で無害化する（MAI-9）。
 
 import DOMPurify from 'dompurify'
-import { Marked, type Tokens } from 'marked'
+import { Marked, type Token, type Tokens } from 'marked'
 import katex from 'katex'
 import { matchBlockMath, matchInlineMath } from './math.ts'
 
 export interface MarkdownRenderOptions {
   maxImages?: number
   maxBlocks?: number
+  // ブロックごとの先頭の要素に、元の Markdown の行（1 から）を data-line で付ける。
+  // 全画面のエディタで、本文とプレビューのスクロールを合わせるのに使う（MAI-44）
+  sourceLines?: boolean
 }
+
+export const SOURCE_LINE_ATTR = 'data-line'
 
 export interface MarkdownRenderResult {
   html: string
@@ -186,7 +191,7 @@ function mathExtension() {
   }
 }
 
-function sanitizeHtml(html: string, options: { allowKaTeXStyles?: boolean } = {}): string {
+function sanitizeHtml(html: string, options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean } = {}): string {
   if (typeof window === 'undefined') return html
 
   const purifier = DOMPurify(window)
@@ -203,9 +208,11 @@ function sanitizeHtml(html: string, options: { allowKaTeXStyles?: boolean } = {}
   try {
     return purifier.sanitize(html, {
       ALLOWED_TAGS: [...allowedTags],
-      ALLOWED_ATTR: options.allowKaTeXStyles
-        ? [...allowedAttributes, 'style']
-        : [...allowedAttributes],
+      ALLOWED_ATTR: [
+        ...allowedAttributes,
+        ...(options.allowKaTeXStyles ? ['style'] : []),
+        ...(options.allowSourceLines ? [SOURCE_LINE_ATTR] : []),
+      ],
       ALLOW_DATA_ATTR: false,
       ALLOW_ARIA_ATTR: false,
     })
@@ -257,11 +264,47 @@ export function renderMarkdown(
     }
   }
 
-  const html = marked.parser(tokens.slice(0, cutIndex))
+  const kept = tokens.slice(0, cutIndex)
+  const html = options.sourceLines ? renderWithSourceLines(marked, kept) : marked.parser(kept)
   return {
-    html: sanitizeHtml(html, { allowKaTeXStyles: true }),
+    html: sanitizeHtml(html, { allowKaTeXStyles: true, allowSourceLines: options.sourceLines }),
     truncated: cutIndex < tokens.length,
   }
+}
+
+// ブロックを一つずつ HTML にして、先頭のタグに data-line（そのブロックが始まる行）を付ける。
+// 行は、それより前のトークンの raw に含まれる改行の数で決まる（marked のブロックの raw をつなぐと元の本文に戻る）。
+// 続く text トークンは、marked が一つの段落にまとめるので、同じようにまとめて渡す
+function renderWithSourceLines(marked: Marked, tokens: Token[]): string {
+  let html = ''
+  let line = 1
+  for (let index = 0; index < tokens.length; ) {
+    const token = tokens[index]
+    let end = index + 1
+    if (token.type === 'text') {
+      while (end < tokens.length && tokens[end].type === 'text') end += 1
+    }
+    const group = tokens.slice(index, end)
+    const fragment = marked.parser(group)
+    html += token.type === 'space' ? fragment : tagFirstElement(fragment, line)
+    for (const t of group) line += countNewlines(t.raw)
+    index = end
+  }
+  return html
+}
+
+function countNewlines(text: string): number {
+  let count = 0
+  for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) count += 1
+  return count
+}
+
+// 断片の先頭がタグなら、そこに data-line を差す（先頭が文字なら何もしない）
+function tagFirstElement(fragment: string, line: number): string {
+  const match = /^\s*<([a-zA-Z][a-zA-Z0-9]*)(?=[\s>/])/.exec(fragment)
+  if (!match) return fragment
+  const at = match.index + match[0].length
+  return `${fragment.slice(0, at)} ${SOURCE_LINE_ATTR}="${line}"${fragment.slice(at)}`
 }
 
 export function renderMarkdownToSafeHtml(
