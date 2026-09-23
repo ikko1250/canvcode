@@ -405,6 +405,14 @@ body,
   font-weight: 600;
 }
 
+.breadcrumb-rename {
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 600;
+}
+
 .breadcrumb-sep {
   margin: 0 2px;
   color: var(--muted);

@@ -804,7 +804,7 @@ export function App(props: { initial: InitialRecords }) {
               ☰
             </button>
           )}
-          <Breadcrumb workspace={workspace} currentId={canvasId} onOpen={(id) => void navigate(id)} />
+          <Breadcrumb workspace={workspace} currentId={canvasId} onOpen={(id) => void navigate(id)} onRename={sidebarActions.onRename} />
         </div>
 
         <div className="toolbar">
