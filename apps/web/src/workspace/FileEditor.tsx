@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createCodeEditor, quoteRange, type FileManager, type QuoteDraft, type Workspace } from '@canvcode/canvas'
-import { MARKDOWN_CARD_CSS, renderMarkdown } from '@canvcode/nodes/markdown'
+import { MARKDOWN_CARD_CSS, SOURCE_LINE_ATTR, renderMarkdown } from '@canvcode/nodes/markdown'
 import 'katex/dist/katex.min.css'
+import { buildScrollMap, previewToSource, sourceToPreview, type ScrollAnchor, type ScrollMap } from './scrollSync.ts'
 
 // 全画面のエディタ（MAI-9 の「5. 編集モードの挙動」、MAI-30、MAI-31）。Markdown は左に本文、右にプレビュー。
 // Python は本文だけ（行番号とインデントを保つ折り返しは、カードと同じ）。
@@ -17,6 +18,12 @@ const MODES: { mode: Mode; label: string }[] = [
 
 // プレビューを描き直すまでの時間（打つたびに描き直すと重いので）
 const PREVIEW_DELAY_MS = 150
+
+// こちらで動かしたスクロールが相手の scroll イベントとして返ってくるのを無視する時間（MAI-44）。
+// 普通は次の scroll イベントで解けるが、イベントが来なかったときのための保険
+const SCROLL_ECHO_MS = 200
+
+type Pane = 'source' | 'preview'
 
 export function FileEditor(props: {
   workspace: Workspace
@@ -37,8 +44,11 @@ export function FileEditor(props: {
   // Python にはプレビューがない
   const mode: Mode = isCode ? 'source' : chosenMode
   const [text, setText] = useState<string | null>(null)
+  // エディタを作り直した回数。スクロールの見張りを付け直す目印（MAI-44）
+  const [editorVersion, setEditorVersion] = useState(0)
   const [previewText, setPreviewText] = useState('')
   const sourceRef = useRef<HTMLDivElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<ReturnType<typeof createCodeEditor> | null>(null)
 
   // 本文を読み込んでから、エディタを作る
@@ -69,6 +79,7 @@ export function FileEditor(props: {
     })
     setPreviewText(text)
     editorRef.current = editor
+    setEditorVersion((n) => n + 1)
     editor.focus()
     // 外で本文が変わったら（衝突で「外の内容を使う」を選んだときなど）、エディタにも反映する
     const unlisten = files.onChange((changed) => {
@@ -132,7 +143,125 @@ export function FileEditor(props: {
     const timer = window.setTimeout(() => setDebounced(previewText), PREVIEW_DELAY_MS)
     return () => window.clearTimeout(timer)
   }, [previewText])
-  const html = useMemo(() => (isCode ? '' : renderMarkdown(debounced).html), [debounced, isCode])
+  const html = useMemo(() => (isCode ? '' : renderMarkdown(debounced, { sourceLines: true }).html), [debounced, isCode])
+
+  // 本文とプレビューのスクロールを合わせる（MAI-44）。
+  // 本文が変わった（プレビューを描き直した）ときと、どちらかの大きさが変わったときに、行と要素の高さ位置の対応表を作り直す。
+  // スクロールのたびには、表を引いて相手の scrollTop を決めるだけ（DOM は計らない）
+  const scrollMapRef = useRef<ScrollMap | null>(null)
+  // 最後に人がスクロールした側。表を作り直したあとは、こちらに合わせてもう一方を動かす
+  const masterRef = useRef<Pane>('source')
+  // こちらで動かした分の scroll イベントを無視する（相手→こちら→相手…と往復しないように）
+  const echoRef = useRef<{ pane: Pane; until: number } | null>(null)
+  const syncEnabled = mode === 'both' && !isCode
+
+  const panes = useCallback((): { scroller: HTMLElement; preview: HTMLElement } | null => {
+    const editor = editorRef.current
+    const preview = previewRef.current
+    if (!editor || !preview) return null
+    return { scroller: editor.view.scrollDOM, preview }
+  }, [])
+
+  // 相手を動かす。動かなかった（すでに同じ位置、端に当たった）ときは何もしない
+  const moveTo = useCallback((pane: Pane, element: HTMLElement, top: number) => {
+    const before = element.scrollTop
+    element.scrollTop = top
+    if (element.scrollTop === before) return
+    echoRef.current = { pane, until: performance.now() + SCROLL_ECHO_MS }
+  }, [])
+
+  const follow = useCallback(
+    (from: Pane) => {
+      const map = scrollMapRef.current
+      const found = panes()
+      if (!map || !found) return
+      if (from === 'source') moveTo('preview', found.preview, sourceToPreview(map, found.scroller.scrollTop))
+      else moveTo('source', found.scroller, previewToSource(map, found.preview.scrollTop))
+    },
+    [panes, moveTo],
+  )
+
+  const rebuildScrollMap = useCallback(() => {
+    const editor = editorRef.current
+    const found = panes()
+    if (!editor || !found) {
+      scrollMapRef.current = null
+      return
+    }
+    const { scroller, preview } = found
+    const { view } = editor
+    const doc = view.state.doc
+    const paddingTop = view.documentPadding.top
+    const previewTop = preview.getBoundingClientRect().top - preview.scrollTop
+    const anchors: ScrollAnchor[] = []
+    for (const element of preview.querySelectorAll<HTMLElement>(`[${SOURCE_LINE_ATTR}]`)) {
+      const line = Number(element.getAttribute(SOURCE_LINE_ATTR))
+      if (!Number.isInteger(line) || line < 1 || line > doc.lines) continue
+      anchors.push({
+        source: view.lineBlockAt(doc.line(line).from).top + paddingTop,
+        preview: element.getBoundingClientRect().top - previewTop,
+      })
+    }
+    scrollMapRef.current = buildScrollMap(
+      anchors,
+      scroller.scrollHeight - scroller.clientHeight,
+      preview.scrollHeight - preview.clientHeight,
+    )
+    follow(masterRef.current)
+  }, [panes, follow])
+
+  // プレビューを描き直したら、表を作り直す（描いた直後の DOM で計る）
+  useLayoutEffect(() => {
+    if (syncEnabled) rebuildScrollMap()
+  }, [html, syncEnabled, editorVersion, rebuildScrollMap])
+
+  // 大きさが変わったら（折り返しの計り直し、画像や数式フォントの読み込み、窓の大きさ）、次のフレームで作り直す
+  useEffect(() => {
+    const editor = editorRef.current
+    const preview = previewRef.current
+    if (!syncEnabled || !editor || !preview) return
+    let frame = 0
+    const schedule = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        rebuildScrollMap()
+      })
+    }
+    const observer = new ResizeObserver(schedule)
+    observer.observe(editor.view.contentDOM)
+    observer.observe(preview)
+    const body = preview.firstElementChild
+    if (body) observer.observe(body)
+    return () => {
+      observer.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+    // エディタを作り直したら、見張る相手を付け直す
+  }, [syncEnabled, editorVersion, rebuildScrollMap])
+
+  // スクロールしたら相手を追わせる
+  useEffect(() => {
+    const found = panes()
+    if (!syncEnabled || !found) return
+    const handler = (pane: Pane) => () => {
+      const echo = echoRef.current
+      if (echo && echo.pane === pane) {
+        echoRef.current = null
+        if (performance.now() < echo.until) return
+      }
+      masterRef.current = pane
+      follow(pane)
+    }
+    const onSource = handler('source')
+    const onPreview = handler('preview')
+    found.scroller.addEventListener('scroll', onSource, { passive: true })
+    found.preview.addEventListener('scroll', onPreview, { passive: true })
+    return () => {
+      found.scroller.removeEventListener('scroll', onSource)
+      found.preview.removeEventListener('scroll', onPreview)
+    }
+  }, [syncEnabled, editorVersion, panes, follow])
 
   return (
     <div className="file-editor" role="dialog" aria-label={file?.title}>
@@ -163,6 +292,7 @@ export function FileEditor(props: {
         <div className="file-editor-source" ref={sourceRef} />
         <div
           className="file-editor-preview"
+          ref={previewRef}
           onClick={(e) => {
             // プレビューの中のリンクは、新しいタブで開く
             const anchor = (e.target as HTMLElement).closest('a[href]')
