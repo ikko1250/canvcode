@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Camera } from '@canvcode/core'
+import type { Camera, NodeRecord } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
@@ -47,7 +47,7 @@ import { FileEditor } from './workspace/FileEditor.tsx'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
-import { useWorkspaceVersion } from './workspace/useWorkspace.ts'
+import { useSelectionVersion, useWorkspaceVersion } from './workspace/useWorkspace.ts'
 
 // 画面（MAI-29 から、サイドバーとパンくずリストを持つ）。ツールなどは、キーで出すパイメニューから選ぶ（MAI-39）。
 // Canvas を移るときは、その Canvas の Editor に切り替える。Editor は Canvas ごとに作って取っておく（カメラや選択を覚えておくため）。
@@ -225,6 +225,8 @@ export function App(props: { initial: InitialRecords }) {
   const [view, setView] = useState<CanvasView | null>(null)
   const session = useSyncExternalStore(editor.session.subscribe, editor.session.getSnapshot)
   useWorkspaceVersion(workspace)
+  // 選んでいるノードが変わったら描き直す（パレットに出す文字の大きさなど。MAI-52）
+  useSelectionVersion(editor)
   const [stats, setStats] = useState<StatsSummary | null>(null)
   // 描画の計測（FPS など）は最初は隠しておき、パイメニューの「計測を表示」で出す（MAI-48）
   const [showStats, setShowStats] = useState(false)
@@ -859,13 +861,18 @@ export function App(props: { initial: InitialRecords }) {
   const textPalette = selectedTextNodes.length > 0 && selectedTextNodes.length === session.selectedIds.size
   const textStyleProps = selectedTextNodes[0]?.props as TextProps | NoteProps | undefined
   const setTextStyle = (patch: Partial<{ fontSize: number; align: TextAlign }> | ((props: TextProps | NoteProps) => Partial<TextProps | NoteProps>)) => {
+    // 画面を描いたあとで変わっている（編集中の文字など）ことがあるので、今の値を読み直す
+    const apply = (node: NodeRecord): NodeRecord => {
+      const props = node.props as TextProps | NoteProps
+      return { ...node, props: { ...props, ...(typeof patch === 'function' ? patch(props) : patch) } }
+    }
+    // 編集中は編集のトランザクションが開いたままで、新しいトランザクションを開けない（MAI-52）。
+    // 編集中のノード（編集中は、選んでいるのはそのノードだけ）は、編集の中で変える
+    if (view?.textEditor.editingId && view.textEditor.updateNode(apply)) return
     editor.transact('text style', (tx) => {
-      // 画面を描いたあとで変わっている（編集中の文字など）ことがあるので、今の値を読み直す
       for (const { id } of selectedTextNodes) {
         const node = editor.getNode(id)
-        if (!node) continue
-        const props = node.props as TextProps | NoteProps
-        tx.put({ ...node, props: { ...props, ...(typeof patch === 'function' ? patch(props) : patch) } })
+        if (node) tx.put(apply(node))
       }
     })
   }
