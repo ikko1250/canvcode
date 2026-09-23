@@ -1,4 +1,17 @@
-import { applyMat, clampZoom, fitBox, invert, panBy, screenToWorld, unionBoxes, zoomAt, type Box, type Camera, type Vec } from '@canvcode/core'
+import {
+  applyMat,
+  boxFromPoints,
+  clampZoom,
+  fitBox,
+  invert,
+  panBy,
+  screenToWorld,
+  unionBoxes,
+  zoomAt,
+  type Box,
+  type Camera,
+  type Vec,
+} from '@canvcode/core'
 import { SOURCE_LINK_PREFIX, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
 import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import {
@@ -370,6 +383,11 @@ export class CanvasView {
         this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
       },
       moveToCanvas: (ids, canvasId) => void this.moveToCanvas(ids, canvasId, { confirm: true }),
+      // 画面に見えている範囲（ワールド座標。吸い付きの候補を絞る。MAI-53）
+      viewportBox: () => {
+        const camera = this.editor.session.get().camera
+        return boxFromPoints(screenToWorld(camera, { x: 0, y: 0 }), screenToWorld(camera, { x: this.width, y: this.height }))
+      },
     }
     this.tools = new Map<ToolId, Tool>([
       ['select', new SelectTool(toolContext)],
@@ -859,7 +877,7 @@ export class CanvasView {
       this.images.endFrame()
     }
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion } = this.editor.session.get()
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides } = this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
         selectedIds,
@@ -867,6 +885,7 @@ export class CanvasView {
         brush,
         focusedGroupId,
         quoteRegion,
+        snapGuides,
       })
     }
     // 描いたノード数は、シーンを描き直したフレームの値を表示し続ける
@@ -937,7 +956,8 @@ export class CanvasView {
       state.hoveredId !== prev.hoveredId ||
       state.brush !== prev.brush ||
       state.quoteRegion !== prev.quoteRegion ||
-      state.focusedGroupId !== prev.focusedGroupId
+      state.focusedGroupId !== prev.focusedGroupId ||
+      state.snapGuides !== prev.snapGuides
     ) {
       this.invalidate('overlay')
     }
