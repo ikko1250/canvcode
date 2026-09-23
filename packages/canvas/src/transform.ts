@@ -282,7 +282,7 @@ export function hitHandle(handles: ScreenHandles, p: Vec): HandleHit | null {
   return null
 }
 
-function distanceToSegment(p: Vec, a: Vec, b: Vec): number {
+export function distanceToSegment(p: Vec, a: Vec, b: Vec): number {
   const dx = b.x - a.x
   const dy = b.y - a.y
   const length2 = dx * dx + dy * dy

@@ -27,6 +27,18 @@ import {
   type PdfPageProps,
   type QuoteCardProps,
 } from '@canvcode/nodes'
+import {
+  alignBoxes,
+  distributeBoxes,
+  meanGap,
+  spaceBoxes,
+  spacingOf,
+  type AlignEdge,
+  type ArrangeBox,
+  type Axis,
+  type Move,
+  type Spacing,
+} from './arrange.ts'
 import { unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
 import type { QuoteDraft } from './quotes.ts'
@@ -56,7 +68,7 @@ export type { HistoryMeta } from './workspace.ts'
 
 // PDF のページの並べ方（MAI-32：横 4 枚ずつの格子）
 const PDF_COLUMNS = 4
-const PDF_PAGE_GAP = 40
+export const PDF_PAGE_GAP = 40
 
 // 引用ノートを出典の横に置くときの間隔（MAI-33）
 const QUOTE_GAP = 24
@@ -837,6 +849,63 @@ export class Editor {
     const meta = result.entry.meta as HistoryMeta | undefined
     if (meta?.selectionAfter) this.setSelection(meta.selectionAfter.filter((id) => this.store.has(id)))
     return true
+  }
+
+  // ---- 整列・等間隔・間隔（MAI-54） ----
+
+  // 整列などの対象：選んでいるノードのうち、固定していないもの。祖先も選んでいるものは祖先と一緒に動くので除く
+  // （transformSelection と同じ「今の階層で選べるもの」）。group は 1 つの箱。箱はワールド座標
+  arrangeTargets(): ArrangeBox[] {
+    const selected = this.session.get().selectedIds
+    return [...selected].flatMap((id) => {
+      const entry = this.index.get(id)
+      if (!entry || entry.node.locked || this.index.ancestorsOf(id).some((a) => selected.has(a))) return []
+      return [{ id, ...entry.worldBounds }]
+    })
+  }
+
+  // 整列（2 つ以上）：全体を囲む箱の辺（中央）に合わせる
+  alignSelection(edge: AlignEdge): void {
+    this.applyMoves('align', alignBoxes(this.arrangeTargets(), edge))
+  }
+
+  // 等間隔（3 つ以上）：両端はそのままに、間の隙間を等しくする
+  distributeSelection(axis: Axis): void {
+    this.applyMoves('distribute', distributeBoxes(this.arrangeTargets(), axis))
+  }
+
+  // 間隔の指定（2 つ以上）：各行（列）の先頭はそのままに、gap の間隔で並べる
+  spaceSelection(axis: Axis, gap: number): void {
+    this.applyMoves('spacing', spaceBoxes(this.arrangeTargets(), axis, gap))
+  }
+
+  // 間隔の指定の既定値：今の間隔の平均（この軸に並んだ行（列）がなければ 0）。
+  // PDF のページだけを選んでいれば、取り込んだときの間隔。対象が 2 つ未満なら null
+  defaultGap(axis: Axis): number | null {
+    const targets = this.arrangeTargets()
+    if (targets.length < 2) return null
+    if (targets.every((t) => this.getNode(t.id)?.type === 'pdf-page')) return PDF_PAGE_GAP
+    return Math.round(meanGap(targets, axis) ?? 0)
+  }
+
+  // 間隔のハンドル：選んでいるものが等間隔に並んでいる軸と、その隙間（ワールド座標）
+  spacingHandlesWorld(): Spacing[] {
+    return spacingOf(this.arrangeTargets())
+  }
+
+  // ワールドでの移動量を、親のローカル座標に戻して 1 回の操作で書き込む。
+  // 動かすノードに含まれる矢印のうち、つながっている先が一緒に動かないものは、つながりを外す（moveNodes と同じ）
+  private applyMoves(label: string, moves: Move[]): void {
+    if (moves.length === 0) return
+    this.transact(label, (tx) => {
+      this.detachArrows(tx, moves.map((m) => m.id))
+      for (const move of moves) {
+        const node = nodeIn(tx, move.id)
+        if (!node) continue
+        const world = this.toWorld(node)
+        tx.put(this.fromWorld({ ...world, x: world.x + move.dx, y: world.y + move.dy }))
+      }
+    })
   }
 
   // ---- リサイズ・回転の対象（MAI-23） ----

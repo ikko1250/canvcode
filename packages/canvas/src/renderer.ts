@@ -10,7 +10,8 @@ import {
   type RenderInfo,
 } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
-import { arrowHandles, selectionHandles } from './tools.ts'
+import type { Axis } from './arrange.ts'
+import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
@@ -26,6 +27,11 @@ const CULL_MARGIN_PX = 16
 const SELECTION_COLOR = '#2f6fed'
 const HANDLE_SIZE_PX = 8
 const ARROW_HANDLE_RADIUS_PX = 5
+// 間隔のハンドル（MAI-54）：ピンクの棒。ホバー中・ドラッグ中は太くする
+const SPACING_COLOR = '#e64980'
+const SPACING_BAR_PX = 2
+const SPACING_BAR_HOVER_PX = 4
+const SPACING_LABEL_FONT_PX = 12
 
 export interface Viewport {
   camera: Camera
@@ -176,6 +182,9 @@ export interface OverlayState {
   focusedGroupId: string | null
   // 引用する範囲（MAI-33）
   quoteRegion?: Box | null
+  // 間隔のハンドル（MAI-54）：ホバー中の隙間と、ドラッグ中の間隔
+  hoveredSpacing?: { axis: Axis; gapIndex: number } | null
+  spacingDrag?: { axis: Axis; gap: number } | null
 }
 
 export function drawOverlay(
@@ -210,6 +219,9 @@ export function drawOverlay(
   // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
   const found = editor.session.get().editingId ? null : selectionHandles(editor)
   if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
+  // 間隔のハンドル（MAI-54）。選択枠のハンドルの上に描く
+  const spacing = editor.session.get().editingId ? [] : spacingHandles(editor)
+  if (spacing.length > 0) drawSpacingHandles(ctx, spacing, state.hoveredSpacing ?? null, state.spacingDrag ?? null, view.dpr)
   // 矢印の端と曲がりのハンドル（MAI-28）
   const arrow = editor.session.get().editingId ? null : arrowHandles(editor)
   if (arrow) {
@@ -318,4 +330,44 @@ function drawSelectionHandles(ctx: CanvasRenderingContext2D, handles: ScreenHand
     ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size)
     ctx.strokeRect(p.x - size / 2, p.y - size / 2, size, size)
   }
+}
+
+// 間隔のハンドル：隙間の真ん中に、軸と直角のピンクの棒（隣どうしの重なりの範囲だけ）。
+// ホバー中・ドラッグ中の棒は太く、ドラッグ中は棒の横に今の間隔（整数）を出す
+function drawSpacingHandles(
+  ctx: CanvasRenderingContext2D,
+  handles: SpacingHandle[],
+  hovered: { axis: Axis; gapIndex: number } | null,
+  drag: { axis: Axis; gap: number } | null,
+  dpr: number,
+): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.strokeStyle = SPACING_COLOR
+  ctx.lineCap = 'round'
+  for (const handle of handles) {
+    const active = hovered !== null && hovered.axis === handle.axis && hovered.gapIndex === handle.gapIndex
+    ctx.lineWidth = (active ? SPACING_BAR_HOVER_PX : SPACING_BAR_PX) * dpr
+    ctx.beginPath()
+    ctx.moveTo(handle.a.x * dpr, handle.a.y * dpr)
+    ctx.lineTo(handle.b.x * dpr, handle.b.y * dpr)
+    ctx.stroke()
+    if (active && drag && drag.axis === handle.axis) {
+      const text = String(Math.round(drag.gap))
+      ctx.font = `${SPACING_LABEL_FONT_PX * dpr}px system-ui, sans-serif`
+      ctx.textBaseline = 'middle'
+      ctx.textAlign = 'left'
+      const width = ctx.measureText(text).width
+      const pad = 4 * dpr
+      const mid = { x: ((handle.a.x + handle.b.x) / 2) * dpr, y: ((handle.a.y + handle.b.y) / 2) * dpr }
+      // 棒の真ん中の右に出す（縦の間隔の横棒なら、少し下にずらして棒に重ねない）
+      const x = mid.x + 8 * dpr
+      const y = handle.axis === 'x' ? mid.y : mid.y + 12 * dpr
+      const h = (SPACING_LABEL_FONT_PX + 6) * dpr
+      ctx.fillStyle = SPACING_COLOR
+      ctx.fillRect(x - pad, y - h / 2, width + pad * 2, h)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillText(text, x, y)
+    }
+  }
+  ctx.lineCap = 'butt'
 }

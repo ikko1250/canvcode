@@ -1,4 +1,5 @@
 import type { Box, Camera } from '@canvcode/core'
+import type { Axis } from './arrange.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
@@ -23,6 +24,10 @@ export interface SessionState {
   drawStyle: DrawStyle
   // 矢印の色・太さ・矢じり（MAI-28）
   arrowStyle: ArrowStyle
+  // 間隔のハンドル（MAI-54）：ポインタの下にある（またはドラッグ中の）隙間。gapIndex はその軸の隙間の通し番号
+  hoveredSpacing: { axis: Axis; gapIndex: number } | null
+  // 間隔のハンドルをドラッグしている間の、今の間隔（棒の横に数字で出す）
+  spacingDrag: { axis: Axis; gap: number } | null
 }
 
 export interface DrawStyle {
@@ -56,6 +61,8 @@ export class Session {
       // フリーハンドの既定は赤・透過率 50%（MAI-49）
       drawStyle: { color: '#e03131', size: 4, opacity: 0.5 },
       arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },
+      hoveredSpacing: null,
+      spacingDrag: null,
       ...initial,
     }
   }
