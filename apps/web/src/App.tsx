@@ -14,7 +14,6 @@ import {
   type QuoteRequest,
   type StatsSummary,
   type SyncStatus,
-  type ToolId,
 } from '@canvcode/canvas'
 import {
   ARROW_COLORS,
@@ -33,6 +32,8 @@ import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './ben
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
+import { buildPieMenus } from './pie/menus.ts'
+import { PieMenus } from './pie/PieMenu.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
@@ -41,24 +42,8 @@ import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.
 import { Sidebar } from './workspace/Sidebar.tsx'
 import { useWorkspaceVersion } from './workspace/useWorkspace.ts'
 
-// 画面（MAI-29 から、サイドバーとパンくずリストを持つ）。下端のツールバーは動作確認用。
+// 画面（MAI-29 から、サイドバーとパンくずリストを持つ）。ツールなどは、キーで出すパイメニューから選ぶ（MAI-39）。
 // Canvas を移るときは、その Canvas の Editor に切り替える。Editor は Canvas ごとに作って取っておく（カメラや選択を覚えておくため）。
-
-const TOOLS: { id: ToolId; label: string; key: string }[] = [
-  { id: 'select', label: '選択', key: 'V' },
-  { id: 'hand', label: '手のひら', key: 'H' },
-  { id: 'rect', label: '矩形', key: 'R' },
-  { id: 'ellipse', label: '楕円', key: 'O' },
-  { id: 'text', label: 'テキスト', key: 'T' },
-  { id: 'note', label: '付箋', key: 'N' },
-  { id: 'frame', label: 'フレーム', key: 'F' },
-  { id: 'draw', label: 'フリーハンド', key: 'D' },
-  { id: 'eraser', label: '消しゴム', key: 'E' },
-  { id: 'arrow', label: '矢印', key: 'A' },
-  { id: 'portal', label: 'Portal', key: 'P' },
-  { id: 'markdown', label: 'Markdown', key: 'M' },
-  { id: 'code', label: 'Python', key: 'Y' },
-]
 
 // Markdown カードの名前の帯の寸法（ワールド座標。cardHtml.ts の .md-card-header に合わせる）
 const CARD_HEADER = { height: 36, padding: 12, fontSize: 13 }
@@ -599,7 +584,6 @@ export function App(props: { initial: InitialRecords }) {
         }
         items.push({
           label: 'ここに新しいキャンバス',
-          shortcut: 'P',
           onSelect: () => {
             // 右クリックした位置（ワールド座標）に作って、そのまま中に入る
             const rect = view.root.getBoundingClientRect()
@@ -610,7 +594,6 @@ export function App(props: { initial: InitialRecords }) {
         })
         items.push({
           label: 'ここに Markdown',
-          shortcut: 'M',
           onSelect: () => {
             const rect = view.root.getBoundingClientRect()
             const camera = editor.session.get().camera
@@ -620,7 +603,6 @@ export function App(props: { initial: InitialRecords }) {
         })
         items.push({
           label: 'ここに Python',
-          shortcut: 'Y',
           onSelect: () => {
             const rect = view.root.getBoundingClientRect()
             const camera = editor.session.get().camera
@@ -828,59 +810,35 @@ export function App(props: { initial: InitialRecords }) {
           <Breadcrumb workspace={workspace} currentId={canvasId} onOpen={(id) => void navigate(id)} onRename={sidebarActions.onRename} />
         </div>
 
-        <div className="toolbar">
-          {TOOLS.map((tool) => (
-            <button
-              key={tool.id}
-              className={session.toolId === tool.id ? 'active' : ''}
-              onClick={() => editor.session.set({ toolId: tool.id })}
-              title={`${tool.label}（${tool.key}）`}
-            >
-              {tool.label}
-              <kbd>{tool.key}</kbd>
-            </button>
-          ))}
-          <span className="separator" />
-          <button onClick={() => view?.undo()} title="元に戻す（Ctrl+Z）">
-            元に戻す
-          </button>
-          <button onClick={() => view?.redo()} title="やり直す（Ctrl+Shift+Z）">
-            やり直す
-          </button>
-          <span className="separator" />
-          <button
-            onClick={() => {
+        <PieMenus
+          enabled={!openFileId && !dialog && !renaming}
+          menus={buildPieMenus({
+            toolId: session.toolId,
+            setTool: (toolId) => editor.session.set({ toolId }),
+            undo: () => view?.undo(),
+            redo: () => view?.redo(),
+            showStats,
+            toggleStats: () => setShowStats((v) => !v),
+            benchRunning: bench === 'running',
+            cardBenchRunning: cardBench === 'running',
+            addBenchNodes: () => {
               generateNodes(editor, BENCH_NODE_COUNT)
               view?.zoomToFit()
-            }}
-          >
-            1 万ノードを追加
-          </button>
-          <button onClick={() => clearNodes(editor)}>すべて消す</button>
-          <button onClick={startBenchmark} disabled={bench === 'running'}>
-            {bench === 'running' ? 'ベンチマーク実行中…' : 'ベンチマーク'}
-          </button>
-          <span className="separator" />
-          <button
-            onClick={() => {
+            },
+            clearNodes: () => clearNodes(editor),
+            runBenchmark: startBenchmark,
+            addMarkdownCards: () => {
               generateMarkdownCards(editor)
               view?.zoomToFit()
-            }}
-          >
-            Markdown カード {CARD_COUNT} 枚を追加
-          </button>
-          <button
-            disabled={cardBench === 'running' || !view}
-            onClick={async () => {
+            },
+            runCardBenchmark: async () => {
               if (!view) return
               setCardBench('running')
               setCardBench(await runCardBenchmark(view))
-            }}
-          >
-            {cardBench === 'running' ? 'カードのベンチマーク実行中…' : 'カードのズームのベンチマーク'}
-          </button>
-          <button onClick={() => setShowStats((v) => !v)}>{showStats ? '計測を隠す' : '計測を表示'}</button>
-        </div>
+            },
+            markdownCardCount: CARD_COUNT,
+          })}
+        />
 
         {session.toolId === 'draw' && (
           <div className="style-palette">

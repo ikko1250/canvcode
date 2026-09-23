@@ -1156,25 +1156,7 @@ export class CanvasView {
       this.zoomToFit()
       return
     }
-    if (mod || e.altKey) return
-    // ツールの切り替え（旧実装と同じ tldraw 風の割り当て。MAI-12）
-    const toolKeys: Record<string, ToolId> = {
-      v: 'select',
-      h: 'hand',
-      r: 'rect',
-      o: 'ellipse',
-      t: 'text',
-      n: 'note',
-      f: 'frame',
-      d: 'draw',
-      e: 'eraser',
-      a: 'arrow',
-      p: 'portal',
-      m: 'markdown',
-      y: 'code',
-    }
-    const toolId = toolKeys[e.key.toLowerCase()]
-    if (toolId) editor.session.set({ toolId })
+    // ツールの切り替えは、画面のパイメニューで行う（MAI-39。1 文字のキーの割り当ては廃止）
   }
 
   // ---- クリップボードとファイル（MAI-26） ----
