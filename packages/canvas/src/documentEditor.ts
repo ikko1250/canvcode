@@ -24,6 +24,8 @@ interface Session {
   fileId: string
   host: HTMLDivElement
   editor: CodeEditorHandle
+  // カードの高さの決め方（layout() で最新にする）。'auto' なら、エディタも中身の高さに合わせて伸ばし、中でスクロールしない
+  sizing: 'auto' | 'fixed'
   unlisten: () => void
 }
 
@@ -122,11 +124,20 @@ export class DocumentEditor {
     const body = document.createElement('div')
     Object.assign(body.style, { flex: '1', minHeight: '0' })
     host.append(header, body)
-    // キャンバスのポインタ操作と、ホイールでのパンに渡さない（ホイールはエディタの中のスクロールに使う）。
+    // キャンバスのポインタ操作に渡さない。
+    // ホイールは、カードの高さが固定（sizing: 'fixed'）のときだけエディタの中のスクロールに使い、キャンバスのパンに渡さない。
+    // 高さを中身に合わせているとき（'auto'）は、エディタも中身の高さに伸ばして中でスクロールしないので、
+    // キャンバスのパン・ズームにそのまま渡す（止めると、見切れているカードへ動けなくなる。MAI-45）。
     // Ctrl（⌘）+ホイールとトラックパッドのピンチ（ブラウザは ctrlKey 付きの wheel として送る）は、
-    // キャンバスのズームに渡す。止めてしまうと、ブラウザがページごと拡大してしまう
+    // いつもキャンバスのズームに渡す。止めてしまうと、ブラウザがページごと拡大してしまう
     host.addEventListener('pointerdown', (e) => e.stopPropagation())
-    host.addEventListener('wheel', stopUnlessZoom, { passive: true })
+    host.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.session?.host === host && this.session.sizing === 'fixed') stopUnlessZoom(e)
+      },
+      { passive: true },
+    )
     host.addEventListener('dblclick', (e) => e.stopPropagation())
     this.options.layer.appendChild(host)
 
@@ -157,7 +168,7 @@ export class DocumentEditor {
       const rect = quoteButton.getBoundingClientRect()
       this.options.onQuote?.({ nodeId, fileId, ...selected, clientX: rect.left, clientY: rect.bottom + 4 })
     })
-    this.session = { nodeId, fileId, host, editor: code, unlisten }
+    this.session = { nodeId, fileId, host, editor: code, sizing: sizingOf(node.props), unlisten }
     editor.setSelection([nodeId])
     this.options.onChange(nodeId)
     this.layout()
@@ -192,8 +203,28 @@ export class DocumentEditor {
     const { host } = session
     host.style.transform = `matrix(${m.a * z}, ${m.b * z}, ${m.c * z}, ${m.d * z}, ${(m.e - camera.x) * z}, ${(m.f - camera.y) * z})`
     host.style.width = `${entry.localBounds.w}px`
-    host.style.height = `${Math.max(entry.localBounds.h, MIN_EDIT_HEIGHT)}px`
+    const height = Math.max(entry.localBounds.h, MIN_EDIT_HEIGHT)
+    const sizing = sizingOf(editor.getNode(session.nodeId)?.props)
+    session.sizing = sizing
+    const { dom, scrollDOM } = session.editor.view
+    if (sizing === 'auto') {
+      // 中身の高さに合わせて伸ばす（カードより短くはしない）。中にスクロールバーを出さない
+      host.style.height = 'auto'
+      host.style.minHeight = `${height}px`
+      dom.style.height = 'auto'
+      scrollDOM.style.overflow = 'visible'
+    } else {
+      host.style.height = `${height}px`
+      host.style.minHeight = ''
+      dom.style.height = ''
+      scrollDOM.style.overflow = ''
+    }
   }
+}
+
+// カードの高さの決め方。Markdown・コードのカードは sizing を持つ（既定は 'auto'）
+function sizingOf(props: unknown): 'auto' | 'fixed' {
+  return (props as { sizing?: unknown } | undefined)?.sizing === 'fixed' ? 'fixed' : 'auto'
 }
 
 export function stopUnlessZoom(e: WheelEvent): void {
