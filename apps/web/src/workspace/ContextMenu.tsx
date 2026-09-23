@@ -34,7 +34,8 @@ export function ContextMenu(props: { x: number; y: number; items: (MenuItem | 's
           <div key={i} className="context-menu-separator" />
         ) : (
           <button
-            key={item.label}
+            // 同じ名前の項目（名前の同じキャンバスなど）があってもよいように、位置も含める
+            key={`${i}:${item.label}`}
             className={item.danger ? 'danger' : ''}
             onClick={() => {
               props.onClose()

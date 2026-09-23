@@ -550,6 +550,20 @@ export function App(props: { initial: InitialRecords }) {
       }
       if (selected.length > 0) {
         items.push({ label: 'キャンバスに昇格', shortcut: 'Ctrl+Alt+P', onSelect: () => view.promoteSelection() })
+        // 子キャンバスに移動（MAI-38）：この Canvas の子の Canvas から、移す先を選ばせる
+        items.push({
+          label: '子キャンバスに移動',
+          onSelect: () => {
+            const ids = selected.map((n) => n.id)
+            const targets = workspace.childCanvases(editor.canvasId).filter((c) => editor.canMoveToCanvas(ids, c.id))
+            if (targets.length === 0) return notify('移動できる子キャンバスがありません')
+            setMenu({
+              x: at.x,
+              y: at.y,
+              items: targets.map((c) => ({ label: c.title || '無題', onSelect: () => void view.moveToCanvas(ids, c.id) })),
+            })
+          },
+        })
         items.push({ label: '複製', shortcut: 'Ctrl+D', onSelect: () => view.duplicateSelection() })
         if (selected.length > 1) items.push({ label: 'グループにする', shortcut: 'Ctrl+G', onSelect: () => editor.groupSelected() })
         if (selected.some((n) => n.type === 'group')) {
@@ -655,6 +669,13 @@ export function App(props: { initial: InitialRecords }) {
           ],
         )
         return choice as OwnerPortalDeletion | null
+      },
+      // ノードを Portal の上に落とした（MAI-38）
+      confirmMoveToCanvas: async ({ title, count }) => {
+        const choice = await ask('キャンバスに移動しますか？', `選んだ ${count} 個を「${title}」の中に移動します。`, [
+          { label: 'OK', value: 'ok' },
+        ])
+        return choice === 'ok'
       },
     })
     viewRef.current = created
