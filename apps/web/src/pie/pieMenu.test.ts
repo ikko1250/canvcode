@@ -201,13 +201,24 @@ describe('buildPieMenus', () => {
     addMarkdownCards: vi.fn(),
     runCardBenchmark: vi.fn(),
     markdownCardCount: 20,
+    // 操作のメニュー（MAI-57）は menus.test.ts で確かめる。ここでは出さない
+    pdf: { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true },
+    selection: { count: 0, arrangeCount: 0, hasText: false },
+    panToPage: vi.fn(),
+    unlockAndSelectPdfPages: vi.fn(),
+    lockPdfPages: vi.fn(),
+    stepFontSize: vi.fn(),
+    setTextAlign: vi.fn(),
+    alignSelection: vi.fn(),
+    distributeSelection: vi.fn(),
+    lockSelection: vi.fn(),
+    duplicateSelection: vi.fn(),
   })
   const flatten = (items: PieEntry[]): PieEntry[] => items.flatMap((e) => (isSubmenu(e) ? flatten(e.items) : [e]))
 
-  it('opens the tools menu with "-" and the others with "."', () => {
-    const [tools, others] = buildPieMenus(context())
-    expect(tools.key).toBe('-')
-    expect(others.key).toBe('.')
+  it('opens the tools menu with "-" and the others with ".", and has no actions menu when nothing applies', () => {
+    const menus = buildPieMenus(context())
+    expect(menus.map((m) => m.key)).toEqual(['-', '.'])
   })
 
   it('has every tool once in the tools menu, and no ring with more than 8 items', () => {

@@ -29,7 +29,8 @@ import {
 } from './clipboard.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
-import type { Editor } from './editor.ts'
+import { PDF_PAGE_GAP, type Editor } from './editor.ts'
+import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
@@ -1382,6 +1383,27 @@ export class CanvasView {
   // 画面の中央（ワールド座標）。パイメニューなどから、ポインタの位置に依らずに置くときに使う
   viewportCenter(): Vec {
     return screenToWorld(this.editor.session.get().camera, { x: this.width / 2, y: this.height / 2 })
+  }
+
+  // この Canvas の PDF のページの箱（ワールド座標。ページ番号の順。MAI-57）
+  private pageBoxes(): Box[] {
+    return this.editor.pdfPageIds().flatMap((id) => {
+      const entry = this.editor.index.get(id)
+      return entry ? [entry.worldBounds] : []
+    })
+  }
+
+  // 次・前のページがあるか（パイメニュー「操作」の項目を決める。MAI-57）
+  pageNavigation(): { canNext: boolean; canPrev: boolean } {
+    return pageNavigationOf(this.pageBoxes(), this.editor.session.get().camera, this.width, this.height)
+  }
+
+  // 次（前）のページへ移る（倍率はそのまま。ページの余白は取り込んだときの隙間の半分）。移る先がなければ何もしない（MAI-57）
+  panToPage(direction: PageDirection): boolean {
+    const target = pageNavigationTarget(this.pageBoxes(), this.editor.session.get().camera, this.width, this.height, direction, PDF_PAGE_GAP / 2)
+    if (!target) return false
+    this.setCamera(target)
+    return true
   }
 
   private onKeyUp(e: KeyboardEvent): void {

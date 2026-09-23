@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Camera, NodeRecord } from '@canvcode/core'
+import type { Camera } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
@@ -22,7 +22,6 @@ import {
   ARROW_SIZES,
   builtinNodeTypes,
   createCodeCardType,
-  stepFontSize,
   textAlignOf,
   type ArrowProps,
   type FileContentSource,
@@ -47,6 +46,7 @@ import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
 import { FileEditor } from './workspace/FileEditor.tsx'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
+import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
 import { useSelectionVersion, useWorkspaceVersion } from './workspace/useWorkspace.ts'
 
@@ -900,11 +900,9 @@ export function App(props: { initial: InitialRecords }) {
   }
 
   // テキストと付箋のパレット（MAI-50）。テキストか付箋だけを選んでいるときに出し、文字の大きさと揃えを変える。
-  // 編集中も出しっぱなしにし、押しても textarea からフォーカスを奪わない（編集を続けられる）
-  const selectedTextNodes = [...session.selectedIds].flatMap((id) => {
-    const node = editor.getNode(id)
-    return node?.type === 'text' || node?.type === 'note' ? [node] : []
-  })
+  // 編集中も出しっぱなしにし、押しても textarea からフォーカスを奪わない（編集を続けられる）。
+  // 変える手順は textStyle.ts（パイメニュー「操作」と共通。MAI-57）
+  const selectedTextNodes = textNodesOf(editor)
   const textPalette = selectedTextNodes.length > 0 && selectedTextNodes.length === session.selectedIds.size
   // 整列・間隔のパレット（MAI-54）。2 つ以上（固定していないもの。group は 1 つ）を選んでいるときに出す。
   // 選ぶものが変わったら key で作り直し、入力中の間隔を既定値に戻す
@@ -915,22 +913,13 @@ export function App(props: { initial: InitialRecords }) {
     .sort()
     .join(',')
   const textStyleProps = selectedTextNodes[0]?.props as TextProps | NoteProps | undefined
-  const setTextStyle = (patch: Partial<{ fontSize: number; align: TextAlign }> | ((props: TextProps | NoteProps) => Partial<TextProps | NoteProps>)) => {
-    // 画面を描いたあとで変わっている（編集中の文字など）ことがあるので、今の値を読み直す
-    const apply = (node: NodeRecord): NodeRecord => {
-      const props = node.props as TextProps | NoteProps
-      return { ...node, props: { ...props, ...(typeof patch === 'function' ? patch(props) : patch) } }
-    }
-    // 編集中は編集のトランザクションが開いたままで、新しいトランザクションを開けない（MAI-52）。
-    // 編集中のノード（編集中は、選んでいるのはそのノードだけ）は、編集の中で変える
-    if (view?.textEditor.editingId && view.textEditor.updateNode(apply)) return
-    editor.transact('text style', (tx) => {
-      for (const { id } of selectedTextNodes) {
-        const node = editor.getNode(id)
-        if (node) tx.put(apply(node))
-      }
-    })
-  }
+
+  // パイメニュー「操作」（MAI-57）に出す項目を決める状態。
+  // session（カメラ・選択）を購読しているので、カメラが動くたびに描き直され、次・前のページの有無もそのたびに決め直す。
+  // ページを数えるのは全ノードを 1 度なめるだけなので、描き直しごとに計算してよい
+  const pdfPageIds = editor.pdfPageIds()
+  const lockedPageCount = pdfPageIds.filter((id) => editor.getNode(id)?.locked).length
+  const pageNavigation = pdfPageIds.length > 0 && view ? view.pageNavigation() : { canNext: false, canPrev: false }
 
   const startBenchmark = () => {
     if (!view) return
@@ -995,6 +984,27 @@ export function App(props: { initial: InitialRecords }) {
               setCardBench(await runCardBenchmark(view))
             },
             markdownCardCount: CARD_COUNT,
+            pdf: {
+              hasPages: pdfPageIds.length > 0,
+              canNext: pageNavigation.canNext,
+              canPrev: pageNavigation.canPrev,
+              allLocked: lockedPageCount === pdfPageIds.length,
+              noneLocked: lockedPageCount === 0,
+            },
+            selection: {
+              count: session.selectedIds.size,
+              arrangeCount: arrangeTargets.length,
+              hasText: selectedTextNodes.length > 0,
+            },
+            panToPage: (direction) => view?.panToPage(direction),
+            unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
+            lockPdfPages: () => editor.lockPdfPages(),
+            stepFontSize: (direction) => stepTextFontSize(editor, view, textNodesOf(editor), direction),
+            setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
+            alignSelection: (edge) => editor.alignSelection(edge),
+            distributeSelection: (axis) => editor.distributeSelection(axis),
+            lockSelection: () => editor.setLocked([...editor.session.get().selectedIds], true),
+            duplicateSelection: () => view?.duplicateSelection(),
           })}
         />
 
@@ -1040,13 +1050,13 @@ export function App(props: { initial: InitialRecords }) {
 
           {textPalette && textStyleProps && (
             <div className="style-palette" onPointerDown={(e) => e.preventDefault()}>
-              <button title="文字を大きく" onClick={() => setTextStyle((props) => ({ fontSize: stepFontSize(props.fontSize, 1) }))}>
+              <button title="文字を大きく" onClick={() => stepTextFontSize(editor, view, selectedTextNodes, 1)}>
                 A+
               </button>
               <span className="value" title="文字の大きさ">
                 {textStyleProps.fontSize}
               </span>
-              <button title="文字を小さく" onClick={() => setTextStyle((props) => ({ fontSize: stepFontSize(props.fontSize, -1) }))}>
+              <button title="文字を小さく" onClick={() => stepTextFontSize(editor, view, selectedTextNodes, -1)}>
                 A−
               </button>
               <span className="separator" />
@@ -1055,7 +1065,7 @@ export function App(props: { initial: InitialRecords }) {
                   key={item.align}
                   title={item.title}
                   className={textAlignOf(textStyleProps.align) === item.align ? 'active' : ''}
-                  onClick={() => setTextStyle({ align: item.align })}
+                  onClick={() => setTextAlign(editor, view, selectedTextNodes, item.align)}
                 >
                   <AlignIcon lines={item.lines} />
                 </button>
