@@ -6,6 +6,8 @@ import {
   FileManager,
   SyncClient,
   Workspace,
+  isEditableKeyboardTarget,
+  isImeEvent,
   type InitialRecords,
   type ConflictChoice,
   type ArrowStyle,
@@ -39,6 +41,7 @@ import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
 import { FileEditor } from './workspace/FileEditor.tsx'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
+import { isParentCanvasKey } from './workspace/shortcuts.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
 import { useWorkspaceVersion } from './workspace/useWorkspace.ts'
 
@@ -633,10 +636,13 @@ export function App(props: { initial: InitialRecords }) {
           },
         })
         items.push({ label: 'すべて選択', shortcut: 'Ctrl+A', onSelect: () => editor.selectAll() })
+        // 親キャンバスに戻る（MAI-47）。ルートや未配置のキャンバスでは出さない
+        const parentId = workspace.getCanvas(editor.canvasId)?.parentCanvasId
+        if (parentId) items.push({ label: '親キャンバスに戻る', shortcut: 'U', onSelect: () => void navigate(parentId) })
       }
       return items
     },
-    [openPortal, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify],
+    [openPortal, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate],
   )
 
 
@@ -742,6 +748,24 @@ export function App(props: { initial: InitialRecords }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // U で親キャンバスに戻る（MAI-47）。パンくずリストの 1 つ左を押したのと同じ。ルートや未配置のキャンバスでは何もしない。
+  // 全画面のエディタ・ダイアログ・名前の変更の間と、文字の入力中（パイメニューと同じ条件）は、ただの文字として扱う
+  useEffect(() => {
+    if (openFileId || dialog || renaming) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || !isParentCanvasKey(e)) return
+      if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
+      if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
+      const current = viewRef.current?.editor.canvasId ?? canvasId
+      const parentId = workspace.getCanvas(current)?.parentCanvasId
+      if (!parentId) return
+      e.preventDefault()
+      void navigate(parentId)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [workspace, canvasId, openFileId, dialog, renaming, navigate])
 
   // サイドバーからの操作は、今の Canvas の履歴に入る（MAI-11）
   const sidebarActions = {
