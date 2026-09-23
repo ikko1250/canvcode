@@ -959,12 +959,14 @@ export class DrawTool implements Tool {
     const editor = this.ctx.editor
     // フレームの上で描き始めたら、フレームの中に入れる
     const { parentId, local } = placeAt(editor, pointer.world)
-    const { color, size } = editor.session.get().drawStyle
+    const { color, size, opacity } = editor.session.get().drawStyle
     const tx = editor.begin('draw')
+    // 透過率はノードの opacity に入れる（保存・同期・サムネイルもそのまま効く。MAI-49）
     const node = editor.makeNode('draw', {
       x: local.x,
       y: local.y,
       parentId,
+      opacity,
       props: { points: [0, 0], color, size, isComplete: false },
     }) as NodeRecord<DrawProps>
     tx.put(node)

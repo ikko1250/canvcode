@@ -245,7 +245,7 @@ export class Editor {
   // 新しいノードのレコードを作る（まだストアには入れない）。x・y は親のローカル座標
   makeNode(
     type: string,
-    fields: { x: number; y: number; props?: object; index?: string; parentId?: string },
+    fields: { x: number; y: number; props?: object; index?: string; parentId?: string; opacity?: number },
   ): NodeRecord {
     const def = this.types.get(type)
     if (!def) throw new Error(`Unknown node type: ${type}`)
@@ -259,7 +259,7 @@ export class Editor {
       y: fields.y,
       rotation: 0,
       index: fields.index ?? this.nextIndex(parentId),
-      opacity: 1,
+      opacity: fields.opacity ?? 1,
       locked: false,
       props: { ...def.defaultProps(), ...fields.props },
       meta: {},

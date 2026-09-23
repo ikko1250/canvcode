@@ -20,6 +20,43 @@ export type DrawNode = NodeRecord<DrawProps>
 export const DRAW_COLORS = ['#1f2328', '#e03131', '#1971c2', '#2f9e44', '#f08c00'] as const
 export const DRAW_SIZES = [2, 4, 8] as const
 
+// 透過率（MAI-49）。線の不透明度はノードの opacity（0〜1）に入れ、描画時の globalAlpha で効く。
+// 既定は赤・50%。リングのスライダーは 100 / 75 / 50 / 25 / 0 % に吸い付く（⌘ を押している間は自由）
+export const DRAW_DEFAULT_COLOR = DRAW_COLORS[1]
+export const DRAW_DEFAULT_OPACITY = 0.5
+export const DRAW_OPACITY_STOPS = [1, 0.75, 0.5, 0.25, 0] as const
+// リングの弧の広がり（度）。下側を開けて、0% を左下、100% を右下、50% を真上に置く
+export const DRAW_OPACITY_ARC_DEG = 300
+
+// 値を 0〜1 に収め、free でなければいちばん近い吸い付き先に丸める
+export function snapDrawOpacity(value: number, free = false): number {
+  const clamped = Math.min(1, Math.max(0, Number.isFinite(value) ? value : DRAW_DEFAULT_OPACITY))
+  if (free) return clamped
+  let best: number = DRAW_OPACITY_STOPS[0]
+  for (const stop of DRAW_OPACITY_STOPS) if (Math.abs(stop - clamped) < Math.abs(best - clamped)) best = stop
+  return best
+}
+
+// リングの中心から見た角度（度。真上が 0、時計回りが正、-180〜180）→ 透過率（0〜1）。
+// 弧の外（下の隙間）は近いほうの端にする
+export function drawOpacityFromAngle(angleDeg: number): number {
+  const half = DRAW_OPACITY_ARC_DEG / 2
+  const wrapped = ((((angleDeg + 180) % 360) + 360) % 360) - 180
+  const clamped = Math.min(half, Math.max(-half, wrapped))
+  return (clamped + half) / DRAW_OPACITY_ARC_DEG
+}
+
+// 透過率 → リングの角度（度。真上が 0、時計回りが正）
+export function drawOpacityToAngle(opacity: number): number {
+  const half = DRAW_OPACITY_ARC_DEG / 2
+  return -half + Math.min(1, Math.max(0, opacity)) * DRAW_OPACITY_ARC_DEG
+}
+
+// 画面上の点（中心からのずれ。y は下向き）→ リングの角度（度。真上が 0、時計回りが正）
+export function drawOpacityAngleFromPoint(dx: number, dy: number): number {
+  return (Math.atan2(dx, -dy) * 180) / Math.PI
+}
+
 // 1 本の線の輪郭（多角形の点）と、それを塗る Path2D。同じ props なら一度だけ作る
 const outlineCache = new WeakMap<DrawProps, number[][]>()
 const pathCache = new WeakMap<DrawProps, Path2D>()

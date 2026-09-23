@@ -91,6 +91,26 @@ describe('draw tool', () => {
     expect(draws()).toHaveLength(0)
   })
 
+  it('starts red at 50% and stores the opacity on the stroke (MAI-49)', () => {
+    const { editor, stroke, draws } = setup()
+    expect(editor.session.get().drawStyle).toMatchObject({ color: '#e03131', opacity: 0.5 })
+    stroke([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+    ])
+    editor.session.set({ drawStyle: { ...editor.session.get().drawStyle, opacity: 0.25 } })
+    stroke([
+      { x: 0, y: 20 },
+      { x: 10, y: 20 },
+    ])
+    const [first, second] = draws()
+    expect(first.props.color).toBe('#e03131')
+    expect(first.opacity).toBe(0.5)
+    expect(second.opacity).toBe(0.25)
+    // 透過率はノードの opacity なので、ほかの型の既定は 1 のまま
+    expect(editor.makeNode('geo', { x: 0, y: 0 }).opacity).toBe(1)
+  })
+
   it('uses coalesced pointer positions and drops points closer than a pixel', () => {
     const { ctx, pointer, draws } = setup()
     const tool = new DrawTool(ctx)
