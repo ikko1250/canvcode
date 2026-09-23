@@ -17,5 +17,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["packages/*/src", "apps/*/src", "apps/web/vite.config.ts"]
+  "include": ["packages/*/src", "apps/*/src", "apps/web/vite.config.ts", "playwright.config.ts", "tests/e2e/**/*.ts"]
 }

@@ -48,6 +48,17 @@ npm test        # ユニットテスト（Vitest）
 npm run lint    # oxlint
 ```
 
+カード上のホイール・ドラッグの実ブラウザ回帰テスト（実際の CanvasView / CodeMirror とカメラ座標・各 DOM の scrollTop を確認）：
+
+```bash
+npx playwright install chromium firefox
+npm run test:e2e                  # Chromium / Firefox、テスト用 Vite は自動起動
+npx playwright install --with-deps webkit  # WebKit の OS 依存ライブラリが必要な環境のみ
+npx playwright test --project=webkit
+```
+
+`apps/web/canvas-input-test.html` はネットワーク上のファイル保存だけをメモリに置き換えた専用ページ。失敗時のイベント経路とブラウザ trace は `test-results/` に出る。トラックパッド固有の OS ジェスチャーそのものは Playwright で再現できないため、細かい wheel 入力で代用する。
+
 ## 操作
 
 | 操作 | 入力 |
