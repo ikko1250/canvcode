@@ -18,8 +18,6 @@ import {
 import {
   ARROW_COLORS,
   ARROW_SIZES,
-  DRAW_COLORS,
-  DRAW_SIZES,
   builtinNodeTypes,
   createCodeCardType,
   type ArrowProps,
@@ -34,6 +32,7 @@ import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
 import { buildPieMenus } from './pie/menus.ts'
 import { PieMenus } from './pie/PieMenu.tsx'
+import { DrawPalette } from './palette/DrawPalette.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
@@ -871,27 +870,10 @@ export function App(props: { initial: InitialRecords }) {
         />
 
         {session.toolId === 'draw' && (
-          <div className="style-palette">
-            {DRAW_COLORS.map((color) => (
-              <button
-                key={color}
-                className={session.drawStyle.color === color ? 'swatch active' : 'swatch'}
-                style={{ background: color }}
-                title={color}
-                onClick={() => editor.session.set({ drawStyle: { ...session.drawStyle, color } })}
-              />
-            ))}
-            <span className="separator" />
-            {DRAW_SIZES.map((size, i) => (
-              <button
-                key={size}
-                className={session.drawStyle.size === size ? 'active' : ''}
-                onClick={() => editor.session.set({ drawStyle: { ...session.drawStyle, size } })}
-              >
-                {SIZE_LABELS[i]}
-              </button>
-            ))}
-          </div>
+          <DrawPalette
+            style={session.drawStyle}
+            onChange={(patch) => editor.session.set({ drawStyle: { ...editor.session.get().drawStyle, ...patch } })}
+          />
         )}
 
         {arrowPalette && (
