@@ -57,7 +57,9 @@ export function PieMenus(props: { menus: PieMenuDef[]; enabled: boolean }) {
         update(cancelPie(stateRef.current))
         return
       }
-      const menu = menusRef.current.find((m) => m.key === e.key)
+      // CapsLock で 'O' になることがあるので、文字のキーは大文字小文字を区別しない（MAI-57）
+      const key = e.key.toLowerCase()
+      const menu = menusRef.current.find((m) => m.key === key)
       if (!menu || e.ctrlKey || e.metaKey || e.altKey) return
       // 文字を入力しているところ（カードの編集、名前の入力欄など）やダイアログでは、ただの文字として扱う
       if (!enabledRef.current || isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
