@@ -102,3 +102,42 @@ describe('locking', () => {
     expect(pagesEditor.nodesInBrush({ x: 0, y: 0, w: 2000, h: 2000 })).toEqual([note.id])
   })
 })
+
+describe('locking all pages (MAI-56)', () => {
+  it('lists the pages of this canvas in page order, not those of other canvases', () => {
+    const { root, pagesEditor, pageNodes } = setup()
+    expect(pagesEditor.pdfPageIds()).toEqual(pageNodes().map((p) => p.id))
+    // ほかの PDF のページ（File の pagesCanvasId が別の Canvas）がこの Canvas にあっても含めない
+    const other = root.importPdf({ title: '別', asset: { id: 'asset:def', hash: 'def', size: 10 }, pageSizes: [{ width: 600, height: 800 }], center: { x: 500, y: 0 } })
+    const stray = pagesEditor.makeNode('pdf-page', { x: 5000, y: 0, props: { assetId: 'asset:def', fileId: other.fileId, pageIndex: 0, w: 100, h: 100 } })
+    pagesEditor.createNodes([stray])
+    expect(pagesEditor.pdfPageIds()).toEqual(pageNodes().filter((p) => p.id !== stray.id).map((p) => p.id))
+    // ページの Canvas でなければ空
+    expect(root.pdfPageIds()).toEqual([])
+  })
+
+  it('unlocks and selects every page, even the ones already unlocked', () => {
+    const { pagesEditor, pageNodes } = setup()
+    const ids = pageNodes().map((p) => p.id)
+    pagesEditor.setLocked([ids[2]], false)
+    pagesEditor.setSelection([])
+    pagesEditor.unlockAndSelectPdfPages()
+    expect(pageNodes().every((p) => !p.locked)).toBe(true)
+    expect([...pagesEditor.session.get().selectedIds].sort()).toEqual([...ids].sort())
+    // 1 回の Undo で戻る（3 ページ目は外れたまま）
+    pagesEditor.undo()
+    expect(pageNodes().map((p) => p.locked)).toEqual([true, true, false, true, true, true])
+  })
+
+  it('locks every page and clears the selection, undoable in one step', () => {
+    const { pagesEditor, pageNodes } = setup()
+    pagesEditor.unlockAndSelectPdfPages()
+    pagesEditor.lockPdfPages()
+    expect(pageNodes().every((p) => p.locked)).toBe(true)
+    expect(pagesEditor.session.get().selectedIds.size).toBe(0)
+    pagesEditor.undo()
+    expect(pageNodes().every((p) => !p.locked)).toBe(true)
+    pagesEditor.undo()
+    expect(pageNodes().every((p) => p.locked)).toBe(true)
+  })
+})

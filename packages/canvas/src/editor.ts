@@ -484,6 +484,38 @@ export class Editor {
     })
   }
 
+  // この Canvas の PDF のページ（File の pagesCanvasId がこの Canvas のもの）を、ページ番号の順に返す（MAI-56）。
+  // ショートカットの Portal などから届く、ほかの Canvas のページは含めない
+  pdfPageIds(): string[] {
+    const pages: { id: string; pageIndex: number }[] = []
+    for (const id of this.index.allIds()) {
+      const node = this.getNode(id)
+      if (node?.type !== 'pdf-page') continue
+      const props = node.props as PdfPageProps
+      if (this.workspace.getFile(props.fileId)?.pagesCanvasId !== this.canvasId) continue
+      pages.push({ id, pageIndex: props.pageIndex })
+    }
+    return pages.sort((a, b) => a.pageIndex - b.pageIndex).map((p) => p.id)
+  }
+
+  // すべてのページの固定を外して、（すでに外れていたページも含めて）全部を選ぶ（MAI-56）。1 回の Undo で戻る
+  unlockAndSelectPdfPages(): void {
+    const ids = this.pdfPageIds()
+    if (ids.length === 0) return
+    this.transact('unlock', (tx) => {
+      for (const id of ids) {
+        const node = this.getNode(id)
+        if (node && node.locked) tx.put({ ...node, locked: false })
+      }
+      this.setSelection(ids)
+    })
+  }
+
+  // すべてのページを固定する（選択は外れる。MAI-56）
+  lockPdfPages(): void {
+    this.setLocked(this.pdfPageIds(), true)
+  }
+
   // Portal のサムネイルに描く範囲。PDF のページの Canvas なら 1 ページ目だけ（MAI-46）、それ以外は中身の全体。中身がなければ null
   thumbnailBounds(): Box | null {
     for (const id of this.index.allIds()) {

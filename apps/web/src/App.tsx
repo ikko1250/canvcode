@@ -505,6 +505,16 @@ export function App(props: { initial: InitialRecords }) {
       const selected = [...editor.session.get().selectedIds].flatMap((id) => editor.getNode(id) ?? [])
       const single = selected.length === 1 ? selected[0] : null
       const items: (MenuItem | 'separator')[] = []
+      // PDF のページの Canvas なら、すべてのページの固定をまとめて外す・固定する（MAI-56）。
+      // 全部が固定されていれば「固定する」を、どれも固定されていなければ「固定を外して選ぶ」を出さない。区切りは呼ぶ側で足す
+      const pdfPageIds = editor.pdfPageIds()
+      const pushPdfPageItems = () => {
+        if (pdfPageIds.length === 0) return false
+        const lockedCount = pdfPageIds.filter((id) => editor.getNode(id)?.locked).length
+        if (lockedCount > 0) items.push({ label: 'すべてのページの固定を外して選ぶ', onSelect: () => editor.unlockAndSelectPdfPages() })
+        if (lockedCount < pdfPageIds.length) items.push({ label: 'すべてのページを固定する', onSelect: () => editor.lockPdfPages() })
+        return true
+      }
       if (single?.type === 'portal') {
         items.push({ label: '開く', shortcut: 'Enter', onSelect: () => openPortal(single.id) })
         const target = workspace.getCanvas((single.props as PortalProps).targetId)
@@ -604,6 +614,7 @@ export function App(props: { initial: InitialRecords }) {
         }
         items.push({ label: '固定する', onSelect: () => editor.setLocked(selected.map((n) => n.id), true) })
         items.push('separator')
+        if (pushPdfPageItems()) items.push('separator')
         items.push({ label: '削除', shortcut: 'Delete', danger: true, onSelect: () => void view.deleteSelection() })
       } else {
         // 固定したノード（PDF のページなど）の上なら、固定を外せる（MAI-32）
@@ -626,10 +637,9 @@ export function App(props: { initial: InitialRecords }) {
             items.push({ label: `この範囲を引用しているノート（${cited.length}）`, onSelect: () => setMenu({ x: at.x, y: at.y, items: cited }) })
           }
         }
-        if (locked?.locked) {
-          items.push({ label: '固定を外す', onSelect: () => editor.setLocked([locked.id], false) })
-          items.push('separator')
-        }
+        if (locked?.locked) items.push({ label: '固定を外す', onSelect: () => editor.setLocked([locked.id], false) })
+        pushPdfPageItems()
+        if (locked?.locked || pdfPageIds.length > 0) items.push('separator')
         items.push({
           label: 'ここに新しいキャンバス',
           onSelect: () => {
