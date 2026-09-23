@@ -1,16 +1,18 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 
 // 付箋（MAI-7 の `note`、MAI-24）。幅は自由に変えられ、高さは文字に合わせて伸びる（MAI-34）。
 // props の h は「最低の高さ」で、文字がそれより多ければ、はみ出さないところまで縦に伸びる。
 // 高さは props から計算するので、前からある付箋も読み込んだときにそのまま文字に合った大きさになる。
+// 文字の大きさと揃え（左・中央・右）はノード単位で変えられる（MAI-50）。align のない古い付箋は左揃え。
 export interface NoteProps {
   text: string
   w: number
   h: number
   color: string
   fontSize: number
+  align: TextAlign
 }
 
 export type NoteNode = NodeRecord<NoteProps>
@@ -18,8 +20,8 @@ export type NoteNode = NodeRecord<NoteProps>
 const PADDING = 16
 const LINE_HEIGHT = 1.4
 
-function noteStyle(props: NoteProps): TextStyle {
-  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: '#2b2930', align: 'left' }
+export function noteStyle(props: NoteProps): TextStyle {
+  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: '#2b2930', align: textAlignOf(props.align) }
 }
 
 function textWidth(props: NoteProps): number {
@@ -50,7 +52,7 @@ export const noteType = defineNodeType<NoteProps>({
   type: 'note',
   version: 1,
 
-  defaultProps: () => ({ text: '', w: 220, h: 200, color: '#fff3bf', fontSize: 20 }),
+  defaultProps: () => ({ text: '', w: 220, h: 200, color: '#fff3bf', fontSize: 20, align: 'left' }),
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: noteHeight(node.props) }),
 

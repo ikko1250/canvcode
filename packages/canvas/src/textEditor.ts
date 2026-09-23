@@ -126,14 +126,17 @@ export class TextEditor {
     }
     const { textarea } = session
     const camera = editor.session.get().camera
-    // ノードのローカル座標（文字の箱の左上）→ 画面の CSS ピクセル
-    const local = multiply(entry.worldMatrix, transformOf(spec.box.x, spec.box.y, 0))
-    const z = camera.zoom
-    textarea.style.transform = `matrix(${local.a * z}, ${local.b * z}, ${local.c * z}, ${local.d * z}, ${(local.e - camera.x) * z}, ${(local.f - camera.y) * z})`
     applyTextStyle(textarea, spec)
     const layout = layoutText(textarea.value, spec.style, spec.autoWidth ? null : spec.box.w)
-    const width = spec.autoWidth ? layout.width + spec.style.fontSize * AUTO_WIDTH_SLACK_EM : spec.box.w
-    textarea.style.width = `${Math.max(width, spec.style.fontSize)}px`
+    const width = Math.max(spec.autoWidth ? layout.width + spec.style.fontSize * AUTO_WIDTH_SLACK_EM : spec.box.w, spec.style.fontSize)
+    // 幅が伸びるテキストの余白は右に付くので、中央揃え・右揃えでは Canvas の描画と同じ位置に文字が来るよう、その分だけ左へずらす（MAI-50）
+    const slack = Math.max(0, width - spec.box.w)
+    const offsetX = spec.style.align === 'center' ? -slack / 2 : spec.style.align === 'right' ? -slack : 0
+    // ノードのローカル座標（文字の箱の左上）→ 画面の CSS ピクセル
+    const local = multiply(entry.worldMatrix, transformOf(spec.box.x + offsetX, spec.box.y, 0))
+    const z = camera.zoom
+    textarea.style.transform = `matrix(${local.a * z}, ${local.b * z}, ${local.c * z}, ${local.d * z}, ${(local.e - camera.x) * z}, ${(local.f - camera.y) * z})`
+    textarea.style.width = `${width}px`
     if (spec.verticalAlign === 'middle') {
       // 上下の中央に置く：上の余白で文字の高さの分だけずらす
       const padding = Math.max(0, (spec.box.h - layout.height) / 2)

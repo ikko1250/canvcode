@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { noteHeight, noteType, type NoteProps } from './noteNode.ts'
+import { noteHeight, noteStyle, noteType, type NoteProps } from './noteNode.ts'
 
 // Node には Canvas がないので、概算の文字幅で測る（layout.test.ts と同じ）
 function note(props: Partial<NoteProps>): NodeRecord<NoteProps> {
@@ -47,5 +47,27 @@ describe('note auto height (MAI-34)', () => {
   it('also fits notes created before, whose stored height is smaller than the text', () => {
     const node = note({ text: 'a\nb\nc\nd\ne', h: 60 })
     expect(noteHeight(node.props)).toBeCloseTo(5 * 28 + 32)
+  })
+})
+
+describe('note font size and alignment (MAI-50)', () => {
+  it('defaults to left alignment', () => {
+    expect(noteType.defaultProps().align).toBe('left')
+    expect(noteStyle(noteType.defaultProps()).align).toBe('left')
+  })
+
+  it('treats notes stored before align existed as left-aligned', () => {
+    const { align: _align, ...legacy } = noteType.defaultProps()
+    expect(noteStyle(legacy as NoteProps).align).toBe('left')
+    expect(noteType.editText!(note(legacy as NoteProps)).style.align).toBe('left')
+  })
+
+  it('passes the alignment and font size to the editor and grows with the font size', () => {
+    const node = note({ text: 'a\nb\nc', align: 'center', fontSize: 40, h: 60 })
+    const spec = noteType.editText!(node)
+    expect(spec.style.align).toBe('center')
+    expect(spec.style.fontSize).toBe(40)
+    // 3 行 × 行の高さ（40 × 1.4）+ 上下の余白（16 × 2）
+    expect(noteHeight(node.props)).toBeCloseTo(3 * 56 + 32)
   })
 })

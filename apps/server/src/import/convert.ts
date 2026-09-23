@@ -421,7 +421,16 @@ export async function convertBackup(zip: ZipReader, options: ImportOptions): Pro
           if (formatted) report.lostFormatting++
           const w = typeof shape.meta?.noteWidth === 'number' ? shape.meta.noteWidth : 200 * scale
           const h = typeof shape.meta?.noteHeight === 'number' ? shape.meta.noteHeight : (200 + num(props.growY)) * scale
-          put('note', { text, w, h, color: NOTE_COLORS[String(props.color)] ?? NOTE_COLORS.black, fontSize: (NOTE_SIZES[String(props.size)] ?? 18) * scale * num(props.fontSizeAdjustment, 1) })
+          // 旧アプリの付箋の揃え（start / middle / end）。なければ左揃え（MAI-50）
+          const align = props.align === 'middle' ? 'center' : props.align === 'end' ? 'right' : 'left'
+          put('note', {
+            text,
+            w,
+            h,
+            color: NOTE_COLORS[String(props.color)] ?? NOTE_COLORS.black,
+            fontSize: (NOTE_SIZES[String(props.size)] ?? 18) * scale * num(props.fontSizeAdjustment, 1),
+            align,
+          })
           break
         }
         case 'bookmark': {
@@ -429,7 +438,7 @@ export async function convertBackup(zip: ZipReader, options: ImportOptions): Pro
           const asset = assetRecords.get(String(props.assetId))
           const url = String(props.url ?? asset?.props?.src ?? '')
           const title = String(asset?.props?.title ?? '')
-          put('note', { text: title && title !== url ? `${title}\n${url}` : url, w: num(props.w, 300), h: Math.min(num(props.h, 200), 200), color: NOTE_COLORS.grey, fontSize: 16 })
+          put('note', { text: title && title !== url ? `${title}\n${url}` : url, w: num(props.w, 300), h: Math.min(num(props.h, 200), 200), color: NOTE_COLORS.grey, fontSize: 16, align: 'left' })
           break
         }
         case 'arrow': {

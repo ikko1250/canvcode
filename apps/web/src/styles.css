@@ -264,6 +264,19 @@ body,
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+.style-palette button svg {
+  display: block;
+  margin: 0 auto;
+}
+
+/* 今の文字の大きさ（MAI-50） */
+.style-palette .value {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1;
+  padding: 2px 0;
+}
+
 .style-palette .separator {
   width: 20px;
   height: 1px;

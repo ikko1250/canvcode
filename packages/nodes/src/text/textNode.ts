@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 
 // テキスト（MAI-7 の `text`、MAI-24）。プレーンテキストで、書式はノード単位。
 // - autoWidth：打った分だけ幅が伸びる（クリックで作ったとき）
@@ -9,7 +9,7 @@ export interface TextProps {
   text: string
   fontSize: number
   color: string
-  align: 'left' | 'center' | 'right'
+  align: TextAlign
   w: number
   autoWidth: boolean
 }
@@ -22,7 +22,7 @@ const LINE_HEIGHT = 1.35
 const MIN_WIDTH_EM = 1
 
 export function textStyle(props: TextProps): TextStyle {
-  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: props.color, align: props.align }
+  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: props.color, align: textAlignOf(props.align) }
 }
 
 // 同じ props のレイアウトは一度だけ計算する（レコードは書き換えないので props で引ける）
