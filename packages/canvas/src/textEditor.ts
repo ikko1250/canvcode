@@ -1,4 +1,4 @@
-import { multiply, transformOf, type WorkspaceRecord, type Transaction } from '@canvcode/core'
+import { multiply, transformOf, type NodeRecord, type WorkspaceRecord, type Transaction } from '@canvcode/core'
 import { cssFont, layoutText, type TextEditSpec } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import { stopUnlessZoom } from './documentEditor.ts'
@@ -146,6 +146,22 @@ export class TextEditor {
       textarea.style.paddingTop = '0'
       textarea.style.height = `${Math.max(layout.height, spec.autoWidth ? 0 : spec.box.h)}px`
     }
+  }
+
+  // 編集中のノードを、文字以外（文字の大きさ・揃えなど）で変える（パレットから。MAI-52）。
+  // 編集のトランザクションが開いたままなので、ほかから transact で変えることはできない（begin が投げる）。
+  // 同じトランザクションで変え、textarea をその場で合わせ直す。フォーカスとカーソルはそのまま。
+  // 終えたときに、文字の編集と合わせて 1 回の Undo になる
+  updateNode(update: (node: NodeRecord) => NodeRecord): boolean {
+    const session = this.session
+    if (!session) return false
+    const editor = this.options.getEditor()
+    const node = editor.getNode(session.nodeId)
+    if (!node) return false
+    session.tx.put(update(node))
+    session.tx.flush()
+    this.layout()
+    return true
   }
 
   private onInput(): void {
