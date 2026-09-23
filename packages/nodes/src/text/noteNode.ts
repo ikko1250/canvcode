@@ -2,7 +2,9 @@ import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './layout.ts'
 
-// 付箋（MAI-7 の `note`、MAI-24）。縦横の大きさを自由に変えられる（旧実装の wide note と同じ）。
+// 付箋（MAI-7 の `note`、MAI-24）。幅は自由に変えられ、高さは文字に合わせて伸びる（MAI-34）。
+// props の h は「最低の高さ」で、文字がそれより多ければ、はみ出さないところまで縦に伸びる。
+// 高さは props から計算するので、前からある付箋も読み込んだときにそのまま文字に合った大きさになる。
 export interface NoteProps {
   text: string
   w: number
@@ -20,8 +22,8 @@ function noteStyle(props: NoteProps): TextStyle {
   return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: '#2b2930', align: 'left' }
 }
 
-function textBox(props: NoteProps) {
-  return { x: PADDING, y: PADDING, w: Math.max(1, props.w - PADDING * 2), h: Math.max(1, props.h - PADDING * 2) }
+function textWidth(props: NoteProps): number {
+  return Math.max(1, props.w - PADDING * 2)
 }
 
 const layoutCache = new WeakMap<NoteProps, TextLayout>()
@@ -29,10 +31,19 @@ const layoutCache = new WeakMap<NoteProps, TextLayout>()
 function noteLayout(props: NoteProps): TextLayout {
   let layout = layoutCache.get(props)
   if (!layout) {
-    layout = layoutText(props.text, noteStyle(props), textBox(props).w)
+    layout = layoutText(props.text, noteStyle(props), textWidth(props))
     layoutCache.set(props, layout)
   }
   return layout
+}
+
+// 実際の高さ：props.h か、文字がすべて収まる高さの大きいほう
+export function noteHeight(props: NoteProps): number {
+  return Math.max(props.h, noteLayout(props).height + PADDING * 2)
+}
+
+function textBox(props: NoteProps) {
+  return { x: PADDING, y: PADDING, w: textWidth(props), h: Math.max(1, noteHeight(props) - PADDING * 2) }
 }
 
 export const noteType = defineNodeType<NoteProps>({
@@ -41,13 +52,14 @@ export const noteType = defineNodeType<NoteProps>({
 
   defaultProps: () => ({ text: '', w: 220, h: 200, color: '#fff3bf', fontSize: 20 }),
 
-  getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: node.props.h }),
+  getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: noteHeight(node.props) }),
 
   hitTest: (node, point, margin) =>
-    point.x >= -margin && point.y >= -margin && point.x <= node.props.w + margin && point.y <= node.props.h + margin,
+    point.x >= -margin && point.y >= -margin && point.x <= node.props.w + margin && point.y <= noteHeight(node.props) + margin,
 
   render(ctx, node, info) {
-    const { w, h, color } = node.props
+    const { w, color } = node.props
+    const h = noteHeight(node.props)
     // 付箋の影と紙
     ctx.fillStyle = 'rgba(60, 50, 20, 0.12)'
     ctx.fillRect(2, 3, w, h)
@@ -67,6 +79,7 @@ export const noteType = defineNodeType<NoteProps>({
 
   roughColor: (node) => node.props.color,
 
+  // 幅は指定どおりにし、高さは最低の高さとして持つ（文字が多ければ、それより縦に伸びる）
   resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
   minSize: { w: 60, h: 60 },
 
