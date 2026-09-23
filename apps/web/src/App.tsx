@@ -121,6 +121,27 @@ interface ImportReport {
   lostPortalLabels: number
 }
 
+// ファイルを選ぶダイアログを出す（パイメニューの Portal › PDF）。選ばずに閉じたら空
+function pickFiles(accept: string): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = accept
+    input.multiple = true
+    input.style.display = 'none'
+    input.addEventListener('change', () => {
+      resolve(Array.from(input.files ?? []))
+      input.remove()
+    })
+    input.addEventListener('cancel', () => {
+      resolve([])
+      input.remove()
+    })
+    document.body.append(input)
+    input.click()
+  })
+}
+
 function describeImport(report: ImportReport): string[] {
   const lines = [
     `キャンバス ${report.canvases} 個、Markdown ${report.markdown} 個、Python ${report.code} 個、PDF ${report.pdf} 個、ノード ${report.nodes} 個（画像 ${report.images}、引用ノート ${report.quotes}）を取り込みました。`,
@@ -815,6 +836,15 @@ export function App(props: { initial: InitialRecords }) {
           menus={buildPieMenus({
             toolId: session.toolId,
             setTool: (toolId) => editor.session.set({ toolId }),
+            importPdf: () => {
+              if (!view) return
+              void pickFiles('.pdf,application/pdf').then(async (files) => {
+                if (!view) return
+                const center = view.viewportCenter()
+                for (const [i, file] of files.entries()) await view.importPdf(file, { x: center.x + i * 40, y: center.y + i * 40 })
+              })
+            },
+            createFileCanvas: (kind) => void view?.createFileCanvas(kind),
             undo: () => view?.undo(),
             redo: () => view?.redo(),
             showStats,

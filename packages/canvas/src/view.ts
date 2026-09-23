@@ -1310,18 +1310,30 @@ export class CanvasView {
   }
 
   // Python を取り込む：File にして、コードのカードを置いた Canvas と Portal を作る（MAI-37）
-  async importPython(title: string, content: string, center: Vec): Promise<string | null> {
+  importPython(title: string, content: string, center: Vec): Promise<string | null> {
+    return this.createFileCanvas('code', { title, content, center })
+  }
+
+  // 新しい File（「無題.md」「無題.py」）を作り、そのカードを置いた Canvas と Portal を center（省略なら画面の中央）に作る。
+  // パイメニューの Portal › Markdown / Python（MAI-42）
+  async createFileCanvas(kind: 'markdown' | 'code', options: { title?: string; content?: string; center?: Vec } = {}): Promise<string | null> {
     if (!this.files) return null
     const editor = this.editor
+    const title = options.title || '無題'
     try {
-      const file = await this.files.create('code', title || '無題', content)
+      const file = await this.files.create(kind, title, options.content ?? '')
       if (this.editor !== editor) return null
-      return editor.createPythonCanvas(file.id, center)?.portalId ?? null
+      return editor.createFileCanvas(file.id, options.center ?? this.viewportCenter())?.portalId ?? null
     } catch (error) {
-      console.error('Failed to import a Python file', error)
-      this.options.notify(`Python のファイルを作れませんでした：${title}`)
+      console.error(`Failed to create a ${kind} canvas`, error)
+      this.options.notify(`${kind === 'markdown' ? 'Markdown' : 'Python'} のファイルを作れませんでした：${title}`)
       return null
     }
+  }
+
+  // 画面の中央（ワールド座標）。パイメニューなどから、ポインタの位置に依らずに置くときに使う
+  viewportCenter(): Vec {
+    return screenToWorld(this.editor.session.get().camera, { x: this.width / 2, y: this.height / 2 })
   }
 
   private onKeyUp(e: KeyboardEvent): void {
