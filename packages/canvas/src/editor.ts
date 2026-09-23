@@ -484,6 +484,19 @@ export class Editor {
     })
   }
 
+  // Portal のサムネイルに描く範囲。PDF のページの Canvas なら 1 ページ目だけ（MAI-46）、それ以外は中身の全体。中身がなければ null
+  thumbnailBounds(): Box | null {
+    for (const id of this.index.allIds()) {
+      const node = this.getNode(id)
+      if (node?.type !== 'pdf-page') continue
+      const props = node.props as PdfPageProps
+      if (props.pageIndex !== 0 || this.workspace.getFile(props.fileId)?.pagesCanvasId !== this.canvasId) continue
+      const bounds = this.index.get(id)?.worldBounds
+      if (bounds) return bounds
+    }
+    return unionBoxes(this.index.allIds().flatMap((id) => this.index.get(id)?.worldBounds ?? []))
+  }
+
   // ---- Python・Markdown の Canvas（MAI-37、MAI-42） ----
 
   // Python の File を、PDF と同じく自分の Canvas に置く：新しい Canvas、その中のコードのカード（左上が原点。
