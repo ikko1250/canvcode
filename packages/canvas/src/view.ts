@@ -206,7 +206,9 @@ export class CanvasView {
     Object.assign(this.root.style, {
       position: 'absolute',
       inset: '0',
-      overflow: 'hidden',
+      // 'hidden' ではなく 'clip'。'hidden' だとスクロールできる要素として扱われ、編集中のカードが画面外へはみ出しているとき、
+      // CodeMirror や textarea がキャレットを見せようとして root 自体をスクロールし、キャンバスごとずれてしまう
+      overflow: 'clip',
       touchAction: 'none',
       userSelect: 'none',
       outline: 'none',
