@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { ReferenceRecord } from '@canvcode/core'
 
 // レコードの保存（MAI-13）。ワークスペースのレコード（Canvas・File・Node・Binding・SourceAnchor）を
 // .canvcode/workspace.db（SQLite、WAL）に 1 行ずつ JSON で持つ。
@@ -54,6 +55,7 @@ export class RecordStore {
       CREATE INDEX IF NOT EXISTS records_rev ON records (rev);
       CREATE TABLE IF NOT EXISTS deleted (id TEXT PRIMARY KEY, rev INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS deleted_rev ON deleted (rev);
+      CREATE TABLE IF NOT EXISTS refs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL);
     `)
     this.migrate(existed)
     if (this.meta('root') === null) this.createRoot()
@@ -119,6 +121,34 @@ export class RecordStore {
     return rev
   }
 
+  // 1 件のレコード（なければ undefined）
+  get(id: string): StoredRecord | undefined {
+    const row = this.db.prepare('SELECT body FROM records WHERE id = ?').get(id) as { body: string } | undefined
+    return row ? (JSON.parse(row.body) as StoredRecord) : undefined
+  }
+
+  // parentId がこれのノード（Canvas の上のノード、group / frame の子）
+  childrenOf(parentId: string): StoredRecord[] {
+    const rows = this.db.prepare('SELECT body FROM records WHERE parent_id = ?').all(parentId) as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as StoredRecord)
+  }
+
+  // AI に渡す参照（ref）を保存する。同期するレコードとは別のテーブルに置き、rev も進めない（ブラウザには流さない）。
+  // 書き換えはしない。同じ id がすでにあれば RefConflictError を投げる
+  putRef(ref: ReferenceRecord): void {
+    try {
+      this.db.prepare('INSERT INTO refs (id, kind, body, created_at) VALUES (?, ?, ?, ?)').run(ref.id, ref.kind, JSON.stringify(ref), ref.createdAt)
+    } catch (error) {
+      if (this.getRef(ref.id)) throw new RefConflictError(ref.id)
+      throw error
+    }
+  }
+
+  getRef(id: string): ReferenceRecord | undefined {
+    const row = this.db.prepare('SELECT body FROM refs WHERE id = ?').get(id) as { body: string } | undefined
+    return row ? (JSON.parse(row.body) as ReferenceRecord) : undefined
+  }
+
   // 動かしたまま、一貫した写しを作る（MAI-13 の「8. バックアップ」）
   snapshot(path: string): void {
     this.db.prepare('VACUUM INTO ?').run(path)
@@ -155,6 +185,12 @@ export class RecordStore {
 
   private setMeta(key: string, value: string): void {
     this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
+  }
+}
+
+export class RefConflictError extends Error {
+  constructor(id: string) {
+    super(`ref already exists: ${id}`)
   }
 }
 

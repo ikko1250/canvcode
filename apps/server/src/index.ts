@@ -10,6 +10,7 @@ import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
+import { handleRefs } from './refs.ts'
 import { SyncHub } from './sync.ts'
 import { ThumbnailStore } from './thumbnails.ts'
 import { SlidesApi } from './slides.ts'
@@ -123,8 +124,9 @@ const server = createServer(async (req, res) => {
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
   if (await slides.handle(req, res, url.pathname, url.searchParams)) return
+  if (await handleRefs(req, res, url.pathname, records)) return
   if (await files.handle(req, res, url.pathname)) return
-  if (await handleMcp(req, res, url.pathname, files, slides)) return
+  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides })) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return

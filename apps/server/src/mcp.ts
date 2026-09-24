@@ -4,7 +4,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { describeRowCountLimits, type SlideData } from '@canvcode/slides'
-import { HttpError, type FileInfo, type FileStore } from './files.ts'
+import { normalizeRefId } from '@canvcode/core'
+import { HttpError, type FileInfo } from './files.ts'
+import { resolveReference, type RefDeps } from './refs.ts'
 import type { SlidesApi } from './slides.ts'
 
 // AI から CanvCode を使うための MCP サーバー（MAI-59）。
@@ -13,10 +15,14 @@ import type { SlidesApi } from './slides.ts'
 // - 第 2 段でスライドデッキを足した。書式の説明・検証付きの作成と更新・スライドの画像での確認ができる
 // - 書いたら開いているブラウザに知らせる。ブラウザは保存していない編集がなければ読み直し、あれば衝突として尋ねる
 // - セッションは持たない（要求ごとにサーバーを作る）
+// - ユーザーが CanvCode で範囲を選んでコピーした ref:XXXXXXXXXX は、resolve_reference で中身にする
 
 export const MCP_PATH = '/mcp'
 
-export function createMcpServer(files: FileStore, slides?: SlidesApi): McpServer {
+export type McpDeps = RefDeps & { slides?: SlidesApi }
+
+export function createMcpServer(deps: McpDeps): McpServer {
+  const { files, slides } = deps
   const server = new McpServer(
     { name: 'canvcode', version: '0.2.0' },
     {
@@ -26,7 +32,10 @@ export function createMcpServer(files: FileStore, slides?: SlidesApi): McpServer
         (slides
           ? 'For slides, call get_slide_format first, then create_slide_deck or update_slide_deck, and check the result with preview_slide_deck. '
           : '') +
-        'New documents appear under "未配置" (unplaced) in the sidebar; the user places them on a canvas.',
+        'New documents appear under "未配置" (unplaced) in the sidebar; the user places them on a canvas. ' +
+        'When the user\'s message contains an id like ref:XXXXXXXXXX, it points at a place the user selected in CanvCode ' +
+        '(a region of a canvas, lines of a document, or a region of a PDF page): call resolve_reference with it first. ' +
+        'Document ids (file:...) in its result can be passed to read_document.',
     },
   )
 
@@ -66,6 +75,25 @@ export function createMcpServer(files: FileStore, slides?: SlidesApi): McpServer
         const { text, hash } = await files.read(id)
         return json({ id, hash, text })
       }),
+  )
+
+  server.registerTool(
+    'resolve_reference',
+    {
+      title: 'Resolve a reference',
+      description:
+        'Resolve a reference id (ref:XXXXXXXXXX) that the user copied in CanvCode to show you what to look at. ' +
+        'Returns the location (canvas region, document lines, or PDF page region) and its content: the current text of the lines, ' +
+        'the nodes in the canvas region (with document ids you can pass to read_document), or the text in the PDF region.',
+      inputSchema: { id: z.string().describe('Reference id, e.g. ref:Ab12Cd34Ef (the ref: prefix may be omitted)') },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ id }) => {
+      const normalized = normalizeRefId(id)
+      const ref = normalized ? deps.records.getRef(normalized) : undefined
+      if (!ref) return error(`Unknown reference id ${normalized ?? JSON.stringify(id)}. Ask the user to copy it again from CanvCode.`)
+      return json(await resolveReference(ref, deps))
+    },
   )
 
   server.registerTool(
@@ -380,7 +408,7 @@ A slide without "layout" is a table. "image" is { "path", "alt" } for table-imag
 }
 
 // /mcp を扱う。扱わないパスなら false を返す
-export async function handleMcp(req: IncomingMessage, res: ServerResponse, path: string, files: FileStore, slides?: SlidesApi): Promise<boolean> {
+export async function handleMcp(req: IncomingMessage, res: ServerResponse, path: string, deps: McpDeps): Promise<boolean> {
   if (path !== MCP_PATH) return false
   if (req.method !== 'POST') {
     // セッションを持たないので、GET（通知の購読）と DELETE（セッションの終了）は受けない
@@ -388,7 +416,7 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, path:
     res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }))
     return true
   }
-  const server = createMcpServer(files, slides)
+  const server = createMcpServer(deps)
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
   res.on('close', () => {
     void transport.close()

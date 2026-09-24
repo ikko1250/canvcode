@@ -6,6 +6,7 @@ import { EditorState, RangeSetBuilder, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, keymap, lineNumbers, placeholder, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import { CODE_CARD_METRICS, CODE_FONT_FAMILY } from '@canvcode/nodes'
+import { linesOfSelection } from '@canvcode/core'
 
 // CodeMirror の設定（MAI-9、MAI-30）。カードの上での編集と、全画面のエディタで同じものを使う。
 // 本文の履歴（Undo）は CodeMirror 自身が持つ。キャンバスの履歴には入れない（MAI-11）
@@ -32,6 +33,8 @@ export interface CodeEditorHandle {
   select(from: number, to: number): void
   // 選んでいる文字と、その始まりの行（1 から。前後の空白は除く）。何も選んでいなければ null
   selectedQuote(): { quote: string; line: number } | null
+  // 選んでいる行の範囲（1 から、終わりの行を含む）と、その行の中身。何も選んでいなければカーソルのある行（AI に渡す参照）
+  selectedLines(): { startLine: number; endLine: number; snapshot: string }
   focus(): void
   destroy(): void
 }
@@ -189,6 +192,10 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
       const quote = raw.trim()
       if (!quote) return null
       return { quote, line: state.doc.lineAt(from + (raw.length - raw.trimStart().length)).number }
+    },
+    selectedLines() {
+      const { from, to } = view.state.selection.main
+      return linesOfSelection(view.state.doc.toString(), from, to)
     },
     focus: () => view.focus(),
     destroy: () => view.destroy(),

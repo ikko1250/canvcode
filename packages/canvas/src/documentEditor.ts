@@ -20,6 +20,8 @@ export interface DocumentEditorOptions {
   onFullscreen(fileId: string): void
   // 選んだ文字を引用する（帯の「引用」ボタン。Markdown のとき。MAI-33）。line は選んだ範囲の始まりの行（1 から）
   onQuote?(request: { nodeId: string; fileId: string; quote: string; line: number; clientX: number; clientY: number }): void
+  // 選んでいる行を AI に渡す（帯の「AIに渡す」ボタン。Markdown と Python）
+  onReference?(request: { nodeId: string; fileId: string; startLine: number; endLine: number; snapshot: string }): void
 }
 
 interface Session {
@@ -110,24 +112,13 @@ export class DocumentEditor {
     Object.assign(hint.style, { fontWeight: '400', fontSize: '11px', color: '#8c959f', marginLeft: 'auto', marginRight: '8px' })
     header.append(title, hint)
     // Markdown は、選んだ文字を引用できる（MAI-33）
-    const quoteButton = kind === 'markdown' && this.options.onQuote ? document.createElement('button') : null
-    if (quoteButton) {
-      quoteButton.textContent = '引用'
-      quoteButton.title = '選んだ文字を引用する'
-      quoteButton.className = 'canvcode-quote-button'
-      Object.assign(quoteButton.style, {
-        font: "600 11px 'Noto Sans JP', sans-serif",
-        padding: '2px 10px',
-        border: '1px solid rgba(80, 66, 45, 0.3)',
-        borderRadius: '6px',
-        background: '#ffffff',
-        color: '#2b2930',
-        cursor: 'pointer',
-      })
-      // 押しても、エディタの選択を失わないように
-      quoteButton.addEventListener('mousedown', (e) => e.preventDefault())
-      header.append(quoteButton)
-    }
+    const quoteButton = kind === 'markdown' && this.options.onQuote ? headerButton('引用', '選んだ文字を引用する', 'canvcode-quote-button') : null
+    // 選んでいる行を、AI に渡す ID にしてコピーする
+    const refButton = this.options.onReference
+      ? headerButton('AIに渡す', '選んでいる行を指す ID をコピーする（AI に貼り付けると、AI がその行を読めます）', 'canvcode-ref-button')
+      : null
+    if (refButton) header.append(refButton)
+    if (quoteButton) header.append(quoteButton)
     const body = document.createElement('div')
     Object.assign(body.style, { flex: '1', minHeight: '0' })
     host.append(header, body)
@@ -179,6 +170,9 @@ export class DocumentEditor {
       }
       const rect = quoteButton.getBoundingClientRect()
       this.options.onQuote?.({ nodeId, fileId, ...selected, clientX: rect.left, clientY: rect.bottom + 4 })
+    })
+    refButton?.addEventListener('click', () => {
+      this.options.onReference?.({ nodeId, fileId, ...code.selectedLines() })
     })
     this.session = { nodeId, fileId, host, editor: code, sizing: sizingOf(node.props), unlisten }
     editor.setSelection([nodeId])
@@ -241,4 +235,24 @@ function sizingOf(props: unknown): 'auto' | 'fixed' {
 
 export function stopUnlessZoom(e: WheelEvent): void {
   if (!e.ctrlKey && !e.metaKey) e.stopPropagation()
+}
+
+// 名前の帯のボタン。押しても、エディタの選択を失わないようにする
+function headerButton(label: string, title: string, className: string): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.textContent = label
+  button.title = title
+  button.className = className
+  Object.assign(button.style, {
+    font: "600 11px 'Noto Sans JP', sans-serif",
+    padding: '2px 10px',
+    marginLeft: '6px',
+    border: '1px solid rgba(80, 66, 45, 0.3)',
+    borderRadius: '6px',
+    background: '#ffffff',
+    color: '#2b2930',
+    cursor: 'pointer',
+  })
+  button.addEventListener('mousedown', (e) => e.preventDefault())
+  return button
 }

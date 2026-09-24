@@ -33,11 +33,13 @@ export function FileEditor(props: {
   focus?: { quote: string; line: number } | null
   // 選んだ文字の引用をコピーする（Markdown のとき）
   onQuote?(draft: QuoteDraft): void
+  // 選んでいる行を AI に渡す ID をコピーする（Markdown と Python）
+  onReference?(lines: { fileId: string; startLine: number; endLine: number; snapshot: string }): void
   // focus の文字列が見つからなかった（位置不明）
   onLost?(): void
   onClose(): void
 }) {
-  const { workspace, files, fileId, focus, onQuote, onLost, onClose } = props
+  const { workspace, files, fileId, focus, onQuote, onReference, onLost, onClose } = props
   const file = workspace.getFile(fileId)
   const isCode = file?.kind === 'code'
   const [chosenMode, setMode] = useState<Mode>('both')
@@ -122,6 +124,13 @@ export function FileEditor(props: {
     const selected = editor.selectedQuote()
     if (!selected) return
     onQuote({ fileId, locator: { kind: 'markdown', line: selected.line }, quote: selected.quote, figure: null })
+    editor.focus()
+  }
+
+  const referenceSelection = () => {
+    const editor = editorRef.current
+    if (!editor || !onReference) return
+    onReference({ fileId, ...editor.selectedLines() })
     editor.focus()
   }
 
@@ -282,6 +291,16 @@ export function FileEditor(props: {
         {!isCode && onQuote && (
           <button className="file-editor-quote" onMouseDown={(e) => e.preventDefault()} onClick={quoteSelection} title="選んだ文字の引用をコピーする。キャンバスに貼ると引用ノートになる">
             引用をコピー
+          </button>
+        )}
+        {onReference && (
+          <button
+            className="file-editor-quote"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={referenceSelection}
+            title="選んでいる行を指す ID をコピーする。AI に貼り付けると、AI がその行を読める"
+          >
+            AIに渡す
           </button>
         )}
         <button className="file-editor-close" onClick={onClose} title="閉じる（Esc）">

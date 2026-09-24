@@ -8,8 +8,14 @@ import {
   screenToWorld,
   unionBoxes,
   zoomAt,
+  createRefId,
+  linesOfSelection,
+  quoteRange,
   type Box,
   type Camera,
+  type CanvasRefTarget,
+  type LinesRefTarget,
+  type RefTarget,
   type Vec,
 } from '@canvcode/core'
 import { SOURCE_LINK_PREFIX, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
@@ -29,6 +35,7 @@ import {
 } from './clipboard.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
+import { canvasRefTarget, postReference } from './refs.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
@@ -130,6 +137,7 @@ export class CanvasView {
   private readonly citations: CitationResolver
   // 「出典へ」で移ってきた範囲（しばらく強調して見せる）
   private emphasizedAnchor: string | null = null
+  private emphasizedRegion: { fileId: string; pageIndex: number; rect: Box } | null = null
   private emphasisTimer: number | null = null
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
@@ -214,11 +222,16 @@ export class CanvasView {
         const line = this.quoteLine(anchorId)
         return { label: locationLabel(anchor.locator, line), lost: line === null }
       },
-      regionsOnPage: (fileId, pageIndex) =>
-        this.editor.workspace.anchorsOfFile(fileId).flatMap((anchor) => {
+      regionsOnPage: (fileId, pageIndex) => {
+        const regions = this.editor.workspace.anchorsOfFile(fileId).flatMap((anchor) => {
           const loc = anchor.locator
           return loc.kind === 'pdf' && loc.pageIndex === pageIndex ? [{ rect: loc.rect, emphasized: anchor.id === this.emphasizedAnchor }] : []
-        }),
+        })
+        // AI に渡す参照（ref）から開いた範囲は、引用ではないので、強調している間だけ出す
+        const region = this.emphasizedRegion
+        if (region && region.fileId === fileId && region.pageIndex === pageIndex) regions.push({ rect: region.rect, emphasized: true })
+        return regions
+      },
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
 
@@ -277,6 +290,7 @@ export class CanvasView {
           onFullscreen: (fileId) => this.options.onOpenFile(fileId),
           onQuote: ({ nodeId, fileId, quote, line, clientX, clientY }) =>
             this.options.onQuote({ kind: 'markdown', nodeId, draft: { fileId, locator: { kind: 'markdown', line }, quote, figure: null }, clientX, clientY }),
+          onReference: ({ fileId, startLine, endLine, snapshot }) => void this.copyReference({ kind: 'lines', fileId, startLine, endLine, snapshot }),
         })
       : null
     // 本文を読み込めた・編集した・外で変わったら、そのカードの形（高さ）と絵を描き直す
@@ -364,7 +378,7 @@ export class CanvasView {
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
-    this.editorRef.session.set({ hoveredId: null, brush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null })
+    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null })
     this.editorRef = editor
     editor.session.set({
       toolId: 'select',
@@ -373,6 +387,7 @@ export class CanvasView {
       editingId: null,
       hoveredId: null,
       brush: null,
+      lastBrush: null,
       quoteRegion: null,
       quoteArmed: false,
       hoveredSpacing: null,
@@ -703,27 +718,98 @@ export class CanvasView {
     const anchor = this.editor.workspace.getAnchor(anchorId)
     const loc = anchor?.locator
     if (!anchor || loc?.kind !== 'pdf') return false
+    return this.showPdfRegion(anchor.fileId, loc.pageIndex, loc.rect, anchorId)
+  }
+
+  // PDF のページの上の範囲（ページの中の割合）を見せて、しばらく強調する。anchorId がなければ、その範囲の枠を一時的に出す（ref から開いたとき）
+  async showPdfRegion(fileId: string, pageIndex: number, rect: Box, anchorId: string | null = null): Promise<boolean> {
     const pageId = this.editor.index.allIds().find((id) => {
       const node = this.editor.getNode(id)
-      return node?.type === 'pdf-page' && (node.props as PdfPageProps).fileId === anchor.fileId && (node.props as PdfPageProps).pageIndex === loc.pageIndex
+      return node?.type === 'pdf-page' && (node.props as PdfPageProps).fileId === fileId && (node.props as PdfPageProps).pageIndex === pageIndex
     })
     const page = pageId ? this.editor.index.get(pageId)?.worldBounds : undefined
     if (!page) return false
     // ページの幅いっぱいに、範囲が画面の中ほどに来るように見せる
-    const regionY = page.y + loc.rect.y * page.h
-    const regionH = loc.rect.h * page.h
+    const regionY = page.y + rect.y * page.h
+    const regionH = rect.h * page.h
     const h = Math.max(regionH * 1.6, page.h * 0.35)
     const target = this.cameraFor({ x: page.x - page.w * 0.05, y: regionY + regionH / 2 - h / 2, w: page.w * 1.1, h })
     this.emphasizedAnchor = anchorId
+    this.emphasizedRegion = anchorId ? null : { fileId, pageIndex, rect }
     if (this.emphasisTimer !== null) window.clearTimeout(this.emphasisTimer)
     this.emphasisTimer = window.setTimeout(() => {
       this.emphasizedAnchor = null
+      this.emphasizedRegion = null
       this.emphasisTimer = null
       this.invalidate('scene')
-    }, 2500)
+    }, anchorId ? 2500 : 5000)
     this.invalidate('scene')
     await this.animateCamera(target)
     return true
+  }
+
+  // ワールド座標の範囲を画面に収めて、まだあるノードを選ぶ（ref から開いたとき）
+  async focusRect(rect: Box, nodeIds: readonly string[]): Promise<void> {
+    this.tool.cancel()
+    this.editor.setSelection(nodeIds.filter((id) => this.editor.getNode(id)))
+    const margin = Math.max(rect.w, rect.h) * 0.1 + 40
+    await this.animateCamera(this.cameraFor({ x: rect.x - margin, y: rect.y - margin, w: rect.w + margin * 2, h: rect.h + margin * 2 }))
+  }
+
+  // Canvas の範囲の参照（直前の範囲選択か、選んでいるノード）。どちらもなければ null
+  canvasReference(): CanvasRefTarget | null {
+    const editor = this.editor
+    const { selectedIds, lastBrush } = editor.session.get()
+    return canvasRefTarget({
+      canvasId: editor.canvasId,
+      selectedIds,
+      lastBrush,
+      boundsOf: (id) => editor.index.get(id)?.worldBounds,
+      nodesInBrush: (rect) => editor.nodesInBrush(rect),
+    })
+  }
+
+  // 今の Canvas の範囲を AI に渡す。範囲がなければ、そう知らせる
+  async copyCanvasReference(): Promise<string | null> {
+    const target = this.canvasReference()
+    if (!target) {
+      this.options.notify('AI に渡す範囲を、選ぶか範囲選択で囲んでください')
+      return null
+    }
+    return this.copyReference(target)
+  }
+
+  // 本文の中の引用（文字列と、その始まりの行）を、行の範囲の参照にする。本文をまだ読んでいなければ、引用した文字列のまま
+  linesReference(fileId: string, quote: string, line: number): LinesRefTarget {
+    const text = this.files?.get(fileId)?.text
+    const range = text === undefined ? null : quoteRange(text, quote, line)
+    if (text !== undefined && range) return { kind: 'lines', fileId, ...linesOfSelection(text, range.from, range.to) }
+    return { kind: 'lines', fileId, startLine: line, endLine: line + quote.split('\n').length - 1, snapshot: quote }
+  }
+
+  // AI に見てほしい場所の参照（ref）を作り、ID だけをクリップボードに載せる。ユーザーはそれを AI に貼り付け、
+  // AI は MCP の resolve_reference で中身を読む。
+  // クリップボードへは、ほかの処理を待たずに書く（ブラウザは、クリックのすぐあとでないと書かせないことがある）
+  async copyReference(target: RefTarget): Promise<string | null> {
+    const id = createRefId()
+    const copied = writeClipboardText(id)
+    this.clearQuoteRegion()
+    try {
+      // 保存していない編集があれば、先に保存する（AI が今の本文を読めるように）
+      if (target.kind === 'lines') await this.files?.flush(target.fileId)
+      const saved = await postReference(target, id)
+      if (saved.id !== id) await writeClipboardText(saved.id)
+      if (!(await copied) && saved.id === id) {
+        this.options.notify(`クリップボードに書けませんでした。この ID を AI に渡してください：${saved.id}`)
+      } else {
+        this.options.notify(`AI に渡す ID をコピーしました（${saved.id}）。Claude Code などに貼り付けてください`)
+      }
+      return saved.id
+    } catch (error) {
+      console.error('Failed to save a reference', error)
+      this.options.notify('AI に渡す ID を保存できませんでした。コピーした ID は使えません')
+      return null
+    }
   }
 
   // Markdown の引用の、今の行（本文が変わっていれば探し直す）。見つからなければ null
@@ -1180,6 +1266,13 @@ export class CanvasView {
       this.promoteSelection()
       return
     }
+    // 選んでいるノード（直前の範囲選択なら、その枠）を AI に渡す ID をコピーする。
+    // Ctrl+Alt+K は Firefox（macOS）の開発ツールと重なるので、A（AI）にする。Option+A は文字（å）になるので、key ではなく code で見る
+    if (mod && e.altKey && e.code === 'KeyA') {
+      e.preventDefault()
+      void this.copyCanvasReference()
+      return
+    }
     if (mod && e.key.toLowerCase() === 'v') {
       // 貼り付けそのものは paste イベントで行う。ここでは Shift を押しているかだけを覚えておく
       this.pasteAtPointer = e.shiftKey
@@ -1503,4 +1596,15 @@ const DOCUMENT_EXTENSION = /\.(md|markdown|py)$/i
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
   return `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、PDF、旧アプリの .ricbackup）`
+}
+
+// クリップボードに文字を書く。書けたかどうかを返す（投げない）
+async function writeClipboardText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch (error) {
+    console.warn('Failed to write the clipboard', error)
+    return false
+  }
 }

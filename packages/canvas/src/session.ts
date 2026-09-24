@@ -17,6 +17,8 @@ export interface SessionState {
   focusedGroupId: string | null
   // 範囲選択の枠（ワールド座標）
   brush: Box | null
+  // 直前の範囲選択の枠と、そのとき選んだノード。右クリックの「AIに渡す」で範囲に使う。次の左クリックで消す
+  lastBrush: { rect: Box; ids: ReadonlySet<string> } | null
   // 引用する範囲（PDF のページの上。ワールド座標。MAI-33）。範囲を決めたあと、メニューを閉じるまで出しておく
   quoteRegion: Box | null
   // 次のドラッグを、引用する範囲の選択にする（右クリックの「範囲を選んで引用」。一度だけ）
@@ -59,6 +61,7 @@ export class Session {
       editingId: null,
       focusedGroupId: null,
       brush: null,
+      lastBrush: null,
       quoteRegion: null,
       quoteArmed: false,
       // フリーハンドの既定は赤・透過率 50%（MAI-49）
