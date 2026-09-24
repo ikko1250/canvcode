@@ -132,7 +132,10 @@ export class FileStore {
           format?: 'md' | 'json'
         }
         if (body.kind !== 'markdown' && body.kind !== 'code' && body.kind !== 'slides') throw new HttpError(400, 'kind must be markdown, code or slides')
-        sendJson(res, 200, { file: await this.create(body.kind, body.title ?? '無題', body.content ?? '', { extension: body.kind === 'slides' && body.format === 'json' ? '.slide.json' : undefined }) })
+        const json = body.kind === 'slides' && body.format === 'json'
+        // 空のデッキはスライドとして読めないので、表紙 1 枚を入れて作る
+        const content = body.content || (body.kind === 'slides' ? emptyDeck(json) : '')
+        sendJson(res, 200, { file: await this.create(body.kind, body.title ?? '無題', content, { extension: json ? '.slide.json' : undefined }) })
       } else if (parts.length === 3 && req.method === 'PATCH') {
         const body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8')) as { title?: string }
         if (!body.title) throw new HttpError(400, 'title is required')
@@ -414,6 +417,10 @@ function newFileId(): string {
 
 function hashOf(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex')
+}
+
+function emptyDeck(json: boolean): string {
+  return json ? `${JSON.stringify({ slides: [{ layout: 'title', title: 'タイトル' }] }, null, 2)}\n` : '# タイトル\n'
 }
 
 function titleOf(path: string): string {

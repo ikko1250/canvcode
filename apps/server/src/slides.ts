@@ -12,6 +12,9 @@ import { FileStore, HttpError, type FileInfo } from './files.ts'
 const MAX_DECK_BYTES = 10 * 1024 * 1024
 const MAX_JSON_REQUEST_BYTES = 24 * 1024 * 1024
 const MAX_ASSET_BYTES = 20 * 1024 * 1024
+// 開発時の Vite（apps/web/vite.config.ts の port、strictPort）。出力時はここからプレビューを開く
+const DEV_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1):5173$/
+const CHROMIUM_MISSING = 'PDF / PNG の出力には Chromium が必要です。サーバーで `npx playwright install chromium` を実行してください。'
 const IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -25,6 +28,8 @@ export class SlidesApi {
   private readonly files: FileStore
   private readonly workspace: string
   private readonly port: number
+  // Chromium を同時にいくつも起動しないよう、出力は 1 件ずつ順に行う
+  private exportQueue: Promise<unknown> = Promise.resolve()
 
   constructor(files: FileStore, workspace: string, port: number) {
     this.files = files
@@ -84,12 +89,28 @@ export class SlidesApi {
         }
         let content = body.text
         if (assetNames.size > 0) {
+          // ブラウザで選んだ画像はファイル名しか分からないので、ファイル名で対応付ける。
+          // 同じファイル名を別の場所から参照していると、どれに当たるか決められないので断る
+          const referenced = new Map<string, Set<string>>()
+          for (const slide of deck.slides) {
+            for (const path of [slide.image?.path, ...(slide.images ?? []).map((image) => image.path)]) {
+              if (path === undefined) continue
+              const sourceName = basenameOf(path)
+              if (!assetNames.has(sourceName)) continue
+              const paths = referenced.get(sourceName) ?? new Set<string>()
+              paths.add(path.replaceAll('\\', '/'))
+              referenced.set(sourceName, paths)
+            }
+          }
+          for (const [sourceName, paths] of referenced) {
+            if (paths.size > 1) throw new HttpError(400, `${sourceName} が複数の場所から参照されています（${[...paths].join(', ')}）。画像の名前を変えてから読み込んでください`)
+          }
           let didRewrite = false
           const rewritten: DeckData = {
             ...deck,
             slides: deck.slides.map((slide) => {
               const imagePath = (path: string) => {
-                const sourceName = path.replaceAll('\\', '/').split('/').at(-1) ?? path
+                const sourceName = basenameOf(path)
                 const targetName = assetNames.get(sourceName)
                 if (targetName) didRewrite = true
                 return targetName ? `assets/${targetName}` : path
@@ -195,11 +216,13 @@ export class SlidesApi {
         const body = await jsonBody<{ format?: 'pdf' | 'png'; scale?: number }>(req)
         if (body.format !== 'pdf' && body.format !== 'png') throw new HttpError(400, 'format は pdf または png を指定してください')
         if (body.scale !== undefined && (typeof body.scale !== 'number' || !Number.isFinite(body.scale))) throw new HttpError(400, 'scale は数値で指定してください')
+        // プレビューのページは、このサーバーか開発時の Vite からだけ開く（ほかの localhost のページにデッキの画像を渡さない）
         const origin = req.headers.origin
-        const previewBase = typeof origin === 'string' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
-          ? origin
-          : `http://127.0.0.1:${this.port}`
-        const result = await this.export(info, body.format, body.scale, previewBase)
+        const previewBase = typeof origin === 'string' && DEV_ORIGIN.test(origin) ? origin : `http://127.0.0.1:${this.port}`
+        const format = body.format
+        const run = this.exportQueue.then(() => this.export(info, format, body.scale, previewBase))
+        this.exportQueue = run.catch(() => {})
+        const result = await run
         res.writeHead(200, {
           'content-type': body.format === 'pdf' ? 'application/pdf' : 'application/zip',
           'content-length': result.data.length,
@@ -275,7 +298,10 @@ export class SlidesApi {
     const warnings = lintDeck(deck).warnings
     const previewUrl = new URL('/slides-preview.html', previewBase)
     previewUrl.hostname = '127.0.0.1'
-    const browser = await chromium.launch({ headless: true })
+    const browser = await chromium.launch({ headless: true }).catch((error: unknown) => {
+      if (errorMessage(error).includes("Executable doesn't exist")) throw new HttpError(503, CHROMIUM_MISSING)
+      throw error
+    })
     try {
       const scale = Math.max(1, Math.min(4, Math.round(requestedScale ?? 1)))
       const page = await browser.newPage({ viewport: { width: SLIDE_WIDTH, height: SLIDE_HEIGHT }, deviceScaleFactor: format === 'png' ? scale : 1 })
@@ -344,6 +370,10 @@ export class SlidesApi {
 
 function formatOf(file: FileInfo): 'md' | 'json' {
   return file.path.toLowerCase().endsWith('.json') ? 'json' : 'md'
+}
+
+function basenameOf(path: string): string {
+  return path.replaceAll('\\', '/').split('/').at(-1) ?? path
 }
 
 function inside(root: string, path: string): boolean {
