@@ -266,6 +266,7 @@ export class SelectTool implements Tool {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
     if (editor.session.get().quoteRegion) editor.session.set({ quoteRegion: null })
+    if (editor.session.get().lastBrush) editor.session.set({ lastBrush: null })
     // PDF のページの上の Alt+ドラッグ（または「範囲を選んで引用」のあと）は、引用する範囲の選択（MAI-33）
     const armed = editor.session.get().quoteArmed
     if (armed || pointer.altKey) {
@@ -493,7 +494,8 @@ export class SelectTool implements Tool {
       // 複数選択中に 1 つをクリックしたら、それだけを選ぶ
       editor.setSelection([state.nodeId])
     } else if (state.name === 'brushing') {
-      editor.session.set({ brush: null })
+      const brush = editor.session.get().brush
+      editor.session.set({ brush: null, lastBrush: brush ? { rect: brush, ids: editor.session.get().selectedIds } : null })
     } else if (state.name === 'pointingCanvas') {
       // PDF のページの上の、引用した範囲をクリックした（MAI-33）
       const anchors = editor.citationsAt(pointer.world)

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Camera } from '@canvcode/core'
+import type { Camera, ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
   FileManager,
   SlidePageService,
   SyncClient,
+  fetchReference,
   Workspace,
   isEditableKeyboardTarget,
   isImeEvent,
@@ -90,6 +91,17 @@ const BENCH_NODE_COUNT = 10_000
 function canvasIdFromUrl(): string | null {
   const match = /^\/c\/([^/]+)/.exec(location.pathname)
   return match ? decodeURIComponent(match[1]) : null
+}
+
+// URL の /r/<id> から、AI に渡す参照（ref）の id を読む。開くと、その場所を見せる
+function refIdFromUrl(): string | null {
+  const match = /^\/r\/([^/]+)/.exec(location.pathname)
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
 }
 
 // URL の /f/<id> から、全画面のエディタで開いている File の id を読む（MAI-8）
@@ -475,6 +487,43 @@ export function App(props: { initial: InitialRecords }) {
     [workspace, navigate, openFile, notify],
   )
 
+  // AI に渡す参照（ref）の場所を見せる（/r/<id> を開いたとき）
+  const openReference = useCallback(
+    async (id: string) => {
+      let ref: ReferenceRecord | null
+      try {
+        ref = await fetchReference(id)
+      } catch (error) {
+        console.error('Failed to read a reference', error)
+        return notify('参照を読み込めませんでした')
+      }
+      if (!ref) return notify(`参照が見つかりません：${id}`)
+      if (ref.kind === 'canvas') {
+        const canvas = workspace.getCanvas(ref.canvasId)
+        if (!canvas) return notify('参照しているキャンバスは削除されています')
+        if (canvas.deletedAt !== null) return notify('参照しているキャンバスはゴミ箱の中にあります。サイドバーから元に戻せます')
+        await navigate(canvas.id)
+        const view = viewRef.current
+        if (view && view.editor.canvasId === canvas.id) await view.focusRect(ref.rect, ref.nodes.map((n) => n.id))
+        return
+      }
+      const file = workspace.getFile(ref.fileId)
+      if (!file) return notify('参照している資料は削除されています')
+      if (workspace.targetStatus(file.id) === 'trashed') return notify('参照している資料はゴミ箱の中にあります。サイドバーから元に戻せます')
+      if (ref.kind === 'lines') {
+        openFile(file.id, { focus: { quote: ref.snapshot, line: ref.startLine } })
+        return
+      }
+      if (!file.pagesCanvasId) return
+      const pages = workspace.getCanvas(file.pagesCanvasId)
+      if (!pages || pages.deletedAt !== null) return notify('参照している PDF はゴミ箱の中にあります。サイドバーから元に戻せます')
+      await navigate(pages.id)
+      const view = viewRef.current
+      if (view && view.editor.canvasId === pages.id) await view.showPdfRegion(file.id, ref.pageIndex, ref.rect)
+    },
+    [workspace, navigate, openFile, notify],
+  )
+
   // 引用する範囲を決めた・文字を選んで「引用」を押した：ノートを横に置くか、コピーするかを選ばせる
   const onQuote = useCallback(
     async (request: QuoteRequest) => {
@@ -509,6 +558,14 @@ export function App(props: { initial: InitialRecords }) {
         items: [
           { label: request.kind === 'pdf' ? 'このページの横に引用ノート' : 'カードの横に引用ノート', onSelect: place },
           { label: '引用をコピー', onSelect: () => void view.copyQuote(d) },
+          {
+            label: 'AIに渡すIDをコピー',
+            onSelect: () => {
+              const loc = d.locator
+              if (loc.kind === 'pdf') void view.copyReference({ kind: 'pdf', fileId: d.fileId, pageIndex: loc.pageIndex, rect: loc.rect, text: d.quote })
+              else if (loc.kind === 'markdown') void view.copyReference(view.linesReference(d.fileId, d.quote, loc.line))
+            },
+          },
         ],
         onClose: () => view.clearQuoteRegion(),
       })
@@ -637,6 +694,8 @@ export function App(props: { initial: InitialRecords }) {
         }
       }
       if (selected.length > 0) {
+        // AI に見てほしい場所として、選んでいるノード（直前の範囲選択なら、その枠）を指す ID をコピーする
+        items.push({ label: 'AIに渡すIDをコピー', shortcut: 'Ctrl+Alt+A', onSelect: () => void view.copyCanvasReference() })
         items.push({ label: 'キャンバスに昇格', shortcut: 'Ctrl+Alt+P', onSelect: () => view.promoteSelection() })
         // 子キャンバスに移動（MAI-38）：この Canvas の子の Canvas から、移す先を選ばせる
         items.push({
@@ -750,6 +809,10 @@ export function App(props: { initial: InitialRecords }) {
           },
         })
         items.push({ label: 'すべて選択', shortcut: 'Ctrl+A', onSelect: () => editor.selectAll() })
+        // 何もない所を範囲選択した直後なら、その範囲を AI に渡せる
+        if (editor.session.get().lastBrush) {
+          items.push({ label: 'この範囲をAIに渡す', shortcut: 'Ctrl+Alt+A', onSelect: () => void view.copyCanvasReference() })
+        }
         // 親キャンバスに戻る（MAI-47）。ルートや未配置のキャンバスでは出さない
         const parentId = workspace.getCanvas(editor.canvasId)?.parentCanvasId
         if (parentId) items.push({ label: '親キャンバスに戻る', shortcut: 'U', onSelect: () => void navigate(parentId) })
@@ -823,8 +886,11 @@ export function App(props: { initial: InitialRecords }) {
     void created.assets.loadList().catch((error: unknown) => console.error('Failed to load assets', error))
     // 開いた URL の Canvas に入る
     const initial = canvasIdFromUrl()
+    const initialRef = refIdFromUrl()
     if (initial && initial !== workspace.rootCanvasId && workspace.getCanvas(initial)) void navigate(initial, { push: false })
     else history.replaceState({ canvasId: workspace.rootCanvasId }, '', `/c/${encodeURIComponent(workspace.rootCanvasId)}`)
+    // /r/<id>（AI に渡す参照）なら、ルートから、その場所へ移る
+    if (initialRef) void openReference(initialRef)
     // ページを閉じる・隠すときは、保存していない編集をすぐ保存する
     const onHide = () => {
       void files.flush()
@@ -851,7 +917,7 @@ export function App(props: { initial: InitialRecords }) {
       slidePages.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource])
+  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
@@ -1275,6 +1341,7 @@ export function App(props: { initial: InitialRecords }) {
             fileId={openFileId}
             focus={fileFocus}
             onQuote={(draft) => void view?.copyQuote(draft)}
+            onReference={(lines) => void view?.copyReference({ kind: 'lines', ...lines })}
             onLost={() => notify('引用した文字列が見つかりません（位置不明）。覚えていた行を開きました')}
             onClose={closeFile}
           />

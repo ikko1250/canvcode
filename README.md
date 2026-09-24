@@ -89,8 +89,21 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 | `create_document` | 新しい File を作る（サイドバーの「未配置」に入る） |
 | `update_document` | 本文を丸ごと置き換える（`expected_hash` で、読んだあとの変更を検出） |
 | `edit_document` | 本文の一部を置き換える |
+| `resolve_reference` | 画面で「AIに渡す」でコピーした `ref:` の ID を、場所と中身にする |
 
 `/mcp` も `/api/` と同じく Host / Origin を確かめる。キャンバス上のノードの操作は、まだ提供していない。
+
+### AI に見てほしい場所を渡す
+
+範囲を選んで「AIに渡す」を押すと、`ref:XXXXXXXXXX` という ID がクリップボードに入る。それを Claude Code などに貼り付けると、AI が `resolve_reference` でその場所の中身を読む。ID は `.canvcode/workspace.db` に保存され、ブラウザで `/r/<ID>` を開くと、その場所に移る。
+
+| 範囲 | 操作 |
+| --- | --- |
+| キャンバスの範囲 | 範囲選択（またはノードを選ぶ）→ 右クリックの「AIに渡すIDをコピー」（Ctrl+Alt+A） |
+| Markdown / Python の行 | カードの上の編集・全画面のエディタで行を選び、「AIに渡す」 |
+| PDF の範囲 | 「範囲を選んで引用」（Alt+ドラッグ）で囲み、「AIに渡すIDをコピー」 |
+
+AI が受け取るのは、行ならそのときの本文（ファイルが変わっていれば探し直した位置）、キャンバスなら範囲の中のノード（カードは File の id を含むので `read_document` で読める）、PDF なら範囲の文字とページ全体の文字。
 
 ## 操作
 

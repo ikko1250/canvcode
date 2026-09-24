@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { RecordStore, snapshotWorkspace } from './records.ts'
+import { RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
 
 // レコードの保存（MAI-13、MAI-35）
 
@@ -19,6 +19,34 @@ afterEach(() => {
 const node = (id: string, parentId: string, x = 0) => ({ typeName: 'node', id, type: 'geo', parentId, x, y: 0, props: {} })
 
 describe('RecordStore', () => {
+  it('keeps refs apart from the synced records and across restarts', () => {
+    const dir = dataDir()
+    const store = new RecordStore(dir)
+    const ref = { typeName: 'ref', id: 'ref:Ab12Cd34Ef', createdAt: 1, kind: 'lines', fileId: 'file:a', startLine: 1, endLine: 2, snapshot: 'a\nb' } as const
+    store.putRef(ref)
+    expect(store.getRef(ref.id)).toEqual(ref)
+    expect(store.getRef('ref:Zz99Zz99Zz')).toBeUndefined()
+    expect(() => store.putRef({ ...ref, startLine: 2 })).toThrow(RefConflictError)
+    expect(store.rev).toBe(0)
+    expect(store.load().records.map((r) => r.typeName)).toEqual(['canvas'])
+    expect(store.changesSince(0).records).toEqual([])
+    store.close()
+    const reopened = new RecordStore(dir)
+    expect(reopened.getRef(ref.id)).toEqual(ref)
+    reopened.close()
+  })
+
+  it('reads one record and the children of a parent', () => {
+    const store = new RecordStore(dataDir())
+    const root = store.rootCanvasId
+    store.apply([node('node:a', root), node('node:b', 'node:a')], [])
+    expect(store.get('node:a')).toMatchObject({ id: 'node:a' })
+    expect(store.get('node:none')).toBeUndefined()
+    expect(store.childrenOf('node:a').map((r) => r.id)).toEqual(['node:b'])
+    expect(store.childrenOf(root).map((r) => r.id)).toEqual(['node:a'])
+    store.close()
+  })
+
   it('creates the root canvas once and keeps it across restarts', () => {
     const dir = dataDir()
     const first = new RecordStore(dir)
