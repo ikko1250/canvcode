@@ -56,10 +56,17 @@ await files.init()
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1)(:\d+)?$/
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
+const configuredOrigin = process.env.CANVCODE_TRUSTED_ORIGIN
+const trustedOrigin = configuredOrigin ? new URL(configuredOrigin).origin : undefined
+if (trustedOrigin && !trustedOrigin.startsWith('https://')) {
+  throw new Error('CANVCODE_TRUSTED_ORIGIN must use HTTPS')
+}
+const trustedHost = trustedOrigin ? new URL(trustedOrigin).host : undefined
 function trusted(req: import('node:http').IncomingMessage): boolean {
-  if (!LOCAL_HOST.test(req.headers.host ?? '')) return false
+  const host = req.headers.host ?? ''
+  if (!LOCAL_HOST.test(host) && host !== trustedHost) return false
   const origin = req.headers.origin
-  return origin === undefined || LOCAL_ORIGIN.test(origin)
+  return origin === undefined || LOCAL_ORIGIN.test(origin) || origin === trustedOrigin
 }
 
 const MIME_TYPES: Record<string, string> = {

@@ -41,6 +41,13 @@ ssh -L 8787:127.0.0.1:8787 <VPS>
 # ブラウザで http://localhost:8787 を開く
 ```
 
+Tailscale Serve から開く場合は、CanvCode のサーバーをその tailnet URL に限定して許可し、Serve は tailnet 内だけに公開する。アプリ自体にログイン機能はないので、tailnet のアクセス制御も確認する。
+
+```bash
+CANVCODE_TRUSTED_ORIGIN=https://<machine>.<tailnet>.ts.net npm start
+sudo tailscale serve --bg 8787
+```
+
 開発時は `npm run dev`（Vite、http://127.0.0.1:5173）。ポートフォワードは `-L 5173:127.0.0.1:5173`。
 
 ```bash
