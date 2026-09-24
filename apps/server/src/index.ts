@@ -52,7 +52,7 @@ function broadcast(event: FileEvent): void {
 }
 const files = new FileStore(WORKSPACE, DATA_DIR, broadcast)
 await files.init()
-const slides = new SlidesApi(files, WORKSPACE, PORT)
+const slides = new SlidesApi(files, WORKSPACE, PORT, DATA_DIR)
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる

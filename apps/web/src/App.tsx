@@ -4,6 +4,7 @@ import {
   CanvasView,
   Editor,
   FileManager,
+  SlidePageService,
   SyncClient,
   Workspace,
   isEditableKeyboardTarget,
@@ -23,9 +24,11 @@ import {
   builtinNodeTypes,
   createCodeCardType,
   createSlideDeckCardType,
+  createSlidePageType,
   textAlignOf,
   type ArrowProps,
   type FileContentSource,
+  type SlidePageImages,
   type NoteProps,
   type PortalProps,
   type QuoteCardProps,
@@ -100,14 +103,24 @@ function fileIdFromUrl(): string | null {
 // 保存されていたレコード（initial）を当ててから、サーバーとの同期を始める（MAI-11、MAI-13）
 function createWorkspace(initial: InitialRecords) {
   let manager: FileManager | null = null
+  let slidePages: SlidePageService | null = null
   const content: FileContentSource = { get: (fileId) => manager?.get(fileId) ?? null }
+  const pageImages: SlidePageImages = { load: (hash) => slidePages!.load(hash) }
   const workspace = new Workspace({
     rootCanvasId: initial.rootCanvasId,
-    types: [...builtinNodeTypes, createAppMarkdownCardType(content), createCodeCardType({ files: content }), createSlideDeckCardType(content)],
+    types: [
+      ...builtinNodeTypes,
+      createAppMarkdownCardType(content),
+      createCodeCardType({ files: content }),
+      createSlideDeckCardType(content),
+      createSlidePageType(pageImages),
+    ],
   })
   const sync = new SyncClient(workspace, initial)
   manager = new FileManager({ workspace })
-  return { workspace, files: manager, sync }
+  // スライドデッキの画像（デッキのカードの横に並べる）。デッキの本文が変わったら読み直す
+  slidePages = new SlidePageService({ files: manager })
+  return { workspace, files: manager, sync, slidePages }
 }
 
 // Canvas ごとの最後のカメラ（端末ごとに、ブラウザに覚える）
@@ -187,7 +200,7 @@ type Dialog = { title: string; message: string; choices: DialogChoice<string>[];
 
 export function App(props: { initial: InitialRecords }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [{ workspace, files, sync }] = useState(() => createWorkspace(props.initial))
+  const [{ workspace, files, sync, slidePages }] = useState(() => createWorkspace(props.initial))
   const syncStatus = useSyncExternalStore(sync.subscribeStatus, sync.getStatus)
   // 旧データを送っている途中なら、その割合（0〜1）。送り終えて取り込んでいる間は 1
   const [importProgress, setImportProgress] = useState<number | null>(null)
@@ -753,6 +766,7 @@ export function App(props: { initial: InitialRecords }) {
     const created = new CanvasView(getEditor(workspace.rootCanvasId), container, {
       notify,
       files,
+      slidePages,
       pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
       onOpenPortal: (portalId) => openPortal(portalId),
@@ -834,9 +848,10 @@ export function App(props: { initial: InitialRecords }) {
       window.removeEventListener('pagehide', onHide)
       created.dispose()
       files.dispose()
+      slidePages.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, sync, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource])
+  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {

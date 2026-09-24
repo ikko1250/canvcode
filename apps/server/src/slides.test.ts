@@ -24,7 +24,7 @@ async function setup() {
   await files.init()
   cleanups.push(() => files.close())
   const deck = await files.create('slides', 'deck', '# タイトル\n', { extension: '.slide.md' })
-  return { api: new SlidesApi(files, workspace, 0), deck, files, workspace }
+  return { api: new SlidesApi(files, workspace, 0, join(workspace, '.canvcode')), deck, files, workspace }
 }
 
 async function get(api: SlidesApi, path: string): Promise<{ status: number; body: Buffer }> {
@@ -109,5 +109,57 @@ describe('FileStore slides', () => {
       const response = await get(api, `/api/slides/${encodeURIComponent(file.id)}`)
       expect(JSON.parse(response.body.toString())).toMatchObject({ format, deck: { slides: [{ layout: 'title', title: 'タイトル' }] } })
     }
+  })
+})
+
+describe('SlidesApi slide ids', () => {
+  it('gives new decks and saved slides an id', async () => {
+    const { api, deck, workspace } = await setup()
+    const created = await request(api, 'POST', '/api/slides', { file: 'fresh.md' })
+    expect(created.status).toBe(201)
+    expect(readFileSync(join(workspace, 'fresh.slide.md'), 'utf8')).toMatch(/^# タイトル \{#s-[a-z0-9]{6}\}$/m)
+    const loaded = JSON.parse((await get(api, `/api/slides/${encodeURIComponent(deck.id)}`)).body.toString()) as { mtimeMs: number }
+    const saved = await request(api, 'PUT', `/api/slides/${encodeURIComponent(deck.id)}`, {
+      deck: { slides: [{ layout: 'title', title: 'A', name: 'cover' }, { layout: 'title', title: 'B' }] },
+      expectedMtimeMs: loaded.mtimeMs,
+    })
+    expect(saved.status).toBe(200)
+    const text = readFileSync(join(workspace, 'deck.slide.md'), 'utf8')
+    expect(text).toContain('# A {#cover}')
+    expect(text).toMatch(/^# B \{#s-[a-z0-9]{6}\}$/m)
+  })
+})
+
+describe('SlidesApi pages', () => {
+  // 画像を作る処理（Chromium）が終わるまで待つ。テストの環境では Chromium が無く、失敗して終わる
+  async function settled(api: SlidesApi, id: string) {
+    for (let i = 0; i < 100; i++) {
+      const state = JSON.parse((await get(api, `/api/slides/${encodeURIComponent(id)}/pages`)).body.toString()) as {
+        pages: { key: string; hash: string; ready: boolean }[]
+        pending: boolean
+      }
+      if (!state.pending) return state
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    throw new Error('slide pages did not settle')
+  }
+
+  it('lists a hash per slide and serves the cached image', async () => {
+    const { api, deck, workspace } = await setup()
+    const first = await settled(api, deck.id)
+    expect(first.pages).toHaveLength(1)
+    const [page] = first.pages
+    expect(page?.key).toBe('@0')
+    expect(page?.hash).toMatch(/^[a-f0-9]{32}$/)
+    // 同じ中身なら同じハッシュ
+    expect((await settled(api, deck.id)).pages[0]?.hash).toBe(page?.hash)
+    // 撮った画像がある（ここでは置いておく）なら、できている
+    mkdirSync(join(workspace, '.canvcode', 'slide-pages'), { recursive: true })
+    writeFileSync(join(workspace, '.canvcode', 'slide-pages', `${page?.hash}.png`), Buffer.from('\x89PNG\r\n\x1a\n', 'binary'))
+    expect((await settled(api, deck.id)).pages[0]?.ready).toBe(true)
+    const image = await get(api, `/api/slide-pages/${page?.hash}.png`)
+    expect(image.status).toBe(200)
+    expect((await get(api, '/api/slide-pages/..%2Fx.png')).status).toBe(404)
+    expect((await get(api, `/api/slide-pages/${'0'.repeat(32)}.png`)).status).toBe(404)
   })
 })
