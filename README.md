@@ -75,7 +75,7 @@ npx playwright test --project=webkit
 
 ## AI から使う（MCP）
 
-サーバーは `/mcp` で MCP（Streamable HTTP）を提供する。Claude Code などの MCP クライアントから、Markdown / Python の File を読み書きできる。書き込みは開いているタブにすぐ反映される（保存していない編集があるときは、いつもの衝突の確認が出る）。
+サーバーは `/mcp` で MCP（Streamable HTTP）を提供する。Claude Code などの MCP クライアントから、Markdown / Python の File の読み書きと、スライドデッキの作成・編集・確認ができる。書き込みは開いているタブにすぐ反映される（保存していない編集があるときは、いつもの衝突の確認が出る）。
 
 ```bash
 # VPS 上、またはポートフォワードした手元の PC で
@@ -88,8 +88,15 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 | `read_document` | 本文とハッシュを読む |
 | `create_document` | 新しい File を作る（サイドバーの「未配置」に入る） |
 | `update_document` | 本文を丸ごと置き換える（`expected_hash` で、読んだあとの変更を検出） |
-| `edit_document` | 本文の一部を置き換える |
+| `edit_document` | 本文の一部を置き換える（スライドデッキでは、デッキとして読めない書き換えは断る） |
 | `resolve_reference` | 画面で「AIに渡す」でコピーした `ref:` の ID を、場所と中身にする |
+| `get_slide_format` | スライドデッキの書式（Markdown / JSON）・レイアウト・上限の説明と例 |
+| `read_slide_deck` | デッキの本文・ハッシュ・スライドの一覧（番号・id・レイアウト・タイトル）・lint の警告 |
+| `create_slide_deck` | 新しいデッキを作る（検証してから保存。id の無いスライドには id を振る。サイドバーの「未配置」に入る） |
+| `update_slide_deck` | デッキを丸ごと置き換える（検証してから保存。`expected_hash` で、読んだあとの変更を検出） |
+| `preview_slide_deck` | スライドを PNG の画像で返す（キャンバスと同じ画像。1 回に 8 枚まで。Chromium が必要） |
+
+AI にスライドを頼むときは「canvcode でスライドを作って」のように言えばよい。AI は書式を読み、デッキを作り、警告を直し、画像で確かめる。作ったデッキはサイドバーの「未配置」からキャンバスへ置く。AI がデッキを書き換えると、キャンバスのスライドの画像も作り直される（id を保つので、上の書き込みはそのスライドに付いたまま）。
 
 `/mcp` も `/api/` と同じく Host / Origin を確かめる。キャンバス上のノードの操作は、まだ提供していない。
 
