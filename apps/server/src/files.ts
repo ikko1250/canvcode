@@ -4,14 +4,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { watch, type FSWatcher } from 'chokidar'
 
-// Markdown / Python の File（MAI-10、MAI-13、MAI-30）。
-// - 本文は、ワークスペースのフォルダに普通の .md / .py ファイルとして置く。サブフォルダは SSH 側で自由に作ってよい
+// Markdown / Python / スライドデッキの File（MAI-10、MAI-13、MAI-30）。
+// - 本文は、ワークスペースのフォルダに .md / .py / .slide.md / .slide.json として置く。サブフォルダは SSH 側で自由に作ってよい
 // - File の id とパスの対応は .canvcode/files.json に持つ（段階 11 で SQLite に移す）
 // - 書き込むときは、ブラウザが読んだときのハッシュ（If-Match）と今のハッシュを比べ、違えば 409 で断る（衝突）
 // - 外からの変更（SSH からの編集など）は chokidar で監視し、知らせる。アプリ自身が書いた変更は、ハッシュで見分けて無視する
 // - 外で名前が変わった場合（削除と追加が短い間に続き、中身が同じ）は、同じ File とみなしてパスだけを更新する
 
-export type FileKind = 'markdown' | 'code'
+export type FileKind = 'markdown' | 'code' | 'slides'
 
 export interface FileInfo {
   id: string
@@ -33,7 +33,20 @@ export type FileEvent =
   | { type: 'file-removed'; file: FileInfo }
 
 const KIND_BY_EXT: Record<string, FileKind> = { '.md': 'markdown', '.markdown': 'markdown', '.py': 'code' }
-const EXT_BY_KIND: Record<FileKind, string> = { markdown: '.md', code: '.py' }
+const EXT_BY_KIND: Record<FileKind, string> = { markdown: '.md', code: '.py', slides: '.slide.md' }
+
+function kindOfPath(path: string): FileKind | undefined {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.slide.md') || lower.endsWith('.slide.json')) return 'slides'
+  return KIND_BY_EXT[extname(lower)]
+}
+
+function extensionOfPath(path: string): string {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.slide.md')) return '.slide.md'
+  if (lower.endsWith('.slide.json')) return '.slide.json'
+  return extname(path)
+}
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 // 削除と追加がこの時間内に続き、中身が同じなら、名前が変わったとみなす
 const RENAME_WINDOW_MS = 1500
@@ -78,7 +91,7 @@ export class FileStore {
     }
     for (const { id, path } of saved.files) {
       if (this.files.has(id)) continue
-      const kind = KIND_BY_EXT[extname(path).toLowerCase()]
+      const kind = kindOfPath(path)
       if (kind) this.put({ id, kind, title: titleOf(path), path, size: 0, mtime: 0, hash: '', missing: true })
     }
     await this.saveIndex()
@@ -91,6 +104,14 @@ export class FileStore {
 
   list(): FileInfo[] {
     return [...this.files.values()]
+  }
+
+  getInfo(id: string): FileInfo {
+    return this.get(id)
+  }
+
+  resolveWorkspacePath(path: string): string {
+    return this.abs(path)
   }
 
   // /api/files 以下を扱う。扱わないパスなら false を返す
@@ -108,9 +129,13 @@ export class FileStore {
           kind?: FileKind
           title?: string
           content?: string
+          format?: 'md' | 'json'
         }
-        if (body.kind !== 'markdown' && body.kind !== 'code') throw new HttpError(400, 'kind must be markdown or code')
-        sendJson(res, 200, { file: await this.create(body.kind, body.title ?? '無題', body.content ?? '') })
+        if (body.kind !== 'markdown' && body.kind !== 'code' && body.kind !== 'slides') throw new HttpError(400, 'kind must be markdown, code or slides')
+        const json = body.kind === 'slides' && body.format === 'json'
+        // 空のデッキはスライドとして読めないので、表紙 1 枚を入れて作る
+        const content = body.content || (body.kind === 'slides' ? emptyDeck(json) : '')
+        sendJson(res, 200, { file: await this.create(body.kind, body.title ?? '無題', content, { extension: json ? '.slide.json' : undefined }) })
       } else if (parts.length === 3 && req.method === 'PATCH') {
         const body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8')) as { title?: string }
         if (!body.title) throw new HttpError(400, 'title is required')
@@ -167,9 +192,9 @@ export class FileStore {
   }
 
   // id を渡すと、その id で作る（旧データの取り込み。旧の ID を引き継ぐ）。announce なら、開いているブラウザに知らせる
-  async create(kind: FileKind, title: string, content: string, options: { id?: string; announce?: boolean } = {}): Promise<FileInfo> {
+  async create(kind: FileKind, title: string, content: string, options: { id?: string; announce?: boolean; extension?: string } = {}): Promise<FileInfo> {
     if (options.id && this.files.has(options.id)) throw new HttpError(409, `file already exists: ${options.id}`)
-    const path = await this.freePath(sanitizeTitle(title), EXT_BY_KIND[kind])
+    const path = await this.freePath(sanitizeTitle(title), options.extension ?? EXT_BY_KIND[kind])
     const buffer = Buffer.from(content, 'utf8')
     await this.writeAtomic(path, buffer)
     const info: FileInfo = { id: options.id ?? newFileId(), kind, title: titleOf(path), path, ...(await this.statOf(path)), hash: hashOf(buffer), missing: false }
@@ -182,7 +207,7 @@ export class FileStore {
   // 名前を変える。File の名前はファイル名と同じ（MAI-10）。同じ名前があれば、末尾に番号を付ける。フォルダはそのまま
   async rename(id: string, title: string): Promise<FileInfo> {
     const info = this.get(id)
-    const ext = extname(info.path)
+    const ext = extensionOfPath(info.path)
     const dir = dirname(info.path) === '.' ? '' : dirname(info.path)
     const wanted = sanitizeTitle(title)
     if (wanted === info.title) return info
@@ -220,7 +245,7 @@ export class FileStore {
         const rel = relative(this.workspace, path)
         if (!rel) return false
         if (rel.split(sep).some((part) => part.startsWith('.') || part === 'node_modules')) return true
-        return stats?.isFile() === true && !KIND_BY_EXT[extname(path).toLowerCase()]
+        return stats?.isFile() === true && !kindOfPath(path)
       },
       // 書き込みの途中を読まないよう、少し落ち着くのを待つ
       awaitWriteFinish: { stabilityThreshold: 120, pollInterval: 40 },
@@ -233,7 +258,7 @@ export class FileStore {
   }
 
   private async onAdd(path: string): Promise<void> {
-    if (!KIND_BY_EXT[extname(path).toLowerCase()]) return
+    if (!kindOfPath(path)) return
     if (this.ownWrites.has(path)) {
       this.ownWrites.delete(path)
       return
@@ -308,7 +333,7 @@ export class FileStore {
   }
 
   private async readInfo(id: string, path: string): Promise<FileInfo | null> {
-    const kind = KIND_BY_EXT[extname(path).toLowerCase()]
+    const kind = kindOfPath(path)
     if (!kind) return null
     try {
       const buffer = await readFile(this.abs(path))
@@ -330,7 +355,7 @@ export class FileStore {
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
       const full = join(dir, entry.name)
       if (entry.isDirectory()) out.push(...(await this.scan(full)))
-      else if (entry.isFile() && KIND_BY_EXT[extname(entry.name).toLowerCase()]) out.push(this.rel(full))
+      else if (entry.isFile() && kindOfPath(entry.name)) out.push(this.rel(full))
     }
     return out
   }
@@ -396,7 +421,14 @@ function hashOf(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex')
 }
 
+function emptyDeck(json: boolean): string {
+  return json ? `${JSON.stringify({ slides: [{ layout: 'title', title: 'タイトル' }] }, null, 2)}\n` : '# タイトル\n'
+}
+
 function titleOf(path: string): string {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.slide.md')) return basename(path).slice(0, -'.slide.md'.length)
+  if (lower.endsWith('.slide.json')) return basename(path).slice(0, -'.slide.json'.length)
   return basename(path, extname(path))
 }
 

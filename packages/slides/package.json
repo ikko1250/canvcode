@@ -1,0 +1,12 @@
+{
+  "name": "@canvcode/slides",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./editor": "./src/editor/index.ts",
+    "./browser": "./src/browser/renderer.ts",
+    "./core/*": "./src/core/*.ts",
+    "./slide.css": "./styles/slide.css"
+  }
+}

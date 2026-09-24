@@ -12,6 +12,7 @@ import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import { SyncHub } from './sync.ts'
 import { ThumbnailStore } from './thumbnails.ts'
+import { SlidesApi } from './slides.ts'
 
 // CanvCode のサーバー（MAI-4）。
 // - VPS 上で 127.0.0.1 でのみ待ち受け、ローカル PC からは SSH のポートフォワードで開く
@@ -53,6 +54,7 @@ function broadcast(event: FileEvent): void {
 }
 const files = new FileStore(WORKSPACE, DATA_DIR, broadcast)
 await files.init()
+const slides = new SlidesApi(files, WORKSPACE, PORT)
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
@@ -120,6 +122,7 @@ const server = createServer(async (req, res) => {
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
+  if (await slides.handle(req, res, url.pathname, url.searchParams)) return
   if (await files.handle(req, res, url.pathname)) return
   if (await handleMcp(req, res, url.pathname, files)) return
   if (url.pathname.startsWith('/api/')) {

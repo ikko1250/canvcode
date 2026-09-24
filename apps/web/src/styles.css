@@ -863,6 +863,11 @@ body,
   color: #0550ae;
 }
 
+.sidebar-kind.slides {
+  background: rgba(126, 101, 180, 0.18);
+  color: #65499a;
+}
+
 /* 保存の状態（段階 11-1） */
 .sync-status {
   position: absolute;

@@ -35,14 +35,14 @@ export interface CitationResolver {
 
 export interface DocumentInfo {
   title: string
-  kind: 'canvas' | 'markdown' | 'code' | 'pdf'
+  kind: 'canvas' | 'markdown' | 'code' | 'slides' | 'pdf'
   // 'trashed'：ゴミ箱の中 / 'missing'：完全に削除された（リンク切れ）/ 'nofile'：File はあるが実ファイルが見つからない
   status: 'ok' | 'trashed' | 'missing' | 'nofile'
 }
 
 // File の本文（MAI-30）。まだ読み込んでいなければ null を返し、読み込みを始める（読み込めたら描き直される）
 export interface FileContentSource {
-  get(fileId: string): { text: string; version: string } | null
+  get(fileId: string): { text: string; version: string; path?: string; kind?: 'markdown' | 'code' | 'slides' } | null
 }
 
 // ノードが参照している Canvas・File と、その持ち主か（MAI-8）。持ち主は参照先に 1 つだけ
