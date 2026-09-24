@@ -11,6 +11,9 @@
     "@canvcode/canvas": "*",
     "@canvcode/core": "*",
     "@canvcode/nodes": "*",
+    "@canvcode/slides": "*",
+    "@fontsource/m-plus-1p": "^5.2.6",
+    "preact": "^10.29.8",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"

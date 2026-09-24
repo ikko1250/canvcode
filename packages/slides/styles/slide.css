@@ -1,0 +1,408 @@
+/*
+ * スライドのスタイル。寸法・色・タイポグラフィの値は
+ * src/core/slide-layout-spec.ts の cssTokens() が :root に注入する CSS カスタムプロパティを参照する。
+ * 行数に依存する幾何（タイトル位置・パネル高・行グリッド）は renderer がインラインスタイルで設定する。
+ */
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--paper, #ffffff);
+}
+
+body {
+  display: grid;
+  place-items: center;
+  font-family: var(--font-family, "M PLUS 1p", sans-serif);
+  color: var(--ink, #000000);
+}
+
+.viewport {
+  width: var(--slide-width, 1920px);
+  height: var(--slide-height, 1080px);
+  transform-origin: center center;
+}
+
+.slide {
+  position: relative;
+  width: var(--slide-width, 1920px);
+  height: var(--slide-height, 1080px);
+  background: var(--paper, #ffffff);
+}
+
+h1 {
+  position: absolute;
+  left: var(--content-left);
+  margin: 0;
+  font-size: var(--title-font-size);
+  line-height: var(--title-line-height);
+  font-weight: 700;
+  letter-spacing: var(--title-letter-spacing);
+}
+
+/* 全幅表パネル（top / height は renderer が設定） */
+.research-panel {
+  position: absolute;
+  left: var(--content-left);
+  width: var(--content-width);
+  padding: var(--table-panel-padding);
+  background: var(--panel);
+}
+
+/* 左表・右図 */
+.mixed-layout {
+  position: absolute;
+  left: var(--content-left);
+  top: var(--mixed-top);
+  display: grid;
+  grid-template-columns: var(--mixed-table-width) var(--mixed-figure-width);
+  column-gap: var(--mixed-column-gap);
+  width: var(--content-width);
+  height: var(--mixed-height);
+}
+
+/* height は renderer が設定。右図枠内で上下中央 */
+.mixed-table-panel {
+  align-self: center;
+  padding: var(--mixed-panel-padding);
+  background: var(--panel);
+}
+
+.figure-panel {
+  display: grid;
+  place-items: center;
+  width: var(--mixed-figure-width);
+  height: var(--mixed-height);
+  margin: 0;
+  padding: var(--figure-padding);
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--figure-border);
+  border-radius: var(--figure-radius);
+}
+
+.figure-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+.figure-panel--code {
+  place-items: start;
+  align-content: start;
+}
+
+.figure-code {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-family: var(--code-font-family);
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  color: var(--ink);
+  background: transparent;
+}
+
+/* 上表・下2図 */
+.table-images-layout {
+  position: absolute;
+  left: var(--content-left);
+  top: var(--table-images-top);
+  display: flex;
+  flex-direction: column;
+  width: var(--content-width);
+  height: var(--table-images-height);
+}
+
+.table-images-layout .table-images-panel {
+  position: static;
+  left: auto;
+  top: auto;
+  width: 100%;
+  padding: var(--table-images-panel-padding);
+  flex-shrink: 0;
+}
+
+.figures-row {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: repeat(2, var(--table-images-figure-column-width));
+  column-gap: var(--table-images-figures-gap);
+  align-content: start;
+}
+
+.figure-slot {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.figure-title {
+  flex-shrink: 0;
+  margin: 0 0 var(--table-images-figure-title-gap);
+  font-size: var(--table-images-figure-title-font-size);
+  line-height: var(--table-images-figure-title-line-height);
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.table-images-layout .figure-slot .figure-image {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: center top;
+}
+
+/* 表紙（title）。見出しブロックの領域高と灰帯の top / height は renderer が設定 */
+.cover-heading {
+  position: absolute;
+  left: var(--content-left);
+  top: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  width: var(--content-width);
+  padding: 0 var(--cover-text-padding-x);
+  text-align: center;
+}
+
+.cover-heading > * {
+  max-width: 100%;
+}
+
+.cover-title {
+  position: static;
+  left: auto;
+  top: auto;
+  margin: 0;
+  font-size: var(--cover-title-font-size);
+  line-height: var(--cover-title-line-height);
+  font-weight: 700;
+  letter-spacing: var(--cover-title-letter-spacing);
+}
+
+.cover-subtitle {
+  margin-top: var(--cover-subtitle-gap);
+  font-size: var(--cover-subtitle-font-size);
+  line-height: var(--cover-subtitle-line-height);
+  font-weight: 400;
+  letter-spacing: var(--body-letter-spacing);
+}
+
+.cover-credits {
+  position: absolute;
+  left: var(--content-left);
+  display: grid;
+  place-content: center;
+  width: var(--content-width);
+  padding: 0 var(--cover-credits-padding-x);
+  background: var(--panel);
+  text-align: center;
+  font-size: var(--cover-credits-font-size);
+  line-height: var(--cover-credits-line-height);
+  font-weight: 400;
+  letter-spacing: var(--body-letter-spacing);
+}
+
+/* 行グリッド（grid-template-rows / row-gap は renderer が設定） */
+.rows {
+  display: grid;
+  height: 100%;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: var(--table-label-width) 1fr;
+  column-gap: var(--table-column-gap);
+  min-width: 0;
+}
+
+.mixed-table-panel .row {
+  grid-template-columns: var(--mixed-label-width) 1fr;
+  column-gap: var(--mixed-row-column-gap);
+}
+
+.citation,
+.summary {
+  height: 100%;
+  min-width: 0;
+}
+
+.citation {
+  display: grid;
+  place-items: center;
+  padding: var(--label-padding);
+  background: var(--paper);
+  text-align: center;
+  font-size: var(--label-font-size);
+  line-height: var(--label-line-height);
+  font-weight: 700;
+  letter-spacing: var(--label-letter-spacing);
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  padding: var(--body-padding);
+  background: var(--cream-a);
+  font-size: var(--body-font-size);
+  line-height: var(--body-line-height);
+  font-weight: 400;
+  letter-spacing: var(--body-letter-spacing);
+  white-space: normal;
+}
+
+.row:nth-child(n + 3) .summary {
+  background: var(--cream-b);
+}
+
+/* 箇条書き（bullets）: ラベル列なしのクリーム行。子項目は記号付きでインデント */
+.row--bullets {
+  grid-template-columns: 1fr;
+  column-gap: 0;
+}
+
+.summary--bullets .bullet-line {
+  position: relative;
+}
+
+.summary--bullets .bullet-level-2 {
+  padding-left: var(--bullet-l2-indent);
+  font-size: var(--bullet-l2-font-size);
+  line-height: var(--bullet-l2-line-height);
+}
+
+.summary--bullets .bullet-level-2::before {
+  content: var(--bullet-l2-marker);
+  position: absolute;
+  left: 0;
+}
+
+.summary--bullets .bullet-level-3 {
+  padding-left: var(--bullet-l3-indent);
+  font-size: var(--bullet-l3-font-size);
+  line-height: var(--bullet-l3-line-height);
+}
+
+.summary--bullets .bullet-level-3::before {
+  content: var(--bullet-l3-marker);
+  position: absolute;
+  left: var(--bullet-l2-indent);
+}
+
+.line { display: block; }
+
+.line strong { font-weight: 700; }
+
+.template-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 80px;
+  background: #ffffff;
+  font-size: 34px;
+  line-height: 1.6;
+  text-align: center;
+  white-space: pre-line;
+}
+
+#deck {
+  display: none;
+}
+
+/* PNG 出力: 1 スライドを等倍表示 */
+body.export-mode {
+  display: block;
+  width: var(--slide-width, 1920px);
+  height: var(--slide-height, 1080px);
+  overflow: hidden;
+}
+
+body.export-mode .viewport {
+  transform: none !important;
+}
+
+/* PDF 出力: 全スライドを縦に並べて印刷 */
+body.deck-export-mode {
+  display: block;
+  width: auto;
+  height: auto;
+  overflow: visible;
+}
+
+body.deck-export-mode #viewport {
+  display: none;
+}
+
+body.deck-export-mode #deck {
+  display: block;
+}
+
+body.deck-export-mode #deck .slide {
+  width: var(--slide-width, 1920px);
+  height: var(--slide-height, 1080px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewport { transition: none; }
+}
+
+@media print {
+  /* 1920×1080px = 20in×11.25in（96dpi）。export は page.pdf の width/height でも同値を指定する */
+  @page {
+    size: 20in 11.25in;
+    margin: 0;
+  }
+
+  html,
+  body {
+    width: auto;
+    height: auto;
+    overflow: visible;
+  }
+
+  body.deck-export-mode #viewport {
+    display: none;
+  }
+
+  body.deck-export-mode #deck {
+    display: block;
+  }
+
+  body.deck-export-mode #deck .slide {
+    width: var(--slide-width, 1920px);
+    height: var(--slide-height, 1080px);
+    break-after: page;
+    page-break-after: always;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body.deck-export-mode #deck .slide:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  body.export-mode .viewport {
+    transform: none !important;
+  }
+}

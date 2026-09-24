@@ -4,7 +4,7 @@ import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 
 // パイメニューの中身（MAI-39。以前は画面の下端のツールバーに並べていたもの）。
 // 項目を足すときは、ここに足す。1 つの輪は 8 項目くらいまでにして、多ければサブメニューにまとめる。
-// ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 › / 文字 › / Portal › 空・PDF・Python・Markdown / Card › Python・Markdown
+// ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 › / 文字 › / Portal › 空・PDF・Python・Markdown・スライド / Card › Python・Markdown
 // 操作（MAI-57、キー o）：今の選択とキャンバスに応じた項目。項目が 1 つもなければ、メニューそのものを出さない
 
 // ツールの名前（並びは以前のツールバーと同じ）
@@ -32,8 +32,9 @@ export interface PieMenuContext {
   setTool(id: ToolId): void
   // Portal › PDF：PDF を選んで、ページを並べたキャンバスとその Portal を作る
   importPdf(): void
-  // Portal › Markdown / Python：空の「無題.md」「無題.py」を置いたキャンバスとその Portal を作る（MAI-42）
+  // Portal › Markdown / Python：新しい File を置いたキャンバスとその Portal を作る（MAI-42）
   createFileCanvas(kind: 'markdown' | 'code'): void
+  createSlideCanvas?(): void
   undo(): void
   redo(): void
   showStats: boolean
@@ -156,6 +157,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
             { label: 'PDF', onSelect: ctx.importPdf },
             { label: 'Python', onSelect: () => ctx.createFileCanvas('code') },
             { label: 'Markdown', onSelect: () => ctx.createFileCanvas('markdown') },
+            ...(ctx.createSlideCanvas ? [{ label: 'スライド', onSelect: ctx.createSlideCanvas }] : []),
           ],
         },
         group('Card', ['code', 'markdown']),

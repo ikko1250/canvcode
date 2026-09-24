@@ -82,6 +82,8 @@ export interface ToolContext {
   startEditing(nodeId: string, options?: { tx?: Transaction<WorkspaceRecord>; selectAll?: boolean }): boolean
   // Portal の参照先に入る（MAI-29）
   openPortal(portalId: string): void
+  // スライドなど専用エディタがある File を開く
+  openFile?(fileId: string): void
   // カードの本文をその場で編集する。編集できるノードなら true（MAI-30）
   editDocument(nodeId: string): boolean
   // 新しい File（Markdown・Python）とカードを作り、その場で編集する（MAI-30、MAI-31）
@@ -592,6 +594,11 @@ export class SelectTool implements Tool {
     // Portal はダブルクリックで参照先に入る（MAI-9 の「ダブルクリックしたときの動作」）
     if (hit.type === 'portal') {
       this.ctx.openPortal(hit.id)
+      return
+    }
+    const reference = editor.workspace.referenceOf(hit)
+    if (reference && editor.workspace.getFile(reference.targetId)?.kind === 'slides') {
+      this.ctx.openFile?.(reference.targetId)
       return
     }
     // 本文を持つカードは、その場で編集する（MAI-30）

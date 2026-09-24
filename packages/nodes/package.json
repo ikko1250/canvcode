@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@canvcode/core": "*",
+    "@canvcode/slides": "*",
     "@lezer/highlight": "^1.2.3",
     "@lezer/python": "^1.1.19",
     "dompurify": "^3.4.15",

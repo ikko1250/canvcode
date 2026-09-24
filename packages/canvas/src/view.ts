@@ -389,6 +389,7 @@ export class CanvasView {
       },
       startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
       openPortal: (portalId) => this.options.onOpenPortal(portalId),
+      openFile: (fileId) => this.options.onOpenFile(fileId),
       editDocument: (nodeId) => this.editDocument(nodeId),
       createDocumentAt: (kind, center, width) => void this.createDocumentAt(kind, center, width),
       quoteRegion: (pageId, rect, screen) => {
@@ -1177,6 +1178,12 @@ export class CanvasView {
         this.options.onOpenPortal(node.id)
         return
       }
+      const fileRef = node && editor.workspace.referenceOf(node)
+      if (fileRef && editor.workspace.getFile(fileRef.targetId)?.kind === 'slides') {
+        e.preventDefault()
+        this.options.onOpenFile(fileRef.targetId)
+        return
+      }
       // 本文を持つカードなら、その場で編集する
       if (node && this.editDocument(node.id)) {
         e.preventDefault()
@@ -1363,9 +1370,9 @@ export class CanvasView {
     return this.createFileCanvas('code', { title, content, center })
   }
 
-  // 新しい File（「無題.md」「無題.py」）を作り、そのカードを置いた Canvas と Portal を center（省略なら画面の中央）に作る。
-  // パイメニューの Portal › Markdown / Python（MAI-42）
-  async createFileCanvas(kind: 'markdown' | 'code', options: { title?: string; content?: string; center?: Vec } = {}): Promise<string | null> {
+  // 新しい File を作り、そのカードを置いた Canvas と Portal を center（省略なら画面の中央）に作る。
+  // パイメニューの Portal › Markdown / Python / スライド（MAI-42）
+  async createFileCanvas(kind: 'markdown' | 'code' | 'slides', options: { title?: string; content?: string; center?: Vec } = {}): Promise<string | null> {
     if (!this.files) return null
     const editor = this.editor
     const title = options.title || '無題'
@@ -1375,7 +1382,7 @@ export class CanvasView {
       return editor.createFileCanvas(file.id, options.center ?? this.viewportCenter())?.portalId ?? null
     } catch (error) {
       console.error(`Failed to create a ${kind} canvas`, error)
-      this.options.notify(`${kind === 'markdown' ? 'Markdown' : 'Python'} のファイルを作れませんでした：${title}`)
+      this.options.notify(`${kind === 'markdown' ? 'Markdown' : kind === 'slides' ? 'スライド' : 'Python'} のファイルを作れませんでした：${title}`)
       return null
     }
   }

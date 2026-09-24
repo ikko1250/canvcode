@@ -77,7 +77,7 @@ const QUOTE_GAP = 24
 const MOVE_TO_CANVAS_GAP = 80
 
 // File の種類ごとの、カードの型（MAI-7）
-const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
+const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', slides: 'slide-deck-card' }
 
 // 選択しているノードをリサイズ・回転するときの対象（MAI-23）
 export interface TransformSelection {
@@ -559,7 +559,8 @@ export class Editor {
     const role = file.ownerNodeId === null && file.deletedAt === null ? 'owner' : 'shortcut'
     return this.transact(`create ${file.kind} canvas`, (tx) => {
       const canvas = this.workspace.createCanvas(tx, options.title ?? file.title)
-      const card = this.makeNode(type, { x: 0, y: 0, parentId: canvas.id, props: { fileId, role, sizing: 'auto' } })
+      const cardProps = file.kind === 'slides' ? { fileId, role } : { fileId, role, sizing: 'auto' }
+      const card = this.makeNode(type, { x: 0, y: 0, parentId: canvas.id, props: cardProps })
       tx.put(card)
       const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
       this.setSelection([portalId])
