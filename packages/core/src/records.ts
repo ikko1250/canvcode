@@ -84,7 +84,7 @@ export interface FileRecord {
   typeName: 'file'
   id: string
   // pdf は、本文を Asset に持ち、ページを並べた Canvas（pagesCanvasId）で表示する（MAI-7、MAI-32）
-  kind: 'markdown' | 'code' | 'pdf'
+  kind: 'markdown' | 'code' | 'slides' | 'pdf'
   // 名前はファイル名（拡張子を除く）と同じ。名前を変えるとファイル名も変わる
   title: string
   // ワークスペースのフォルダからの相対パス

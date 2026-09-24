@@ -22,6 +22,7 @@ import {
   ARROW_SIZES,
   builtinNodeTypes,
   createCodeCardType,
+  createSlideDeckCardType,
   textAlignOf,
   type ArrowProps,
   type FileContentSource,
@@ -102,7 +103,7 @@ function createWorkspace(initial: InitialRecords) {
   const content: FileContentSource = { get: (fileId) => manager?.get(fileId) ?? null }
   const workspace = new Workspace({
     rootCanvasId: initial.rootCanvasId,
-    types: [...builtinNodeTypes, createAppMarkdownCardType(content), createCodeCardType({ files: content })],
+    types: [...builtinNodeTypes, createAppMarkdownCardType(content), createCodeCardType({ files: content }), createSlideDeckCardType(content)],
   })
   const sync = new SyncClient(workspace, initial)
   manager = new FileManager({ workspace })
@@ -326,6 +327,11 @@ export function App(props: { initial: InitialRecords }) {
       if (!workspace.getFile(fileId)) return
       if (workspace.targetStatus(fileId) !== 'ok') {
         notify('この File は開けません（ゴミ箱の中か、ファイルが見つかりません）')
+        return
+      }
+      if (workspace.getFile(fileId)?.kind === 'slides') {
+        const returnTo = `${location.pathname}${location.search}`
+        location.href = `/slide-editor.html?deck=${encodeURIComponent(fileId)}&back=${encodeURIComponent(returnTo)}`
         return
       }
       setOpenFileId(fileId)
@@ -590,6 +596,31 @@ export function App(props: { initial: InitialRecords }) {
             },
           })
           items.push('separator')
+        }
+      }
+      if (single?.type === 'slide-deck-card') {
+        const fileId = (single.props as { fileId: string }).fileId
+        const file = workspace.getFile(fileId)
+        if (file) {
+          items.push({ label: 'スライドを編集', shortcut: 'Enter', onSelect: () => openFile(file.id) })
+          items.push({
+            label: '名前を変更',
+            onSelect: () => {
+              const entry = editor.index.get(single.id)
+              if (!entry) return
+              const camera = editor.session.get().camera
+              setRenaming({
+                documentId: file.id,
+                title: file.title,
+                header: CARD_HEADER,
+                x: (entry.worldBounds.x - camera.x) * camera.zoom,
+                y: (entry.worldBounds.y - camera.y) * camera.zoom,
+                width: entry.worldBounds.w * camera.zoom,
+                zoom: camera.zoom,
+                canvasOfPortal: editor.canvasId,
+              })
+            },
+          })
         }
       }
       if (selected.length > 0) {
@@ -962,6 +993,7 @@ export function App(props: { initial: InitialRecords }) {
               })
             },
             createFileCanvas: (kind) => void view?.createFileCanvas(kind),
+            createSlideCanvas: () => void view?.createFileCanvas('slides'),
             undo: () => view?.undo(),
             redo: () => view?.redo(),
             showStats,
