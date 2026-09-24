@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { AssetStore } from './assets.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
+import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import { SyncHub } from './sync.ts'
 import { ThumbnailStore } from './thumbnails.ts'
@@ -18,6 +19,7 @@ import { SlidesApi } from './slides.ts'
 // - 本番では、ビルドした画面（apps/web/dist）も同じサーバーから配信する
 // - ワークスペースのフォルダ（MAI-13）の .canvcode/ に、画像の Asset を保存する（MAI-26）
 // - レコードは .canvcode/workspace.db（SQLite）に保存し、/api/sync の WebSocket で同期する（MAI-11、MAI-13）
+// - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きできる（MAI-59）
 
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
@@ -112,7 +114,7 @@ const server = createServer(async (req, res) => {
     sendJson(res, 200, { ok: true })
     return
   }
-  if (url.pathname.startsWith('/api/') && !trusted(req)) {
+  if ((url.pathname.startsWith('/api/') || url.pathname === MCP_PATH) && !trusted(req)) {
     sendJson(res, 403, { error: 'forbidden origin' })
     return
   }
@@ -122,6 +124,7 @@ const server = createServer(async (req, res) => {
   if (await assets.handle(req, res, url.pathname)) return
   if (await slides.handle(req, res, url.pathname, url.searchParams)) return
   if (await files.handle(req, res, url.pathname)) return
+  if (await handleMcp(req, res, url.pathname, files)) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return
@@ -160,5 +163,6 @@ server.on('upgrade', (req, socket, head) => {
 server.listen(PORT, HOST, () => {
   console.log(`CanvCode server: http://${HOST}:${PORT}`)
   console.log(`ワークスペース: ${WORKSPACE}`)
+  console.log(`AI（MCP）から使うとき: claude mcp add --transport http canvcode http://${HOST}:${PORT}${MCP_PATH}`)
   console.log(`手元の PC から開くとき: ssh -L ${PORT}:${HOST}:${PORT} <VPS> のあと http://localhost:${PORT}`)
 })

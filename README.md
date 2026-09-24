@@ -70,6 +70,25 @@ npx playwright test --project=webkit
 
 `apps/web/canvas-input-test.html` はネットワーク上のファイル保存だけをメモリに置き換えた専用ページ。失敗時のイベント経路とブラウザ trace は `test-results/` に出る。トラックパッド固有の OS ジェスチャーそのものは Playwright で再現できないため、細かい wheel 入力で代用する。
 
+## AI から使う（MCP）
+
+サーバーは `/mcp` で MCP（Streamable HTTP）を提供する。Claude Code などの MCP クライアントから、Markdown / Python の File を読み書きできる。書き込みは開いているタブにすぐ反映される（保存していない編集があるときは、いつもの衝突の確認が出る）。
+
+```bash
+# VPS 上、またはポートフォワードした手元の PC で
+claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
+```
+
+| ツール | 内容 |
+|---|---|
+| `list_documents` | File の一覧（名前・パスで絞り込み） |
+| `read_document` | 本文とハッシュを読む |
+| `create_document` | 新しい File を作る（サイドバーの「未配置」に入る） |
+| `update_document` | 本文を丸ごと置き換える（`expected_hash` で、読んだあとの変更を検出） |
+| `edit_document` | 本文の一部を置き換える |
+
+`/mcp` も `/api/` と同じく Host / Origin を確かめる。キャンバス上のノードの操作は、まだ提供していない。
+
 ## 操作
 
 | 操作 | 入力 |
