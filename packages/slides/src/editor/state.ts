@@ -8,6 +8,7 @@
 import { lintSlide } from "../core/deck-lint.ts";
 import { parseMarkdownDeck } from "../core/markdown-deck.ts";
 import { serializeDeck } from "../core/markdown-deck-writer.ts";
+import { assignSlideNames, newSlideName } from "../core/slide-ids.ts";
 import { getMaxRowCount, layoutUsesRows, type SlideLayout } from "../core/slide-layout-spec.ts";
 import {
   normalizeDeckData,
@@ -153,11 +154,27 @@ export function slideToData(draft: DraftSlide): Record<string, unknown> {
   return out;
 }
 
+/** 読み込んだデッキの下書き。id（name）の無いスライドには、ここで id を振る（キャンバスの画像と結び付けるため） */
 export function deckFromData(deck: DeckData): DraftDeck {
   return {
     ...(deck.$schema !== undefined ? { schemaRef: deck.$schema } : {}),
     deckTitle: deck.deckTitle ?? "",
-    slides: deck.slides.map(slideFromData),
+    slides: assignSlideNames(deck).slides.map(slideFromData),
+  };
+}
+
+/** id（name）の無いスライドに id を振った下書き（name 欄を空にしたスライドなど）。全部にあれば同じオブジェクトを返す */
+export function ensureDraftSlideNames(deck: DraftDeck): DraftDeck {
+  if (deck.slides.every((slide) => slide.name !== "")) return deck;
+  const taken = new Set(deck.slides.map((slide) => slide.name).filter((name) => name !== ""));
+  return {
+    ...deck,
+    slides: deck.slides.map((slide) => {
+      if (slide.name !== "") return slide;
+      const name = newSlideName(taken);
+      taken.add(name);
+      return { ...slide, name };
+    }),
   };
 }
 
@@ -184,7 +201,7 @@ export function newBullet(text = "項目"): DraftBullet {
 export function newSlide(layout: SlideLayout): DraftSlide {
   return {
     id: newId(),
-    name: "",
+    name: newSlideName(),
     layout,
     title: "新しいスライド",
     rows: [newRow()],
@@ -224,7 +241,8 @@ export function duplicateDraftSlide(slide: DraftSlide): DraftSlide {
   return {
     ...slide,
     id: newId(),
-    name: "",
+    // 複製は別のスライドなので、新しい id にする
+    name: newSlideName(),
     rows: slide.rows.map((row) => ({ ...row, id: newId() })),
     items: slide.items.map(cloneBullet),
     image: { ...slide.image },

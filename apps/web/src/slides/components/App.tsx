@@ -18,6 +18,7 @@ import {
   deckFromData,
   deckToData,
   duplicateDraftSlide,
+  ensureDraftSlideNames,
   insertSlide,
   moveSlide,
   newSlide,
@@ -317,8 +318,13 @@ export function App() {
   // ---- 保存・出力 ----
 
   const performSave = useCallback(
-    async (target: DraftDeck): Promise<boolean> => {
+    async (draft: DraftDeck): Promise<boolean> => {
       if (!open) return false;
+      // name 欄を空にしたスライドにも id を振って保存する。下書きにも入れておき、次の保存で別の id にならないようにする
+      const target = ensureDraftSlideNames(draft);
+      if (target !== draft) {
+        setHistory((current) => (current && current.present === draft ? { ...current, present: target } : current));
+      }
       const data = deckToData(target);
       setSaving(true);
       try {

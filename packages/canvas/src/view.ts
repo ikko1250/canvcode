@@ -32,6 +32,7 @@ import { DocumentEditor } from './documentEditor.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
+import { reconcileSlidePages, type SlidePageService } from './slidePages.ts'
 import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
@@ -85,6 +86,8 @@ export interface CanvasViewOptions {
   files?: FileManager
   // File を全画面のエディタで開く（Ctrl+Enter）
   onOpenFile?: (fileId: string) => void
+  // スライドデッキの画像の一覧。渡すと、デッキのカードの横にスライドの画像を並べる
+  slidePages?: SlidePageService
   // 引用（MAI-33）：PDF のページの上で引用する範囲を決めた / カードの上の編集で文字を選んで「引用」を押した。
   // 呼び出し側は、「横に引用ノート」か「引用をコピー」かを選ばせる
   onQuote?: (request: QuoteRequest) => void
@@ -122,7 +125,7 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf'>>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf' | 'slidePages'>>
   // 引用の出典（MAI-33）
   private readonly citations: CitationResolver
   // 「出典へ」で移ってきた範囲（しばらく強調して見せる）
@@ -131,6 +134,9 @@ export class CanvasView {
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
   readonly files: FileManager | null
+  readonly slidePages: SlidePageService | null
+  // 知らせたスライドの画像のエラー（同じものを何度も知らせない）
+  private readonly slidePageErrors = new Map<string, string>()
   // カードの上での本文の編集（MAI-30）
   readonly documentEditor: DocumentEditor | null
   readonly assets: AssetManager
@@ -190,6 +196,7 @@ export class CanvasView {
       onImportBackup: options.onImportBackup ?? (() => {}),
     }
     this.files = options.files ?? null
+    this.slidePages = options.slidePages ?? null
     this.documents = {
       get: (id) => {
         const workspace = this.editor.workspace
@@ -283,7 +290,11 @@ export class CanvasView {
         }),
       )
     }
+    if (this.slidePages) {
+      this.disposers.push(this.slidePages.onChange((fileId) => this.syncSlidePages(fileId)))
+    }
     this.attachEditor()
+    this.syncSlidePages()
 
     this.listen(this.root, 'pointerdown', (e) => this.onPointerDown(e))
     this.listen(this.root, 'pointermove', (e) => this.onPointerMove(e))
@@ -371,8 +382,30 @@ export class CanvasView {
     this.panPointer = null
     this.cursorOverride = null
     this.attachEditor()
+    this.syncSlidePages()
     this.updateCursor()
     this.invalidate('all')
+  }
+
+  // この Canvas にあるデッキのカード（持ち主）の横に、スライドの画像を並べる（fileId を渡せば、そのデッキだけ）
+  private syncSlidePages(fileId?: string): void {
+    const service = this.slidePages
+    if (!service) return
+    const editor = this.editor
+    for (const id of editor.index.allIds()) {
+      const node = editor.getNode(id)
+      if (node?.type !== 'slide-deck-card') continue
+      const props = node.props as { fileId: string; role: 'owner' | 'shortcut' }
+      if (props.role !== 'owner' || (fileId && props.fileId !== fileId)) continue
+      const state = service.get(props.fileId)
+      if (!state) continue
+      reconcileSlidePages(editor, id, state.pages)
+      if (state.error && this.slidePageErrors.get(props.fileId) !== state.error) {
+        this.options.notify(`スライドの画像を作れませんでした：${state.error}`)
+      }
+      if (state.error) this.slidePageErrors.set(props.fileId, state.error)
+      else this.slidePageErrors.delete(props.fileId)
+    }
   }
 
   private attachEditor(): void {

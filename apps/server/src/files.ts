@@ -110,6 +110,11 @@ export class FileStore {
     return this.get(id)
   }
 
+  // 開いているブラウザに、中身が変わったことを知らせる（スライドのエディタが /api/slides から保存したときなど）
+  announce(id: string): void {
+    this.broadcast({ type: 'file-changed', file: this.get(id) })
+  }
+
   resolveWorkspacePath(path: string): string {
     return this.abs(path)
   }

@@ -1,10 +1,10 @@
 import { readFile, readdir, stat, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { zipSync } from 'fflate'
-import { chromium } from 'playwright'
-import { lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, serializeDeck } from '@canvcode/slides'
+import { chromium, type Browser, type Page } from 'playwright'
+import { assignSlideNames, lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, serializeDeck, slideKey, slideLabel } from '@canvcode/slides'
 import type { DeckData, RenderSlideData, SlideData } from '@canvcode/slides'
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '@canvcode/slides/core/slide-layout-spec'
 import { FileStore, HttpError, type FileInfo } from './files.ts'
@@ -14,7 +14,12 @@ const MAX_JSON_REQUEST_BYTES = 24 * 1024 * 1024
 const MAX_ASSET_BYTES = 20 * 1024 * 1024
 // 開発時の Vite（apps/web/vite.config.ts の port、strictPort）。出力時はここからプレビューを開く
 const DEV_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1):5173$/
-const CHROMIUM_MISSING = 'PDF / PNG の出力には Chromium が必要です。サーバーで `npx playwright install chromium` を実行してください。'
+const CHROMIUM_MISSING = 'PDF / PNG の出力とキャンバスのスライド画像には Chromium が必要です。サーバーで `npx playwright install chromium` を実行してください。'
+// キャンバスに並べるスライドの画像（.canvcode/slide-pages/<ハッシュ>.png）。描き方を変えたら版を上げて作り直させる
+const PAGE_RENDER_VERSION = '1'
+const PAGE_HASH = /^[a-f0-9]{32}$/
+// キャンバスの画像の横幅（画素）。1920×1080 のスライドを縮めて撮る
+const PAGE_IMAGE_WIDTH = 1280
 const IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -30,15 +35,25 @@ export class SlidesApi {
   private readonly port: number
   // Chromium を同時にいくつも起動しないよう、出力は 1 件ずつ順に行う
   private exportQueue: Promise<unknown> = Promise.resolve()
+  private readonly pagesDir: string
+  // デッキごとの、スライドの画像を作る処理（1 デッキに 1 つだけ）と、最後に失敗した理由。
+  // 失敗したときと同じ画像を頼まれても作り直さない（Chromium が無いときに、読み直しのたびに起動し直さないように）
+  private readonly pageJobs = new Map<string, Promise<void>>()
+  private readonly pageErrors = new Map<string, { message: string; hashes: string }>()
 
-  constructor(files: FileStore, workspace: string, port: number) {
+  constructor(files: FileStore, workspace: string, port: number, dataDir: string) {
     this.files = files
     this.workspace = workspace
     this.port = port
+    this.pagesDir = join(dataDir, 'slide-pages')
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, search: URLSearchParams): Promise<boolean> {
     const parts = pathname.split('/').filter(Boolean)
+    if (parts[0] === 'api' && parts[1] === 'slide-pages' && parts.length === 3 && req.method === 'GET') {
+      await this.sendPage(res, parts[2] ?? '')
+      return true
+    }
     if (parts[0] !== 'api' || parts[1] !== 'slides') return false
     try {
       if (parts.length === 2 && req.method === 'GET') {
@@ -58,7 +73,7 @@ export class SlidesApi {
         const format = requested.toLowerCase().endsWith('.json') ? 'json' : 'md'
         const title = requested.replace(/\.slide\.(?:md|json)$/i, '').replace(/\.(?:md|json)$/i, '')
         const extension = format === 'json' ? '.slide.json' : '.slide.md'
-        const initial: DeckData = { slides: [{ layout: 'title', title: 'タイトル' }] }
+        const initial: DeckData = assignSlideNames({ slides: [{ layout: 'title', title: 'タイトル' }] })
         const content = serializeDeck(initial, `new.slide.${format}`)
         const file = await this.files.create('slides', title || '新しいデッキ', content, { extension, announce: true })
         sendJson(res, 201, { file: file.id, format, mtimeMs: file.mtime })
@@ -88,6 +103,8 @@ export class SlidesApi {
           assetNames.set(asset.sourceName, asset.name)
         }
         let content = body.text
+        let target = deck
+        let didRewrite = false
         if (assetNames.size > 0) {
           // ブラウザで選んだ画像はファイル名しか分からないので、ファイル名で対応付ける。
           // 同じファイル名を別の場所から参照していると、どれに当たるか決められないので断る
@@ -105,7 +122,6 @@ export class SlidesApi {
           for (const [sourceName, paths] of referenced) {
             if (paths.size > 1) throw new HttpError(400, `${sourceName} が複数の場所から参照されています（${[...paths].join(', ')}）。画像の名前を変えてから読み込んでください`)
           }
-          let didRewrite = false
           const rewritten: DeckData = {
             ...deck,
             slides: deck.slides.map((slide) => {
@@ -122,7 +138,18 @@ export class SlidesApi {
               }
             }),
           }
-          if (didRewrite) content = serializeDeck(rewritten, format === 'json' ? 'deck.slide.json' : 'deck.slide.md')
+          if (didRewrite) target = rewritten
+        }
+        // スライドに id を振って保存する。Markdown で書き戻せない内容なら、元の文字のまま取り込む（id はあとで保存したときに振る）
+        const named = assignSlideNames(target)
+        if (named !== target || didRewrite) {
+          const fileName = format === 'json' ? 'deck.slide.json' : 'deck.slide.md'
+          try {
+            content = serializeDeck(named, fileName)
+          } catch (error) {
+            if (!didRewrite) content = body.text
+            else throw new HttpError(400, `画像のパスを書き換えて保存できません: ${errorMessage(error)}`)
+          }
         }
         const title = name.replace(/\.slide\.(?:md|json)$/i, '').replace(/\.(?:md|json)$/i, '')
         const extension = format === 'json' ? '.slide.json' : '.slide.md'
@@ -152,14 +179,21 @@ export class SlidesApi {
         }
         let text: string
         try {
-          text = serializeDeck(body.deck, info.path)
+          // id（name）の無いスライドには id を振る（エディタは振ってから送るので、API を直接使ったときの保険）
+          text = serializeDeck(assignSlideNames(normalizeDeckData(body.deck, info.path)), info.path)
         } catch (error) {
           throw new HttpError(400, errorMessage(error))
         }
         if (Buffer.byteLength(text, 'utf8') > MAX_DECK_BYTES) throw new HttpError(413, '保存後のデッキファイルが大きすぎます')
         const saved = await this.files.write(info.id, text, current.hash)
-        const deck = normalizeDeckData(formatOf(info) === 'json' ? JSON.parse(text) : parseMarkdownDeck(text, info.path), info.path)
+        const deck = parseDeck(saved, text)
         sendJson(res, 200, { mtimeMs: saved.mtime, text, warnings: lintDeck(deck).warnings })
+        // 開いているキャンバスに知らせ、スライドの画像を先に作り始める
+        this.files.announce(saved.id)
+        void this.pages(saved, previewBaseOf(req, this.port)).catch((error: unknown) => console.error('slide pages failed', error))
+      } else if (parts.length === 4 && parts[3] === 'pages' && req.method === 'GET') {
+        const info = this.requireDeck(decodePart(parts[2]))
+        sendJson(res, 200, await this.pages(info, previewBaseOf(req, this.port)))
       } else if (parts.length === 4 && parts[3] === 'assets' && req.method === 'GET') {
         const info = this.requireDeck(decodePart(parts[2]))
         sendJson(res, 200, { assets: await this.listAssets(info) })
@@ -216,9 +250,7 @@ export class SlidesApi {
         const body = await jsonBody<{ format?: 'pdf' | 'png'; scale?: number }>(req)
         if (body.format !== 'pdf' && body.format !== 'png') throw new HttpError(400, 'format は pdf または png を指定してください')
         if (body.scale !== undefined && (typeof body.scale !== 'number' || !Number.isFinite(body.scale))) throw new HttpError(400, 'scale は数値で指定してください')
-        // プレビューのページは、このサーバーか開発時の Vite からだけ開く（ほかの localhost のページにデッキの画像を渡さない）
-        const origin = req.headers.origin
-        const previewBase = typeof origin === 'string' && DEV_ORIGIN.test(origin) ? origin : `http://127.0.0.1:${this.port}`
+        const previewBase = previewBaseOf(req, this.port)
         const format = body.format
         const run = this.exportQueue.then(() => this.export(info, format, body.scale, previewBase))
         this.exportQueue = run.catch(() => {})
@@ -288,24 +320,11 @@ export class SlidesApi {
 
   private async export(info: FileInfo, format: 'pdf' | 'png', requestedScale: number | undefined, previewBase: string): Promise<{ data: Buffer; name: string; warnings: string[]; elapsedMs: number }> {
     const started = Date.now()
-    const { text } = await this.files.read(info.id)
-    let deck: DeckData
-    try {
-      deck = normalizeDeckData(formatOf(info) === 'json' ? JSON.parse(text) : parseMarkdownDeck(text, info.path), info.path)
-    } catch (error) {
-      throw new HttpError(400, `デッキを読み込めません: ${errorMessage(error)}`)
-    }
+    const deck = await this.readDeck(info)
     const warnings = lintDeck(deck).warnings
-    const previewUrl = new URL('/slides-preview.html', previewBase)
-    previewUrl.hostname = '127.0.0.1'
-    const browser = await chromium.launch({ headless: true }).catch((error: unknown) => {
-      if (errorMessage(error).includes("Executable doesn't exist")) throw new HttpError(503, CHROMIUM_MISSING)
-      throw error
-    })
+    const scale = Math.max(1, Math.min(4, Math.round(requestedScale ?? 1)))
+    const { browser, page } = await openPreview(previewBase, format === 'png' ? scale : 1)
     try {
-      const scale = Math.max(1, Math.min(4, Math.round(requestedScale ?? 1)))
-      const page = await browser.newPage({ viewport: { width: SLIDE_WIDTH, height: SLIDE_HEIGHT }, deviceScaleFactor: format === 'png' ? scale : 1 })
-      await page.goto(previewUrl.toString(), { waitUntil: 'networkidle' })
       const rendered: RenderSlideData[] = await Promise.all(deck.slides.map((slide, index) => this.toRenderSlide(info, slide, index)))
       if (format === 'pdf') {
         await page.evaluate(async (slides) => {
@@ -325,24 +344,103 @@ export class SlidesApi {
       for (let index = 0; index < rendered.length; index += 1) {
         const slide = rendered[index]
         if (!slide) continue
-        const outcome = await page.evaluate(async (data) => {
-          const view = window as Window & { renderSlide?: (value: unknown) => Promise<{ ok: boolean; message?: string }>; setExportMode?: (enabled: boolean) => void }
-          if (!view.renderSlide || !view.setExportMode) throw new Error('スライド描画機能を読み込めませんでした')
-          const result = await view.renderSlide(data)
-          if (!result.ok) throw new Error(result.message ?? 'スライドを描画できませんでした')
-          await document.fonts.ready
-          view.setExportMode(true)
-          return true
-        }, slide).catch((error: unknown) => { throw new HttpError(400, errorMessage(error)) })
-        void outcome
-        const png = await page.locator('#slide').screenshot({ type: 'png' })
-        files[`slide-${String(index + 1).padStart(2, '0')}.png`] = new Uint8Array(png)
+        files[`slide-${String(index + 1).padStart(2, '0')}.png`] = new Uint8Array(await screenshotSlide(page, slide))
       }
       const data = Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, bytes]))))
       return { data, name: `${safeFilename(info.title)}-png.zip`, warnings, elapsedMs: Date.now() - started }
     } finally {
       await browser.close()
     }
+  }
+
+  private async readDeck(info: FileInfo): Promise<DeckData> {
+    const { text } = await this.files.read(info.id)
+    try {
+      return parseDeck(info, text)
+    } catch (error) {
+      throw new HttpError(400, `デッキを読み込めません: ${errorMessage(error)}`)
+    }
+  }
+
+  // ---- キャンバスに並べるスライドの画像 ----
+
+  // スライドごとの画像のハッシュと、できているか。できていない画像があれば、裏で作り始める（pending）
+  private async pages(info: FileInfo, previewBase: string): Promise<{ pages: SlidePage[]; pending: boolean; error?: string }> {
+    let deck: DeckData
+    try {
+      deck = await this.readDeck(info)
+    } catch (error) {
+      return { pages: [], pending: false, error: errorMessage(error) }
+    }
+    const entries = await Promise.all(deck.slides.map(async (slide, index) => {
+      const key = slideKey(slide, index)
+      try {
+        const render = await this.toRenderSlide(info, slide, index)
+        const hash = createHash('sha256').update(PAGE_RENDER_VERSION).update('\0').update(JSON.stringify(render)).digest('hex').slice(0, 32)
+        const ready = await stat(this.pagePath(hash)).then((s) => s.isFile(), () => false)
+        return { key, hash, ready, render }
+      } catch (error) {
+        // 画像が見つからないスライドなど。そのスライドだけ画像なしにする
+        return { key, hash: '', ready: false, error: `${slideLabel(slide, index)}: ${errorMessage(error)}` }
+      }
+    }))
+    const missing = entries.flatMap((entry) => (entry.render && !entry.ready ? [{ hash: entry.hash, render: entry.render }] : []))
+    const failed = this.pageErrors.get(info.id)
+    if (missing.length > 0 && failed?.hashes !== hashesOf(missing)) this.renderPages(info.id, missing, previewBase)
+    const error = this.pageErrors.get(info.id)?.message ?? entries.find((entry) => entry.error)?.error
+    return {
+      pages: entries.map(({ key, hash, ready }) => ({ key, hash, ready })),
+      pending: this.pageJobs.has(info.id),
+      ...(error ? { error } : {}),
+    }
+  }
+
+  // 足りない画像を作る。Chromium は出力と同じ列に並べ、1 つずつ起動する
+  private renderPages(fileId: string, items: { hash: string; render: RenderSlideData }[], previewBase: string): void {
+    if (this.pageJobs.has(fileId)) return
+    const job = this.exportQueue
+      .then(async () => {
+        await mkdir(this.pagesDir, { recursive: true })
+        const { browser, page } = await openPreview(previewBase, PAGE_IMAGE_WIDTH / SLIDE_WIDTH)
+        try {
+          for (const item of items) {
+            const path = this.pagePath(item.hash)
+            if (await stat(path).then(() => true, () => false)) continue
+            const png = await screenshotSlide(page, item.render)
+            const temporary = `${path}.${randomUUID()}.tmp`
+            await writeFile(temporary, png)
+            await rename(temporary, path)
+          }
+        } finally {
+          await browser.close()
+        }
+      })
+      .then(
+        () => { this.pageErrors.delete(fileId) },
+        (error: unknown) => {
+          this.pageErrors.set(fileId, { message: errorMessage(error), hashes: hashesOf(items) })
+          console.error('slide page rendering failed', fileId, error)
+        },
+      )
+      .finally(() => this.pageJobs.delete(fileId))
+    this.pageJobs.set(fileId, job)
+    this.exportQueue = job
+  }
+
+  private pagePath(hash: string): string {
+    return join(this.pagesDir, `${hash}.png`)
+  }
+
+  private async sendPage(res: ServerResponse, name: string): Promise<void> {
+    const hash = name.endsWith('.png') ? name.slice(0, -4) : ''
+    const data = PAGE_HASH.test(hash) ? await readFile(this.pagePath(hash)).catch(() => null) : null
+    if (!data) {
+      sendJson(res, 404, { error: 'not found' })
+      return
+    }
+    // 中身はハッシュで決まるので、ずっとキャッシュしてよい
+    res.writeHead(200, { 'content-type': 'image/png', 'content-length': data.length, 'cache-control': 'public, max-age=31536000, immutable' })
+    res.end(data)
   }
 
   private async toRenderSlide(info: FileInfo, slide: SlideData, index: number): Promise<RenderSlideData> {
@@ -366,6 +464,55 @@ export class SlidesApi {
     const type = IMAGE_TYPES[extname(path).toLowerCase()]
     return `data:${type};base64,${data.toString('base64')}`
   }
+}
+
+type SlidePage = { key: string; hash: string; ready: boolean }
+
+function hashesOf(items: { hash: string }[]): string {
+  return items.map((item) => item.hash).join(',')
+}
+
+function parseDeck(info: FileInfo, text: string): DeckData {
+  return normalizeDeckData(formatOf(info) === 'json' ? JSON.parse(text) : parseMarkdownDeck(text, info.path), info.path)
+}
+
+// プレビューのページは、このサーバーか開発時の Vite からだけ開く（ほかの localhost のページにデッキの画像を渡さない）
+function previewBaseOf(req: IncomingMessage, port: number): string {
+  const origin = req.headers.origin
+  return typeof origin === 'string' && DEV_ORIGIN.test(origin) ? origin : `http://127.0.0.1:${port}`
+}
+
+async function openPreview(previewBase: string, deviceScaleFactor: number): Promise<{ browser: Browser; page: Page }> {
+  const previewUrl = new URL('/slides-preview.html', previewBase)
+  previewUrl.hostname = '127.0.0.1'
+  // CANVCODE_CHROMIUM：Playwright が入れたものの代わりに使う Chromium（Chrome）の実行ファイル
+  const executablePath = process.env.CANVCODE_CHROMIUM || undefined
+  const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) }).catch((error: unknown) => {
+    if (errorMessage(error).includes("Executable doesn't exist")) throw new HttpError(503, CHROMIUM_MISSING)
+    throw error
+  })
+  try {
+    const page = await browser.newPage({ viewport: { width: SLIDE_WIDTH, height: SLIDE_HEIGHT }, deviceScaleFactor })
+    await page.goto(previewUrl.toString(), { waitUntil: 'networkidle' })
+    return { browser, page }
+  } catch (error) {
+    await browser.close()
+    throw error
+  }
+}
+
+// 1 枚を描いて、スライドの部分だけを PNG に撮る
+async function screenshotSlide(page: Page, slide: RenderSlideData): Promise<Buffer> {
+  await page.evaluate(async (data) => {
+    const view = window as Window & { renderSlide?: (value: unknown) => Promise<{ ok: boolean; message?: string }>; setExportMode?: (enabled: boolean) => void }
+    if (!view.renderSlide || !view.setExportMode) throw new Error('スライド描画機能を読み込めませんでした')
+    const result = await view.renderSlide(data)
+    if (!result.ok) throw new Error(result.message ?? 'スライドを描画できませんでした')
+    await document.fonts.ready
+    view.setExportMode(true)
+    return true
+  }, slide).catch((error: unknown) => { throw new HttpError(400, errorMessage(error)) })
+  return page.locator('#slide').screenshot({ type: 'png' })
 }
 
 function formatOf(file: FileInfo): 'md' | 'json' {
