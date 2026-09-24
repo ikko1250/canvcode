@@ -17,8 +17,13 @@ export type AssetSummary = { name: string; path: string; size: number; mtimeMs: 
 export type ExportResponse = { outputs: string[]; warnings: string[]; elapsedMs: number }
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string, readonly extra: Record<string, unknown> = {}) {
+  readonly status: number
+  readonly extra: Record<string, unknown>
+
+  constructor(status: number, message: string, extra: Record<string, unknown> = {}) {
     super(message)
+    this.status = status
+    this.extra = extra
   }
 }
 

@@ -7,7 +7,6 @@ import { imageType } from './image.ts'
 import { pdfPageType } from './pdfPage.ts'
 import { portalType } from './portal.ts'
 import { quoteCardType } from './quoteCard.ts'
-import { createSlideDeckCardType } from './slideDeckCard.ts'
 import { noteType } from './text/noteNode.ts'
 import { textType } from './text/textNode.ts'
 

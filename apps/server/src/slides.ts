@@ -1,13 +1,13 @@
 import { readFile, readdir, stat, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { zipSync } from 'fflate'
 import { chromium } from 'playwright'
 import { lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, serializeDeck } from '@canvcode/slides'
 import type { DeckData, RenderSlideData, SlideData } from '@canvcode/slides'
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '@canvcode/slides/core/slide-layout-spec'
-import { FileStore, type FileInfo } from './files.ts'
+import { FileStore, HttpError, type FileInfo } from './files.ts'
 
 const MAX_DECK_BYTES = 10 * 1024 * 1024
 const MAX_JSON_REQUEST_BYTES = 24 * 1024 * 1024
@@ -21,7 +21,16 @@ const IMAGE_TYPES: Record<string, string> = {
 }
 
 export class SlidesApi {
-  constructor(private readonly files: FileStore, private readonly workspace: string, private readonly port: number) {}
+  // Node の型除去（strip-only）はコンストラクタ引数のプロパティ宣言を扱えないので、フィールドとして宣言する
+  private readonly files: FileStore
+  private readonly workspace: string
+  private readonly port: number
+
+  constructor(files: FileStore, workspace: string, port: number) {
+    this.files = files
+    this.workspace = workspace
+    this.port = port
+  }
 
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, search: URLSearchParams): Promise<boolean> {
     const parts = pathname.split('/').filter(Boolean)
@@ -238,8 +247,9 @@ export class SlidesApi {
   }
 
   private async resolveImage(info: FileInfo, assetPath: string): Promise<string> {
-    if (!assetPath || assetPath.includes('\0') || /^[a-z][a-z0-9+.-]*:/i.test(assetPath)) throw new HttpError(400, '画像パスが不正です')
-    const candidate = this.files.resolveWorkspacePath(resolve(dirname(info.path), assetPath))
+    if (!assetPath || assetPath.includes('\0') || isAbsolute(assetPath) || /^[a-z][a-z0-9+.-]*:/i.test(assetPath)) throw new HttpError(400, '画像パスが不正です')
+    // info.path はワークスペースからの相対パス。resolve() だとプロセスのカレントディレクトリが基準になるので、相対のまま join する
+    const candidate = this.files.resolveWorkspacePath(join(dirname(info.path), assetPath))
     if (!inside(this.files.resolveWorkspacePath('.'), candidate)) throw new HttpError(400, 'ワークスペース外の画像は使えません')
     if (!IMAGE_TYPES[extname(candidate).toLowerCase()]) throw new HttpError(415, '未対応の画像形式です')
     const { realpath } = await import('node:fs/promises')
@@ -350,10 +360,6 @@ function decodePart(value: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-class HttpError extends Error {
-  constructor(readonly status: number, message: string, readonly extra: Record<string, unknown> = {}) { super(message) }
 }
 
 async function jsonBody<T>(req: IncomingMessage): Promise<T> {

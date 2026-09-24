@@ -97,7 +97,9 @@ export class FileManager implements FileContentSource {
     const entry = this.entries.get(fileId)
     if (entry) {
       const file = this.workspace.getFile(fileId)
-      return { text: entry.text, version: entry.version, path: file?.path, kind: file?.kind }
+      // PDF は FileManager では読み込まない（本文は Asset）ので、本文を持つ種類だけを返す
+      const kind = file?.kind === 'pdf' ? undefined : file?.kind
+      return { text: entry.text, version: entry.version, path: file?.path, kind }
     }
     void this.load(fileId)
     return null

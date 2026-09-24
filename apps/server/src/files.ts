@@ -435,7 +435,7 @@ function sanitizeTitle(title: string): string {
   return cleaned || '無題'
 }
 
-class HttpError extends Error {
+export class HttpError extends Error {
   readonly status: number
   readonly extra: Record<string, unknown>
   constructor(status: number, message: string, extra: Record<string, unknown> = {}) {
