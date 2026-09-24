@@ -277,6 +277,80 @@ export class SlidesApi {
     return true
   }
 
+  // ---- AI（MCP）から使う操作 ----
+
+  // デッキを読み、構造と lint の警告を添える。読めないデッキは error に理由を入れる
+  async inspectDeck(id: string): Promise<{ info: FileInfo; text: string; hash: string; deck?: DeckData; warnings: string[]; error?: string }> {
+    const info = this.requireDeck(id)
+    const { text, hash } = await this.files.read(info.id)
+    try {
+      const deck = parseDeck(info, text)
+      return { info, text, hash, deck, warnings: lintDeck(deck).warnings }
+    } catch (error) {
+      return { info, text, hash, warnings: [], error: errorMessage(error) }
+    }
+  }
+
+  // Markdown / JSON のデッキを検証して新しいファイルにする。読めないデッキは 400 で断る
+  async createDeck(title: string, text: string, format: 'md' | 'json'): Promise<{ info: FileInfo; deck: DeckData; warnings: string[] }> {
+    const extension = format === 'json' ? '.slide.json' : '.slide.md'
+    const { content, deck } = prepareDeck(text, `deck${extension}`)
+    const info = await this.files.create('slides', title.trim() || deck.deckTitle || '新しいデッキ', content, { extension, announce: true })
+    this.renderPagesSoon(info)
+    return { info, deck, warnings: lintDeck(deck).warnings }
+  }
+
+  // デッキの中身を丸ごと置き換える。expectedHash が今のハッシュと違えば 409。読めないデッキは 400 で断る
+  async replaceDeck(id: string, text: string, expectedHash: string): Promise<{ info: FileInfo; deck: DeckData; warnings: string[] }> {
+    const info = this.requireDeck(id)
+    const { content, deck } = prepareDeck(text, info.path)
+    const saved = await this.files.write(info.id, content, expectedHash, { announce: true })
+    this.renderPagesSoon(saved)
+    return { info: saved, deck, warnings: lintDeck(deck).warnings }
+  }
+
+  // 書き込む前に、デッキとして読めるか確かめる（MCP の edit_document など、デッキを文字列として直すとき）
+  checkDeckText(id: string, text: string): void {
+    const info = this.requireDeck(id)
+    try {
+      parseDeck(info, text)
+    } catch (error) {
+      throw new HttpError(400, `デッキとして読めません: ${errorMessage(error)}`)
+    }
+  }
+
+  // 保存したデッキのスライドの画像を先に作り始める（キャンバスの画像と、AI の確認用）
+  renderPagesSoon(info: FileInfo): void {
+    void this.pages(info, `http://127.0.0.1:${this.port}`).catch((error: unknown) => console.error('slide pages failed', error))
+  }
+
+  // スライドの画像（PNG）。indices は 0 始まり。キャンバスと同じ画像を使い、無ければ作るのを待つ
+  async slideImages(id: string, indices?: number[]): Promise<{ images: { index: number; name?: string; title: string; png: Buffer }[]; warnings: string[] }> {
+    const info = this.requireDeck(id)
+    const deck = await this.readDeck(info)
+    const wanted = indices ?? deck.slides.map((_, index) => index)
+    for (const index of wanted) {
+      if (!Number.isInteger(index) || index < 0 || index >= deck.slides.length) {
+        throw new HttpError(400, `スライド ${index + 1} はありません（全 ${deck.slides.length} 枚）`)
+      }
+    }
+    const previewBase = `http://127.0.0.1:${this.port}`
+    let state = await this.pages(info, previewBase)
+    // 作っている途中なら終わるのを待つ。待つ間に中身が変わると、もう一度作り始めるので、何度か見直す
+    for (let round = 0; round < 3 && state.pending; round += 1) {
+      await this.pageJobs.get(info.id)
+      state = await this.pages(info, previewBase)
+    }
+    const images = []
+    for (const index of wanted) {
+      const page = state.pages[index]
+      const slide = deck.slides[index]
+      if (!page?.ready || !slide) throw new HttpError(503, state.error ?? `スライド ${index + 1} の画像を作れませんでした`)
+      images.push({ index, ...(slide.name ? { name: slide.name } : {}), title: slide.title, png: await readFile(this.pagePath(page.hash)) })
+    }
+    return { images, warnings: lintDeck(deck).warnings }
+  }
+
   private requireDeck(id: string): FileInfo {
     const info = this.files.getInfo(id)
     if (info.kind !== 'slides' || info.missing) throw new HttpError(404, 'スライドデッキが見つかりません')
@@ -470,6 +544,25 @@ type SlidePage = { key: string; hash: string; ready: boolean }
 
 function hashesOf(items: { hash: string }[]): string {
   return items.map((item) => item.hash).join(',')
+}
+
+// 外から渡されたデッキの文字列を検証し、id の無いスライドに id を振って書き出す。
+// 振った id を書き戻せない（Markdown で表せない）内容なら、元の文字のまま保存する（読み込みと同じ）
+function prepareDeck(text: string, fileName: string): { content: string; deck: DeckData } {
+  if (Buffer.byteLength(text, 'utf8') > MAX_DECK_BYTES) throw new HttpError(413, 'デッキファイルが大きすぎます')
+  let deck: DeckData
+  try {
+    deck = normalizeDeckData(fileName.toLowerCase().endsWith('.json') ? JSON.parse(text) : parseMarkdownDeck(text, fileName), fileName)
+  } catch (error) {
+    throw new HttpError(400, `デッキとして読めません: ${errorMessage(error)}`)
+  }
+  const named = assignSlideNames(deck)
+  if (named === deck) return { content: text, deck }
+  try {
+    return { content: serializeDeck(named, fileName), deck: named }
+  } catch {
+    return { content: text, deck }
+  }
 }
 
 function parseDeck(info: FileInfo, text: string): DeckData {
