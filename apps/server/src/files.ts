@@ -149,7 +149,8 @@ export class FileStore {
     return { text: buffer.toString('utf8'), hash: hashOf(buffer) }
   }
 
-  async write(id: string, text: string, ifMatch: string): Promise<FileInfo> {
+  // announce なら、開いているブラウザに知らせる（MCP など、ブラウザ以外から書いたとき。MAI-59）
+  async write(id: string, text: string, ifMatch: string, options: { announce?: boolean } = {}): Promise<FileInfo> {
     const info = this.get(id)
     const current = await readFile(this.abs(info.path)).catch(() => null)
     const currentHash = current ? hashOf(current) : ''
@@ -161,6 +162,7 @@ export class FileStore {
     await this.writeAtomic(info.path, buffer)
     const next = { ...info, ...(await this.statOf(info.path)), hash: hashOf(buffer), missing: false }
     this.put(next)
+    if (options.announce) this.broadcast({ type: 'file-changed', file: next })
     return next
   }
 
@@ -410,7 +412,7 @@ function sanitizeTitle(title: string): string {
   return cleaned || '無題'
 }
 
-class HttpError extends Error {
+export class HttpError extends Error {
   readonly status: number
   readonly extra: Record<string, unknown>
   constructor(status: number, message: string, extra: Record<string, unknown> = {}) {

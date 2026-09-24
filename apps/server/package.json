@@ -6,9 +6,11 @@
     "start": "node src/index.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "chokidar": "^5.0.0",
     "pdfjs-dist": "^6.3.289",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"
