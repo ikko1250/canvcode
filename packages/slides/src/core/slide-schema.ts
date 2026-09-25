@@ -22,10 +22,23 @@ export type TableRow = {
   bodyLines: string[];
 };
 
+/** 画像1枚ごとの拡大率・位置ずらし（省略可）。既定値は今の見た目と同一 */
+export type ImageAdjust = {
+  zoom?: number;
+  x?: number;
+  y?: number;
+};
+
+export const IMAGE_ZOOM_MIN = 0.5;
+export const IMAGE_ZOOM_MAX = 4;
+export const IMAGE_OFFSET_MIN = -100;
+export const IMAGE_OFFSET_MAX = 100;
+export const IMAGE_ADJUST_KEYS = ["zoom", "x", "y"] as const;
+
 export type SlideImage = {
   path: string;
   alt: string;
-};
+} & ImageAdjust;
 
 export type SlideCodeBlock = {
   lines: string[];
@@ -36,7 +49,7 @@ export type TableImagesImage = {
   path: string;
   alt: string;
   title: string;
-};
+} & ImageAdjust;
 
 /** 箇条書きの項目。子を持たない項目は文字列、子を持つ項目は { text, children } */
 export type BulletItem = string | { text: string; children: BulletItem[] };
@@ -71,9 +84,9 @@ export type RenderSlideData = {
   title: string;
   rows?: TableRow[];
   items?: BulletItem[];
-  image?: { src: string; alt: string };
+  image?: { src: string; alt: string } & ImageAdjust;
   code?: SlideCodeBlock;
-  images?: { src: string; alt: string; title: string }[];
+  images?: ({ src: string; alt: string; title: string } & ImageAdjust)[];
   subtitle?: string[];
   credits?: string[];
   computedRowHeights?: number[];
@@ -95,8 +108,8 @@ export const SLIDE_KEYS = [
   "credits",
 ] as const;
 export const ROW_KEYS = ["labelLines", "bodyLines"] as const;
-export const IMAGE_KEYS = ["path", "alt"] as const;
-export const IMAGES_ITEM_KEYS = ["path", "alt", "title"] as const;
+export const IMAGE_KEYS = ["path", "alt", ...IMAGE_ADJUST_KEYS] as const;
+export const IMAGES_ITEM_KEYS = ["path", "alt", "title", ...IMAGE_ADJUST_KEYS] as const;
 export const CODE_KEYS = ["lines", "language"] as const;
 
 const RENDER_SLIDE_KEYS = [...SLIDE_KEYS, "computedRowHeights", "computedFullPanel"] as const;
@@ -244,16 +257,61 @@ function validateCode(value: unknown, label: string): SlideCodeBlock {
   return code;
 }
 
+/** 画像1枚ぶんの zoom/x/y を検証する。既定値（zoom=1, x=0, y=0）のキーは結果に含めない */
+function validateImageAdjust(value: Record<string, unknown>, label: string): ImageAdjust {
+  const result: ImageAdjust = {};
+  if (value.zoom !== undefined) {
+    if (
+      typeof value.zoom !== "number" ||
+      !Number.isFinite(value.zoom) ||
+      value.zoom < IMAGE_ZOOM_MIN ||
+      value.zoom > IMAGE_ZOOM_MAX
+    ) {
+      throw new Error(
+        `${label}.zoom は ${IMAGE_ZOOM_MIN}〜${IMAGE_ZOOM_MAX} の数値で指定してください。`,
+      );
+    }
+    if (value.zoom !== 1) result.zoom = value.zoom;
+  }
+  for (const key of ["x", "y"] as const) {
+    const v = value[key];
+    if (v === undefined) continue;
+    if (
+      typeof v !== "number" ||
+      !Number.isFinite(v) ||
+      v < IMAGE_OFFSET_MIN ||
+      v > IMAGE_OFFSET_MAX
+    ) {
+      throw new Error(
+        `${label}.${key} は ${IMAGE_OFFSET_MIN}〜${IMAGE_OFFSET_MAX} の数値で指定してください。`,
+      );
+    }
+    if (v !== 0) result[key] = v;
+  }
+  return result;
+}
+
+/** 既定値以外の zoom/x/y だけを返す（Markdown 往復・JSON の正規化で使う） */
+export function pickAdjust(image: ImageAdjust): ImageAdjust {
+  const result: ImageAdjust = {};
+  if (image.zoom !== undefined && image.zoom !== 1) result.zoom = image.zoom;
+  if (image.x !== undefined && image.x !== 0) result.x = image.x;
+  if (image.y !== undefined && image.y !== 0) result.y = image.y;
+  return result;
+}
+
 function validateImageLike(
   value: unknown,
   label: string,
   srcKey: "path" | "src",
   requireTitle: boolean,
-): { source: string; alt: string; title?: string } {
+): { source: string; alt: string; title?: string } & ImageAdjust {
   if (!isRecord(value)) {
     throw new Error(`${label} はオブジェクトで指定してください。`);
   }
-  const allowed = requireTitle ? [srcKey, "alt", "title"] : [srcKey, "alt"];
+  const allowed = requireTitle
+    ? [srcKey, "alt", "title", ...IMAGE_ADJUST_KEYS]
+    : [srcKey, "alt", ...IMAGE_ADJUST_KEYS];
   rejectUnknownKeys(value, allowed, label);
 
   if (!isNonEmptyString(value[srcKey])) {
@@ -263,9 +321,11 @@ function validateImageLike(
   if (!isNonEmptyString(value.alt)) {
     throw new Error(`${label}.alt に空でない文字列を指定してください。`);
   }
-  const result: { source: string; alt: string; title?: string } = {
+  const adjust = validateImageAdjust(value, label);
+  const result: { source: string; alt: string; title?: string } & ImageAdjust = {
     source: value[srcKey],
     alt: value.alt,
+    ...adjust,
   };
   if (requireTitle) {
     if (!isNonEmptyString(value.title)) {
@@ -284,8 +344,8 @@ type SlideCore = {
   rows?: TableRow[];
   items?: BulletItem[];
   code?: SlideCodeBlock;
-  image?: { source: string; alt: string };
-  images?: { source: string; alt: string; title: string }[];
+  image?: { source: string; alt: string } & ImageAdjust;
+  images?: ({ source: string; alt: string; title: string } & ImageAdjust)[];
   subtitle?: string[];
   credits?: string[];
 };
@@ -376,7 +436,7 @@ function normalizeSlideCore(value: unknown, label: string, mode: Mode): SlideCor
     }
     if (hasImage) {
       const image = validateImageLike(value.image, `${label}: image`, srcKey, false);
-      core.image = { source: image.source, alt: image.alt };
+      core.image = { source: image.source, alt: image.alt, ...pickAdjust(image) };
     }
     if (hasCode) {
       core.code = validateCode(value.code, label);
@@ -389,7 +449,7 @@ function normalizeSlideCore(value: unknown, label: string, mode: Mode): SlideCor
     }
     core.images = value.images.map((image, index) => {
       const item = validateImageLike(image, `${label}: images[${index}]`, srcKey, true);
-      return { source: item.source, alt: item.alt, title: item.title ?? "" };
+      return { source: item.source, alt: item.alt, title: item.title ?? "", ...pickAdjust(item) };
     });
   }
 
@@ -416,13 +476,16 @@ export function normalizeSlideData(value: unknown, label: string): SlideData {
   };
   if (core.rows) slide.rows = core.rows;
   if (core.items) slide.items = core.items;
-  if (core.image) slide.image = { path: core.image.source, alt: core.image.alt };
+  if (core.image) {
+    slide.image = { path: core.image.source, alt: core.image.alt, ...pickAdjust(core.image) };
+  }
   if (core.code) slide.code = core.code;
   if (core.images) {
     slide.images = core.images.map((image) => ({
       path: image.source,
       alt: image.alt,
       title: image.title,
+      ...pickAdjust(image),
     }));
   }
   if (core.subtitle) slide.subtitle = core.subtitle;

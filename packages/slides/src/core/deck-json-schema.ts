@@ -4,11 +4,41 @@
  * 実行時の検証は slide-schema.ts（TypeScript）が単一ソースであり、本スキーマは整合テストで突き合わせる。
  */
 import { BULLETS_SPEC, getMaxRowCount, SLIDE_LAYOUTS } from "./slide-layout-spec.ts";
-import { SLIDE_NAME_PATTERN } from "./slide-schema.ts";
+import {
+  IMAGE_OFFSET_MAX,
+  IMAGE_OFFSET_MIN,
+  IMAGE_ZOOM_MAX,
+  IMAGE_ZOOM_MIN,
+  SLIDE_NAME_PATTERN,
+} from "./slide-schema.ts";
 
 type JsonSchema = Record<string, unknown>;
 
 const nonEmptyString: JsonSchema = { type: "string", minLength: 1 };
+
+const imageAdjustProperties: JsonSchema = {
+  zoom: {
+    type: "number",
+    minimum: IMAGE_ZOOM_MIN,
+    maximum: IMAGE_ZOOM_MAX,
+    default: 1,
+    description: "拡大率（1 = 枠に収める）。既定値のときは省略",
+  },
+  x: {
+    type: "number",
+    minimum: IMAGE_OFFSET_MIN,
+    maximum: IMAGE_OFFSET_MAX,
+    default: 0,
+    description: "横のずらし（枠の幅に対する %）。既定値のときは省略",
+  },
+  y: {
+    type: "number",
+    minimum: IMAGE_OFFSET_MIN,
+    maximum: IMAGE_OFFSET_MAX,
+    default: 0,
+    description: "縦のずらし（枠の高さに対する %）。既定値のときは省略",
+  },
+};
 
 const linesSchema: JsonSchema = {
   description: "行テキスト。文字列配列（各行非空）または改行（\\n）入りの文字列。**強調** が使える。",
@@ -39,6 +69,7 @@ const imageSchema: JsonSchema = {
   properties: {
     path: { ...nonEmptyString, description: "画像パス（デッキファイルからの相対パスまたは絶対パス）" },
     alt: { ...nonEmptyString, description: "代替テキスト" },
+    ...imageAdjustProperties,
   },
 };
 
@@ -50,6 +81,7 @@ const imagesItemSchema: JsonSchema = {
     path: { ...nonEmptyString, description: "画像パス（デッキファイルからの相対パスまたは絶対パス）" },
     alt: { ...nonEmptyString, description: "代替テキスト" },
     title: { ...nonEmptyString, description: "図タイトル（黒字プレーンテキスト）" },
+    ...imageAdjustProperties,
   },
 };
 

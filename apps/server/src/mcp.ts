@@ -391,6 +391,7 @@ def hello():
 - Keep ids when you edit a deck: the canvas shows each slide as an image, and the notes the user drew on it follow the id when slides are reordered.
 - A header row followed by \`|---|---|\` is dropped (it is not a slide row). Only "#" and "##" headings are allowed.
 - Image paths are relative to the deck file. Images must be inside the workspace (png, jpg, webp, svg).
+- An image line can end with an attribute block to zoom and reposition it, e.g. \`![図](assets/a.png){zoom=1.5 x=-10 y=5}\`: \`zoom\` is 0.5-4 (default 1), \`x\`/\`y\` are -100-100 percent offsets (default 0). Parts that overflow the frame are cropped. Omit the block to keep the default (unchanged) framing.
 
 ## JSON
 
@@ -407,7 +408,7 @@ def hello():
 }
 ~~~
 
-A slide without "layout" is a table. "image" is { "path", "alt" } for table-image.
+A slide without "layout" is a table. "image" is { "path", "alt" } for table-image. Both "image" and each item in "images" also accept optional "zoom" (0.5-4, default 1) and "x"/"y" (-100-100, default 0) to zoom and reposition the figure; omit them to keep the default framing.
 
 ## Workflow
 

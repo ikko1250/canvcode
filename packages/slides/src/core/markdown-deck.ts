@@ -19,11 +19,15 @@
  *
  * 戻り値は未検証のプレーンオブジェクト。呼び出し側で normalizeDeckData を通す。
  */
+import { pickAdjust } from "./slide-schema.ts";
 
 export type MarkdownImage = {
   path: string;
   alt: string;
   title?: string;
+  zoom?: number;
+  x?: number;
+  y?: number;
 };
 
 type BulletDraft = {
@@ -54,7 +58,9 @@ const DEEP_HEADING_PATTERN = /^#{3,6}\s+/;
 const HEADING_ATTRS_PATTERN = /\s*\{([^}]*)\}\s*$/;
 const FENCE_OPEN_PATTERN = /^```\s*([A-Za-z0-9_+-]*)\s*$/;
 const FENCE_CLOSE_PATTERN = /^```\s*$/;
-const IMAGE_PATTERN = /^!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+"([^"]*)")?\s*\)\s*$/;
+const IMAGE_PATTERN =
+  /^!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+"([^"]*)")?\s*\)(?:\s*\{([^}]*)\})?\s*$/;
+const IMAGE_ATTR_TOKEN_PATTERN = /^(zoom|x|y)=(-?\d+(?:\.\d+)?)$/;
 const COMMENT_PATTERN = /^<!--\s*(.*?)\s*-->$/;
 const LIST_PATTERN = /^([ 	]*)[-*+][ 	]+(.+?)\s*$/;
 const DIRECTIVE_PATTERN = /^(name|layout)\s*:\s*(\S+)$/;
@@ -98,6 +104,21 @@ function parseHeading(text: string): { title: string; name?: string; layout?: st
     } else {
       throw new Error(`見出し属性 "${token}" は解釈できません（使用可: {#name layout=...}）。`);
     }
+  }
+  return result;
+}
+
+/** 画像の属性ブロック（{zoom=1.5 x=-10 y=5}）を解析する。範囲チェックはスキーマ側に委ねる */
+function parseImageAttrs(raw: string): { zoom?: number; x?: number; y?: number } {
+  const result: { zoom?: number; x?: number; y?: number } = {};
+  for (const token of raw.split(/\s+/).filter(Boolean)) {
+    const match = token.match(IMAGE_ATTR_TOKEN_PATTERN);
+    if (!match || result[match[1] as "zoom" | "x" | "y"] !== undefined) {
+      throw new Error(
+        `画像属性 "${token}" は解釈できません（使用可: {zoom=1.5 x=-10 y=5}）。`,
+      );
+    }
+    result[match[1] as "zoom" | "x" | "y"] = Number(match[2]);
   }
   return result;
 }
@@ -260,7 +281,7 @@ function finalizeSlide(draft: SlideDraft, sourceName: string): Record<string, un
     } else {
       const image = draft.images[0];
       if (image) {
-        slide.image = { path: image.path, alt: image.alt };
+        slide.image = { path: image.path, alt: image.alt, ...pickAdjust(image) };
       }
     }
   }
@@ -274,7 +295,7 @@ function finalizeSlide(draft: SlideDraft, sourceName: string): Record<string, un
           `スライド "${draft.title}": 2図レイアウトでは images[${index}] に図タイトルが必要です（![alt](path "title") の形式）。`,
         );
       }
-      return { path: image.path, alt: image.alt, title: image.title };
+      return { path: image.path, alt: image.alt, title: image.title, ...pickAdjust(image) };
     });
   }
 
@@ -401,6 +422,13 @@ export function parseMarkdownDeck(source: string, sourceName = "deck.md"): Recor
       const imagePath = rawPath.startsWith("<") ? rawPath.slice(1, -1) : rawPath;
       const entry: MarkdownImage = { path: imagePath, alt: image[1] ?? "" };
       if (image[3] !== undefined) entry.title = image[3];
+      if (image[4] !== undefined) {
+        try {
+          Object.assign(entry, parseImageAttrs(image[4]));
+        } catch (error) {
+          fail(sourceName, lineNo, error instanceof Error ? error.message : String(error));
+        }
+      }
       current.images.push(entry);
       continue;
     }

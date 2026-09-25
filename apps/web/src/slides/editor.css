@@ -216,6 +216,31 @@ textarea.code { font-family: ui-monospace, Consolas, "Cascadia Code", monospace;
 .image-picker .missing { color: #888; font-size: 12px; margin: 6px 0; }
 .image-picker .upload { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 
+.figure-adjust {
+  padding: 8px;
+  border: 1px solid #dfe3e8;
+  border-radius: 4px;
+  background: #fafbfc;
+}
+
+.figure-adjust-row {
+  display: grid;
+  grid-template-columns: 4em 1fr 4.5em;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.figure-adjust-row label { font-size: 12px; color: #555; }
+.figure-adjust-row input[type="number"] { width: 100%; }
+
+.figure-adjust-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 /* ---- プレビューと問題一覧 ---- */
 .preview-pane {
   display: flex;

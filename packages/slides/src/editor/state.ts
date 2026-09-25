@@ -13,6 +13,7 @@ import { getMaxRowCount, layoutUsesRows, type SlideLayout } from "../core/slide-
 import {
   normalizeDeckData,
   normalizeSlideData,
+  pickAdjust,
   type BulletItem,
   type DeckData,
   type RenderSlideData,
@@ -21,7 +22,7 @@ import {
 
 export type DraftBullet = { id: string; text: string; children: DraftBullet[] };
 export type DraftRow = { id: string; label: string; body: string };
-export type DraftImage = { path: string; alt: string; title: string };
+export type DraftImage = { path: string; alt: string; title: string; zoom: number; x: number; y: number };
 export type FigureKind = "image" | "code";
 
 export type DraftSlide = {
@@ -63,7 +64,7 @@ export function newId(): string {
   return `d${nextId}`;
 }
 
-const emptyImage = (): DraftImage => ({ path: "", alt: "", title: "" });
+const emptyImage = (): DraftImage => ({ path: "", alt: "", title: "", zoom: 1, x: 0, y: 0 });
 
 function splitLines(text: string): string[] {
   return text.split(/\r?\n/);
@@ -87,8 +88,21 @@ function bulletToData(item: DraftBullet): unknown {
   return { text: item.text, children: item.children.map(bulletToData) };
 }
 
-function imageFromData(image: { path: string; alt: string; title?: string } | undefined): DraftImage {
-  return image ? { path: image.path, alt: image.alt, title: image.title ?? "" } : emptyImage();
+function imageFromData(
+  image:
+    | { path: string; alt: string; title?: string; zoom?: number; x?: number; y?: number }
+    | undefined,
+): DraftImage {
+  return image
+    ? {
+        path: image.path,
+        alt: image.alt,
+        title: image.title ?? "",
+        zoom: image.zoom ?? 1,
+        x: image.x ?? 0,
+        y: image.y ?? 0,
+      }
+    : emptyImage();
 }
 
 export function slideFromData(slide: SlideData): DraftSlide {
@@ -137,7 +151,7 @@ export function slideToData(draft: DraftSlide): Record<string, unknown> {
         ...(draft.code.language !== "" ? { language: draft.code.language } : {}),
       };
     } else {
-      out.image = { path: draft.image.path, alt: draft.image.alt };
+      out.image = { path: draft.image.path, alt: draft.image.alt, ...pickAdjust(draft.image) };
     }
   }
   if (draft.layout === "table-images") {
@@ -145,6 +159,7 @@ export function slideToData(draft: DraftSlide): Record<string, unknown> {
       path: image.path,
       alt: image.alt,
       title: image.title,
+      ...pickAdjust(image),
     }));
   }
   if (draft.layout === "title") {
@@ -401,12 +416,17 @@ export function previewData(
   if (slide.layout === "table-image" && slide.code) {
     render.code = slide.code;
   } else if (slide.layout === "table-image" && slide.image) {
-    render.image = { src: assetUrl(slide.image.path), alt: slide.image.alt };
+    render.image = {
+      src: assetUrl(slide.image.path),
+      alt: slide.image.alt,
+      ...pickAdjust(slide.image),
+    };
   } else if (slide.layout === "table-images" && slide.images) {
     render.images = slide.images.map((image) => ({
       src: assetUrl(image.path),
       alt: image.alt,
       title: image.title,
+      ...pickAdjust(image),
     }));
   }
   const lint = lintSlide(slide, index);
