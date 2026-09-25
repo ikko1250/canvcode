@@ -461,6 +461,7 @@ export class CanvasView {
       ['rect', new GeoTool(toolContext, 'rect')],
       ['ellipse', new GeoTool(toolContext, 'ellipse')],
       ['text', new TextTool(toolContext)],
+      ['title', new TextTool(toolContext, 'title')],
       ['note', new NoteTool(toolContext)],
       ['frame', new FrameTool(toolContext)],
       ['draw', new DrawTool(toolContext)],

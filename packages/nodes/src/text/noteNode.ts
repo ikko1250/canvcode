@@ -19,6 +19,8 @@ export type NoteNode = NodeRecord<NoteProps>
 
 const PADDING = 16
 const LINE_HEIGHT = 1.4
+// 新しく作る付箋の文字の大きさ（MAI-62）
+export const NOTE_DEFAULT_FONT_SIZE = 12
 
 export function noteStyle(props: NoteProps): TextStyle {
   return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: '#2b2930', align: textAlignOf(props.align) }
@@ -52,7 +54,7 @@ export const noteType = defineNodeType<NoteProps>({
   type: 'note',
   version: 1,
 
-  defaultProps: () => ({ text: '', w: 220, h: 200, color: '#fff3bf', fontSize: 20, align: 'left' }),
+  defaultProps: () => ({ text: '', w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, align: 'left' }),
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: noteHeight(node.props) }),
 

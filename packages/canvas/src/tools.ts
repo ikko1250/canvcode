@@ -16,6 +16,7 @@ import {
 import {
   GEO_DEFAULT_SIZE,
   PORTAL_DEFAULT_SIZE,
+  TITLE_FONT_SIZE,
   arrowLabelPoint,
   arcGeometry,
   arcPoint,
@@ -1013,15 +1014,20 @@ function createTextAt(ctx: ToolContext, point: Vec, tx?: Transaction<WorkspaceRe
   ctx.startEditing(node.id, { tx: transaction })
 }
 
+// 'title'（タイトル）は、文字が大きいだけの普通のテキストとして作る（MAI-62）
 export class TextTool implements Tool {
-  readonly id = 'text' as const
+  readonly id: 'text' | 'title'
   readonly cursor = 'text'
   private creating: { start: ToolPointer; tx: Transaction<WorkspaceRecord>; node: NodeRecord<TextProps>; parentId: string } | null =
     null
   private readonly ctx: ToolContext
+  // 作るテキストの文字の大きさ。undefined ならテキストの初期値
+  private readonly fontSize: number | undefined
 
-  constructor(ctx: ToolContext) {
+  constructor(ctx: ToolContext, kind: 'text' | 'title' = 'text') {
     this.ctx = ctx
+    this.id = kind
+    this.fontSize = kind === 'title' ? TITLE_FONT_SIZE : undefined
   }
 
   onPointerDown(pointer: ToolPointer): void {
@@ -1029,7 +1035,8 @@ export class TextTool implements Tool {
     const editor = this.ctx.editor
     const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin('create text')
-    const draft = editor.makeNode('text', { x: local.x, y: local.y, parentId }) as NodeRecord<TextProps>
+    const props = this.fontSize === undefined ? undefined : { fontSize: this.fontSize }
+    const draft = editor.makeNode('text', { x: local.x, y: local.y, parentId, props }) as NodeRecord<TextProps>
     const node = { ...draft, y: local.y - textLayout(draft.props).lineHeightPx / 2 }
     tx.put(node)
     tx.flush()

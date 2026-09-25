@@ -4,7 +4,7 @@ import type { Axis } from './arrange.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow' | 'portal' | 'markdown' | 'code'
+export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'title' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow' | 'portal' | 'markdown' | 'code'
 
 export interface SessionState {
   camera: Camera
