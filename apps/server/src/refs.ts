@@ -4,16 +4,25 @@ import { join } from 'node:path'
 import { resolveLines, validateReference, type Box, type ReferenceRecord } from '@canvcode/core'
 import { HttpError, type FileStore } from './files.ts'
 import { RefConflictError, type RecordStore, type StoredRecord } from './records.ts'
+import { MAX_REF_IMAGE_BYTES, RefImageExistsError, type RefImageInfo, type RefImageStore } from './refImages.ts'
 
 // AI に見てほしい場所の参照（ref）。
 // - POST /api/refs：ブラウザが作った ref を保存する（ID もブラウザが作る。クリップボードにすぐ書けるように）
 // - GET /api/refs/<id>：ref を返す（/r/<id> を開いたとき）
+// - PUT /api/refs/<id>/image?x=&y=&w=&h=：範囲を描いた PNG を ref に添える（MAI-64。x〜h は描いたワールド座標の範囲）
 // - resolveReference：ref を、AI が読める中身にする（MCP の resolve_reference）
 
 const REFS_PATH = '/api/refs'
 const MAX_BODY = 1024 * 1024
 
-export async function handleRefs(req: IncomingMessage, res: ServerResponse, path: string, records: RecordStore): Promise<boolean> {
+export async function handleRefs(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  records: RecordStore,
+  images?: RefImageStore,
+  search: URLSearchParams = new URLSearchParams(),
+): Promise<boolean> {
   if (path === REFS_PATH) {
     if (req.method !== 'POST') {
       sendJson(res, 405, { error: 'method not allowed' })
@@ -39,6 +48,7 @@ export async function handleRefs(req: IncomingMessage, res: ServerResponse, path
     return true
   }
   if (!path.startsWith(`${REFS_PATH}/`)) return false
+  if (images && path.endsWith('/image')) return handleImage(req, res, path.slice(REFS_PATH.length + 1, -'/image'.length), records, images, search)
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'method not allowed' })
     return true
@@ -56,10 +66,54 @@ export async function handleRefs(req: IncomingMessage, res: ServerResponse, path
   return true
 }
 
+async function handleImage(
+  req: IncomingMessage,
+  res: ServerResponse,
+  rawId: string,
+  records: RecordStore,
+  images: RefImageStore,
+  search: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'PUT') {
+    sendJson(res, 405, { error: 'method not allowed' })
+    return true
+  }
+  let id: string
+  try {
+    id = decodeURIComponent(rawId)
+  } catch {
+    id = ''
+  }
+  if (!records.getRef(id)) {
+    sendJson(res, 404, { error: 'reference not found' })
+    return true
+  }
+  if ((req.headers['content-type'] ?? '') !== 'image/png') {
+    sendJson(res, 415, { error: 'png only' })
+    return true
+  }
+  const [x, y, w, h] = ['x', 'y', 'w', 'h'].map((key) => Number(search.get(key) ?? NaN))
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+    sendJson(res, 400, { error: 'x, y, w and h are required' })
+    return true
+  }
+  try {
+    const info = await images.save(id, await readBody(req, MAX_REF_IMAGE_BYTES), { x, y, w, h })
+    sendJson(res, 201, info)
+  } catch (error) {
+    if (error instanceof RefImageExistsError) sendJson(res, 409, { error: error.message })
+    else if (error instanceof HttpError) sendJson(res, error.status, { error: error.message })
+    else sendJson(res, 400, { error: error instanceof Error ? error.message : 'invalid image' })
+  }
+  return true
+}
+
 export interface RefDeps {
   records: RecordStore
   files: FileStore
   dataDir: string
+  // ref に添えた画像（MAI-64）。なければ、画像は返さない
+  refImages?: RefImageStore
 }
 
 const MAX_NODES = 300
@@ -82,8 +136,21 @@ export interface DescribedNode {
   page?: number
   slide?: number
   assetId?: string
+  color?: string
+  size?: number
+  pointCount?: number
+  note?: string
   children?: DescribedNode[]
 }
+
+// 画像を添えたときに JSON に足すもの。画像のピクセルとワールド座標の対応
+export type DescribedImage = RefImageInfo & { note: string }
+
+const IMAGE_NOTE =
+  'The attached image shows this region as it looked when the reference was made (capturedAt). ' +
+  'Pixel (px, py) in the image is world point (x + px / scale, y + py / scale). The JSON is the current content and may differ.'
+const DRAW_NOTE = 'Freehand stroke. Its shape is not in the JSON: look at the attached image.'
+const DRAW_NOTE_NO_IMAGE = 'Freehand stroke. Its shape is not in the JSON (no image was attached to this reference).'
 
 // ref を、AI に返す中身にする。指している先が消えていても投げず、status と warnings で知らせる
 export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Promise<Record<string, unknown>> {
@@ -94,6 +161,8 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
     openPath: `/r/${encodeURIComponent(ref.id)}`,
   }
   const warnings: string[] = []
+  const saved = await deps.refImages?.read(ref.id)
+  const image: { image?: DescribedImage } = saved ? { image: { ...saved.info, note: IMAGE_NOTE } } : {}
   if (ref.kind === 'lines') {
     const file = fileSummary(ref.fileId, deps)
     const location = {
@@ -132,6 +201,7 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
     return {
       ...head,
       warnings,
+      ...image,
       location: {
         fileId: ref.fileId,
         ...(record ? { title: record.title, path: record.path } : {}),
@@ -165,12 +235,13 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
       nodes.push({ id, type: 'unknown', bounds, deleted: true })
       continue
     }
-    nodes.push({ ...describeNode(record, deps, budget), bounds })
+    nodes.push({ ...describeNode(record, deps, budget, Boolean(saved)), bounds })
   }
   if (ref.nodes.some(({ id }) => !deps.records.get(id))) warnings.push('Some nodes were deleted after the reference was made.')
   return {
     ...head,
     warnings,
+    ...image,
     location: {
       canvasId: ref.canvasId,
       ...(canvas ? { canvasTitle: canvas.title, canvasPath: canvasPath(ref.canvasId, deps) } : {}),
@@ -182,7 +253,7 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
 }
 
 // ノードを、AI が読める形にする。ノードの型は @canvcode/nodes にあるが、サーバーは読み込まないので props を構造的に読む
-function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: number; truncated: boolean }): DescribedNode {
+function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: number; truncated: boolean }, hasImage: boolean): DescribedNode {
   const props = (record.props ?? {}) as Record<string, unknown>
   const type = typeof record.type === 'string' ? record.type : 'unknown'
   const out: DescribedNode = { id: record.id, type }
@@ -241,6 +312,13 @@ function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: numbe
     case 'image':
       if (typeof props.assetId === 'string') out.assetId = props.assetId
       break
+    // 手書き線（MAI-64）。点の列は渡さない（AI には、画像を見るほうが形を読み取りやすい。文字数もすぐに埋まる）
+    case 'draw':
+      if (typeof props.color === 'string') out.color = props.color
+      if (typeof props.size === 'number') out.size = props.size
+      if (Array.isArray(props.points)) out.pointCount = Math.floor(props.points.length / 2)
+      out.note = hasImage ? DRAW_NOTE : DRAW_NOTE_NO_IMAGE
+      break
   }
   if (type === 'group' || type === 'frame') {
     const children: DescribedNode[] = []
@@ -251,7 +329,7 @@ function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: numbe
         break
       }
       budget.left--
-      children.push(describeNode(child, deps, budget))
+      children.push(describeNode(child, deps, budget, hasImage))
     }
     if (children.length) out.children = children
   }
@@ -307,12 +385,12 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…（${text.length - max} 文字省略）` : text
 }
 
-async function readBody(req: IncomingMessage): Promise<Buffer> {
+async function readBody(req: IncomingMessage, max = MAX_BODY): Promise<Buffer> {
   const chunks: Buffer[] = []
   let total = 0
   for await (const chunk of req) {
     total += (chunk as Buffer).length
-    if (total > MAX_BODY) throw new HttpError(413, 'too large')
+    if (total > max) throw new HttpError(413, 'too large')
     chunks.push(chunk as Buffer)
   }
   return Buffer.concat(chunks)

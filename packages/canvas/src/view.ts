@@ -35,7 +35,7 @@ import {
 } from './clipboard.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
-import { canvasRefTarget, postReference } from './refs.ts'
+import { canvasRefTarget, postReference, putReferenceImage, REF_IMAGE_MAX_EDGE, refImageRegion, refImageSize } from './refs.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
@@ -506,6 +506,17 @@ export class CanvasView {
     const scale = Math.min(THUMBNAIL_MAX.w / bounds.w, THUMBNAIL_MAX.h / bounds.h, 2)
     const width = Math.max(1, Math.round(bounds.w * scale))
     const height = Math.max(1, Math.round(bounds.h * scale))
+    const canvas = this.renderRegion(editor, bounds, scale, width, height)
+    const image = await createImageBitmap(canvas)
+    const previous = this.thumbnails.get(editor.canvasId)?.image
+    if (previous instanceof ImageBitmap) previous.close()
+    this.thumbnails.set(editor.canvasId, { image, width, height, level: 1 })
+    this.invalidate('scene')
+    void this.storeThumbnail(editor.canvasId, canvas)
+  }
+
+  // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像）
+  private renderRegion(editor: Editor, box: Box, scale: number, width: number, height: number): HTMLCanvasElement {
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -513,7 +524,7 @@ export class CanvasView {
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, width, height)
     const viewport: Viewport = {
-      camera: { x: bounds.x, y: bounds.y, zoom: scale },
+      camera: { x: box.x, y: box.y, zoom: scale },
       width,
       height,
       dpr: 1,
@@ -524,12 +535,14 @@ export class CanvasView {
       citations: this.citations,
     }
     drawNodes(ctx, editor, visibleIds(editor, viewport), viewport)
-    const image = await createImageBitmap(canvas)
-    const previous = this.thumbnails.get(editor.canvasId)?.image
-    if (previous instanceof ImageBitmap) previous.close()
-    this.thumbnails.set(editor.canvasId, { image, width, height, level: 1 })
-    this.invalidate('scene')
-    void this.storeThumbnail(editor.canvasId, canvas)
+    return canvas
+  }
+
+  // ワールド座標の範囲を、白い背景の PNG にする（MAI-64）。長い辺は maxEdge まで。作れなければ null
+  async renderRegionPng(editor: Editor, box: Box, maxEdge = REF_IMAGE_MAX_EDGE): Promise<Blob | null> {
+    const { width, height, scale } = refImageSize(box, maxEdge)
+    const canvas = this.renderRegion(editor, box, scale, width, height)
+    return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
   }
 
   // サムネイルをサーバーに保存する（null なら消す）。失敗しても、このタブでは見えているので知らせない
@@ -724,11 +737,7 @@ export class CanvasView {
 
   // PDF のページの上の範囲（ページの中の割合）を見せて、しばらく強調する。anchorId がなければ、その範囲の枠を一時的に出す（ref から開いたとき）
   async showPdfRegion(fileId: string, pageIndex: number, rect: Box, anchorId: string | null = null): Promise<boolean> {
-    const pageId = this.editor.index.allIds().find((id) => {
-      const node = this.editor.getNode(id)
-      return node?.type === 'pdf-page' && (node.props as PdfPageProps).fileId === fileId && (node.props as PdfPageProps).pageIndex === pageIndex
-    })
-    const page = pageId ? this.editor.index.get(pageId)?.worldBounds : undefined
+    const page = this.pdfPageBounds(fileId, pageIndex)
     if (!page) return false
     // ページの幅いっぱいに、範囲が画面の中ほどに来るように見せる
     const regionY = page.y + rect.y * page.h
@@ -747,6 +756,15 @@ export class CanvasView {
     this.invalidate('scene')
     await this.animateCamera(target)
     return true
+  }
+
+  // 今の Canvas にある PDF のページのワールド座標
+  private pdfPageBounds(fileId: string, pageIndex: number): Box | undefined {
+    const pageId = this.editor.index.allIds().find((id) => {
+      const node = this.editor.getNode(id)
+      return node?.type === 'pdf-page' && (node.props as PdfPageProps).fileId === fileId && (node.props as PdfPageProps).pageIndex === pageIndex
+    })
+    return pageId ? this.editor.index.get(pageId)?.worldBounds : undefined
   }
 
   // ワールド座標の範囲を画面に収めて、まだあるノードを選ぶ（ref から開いたとき）
@@ -795,6 +813,8 @@ export class CanvasView {
     const id = createRefId()
     const copied = writeClipboardText(id)
     this.clearQuoteRegion()
+    // 手書き線や画像があれば、今の見た目を画像にしておく（ref を保存したあとで送る。MAI-64）
+    const image = this.referenceImage(target)
     try {
       // 保存していない編集があれば、先に保存する（AI が今の本文を読めるように）
       if (target.kind === 'lines') await this.files?.flush(target.fileId)
@@ -805,11 +825,40 @@ export class CanvasView {
       } else {
         this.options.notify(`AI に渡す ID をコピーしました（${saved.id}）。Claude Code などに貼り付けてください`)
       }
+      if (image) await this.storeReferenceImage(saved.id, image)
       return saved.id
     } catch (error) {
       console.error('Failed to save a reference', error)
       this.options.notify('AI に渡す ID を保存できませんでした。コピーした ID は使えません')
       return null
+    }
+  }
+
+  // ref に添える画像（範囲と PNG）。添えなくてよい範囲なら null
+  private referenceImage(target: RefTarget): { region: Box; png: Promise<Blob | null> } | null {
+    const editor = this.editor
+    const region = refImageRegion(target, {
+      canvasId: editor.canvasId,
+      typeOf: (id) => editor.getNode(id)?.type,
+      childrenOf: (id) => editor.index.childrenOf(id),
+      search: (box) => editor.index.search(box),
+      pdfPage: (fileId, pageIndex) => this.pdfPageBounds(fileId, pageIndex),
+    })
+    if (!region) return null
+    const png = this.renderRegionPng(editor, region).catch((error: unknown) => {
+      console.warn('Failed to render a reference image', error)
+      return null
+    })
+    return { region, png }
+  }
+
+  // 画像を送る。失敗しても ID は使える（JSON だけが返る）ので、記録だけする
+  private async storeReferenceImage(id: string, image: { region: Box; png: Promise<Blob | null> }): Promise<void> {
+    try {
+      const png = await image.png
+      if (png) await putReferenceImage(id, png, image.region)
+    } catch (error) {
+      console.warn('Failed to save a reference image', error)
     }
   }
 
