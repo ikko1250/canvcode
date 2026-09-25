@@ -38,6 +38,7 @@ import {
 } from '@canvcode/nodes'
 import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
+import { memoryBreakdown } from './memoryStats.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
@@ -891,9 +892,14 @@ export function App(props: { initial: InitialRecords }) {
     ;(window as unknown as { canvcode: unknown }).canvcode = {
       workspace,
       view: created,
+      files,
+      sync,
       get editor() {
         return created.editor
       },
+      // Canvas を移る（Portal からではなく直接。メモリーのベンチマークで使う。MAI-67）
+      navigate: (canvasId: string) => navigate(canvasId),
+      memory: () => memoryBreakdown({ workspace, view: created, files, editors }),
     }
     // ワークスペースの File の一覧を読み、外からの変更の知らせを受け始める（MAI-30）
     const filesLoaded = files.start().catch((error: unknown) => {
@@ -951,7 +957,7 @@ export function App(props: { initial: InitialRecords }) {
       slidePages.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, slidePages, sync, editors, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {

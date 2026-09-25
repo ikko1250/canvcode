@@ -135,6 +135,11 @@ export class AssetManager implements AssetResolver {
     for (const asset of assets) this.register({ typeName: 'asset', id: assetIdFromHash(asset.hash), ...asset })
   }
 
+  // 手元に持っているもの（メモリーのベンチマーク用。MAI-67）
+  get stats(): { records: number; pdfDocuments: number; localAssets: number; uploads: number } {
+    return { records: this.records.size, pdfDocuments: this.pdfDocuments.size, localAssets: this.local.size, uploads: this.uploads.size }
+  }
+
   // すべてのアップロードが終わるまで待つ（テスト用）
   async settled(): Promise<void> {
     await Promise.allSettled([...this.uploads.values()])

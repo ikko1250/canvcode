@@ -1041,6 +1041,22 @@ export class CanvasView {
     this.stats.reset()
   }
 
+  // 画面が持っている画像などの量（メモリーのベンチマーク用。MAI-67）。画像のバイト数は幅×高さ×4 で数える
+  memoryStats(): {
+    imageCache: { entries: number; bytes: number; idle: boolean }
+    thumbnails: { entries: number; bytes: number }
+    assets: AssetManager['stats']
+  } {
+    const images = this.images.stats
+    let thumbnailBytes = 0
+    for (const image of this.thumbnails.values()) thumbnailBytes += image.width * image.height * 4
+    return {
+      imageCache: { entries: images.entries, bytes: images.bytes, idle: this.images.idle },
+      thumbnails: { entries: this.thumbnails.size, bytes: thumbnailBytes },
+      assets: this.assets.stats,
+    }
+  }
+
   // 毎フレーム、描画の直前に呼ばれる処理を登録する（ベンチマークなど）
   onFrame(callback: (now: number) => void): () => void {
     this.frameCallbacks.add(callback)
@@ -1493,8 +1509,9 @@ export class CanvasView {
     await this.importFiles(files, this.toPointer(e).world)
   }
 
-  // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
-  private async importFiles(all: File[], center: Vec): Promise<void> {
+  // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる。
+  // ドロップ・貼り付けのほか、ベンチマーク（MAI-67）からも呼ぶ
+  async importFiles(all: File[], center: Vec): Promise<void> {
     // 旧データ（.ricbackup）は、サーバーに送って取り込む（MAI-36）
     const backups = all.filter((file) => /\.ricbackup$/i.test(file.name))
     for (const file of backups) this.options.onImportBackup(file)

@@ -52,6 +52,15 @@ export function clampScale(width: number, height: number, scale: number): number
 export const rasterizeCounters = { bitmap: 0, canvas: 0, bitmapFallback: 0 }
 
 const imageCache = new Map<string, Promise<string | null>>()
+// 読み終えた data URL の長さ（メモリーのベンチマーク用。MAI-67）
+const imageCacheChars = new Map<string, number>()
+
+// Markdown の中の画像のキャッシュの件数と、data URL の合計の文字数
+export function rasterizeImageCacheStats(): { entries: number; chars: number } {
+  let chars = 0
+  for (const length of imageCacheChars.values()) chars += length
+  return { entries: imageCache.size, chars }
+}
 
 async function toDataUrl(src: string): Promise<string | null> {
   if (src.startsWith('data:')) return src
@@ -73,6 +82,9 @@ async function toDataUrl(src: string): Promise<string | null> {
       }
     })()
     imageCache.set(src, cached)
+    void cached.then((url) => {
+      if (url) imageCacheChars.set(src, url.length)
+    })
   }
   return cached
 }

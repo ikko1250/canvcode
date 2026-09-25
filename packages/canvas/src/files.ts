@@ -92,6 +92,17 @@ export class FileManager implements FileContentSource {
     return () => this.listeners.delete(listener)
   }
 
+  // 読み込んである本文の数と合計の文字数（メモリーのベンチマーク用。MAI-67）
+  get stats(): { entries: number; chars: number; dirty: number } {
+    let chars = 0
+    let dirty = 0
+    for (const entry of this.entries.values()) {
+      chars += entry.text.length
+      if (entry.dirty) dirty++
+    }
+    return { entries: this.entries.size, chars, dirty }
+  }
+
   // 描画から呼ばれる。まだ読んでいなければ読み込みを始めて null を返す
   get(fileId: string): { text: string; version: string; path?: string; kind?: 'markdown' | 'code' | 'slides' } | null {
     const entry = this.entries.get(fileId)
