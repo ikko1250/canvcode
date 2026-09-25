@@ -10,6 +10,7 @@ import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
+import { RefImageStore } from './refImages.ts'
 import { handleRefs } from './refs.ts'
 import { SyncHub } from './sync.ts'
 import { ThumbnailStore } from './thumbnails.ts'
@@ -40,6 +41,7 @@ await assets.init()
 const thumbnails = new ThumbnailStore(DATA_DIR)
 await thumbnails.init()
 const records = new RecordStore(DATA_DIR)
+const refImages = new RefImageStore(DATA_DIR)
 const sync = new SyncHub(records)
 
 // ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）
@@ -124,9 +126,9 @@ const server = createServer(async (req, res) => {
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
   if (await slides.handle(req, res, url.pathname, url.searchParams)) return
-  if (await handleRefs(req, res, url.pathname, records)) return
+  if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await files.handle(req, res, url.pathname)) return
-  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides })) return
+  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides, refImages })) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return

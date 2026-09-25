@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
+import { RefImageStore } from './refImages.ts'
 import { SlidesApi } from './slides.ts'
 
 // AI から使う MCP サーバー（MAI-59）
@@ -18,7 +19,16 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 
-async function setup(): Promise<{ client: Client; files: FileStore; records: RecordStore; dataDir: string; events: FileEvent[]; url: URL; workspace: string }> {
+async function setup(): Promise<{
+  client: Client
+  files: FileStore
+  records: RecordStore
+  refImages: RefImageStore
+  dataDir: string
+  events: FileEvent[]
+  url: URL
+  workspace: string
+}> {
   const workspace = mkdtempSync(join(tmpdir(), 'canvcode-mcp-'))
   cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
   const events: FileEvent[] = []
@@ -29,11 +39,12 @@ async function setup(): Promise<{ client: Client; files: FileStore; records: Rec
   const records = new RecordStore(dataDir)
   cleanups.push(() => records.close())
   const slides = new SlidesApi(files, workspace, 0, dataDir)
+  const refImages = new RefImageStore(dataDir)
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     void (async () => {
       if (await slides.handle(req, res, url.pathname, url.searchParams)) return
-      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, slides }))) res.writeHead(404).end()
+      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, slides, refImages }))) res.writeHead(404).end()
     })()
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -42,7 +53,7 @@ async function setup(): Promise<{ client: Client; files: FileStore; records: Rec
   const client = new Client({ name: 'test', version: '0.0.0' })
   await client.connect(new StreamableHTTPClientTransport(url))
   cleanups.push(() => client.close())
-  return { client, files, records, dataDir, events, url, workspace }
+  return { client, files, records, refImages, dataDir, events, url, workspace }
 }
 
 async function call(client: Client, name: string, args: Record<string, unknown>): Promise<{ data: any; isError: boolean; text: string }> {
@@ -220,6 +231,54 @@ describe('MCP server', () => {
       const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
       expect(result.data.location).toMatchObject({ fileId: 'file:pdf', title: 'paper', path: 'paper.pdf', page: 2, pageIndex: 1 })
       expect(result.data.content).toEqual({ text: 'two', pageText: 'page two text' })
+    })
+
+    // 手書き線のある範囲は、画像を先に、JSON をあとに返す（MAI-64）
+    describe('with a freehand stroke', () => {
+      async function drawRef() {
+        const env = await setup()
+        const root = env.records.rootCanvasId
+        env.records.apply(
+          [
+            { typeName: 'node', id: 'node:group', type: 'group', parentId: root, x: 0, y: 0, props: {} },
+            { typeName: 'node', id: 'node:ink', type: 'draw', parentId: 'node:group', x: 0, y: 0, props: { points: [0, 0, 10, 5, 20, 0], color: '#e03131', size: 4, isComplete: true } },
+          ],
+          [],
+        )
+        const bounds = { x: 0, y: 0, w: 20, h: 5 }
+        env.records.putRef(ref({ kind: 'canvas', canvasId: root, rect: { x: -10, y: -10, w: 400, h: 200 }, nodes: [{ id: 'node:group', bounds }] }))
+        return env
+      }
+      const PNG = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
+        Buffer.from('IHDR', 'ascii'),
+        Buffer.from([0, 0, 3, 32, 0, 0, 1, 144, 8, 6, 0, 0, 0, 0, 0, 0, 0]),
+      ])
+
+      it('returns the image first, and says how its pixels map to the canvas', async () => {
+        const { client, refImages } = await drawRef()
+        await refImages.save('ref:Ab12Cd34Ef', PNG, { x: -10, y: -10, w: 400, h: 200 }, new Date(Date.UTC(2026, 8, 25)))
+        const result = await client.callTool({ name: 'resolve_reference', arguments: { id: 'ref:Ab12Cd34Ef' } })
+        const content = result.content as { type: string; text?: string; data?: string; mimeType?: string }[]
+        expect(content.map((c) => c.type)).toEqual(['image', 'text'])
+        expect(content[0]).toMatchObject({ mimeType: 'image/png', data: PNG.toString('base64') })
+        const data = JSON.parse(content[1]!.text!)
+        expect(data.image).toMatchObject({ x: -10, y: -10, w: 400, h: 200, scale: 2, capturedAt: '2026-09-25T00:00:00.000Z' })
+        expect(data.content.nodes[0].children).toEqual([
+          { id: 'node:ink', type: 'draw', parentId: 'node:group', color: '#e03131', size: 4, pointCount: 3, note: expect.stringContaining('look at the attached image') },
+        ])
+      })
+
+      it('returns only the JSON while there is no image', async () => {
+        const { client } = await drawRef()
+        const result = await client.callTool({ name: 'resolve_reference', arguments: { id: 'ref:Ab12Cd34Ef' } })
+        const content = result.content as { type: string; text: string }[]
+        expect(content.map((c) => c.type)).toEqual(['text'])
+        const data = JSON.parse(content[0]!.text)
+        expect(data.image).toBeUndefined()
+        expect(data.content.nodes[0].children[0]).toMatchObject({ type: 'draw', color: '#e03131', size: 4, pointCount: 3 })
+        expect(data.content.nodes[0].children[0].points).toBeUndefined()
+      })
     })
 
     it('reports an unknown reference as a tool error', async () => {

@@ -84,7 +84,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
       description:
         'Resolve a reference id (ref:XXXXXXXXXX) that the user copied in CanvCode to show you what to look at. ' +
         'Returns the location (canvas region, document lines, or PDF page region) and its content: the current text of the lines, ' +
-        'the nodes in the canvas region (with document ids you can pass to read_document), or the text in the PDF region.',
+        'the nodes in the canvas region (with document ids you can pass to read_document), or the text in the PDF region. ' +
+        'When the region has freehand strokes or images, a PNG of the region comes first; the "image" field maps its pixels to world coordinates.',
       inputSchema: { id: z.string().describe('Reference id, e.g. ref:Ab12Cd34Ef (the ref: prefix may be omitted)') },
       annotations: { readOnlyHint: true },
     },
@@ -92,7 +93,16 @@ export function createMcpServer(deps: McpDeps): McpServer {
       const normalized = normalizeRefId(id)
       const ref = normalized ? deps.records.getRef(normalized) : undefined
       if (!ref) return error(`Unknown reference id ${normalized ?? JSON.stringify(id)}. Ask the user to copy it again from CanvCode.`)
-      return json(await resolveReference(ref, deps))
+      const resolved = await resolveReference(ref, deps)
+      // 範囲の画像があれば、画像を先に置く（画像を先に置くと読み取りがよくなる。MAI-64）
+      const image = resolved.image ? await deps.refImages?.read(ref.id) : null
+      if (!image) return json(resolved)
+      return {
+        content: [
+          { type: 'image', data: image.png.toString('base64'), mimeType: 'image/png' },
+          { type: 'text', text: JSON.stringify(resolved, null, 2) },
+        ],
+      }
     },
   )
 
