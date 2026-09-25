@@ -148,7 +148,7 @@ describe('MCP server', () => {
     const ref = (fields: Record<string, unknown>) => ({ typeName: 'ref', id: 'ref:Ab12Cd34Ef', createdAt: Date.UTC(2026, 8, 24), ...fields }) as any
 
     it('returns the current lines, and follows them when they move', async () => {
-      const { client, files, records } = await setup()
+      const { client, files, records, workspace } = await setup()
       const file = await files.create('code', 'main', 'import os\ndef f():\n    return 1\n')
       records.putRef(ref({ kind: 'lines', fileId: file.id, startLine: 2, endLine: 3, snapshot: 'def f():\n    return 1' }))
 
@@ -157,7 +157,7 @@ describe('MCP server', () => {
         id: 'ref:Ab12Cd34Ef',
         kind: 'lines',
         openPath: '/r/ref%3AAb12Cd34Ef',
-        location: { fileId: file.id, path: 'main.py', fileKind: 'code', startLine: 2, endLine: 3, status: 'unchanged' },
+        location: { fileId: file.id, path: 'main.py', absPath: join(workspace, 'main.py'), fileKind: 'code', startLine: 2, endLine: 3, status: 'unchanged' },
         content: { text: 'def f():\n    return 1' },
       })
       expect(same.data.content.snapshot).toBeUndefined()
@@ -174,7 +174,7 @@ describe('MCP server', () => {
     })
 
     it('describes the nodes in a canvas region, including the contents of frames', async () => {
-      const { client, files, records } = await setup()
+      const { client, files, records, workspace } = await setup()
       const root = records.rootCanvasId
       const doc = await files.create('markdown', 'メモ', '# hi\n')
       const node = (id: string, type: string, parentId: string, props: Record<string, unknown>) => ({ typeName: 'node', id, type, parentId, x: 0, y: 0, props })
@@ -205,7 +205,7 @@ describe('MCP server', () => {
       expect(result.data.location).toMatchObject({ canvasId: root, canvasTitle: 'ホーム', canvasPath: ['ホーム'], status: 'ok' })
       expect(result.data.content.nodes).toEqual([
         { id: 'node:frame', type: 'frame', name: '設計', bounds, children: [{ id: 'node:note', type: 'note', parentId: 'node:frame', text: 'ここを直す' }] },
-        { id: 'node:card', type: 'markdown-card', bounds, file: { id: doc.id, kind: 'markdown', title: 'メモ', path: 'メモ.md' } },
+        { id: 'node:card', type: 'markdown-card', bounds, file: { id: doc.id, kind: 'markdown', title: 'メモ', path: 'メモ.md', absPath: join(workspace, 'メモ.md') } },
         { id: 'node:gone', type: 'unknown', bounds, deleted: true },
       ])
       expect(result.data.content.truncated).toBe(false)
@@ -231,6 +231,34 @@ describe('MCP server', () => {
       const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
       expect(result.data.location).toMatchObject({ fileId: 'file:pdf', title: 'paper', path: 'paper.pdf', page: 2, pageIndex: 1 })
       expect(result.data.content).toEqual({ text: 'two', pageText: 'page two text' })
+      // PDF を読めないモデルもあるので、取り出したテキストのファイルを渡す。古い PDF でも pages.json から作る
+      const textPath = join(dataDir, 'assets', `${hash}.txt`)
+      expect(result.data.location.textPath).toBe(textPath)
+      expect(readFileSync(textPath, 'utf8')).toBe('=== page 1 ===\npage one\n\f=== page 2 ===\npage two text\n')
+    })
+
+    it('gives the PDF text file for PDF pages in a canvas region, and nothing when the text is not extracted yet', async () => {
+      const { client, records, dataDir } = await setup()
+      const root = records.rootCanvasId
+      const hash = 'b'.repeat(64)
+      mkdirSync(join(dataDir, 'assets'), { recursive: true })
+      writeFileSync(join(dataDir, 'assets', `${hash}.pages.json`), JSON.stringify({ version: 1, pages: ['one', 'two'] }))
+      const now = Date.now()
+      const pdf = (id: string, assetHash: string) => ({
+        typeName: 'file', id, kind: 'pdf', title: id, path: '', assetId: `asset:${assetHash}`, pageCount: 2,
+        parentCanvasId: root, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null,
+      })
+      const page = (id: string, fileId: string, pageIndex: number) => ({ typeName: 'node', id, type: 'pdf-page', parentId: root, x: 0, y: 0, props: { fileId, pageIndex } })
+      records.apply([pdf('file:pdf', hash), pdf('file:new', 'c'.repeat(64)), page('node:p1', 'file:pdf', 0), page('node:p2', 'file:pdf', 1), page('node:n1', 'file:new', 0)], [])
+      const bounds = { x: 0, y: 0, w: 10, h: 10 }
+      records.putRef(ref({ kind: 'canvas', canvasId: root, rect: bounds, nodes: ['node:p1', 'node:p2', 'node:n1'].map((id) => ({ id, bounds })) }))
+      const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
+      const textPath = join(dataDir, 'assets', `${hash}.txt`)
+      expect(result.data.content.nodes).toEqual([
+        { id: 'node:p1', type: 'pdf-page', bounds, page: 1, file: { id: 'file:pdf', kind: 'pdf', title: 'file:pdf', path: '', pageCount: 2, textPath } },
+        { id: 'node:p2', type: 'pdf-page', bounds, page: 2, file: { id: 'file:pdf', kind: 'pdf', title: 'file:pdf', path: '', pageCount: 2, textPath } },
+        { id: 'node:n1', type: 'pdf-page', bounds, page: 1, file: { id: 'file:new', kind: 'pdf', title: 'file:new', path: '', pageCount: 2 } },
+      ])
     })
 
     // 手書き線のある範囲は、画像を先に、JSON をあとに返す（MAI-64）

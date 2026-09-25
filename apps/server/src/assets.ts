@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 // 画像の Asset の保存と配信（MAI-10、MAI-13、MAI-26）。
 // - 実体は <ワークスペース>/.canvcode/assets/<ハッシュ>.<拡張子> に置く。名前が中身の SHA-256 なので、
@@ -11,6 +11,8 @@ import { join } from 'node:path'
 // - 種類・大きさ・縮小版の一覧は <ハッシュ>.json に書いておく。画面を開いたときに、一覧（GET /api/assets）を返す
 // - PDF は、受け取ったあとで検索用のテキストをページごとに取り出し、<ハッシュ>.pages.json に置く（MAI-10 の「4. PDF」）。
 //   全文検索の画面は初版の範囲外なので、取り出しておくだけ
+// - 同じテキストを、ページの区切りを入れた <ハッシュ>.txt にも置く。AI に渡す ref には、このファイルのパスを付ける
+//   （PDF をそのまま読めないモデルもあるので。ファイルがない古い PDF は ensurePdfTextFile が pages.json から作る）
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -160,6 +162,7 @@ export class AssetStore {
       }
       await task.destroy()
       await writeAtomic(join(this.dir, `${hash}.pages.json`), Buffer.from(JSON.stringify({ version: 1, pages })))
+      await writeAtomic(join(this.dir, `${hash}.txt`), Buffer.from(pdfTextFile(pages)))
     } catch (error) {
       console.error('failed to extract the text of a PDF', hash, error)
     }
@@ -217,6 +220,29 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
     chunks.push(chunk as Buffer)
   }
   return Buffer.concat(chunks)
+}
+
+// PDF のページごとのテキストを、1 つのテキストファイルの中身にする。ページの前に改ページ（最初のページを除く）と「=== page N ===」の行を置く
+export function pdfTextFile(pages: string[]): string {
+  return pages.map((text, i) => `${i ? '\f' : ''}=== page ${i + 1} ===\n${text.endsWith('\n') || !text ? text : `${text}\n`}`).join('')
+}
+
+// PDF のテキストファイルの絶対パスを返す。なければ pages.json から作る。pages.json もなければ（取り出し前・失敗）null。
+// textless は、どのページにも文字がない（スキャンした PDF など）とき
+export async function ensurePdfTextFile(dataDir: string, hash: string): Promise<{ path: string; textless: boolean } | null> {
+  if (!HASH_PATTERN.test(hash)) return null
+  const dir = join(dataDir, 'assets')
+  let pages: unknown
+  try {
+    pages = (JSON.parse(await readFile(join(dir, `${hash}.pages.json`), 'utf8')) as { pages?: unknown }).pages
+  } catch {
+    return null
+  }
+  if (!Array.isArray(pages) || !pages.every((page) => typeof page === 'string')) return null
+  const path = resolve(dir, `${hash}.txt`)
+  const exists = await stat(path).then(() => true, () => false)
+  if (!exists) await writeAtomic(path, Buffer.from(pdfTextFile(pages)))
+  return { path, textless: pages.every((page) => !page.trim()) }
 }
 
 // 一時ファイルに書いてから名前を変える（書きかけのファイルが残らない。MAI-13）

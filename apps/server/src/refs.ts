@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import { resolveLines, validateReference, type Box, type ReferenceRecord } from '@canvcode/core'
+import { ensurePdfTextFile } from './assets.ts'
 import { HttpError, type FileStore } from './files.ts'
 import { RefConflictError, type RecordStore, type StoredRecord } from './records.ts'
 import { MAX_REF_IMAGE_BYTES, RefImageExistsError, type RefImageInfo, type RefImageStore } from './refImages.ts'
@@ -119,6 +120,23 @@ export interface RefDeps {
 const MAX_NODES = 300
 const MAX_NODE_TEXT = 4000
 const MAX_PAGE_TEXT = 8000
+const PDF_TEXTLESS = 'The PDF has no extractable text (it may be scanned images).'
+
+// 文書の場所。本文は入れず、AI が自分で読めるよう絶対パスを付ける（Markdown / Python は absPath、PDF は取り出したテキストの textPath）。
+// AI は CanvCode のサーバーと同じマシンで動いている前提
+export interface FileSummary {
+  kind?: string
+  title?: string
+  path?: string
+  absPath?: string
+  textPath?: string
+  pageCount?: number
+  note?: string
+  missing?: boolean
+}
+
+// 1 つの ref を解決する間の File の要約。同じ PDF のページがたくさん選ばれても、1 回だけ調べる
+type SummaryCache = Map<string, Promise<FileSummary | undefined>>
 
 export interface DescribedNode {
   id: string
@@ -131,7 +149,7 @@ export interface DescribedNode {
   name?: string
   memo?: string
   quote?: string
-  file?: { id: string; kind?: string; title?: string; path?: string; missing?: boolean }
+  file?: FileSummary & { id: string }
   target?: { id: string; title?: string }
   page?: number
   slide?: number
@@ -164,10 +182,10 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
   const saved = await deps.refImages?.read(ref.id)
   const image: { image?: DescribedImage } = saved ? { image: { ...saved.info, note: IMAGE_NOTE } } : {}
   if (ref.kind === 'lines') {
-    const file = fileSummary(ref.fileId, deps)
+    const file = await fileSummary(ref.fileId, deps)
     const location = {
       fileId: ref.fileId,
-      ...(file ? { title: file.title, path: file.path, fileKind: file.kind } : {}),
+      ...(file ? { title: file.title, path: file.path, fileKind: file.kind, ...(file.absPath ? { absPath: file.absPath } : {}) } : {}),
       originalStartLine: ref.startLine,
       originalEndLine: ref.endLine,
     }
@@ -198,6 +216,8 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
     if (!record) warnings.push('The PDF was deleted from the workspace.')
     else if (record.deletedAt) warnings.push('The PDF is in the trash.')
     const pageText = record ? await pdfPageText(record, ref.pageIndex, deps.dataDir) : null
+    const file = record ? await fileSummary(ref.fileId, deps) : undefined
+    if (file?.note === PDF_TEXTLESS) warnings.push(PDF_TEXTLESS)
     return {
       ...head,
       warnings,
@@ -205,6 +225,7 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
       location: {
         fileId: ref.fileId,
         ...(record ? { title: record.title, path: record.path } : {}),
+        ...(file?.textPath ? { textPath: file.textPath } : {}),
         page: ref.pageIndex + 1,
         pageIndex: ref.pageIndex,
         rect: ref.rect,
@@ -223,6 +244,7 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
   if (status === 'trashed') warnings.push('The canvas is in the trash.')
   warnings.push('Bounds are world coordinates recorded when the reference was made; nodes may have moved since.')
   const budget = { left: MAX_NODES, truncated: false }
+  const cache: SummaryCache = new Map()
   const nodes: DescribedNode[] = []
   for (const { id, bounds } of ref.nodes) {
     if (budget.left <= 0) {
@@ -235,7 +257,7 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
       nodes.push({ id, type: 'unknown', bounds, deleted: true })
       continue
     }
-    nodes.push({ ...describeNode(record, deps, budget, Boolean(saved)), bounds })
+    nodes.push({ ...(await describeNode(record, deps, budget, Boolean(saved), cache)), bounds })
   }
   if (ref.nodes.some(({ id }) => !deps.records.get(id))) warnings.push('Some nodes were deleted after the reference was made.')
   return {
@@ -253,7 +275,13 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
 }
 
 // ノードを、AI が読める形にする。ノードの型は @canvcode/nodes にあるが、サーバーは読み込まないので props を構造的に読む
-function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: number; truncated: boolean }, hasImage: boolean): DescribedNode {
+async function describeNode(
+  record: StoredRecord,
+  deps: RefDeps,
+  budget: { left: number; truncated: boolean },
+  hasImage: boolean,
+  cache: SummaryCache,
+): Promise<DescribedNode> {
   const props = (record.props ?? {}) as Record<string, unknown>
   const type = typeof record.type === 'string' ? record.type : 'unknown'
   const out: DescribedNode = { id: record.id, type }
@@ -262,11 +290,13 @@ function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: numbe
     const value = props[key]
     return typeof value === 'string' && value !== '' ? truncate(value, MAX_NODE_TEXT) : undefined
   }
-  const file = (key = 'fileId'): DescribedNode['file'] => {
+  const file = async (key = 'fileId'): Promise<DescribedNode['file']> => {
     const id = props[key]
     if (typeof id !== 'string' || !id) return undefined
-    const info = fileSummary(id, deps)
-    return info ? { id, kind: info.kind, title: info.title, path: info.path, ...(info.missing ? { missing: true } : {}) } : { id }
+    let pending = cache.get(id)
+    if (!pending) cache.set(id, (pending = fileSummary(id, deps)))
+    const info = await pending
+    return info ? { id, ...info } : { id }
   }
   switch (type) {
     case 'text':
@@ -281,24 +311,24 @@ function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: numbe
       out.name = str('name')
       break
     case 'markdown-card':
-      out.file = file()
+      out.file = await file()
       if (!out.file) out.text = str('inlineText')
       break
     case 'code-card':
     case 'slide-deck-card':
-      out.file = file()
+      out.file = await file()
       break
     case 'quote-card':
       out.quote = str('quote')
       out.memo = str('memo')
-      out.file = file()
+      out.file = await file()
       break
     case 'pdf-page':
-      out.file = file()
+      out.file = await file()
       if (typeof props.pageIndex === 'number') out.page = props.pageIndex + 1
       break
     case 'slide-page':
-      out.file = file()
+      out.file = await file()
       if (typeof props.slideIndex === 'number') out.slide = props.slideIndex + 1
       break
     case 'portal': {
@@ -329,7 +359,7 @@ function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: numbe
         break
       }
       budget.left--
-      children.push(describeNode(child, deps, budget, hasImage))
+      children.push(await describeNode(child, deps, budget, hasImage, cache))
     }
     if (children.length) out.children = children
   }
@@ -337,16 +367,35 @@ function describeNode(record: StoredRecord, deps: RefDeps, budget: { left: numbe
   return out
 }
 
-function fileSummary(id: string, deps: RefDeps): { kind: string; title: string; path: string; missing: boolean } | undefined {
+async function fileSummary(id: string, deps: RefDeps): Promise<FileSummary | undefined> {
+  let info
   try {
-    const info = deps.files.getInfo(id)
-    return { kind: info.kind, title: info.title, path: info.path, missing: info.missing }
+    info = deps.files.getInfo(id)
   } catch {
     // FileStore が扱わない File（PDF）はレコードから
     const record = deps.records.get(id)
     if (!record || record.typeName !== 'file') return undefined
-    return { kind: String(record.kind), title: String(record.title), path: String(record.path), missing: record.missing === true }
+    const out: FileSummary = { kind: String(record.kind), title: String(record.title), path: String(record.path) }
+    if (typeof record.pageCount === 'number') out.pageCount = record.pageCount
+    const assetId = record.assetId
+    const text = typeof assetId === 'string' && assetId.startsWith('asset:')
+      ? await ensurePdfTextFile(deps.dataDir, assetId.slice('asset:'.length)).catch(() => null)
+      : null
+    if (text) out.textPath = text.path
+    if (text?.textless) out.note = PDF_TEXTLESS
+    if (record.missing === true) out.missing = true
+    return out
   }
+  const out: FileSummary = { kind: info.kind, title: info.title, path: info.path }
+  if (info.missing) out.missing = true
+  else {
+    try {
+      out.absPath = deps.files.resolveWorkspacePath(info.path)
+    } catch {
+      // ワークスペースの外を指す（ありえないはずだが）ときは、パスを付けない
+    }
+  }
+  return out
 }
 
 function trashed(id: string, deps: RefDeps): boolean {
