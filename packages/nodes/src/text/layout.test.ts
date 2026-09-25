@@ -58,7 +58,13 @@ describe('layoutText', () => {
 describe('stepFontSize (MAI-50)', () => {
   it('moves one preset up or down', () => {
     expect(stepFontSize(24, 1)).toBe(32)
-    expect(stepFontSize(24, -1)).toBe(20)
+    expect(stepFontSize(24, -1)).toBe(22)
+  })
+
+  it('passes through the title size of 22 between 20 and 24 (MAI-62)', () => {
+    expect(stepFontSize(20, 1)).toBe(22)
+    expect(stepFontSize(22, 1)).toBe(24)
+    expect(stepFontSize(22, -1)).toBe(20)
   })
 
   it('snaps sizes that are not presets to the nearest preset in that direction', () => {

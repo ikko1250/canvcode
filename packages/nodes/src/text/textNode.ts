@@ -16,7 +16,9 @@ export interface TextProps {
 
 export type TextNode = NodeRecord<TextProps>
 
-export const TEXT_DEFAULT_FONT_SIZE = 24
+// テキストの初期の大きさ。パイメニューの「タイトル」は、大きさだけが違うテキストとして作る（MAI-62）
+export const TEXT_DEFAULT_FONT_SIZE = 12
+export const TITLE_FONT_SIZE = 22
 const LINE_HEIGHT = 1.35
 // 空のときでも、カーソルを置けるだけの幅を持たせる
 const MIN_WIDTH_EM = 1

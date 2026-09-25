@@ -21,7 +21,7 @@ export interface TextStyle {
 }
 
 // テキストと付箋の文字の大きさの段階（MAI-50）。パレットの「大きく」「小さく」で、この中を行き来する
-export const TEXT_FONT_SIZES = [12, 16, 20, 24, 32, 48, 64] as const
+export const TEXT_FONT_SIZES = [12, 16, 20, 22, 24, 32, 48, 64] as const
 
 // 今の大きさから、1 段階大きい（direction が 1）か小さい（-1）大きさ。
 // 段階にない大きさ（取り込んだものなど）からは、その向きで最も近い段階へ移る。端に達していればそのまま

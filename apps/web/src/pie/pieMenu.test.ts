@@ -240,7 +240,7 @@ describe('buildPieMenus', () => {
       return isSubmenu(entry) ? entry.items : []
     }
     expect(labels(sub('図形'))).toEqual(['矩形', '楕円', 'フレーム', '矢印'])
-    expect(labels(sub('文字'))).toEqual(['テキスト', '付箋'])
+    expect(labels(sub('文字'))).toEqual(['テキスト', 'タイトル', '付箋'])
     expect(labels(sub('Portal'))).toEqual(['空', 'PDF', 'Python', 'Markdown'])
     expect(labels(sub('Card'))).toEqual(['Python', 'Markdown'])
   })

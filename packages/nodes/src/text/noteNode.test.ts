@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { noteHeight, noteStyle, noteType, type NoteProps } from './noteNode.ts'
+import { NOTE_DEFAULT_FONT_SIZE, noteHeight, noteStyle, noteType, type NoteProps } from './noteNode.ts'
 
 // Node には Canvas がないので、概算の文字幅で測る（layout.test.ts と同じ）
 function note(props: Partial<NoteProps>): NodeRecord<NoteProps> {
@@ -27,7 +27,7 @@ describe('note auto height (MAI-34)', () => {
   })
 
   it('grows to fit the text when it does not fit', () => {
-    const node = note({ text: Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n'), h: 200 })
+    const node = note({ text: Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n'), h: 200, fontSize: 20 })
     const h = noteHeight(node.props)
     expect(h).toBeGreaterThan(200)
     // 20 行 × 行の高さ（20 × 1.4）+ 上下の余白（16 × 2）
@@ -40,17 +40,22 @@ describe('note auto height (MAI-34)', () => {
 
   it('wraps long lines at the note width before measuring the height', () => {
     // 半角 1 文字 = 0.55 × 20 = 11 なので、幅 188 の箱には 17 文字が入る。34 文字なら 2 行
-    const node = note({ text: 'a'.repeat(34), h: 60 })
+    const node = note({ text: 'a'.repeat(34), h: 60, fontSize: 20 })
     expect(noteHeight(node.props)).toBeCloseTo(2 * 28 + 32)
   })
 
   it('also fits notes created before, whose stored height is smaller than the text', () => {
-    const node = note({ text: 'a\nb\nc\nd\ne', h: 60 })
+    const node = note({ text: 'a\nb\nc\nd\ne', h: 60, fontSize: 20 })
     expect(noteHeight(node.props)).toBeCloseTo(5 * 28 + 32)
   })
 })
 
 describe('note font size and alignment (MAI-50)', () => {
+  it('defaults to a font size of 12 (MAI-62)', () => {
+    expect(noteType.defaultProps().fontSize).toBe(NOTE_DEFAULT_FONT_SIZE)
+    expect(NOTE_DEFAULT_FONT_SIZE).toBe(12)
+  })
+
   it('defaults to left alignment', () => {
     expect(noteType.defaultProps().align).toBe('left')
     expect(noteStyle(noteType.defaultProps()).align).toBe('left')
