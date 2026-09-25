@@ -83,6 +83,8 @@ export interface CanvasViewOptions {
   notify?: (message: string) => void
   // Portal の参照先に入る（ダブルクリック・Portal を作ったとき。MAI-29）
   onOpenPortal?: (portalId: string) => void
+  // Portal をブラウザの新しいタブで開く（Ctrl（⌘）+クリック・中ボタンのクリック。MAI-63）
+  onOpenPortalInNewTab?: (portalId: string) => void
   // 持ち主の Portal を消す前に、参照先をどうするか尋ねる（MAI-8）。null ならやめる
   confirmOwnerPortalDeletion?: (portals: { title: string; descendants: number }[]) => Promise<OwnerPortalDeletion | null>
   // ノードを Portal の上に落としたとき、参照先の Canvas に移してよいか尋ねる（MAI-38）。count は移すノードの数
@@ -119,6 +121,8 @@ const NUDGE = 1
 const NUDGE_LARGE = 10
 // 複製したノードをずらす量（CSS ピクセル）
 const DUPLICATE_OFFSET_PX = 16
+// 押してから離すまでに、これより動かさなければクリックとみなす（CSS ピクセル）
+const CLICK_SLOP_PX = 3
 // 貼り付けた画像を、画面のこの割合に収まるよう縮める
 const IMAGE_FIT_RATIO = 0.8
 // Portal のサムネイルの大きさの上限（画素）
@@ -172,6 +176,8 @@ export class CanvasView {
   private spaceHeld = false
   private cursorOverride: string | null = null
   private panPointer: { id: number; last: { x: number; y: number } } | null = null
+  // Ctrl（⌘）+クリック・中ボタンのクリックを押し始めた位置（ブラウザの画面の座標）。動かさずに離したらクリックとみなす（MAI-63）
+  private linkClick: { id: number; button: number; x: number; y: number } | null = null
   private gestureScale = 1
   // 時間のかかる画像（Markdown カードなど）のキャッシュ。作れたらシーンを描き直す（MAI-22）
   readonly images = new ImageCache({ onReady: () => this.invalidate('scene') })
@@ -194,6 +200,7 @@ export class CanvasView {
       gridColors: options.gridColors ?? { minor: '#eef0f3', major: '#dde1e7' },
       notify: options.notify ?? ((message) => console.warn(message)),
       onOpenPortal: options.onOpenPortal ?? (() => {}),
+      onOpenPortalInNewTab: options.onOpenPortalInNewTab ?? (() => {}),
       confirmOwnerPortalDeletion: options.confirmOwnerPortalDeletion ?? (async () => 'trash'),
       confirmMoveToCanvas: options.confirmMoveToCanvas ?? (async () => true),
       onContextMenu: options.onContextMenu ?? (() => {}),
@@ -323,7 +330,11 @@ export class CanvasView {
       if (this.root.scrollTop !== 0) this.root.scrollTop = 0
       if (this.root.scrollLeft !== 0) this.root.scrollLeft = 0
     })
-    this.listen(this.root, 'contextmenu', (e) => this.onContextMenu(e))
+    this.listen(this.root, 'contextmenu', (e) => {
+      // macOS の Ctrl+クリックは右クリック。新しいタブでは開かない（ブラウザのリンクと同じ）
+      this.linkClick = null
+      this.onContextMenu(e)
+    })
     this.listen(this.root, 'dblclick', (e) => {
       if (this.panPointer || this.spaceHeld) return
       this.tool.onDoubleClick?.(this.toPointer(e))
@@ -948,6 +959,14 @@ export class CanvasView {
     duplicateSelection(this.editor, { x: DUPLICATE_OFFSET_PX / zoom, y: DUPLICATE_OFFSET_PX / zoom })
   }
 
+  // ポインタの下が Portal なら、新しいタブで開く（MAI-63）
+  private openPortalInNewTabAt(e: PointerEvent): void {
+    const editor = this.editor
+    const pointer = this.toPointer(e)
+    const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / editor.session.get().camera.zoom)
+    if (hit?.type === 'portal') this.options.onOpenPortalInNewTab(hit.id)
+  }
+
   // ポインタの下のカードにリンクがあれば、新しいタブで開いて true を返す
   private openLinkAt(e: PointerEvent): boolean {
     const editor = this.editor
@@ -1178,6 +1197,9 @@ export class CanvasView {
 
   private onPointerDown(e: PointerEvent): void {
     const panning = e.button === 1 || (e.button === 0 && this.spaceHeld)
+    // リンクと同じく、Ctrl（⌘）+クリックと中ボタンのクリックは、Portal を新しいタブで開く（離したときに見る。MAI-63）
+    const linkClick = e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey) && !this.spaceHeld)
+    this.linkClick = linkClick ? { id: e.pointerId, button: e.button, x: e.clientX, y: e.clientY } : null
     // パン中は編集中のカードとフォーカスを維持する
     if (!panning) {
       // 編集中にキャンバスのどこかを押したら、編集を終えてから、その操作を始める
@@ -1219,6 +1241,11 @@ export class CanvasView {
 
   private onPointerUp(e: PointerEvent): void {
     if (this.root.hasPointerCapture(e.pointerId)) this.root.releasePointerCapture(e.pointerId)
+    const click = this.linkClick
+    this.linkClick = null
+    if (click && e.type === 'pointerup' && click.id === e.pointerId && click.button === e.button && Math.hypot(e.clientX - click.x, e.clientY - click.y) < CLICK_SLOP_PX) {
+      this.openPortalInNewTabAt(e)
+    }
     if (this.panPointer && this.panPointer.id === e.pointerId) {
       this.panPointer = null
       this.updateCursor()

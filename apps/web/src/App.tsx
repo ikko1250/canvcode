@@ -50,6 +50,7 @@ import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
 import { FileEditor } from './workspace/FileEditor.tsx'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
+import { canvasUrl, fileUrl, newTabUrl, openInNewTab, slideEditorUrl } from './workspace/newTab.ts'
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
 import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
@@ -356,12 +357,12 @@ export function App(props: { initial: InitialRecords }) {
       }
       if (workspace.getFile(fileId)?.kind === 'slides') {
         const returnTo = `${location.pathname}${location.search}`
-        location.href = `/slide-editor.html?deck=${encodeURIComponent(fileId)}&back=${encodeURIComponent(returnTo)}`
+        location.href = slideEditorUrl(fileId, returnTo)
         return
       }
       setOpenFileId(fileId)
       setFileFocus(options.focus ?? null)
-      if (options.push !== false) history.pushState({ fileId }, '', `/f/${encodeURIComponent(fileId)}`)
+      if (options.push !== false) history.pushState({ fileId }, '', fileUrl(fileId))
     },
     [workspace, notify],
   )
@@ -400,7 +401,7 @@ export function App(props: { initial: InitialRecords }) {
         view.setEditor(next)
         // 画面の状態も、ここで切り替える（このあとのアニメーションの間の操作も、移った先の Canvas に入るように）
         setCanvasId(targetId)
-        if (options.push !== false) history.pushState({ canvasId: targetId }, '', `/c/${encodeURIComponent(targetId)}`)
+        if (options.push !== false) history.pushState({ canvasId: targetId }, '', canvasUrl(targetId))
         from.session.set({ camera: fromCamera })
         if (!visited.has(targetId)) {
           visited.add(targetId)
@@ -435,6 +436,19 @@ export function App(props: { initial: InitialRecords }) {
       void navigate(targetId, { portalId })
     },
     [workspace, navigate, notify],
+  )
+  // ノード（Portal・File のカード）を、ブラウザの新しいタブで開く（MAI-63）
+  const openNodeInNewTab = useCallback(
+    (nodeId: string) => {
+      const editor = viewRef.current?.editor
+      const node = editor?.getNode(nodeId)
+      if (!editor || !node) return
+      const url = newTabUrl(workspace, node, editor.canvasId)
+      if (url) openInNewTab(url)
+      else if (node.type === 'portal') notify('参照先のキャンバスは開けません（ゴミ箱の中か、リンク切れです）')
+      else notify('この File は開けません（ゴミ箱の中か、ファイルが見つかりません）')
+    },
+    [workspace, notify],
   )
 
   // ---- 引用（MAI-33） ----
@@ -594,6 +608,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       if (single?.type === 'portal') {
         items.push({ label: '開く', shortcut: 'Enter', onSelect: () => openPortal(single.id) })
+        items.push({ label: '新しいタブで開く', shortcut: 'Ctrl+クリック', onSelect: () => openNodeInNewTab(single.id) })
         const target = workspace.getCanvas((single.props as PortalProps).targetId)
         if (target) {
           items.push({
@@ -630,6 +645,7 @@ export function App(props: { initial: InitialRecords }) {
         if (file) {
           items.push({ label: '編集', shortcut: 'Enter', onSelect: () => view.editDocument(single.id) })
           items.push({ label: '全画面で開く', shortcut: 'Ctrl+Enter', onSelect: () => openFile(file.id) })
+          items.push({ label: '新しいタブで開く', onSelect: () => openNodeInNewTab(single.id) })
           // このファイルを引用しているノート（逆リンク。MAI-33）
           const cited = citationItems(workspace.anchorsOfFile(file.id).map((a) => a.id))
           if (cited.length > 0) {
@@ -673,6 +689,7 @@ export function App(props: { initial: InitialRecords }) {
         const file = workspace.getFile(fileId)
         if (file) {
           items.push({ label: 'スライドを編集', shortcut: 'Enter', onSelect: () => openFile(file.id) })
+          items.push({ label: '新しいタブで開く', onSelect: () => openNodeInNewTab(single.id) })
           items.push({
             label: '名前を変更',
             onSelect: () => {
@@ -819,7 +836,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate],
   )
 
 
@@ -833,6 +850,7 @@ export function App(props: { initial: InitialRecords }) {
       pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
       onOpenPortal: (portalId) => openPortal(portalId),
+      onOpenPortalInNewTab: (portalId) => openNodeInNewTab(portalId),
       onQuote: (request) => void onQuote(request),
       onOpenCitations: (anchorIds, { clientX, clientY }) => {
         const items = citationItems(anchorIds)
@@ -878,7 +896,7 @@ export function App(props: { initial: InitialRecords }) {
       },
     }
     // ワークスペースの File の一覧を読み、外からの変更の知らせを受け始める（MAI-30）
-    void files.start().catch((error: unknown) => {
+    const filesLoaded = files.start().catch((error: unknown) => {
       console.error('Failed to load files', error)
       notify('ファイルの一覧を読み込めませんでした')
     })
@@ -887,8 +905,24 @@ export function App(props: { initial: InitialRecords }) {
     // 開いた URL の Canvas に入る
     const initial = canvasIdFromUrl()
     const initialRef = refIdFromUrl()
+    const initialFile = fileIdFromUrl()
     if (initial && initial !== workspace.rootCanvasId && workspace.getCanvas(initial)) void navigate(initial, { push: false })
-    else history.replaceState({ canvasId: workspace.rootCanvasId }, '', `/c/${encodeURIComponent(workspace.rootCanvasId)}`)
+    else if (!initialFile) history.replaceState({ canvasId: workspace.rootCanvasId }, '', canvasUrl(workspace.rootCanvasId))
+    // /f/<id>（新しいタブで開いた File など。MAI-63）なら、File の持ち主の Canvas を履歴の下に敷いてから、全画面のエディタで開く。
+    // 閉じると history.back() で、その Canvas に戻る。File の一覧を読む前は知らない File もあるので、見つからなければ読んでから開く
+    const openInitialFile = (fileId: string) => {
+      const file = workspace.getFile(fileId)
+      const owner = file?.parentCanvasId ? workspace.getCanvas(file.parentCanvasId) : undefined
+      const parent = owner && owner.deletedAt === null ? owner.id : workspace.rootCanvasId
+      history.replaceState({ canvasId: parent }, '', canvasUrl(parent))
+      if (parent !== workspace.rootCanvasId) void navigate(parent, { push: false })
+      if (file) openFile(fileId)
+      else notify('この File は見つかりません')
+    }
+    if (initialFile) {
+      if (workspace.getFile(initialFile)) openInitialFile(initialFile)
+      else void filesLoaded.then(() => openInitialFile(initialFile))
+    }
     // /r/<id>（AI に渡す参照）なら、ルートから、その場所へ移る
     if (initialRef) void openReference(initialRef)
     // ページを閉じる・隠すときは、保存していない編集をすぐ保存する
@@ -917,7 +951,7 @@ export function App(props: { initial: InitialRecords }) {
       slidePages.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
