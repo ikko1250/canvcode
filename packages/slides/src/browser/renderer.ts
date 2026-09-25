@@ -24,7 +24,7 @@ type SlideStructure = {
   rows: HTMLDivElement;
   panel: HTMLElement;
   figurePanel: HTMLElement | null;
-  figureSlots: { title: HTMLDivElement; image: HTMLImageElement }[] | null;
+  figureSlots: { title: HTMLDivElement; frame: HTMLDivElement; image: HTMLImageElement }[] | null;
 };
 
 const defaultSlideData: RenderSlideData = {
@@ -137,12 +137,16 @@ function createSlideStructure(slideElement: HTMLElement, layout: SlideLayout): S
       const figureTitle = document.createElement("div");
       figureTitle.className = "figure-title";
 
+      const figureFrame = document.createElement("div");
+      figureFrame.className = "figure-frame";
+
       const figureImage = document.createElement("img");
       figureImage.className = "figure-image";
+      figureFrame.appendChild(figureImage);
 
-      slot.append(figureTitle, figureImage);
+      slot.append(figureTitle, figureFrame);
       figuresRow.appendChild(slot);
-      figureSlots.push({ title: figureTitle, image: figureImage });
+      figureSlots.push({ title: figureTitle, frame: figureFrame, image: figureImage });
     }
 
     container.append(panel, figuresRow);
@@ -181,6 +185,21 @@ async function waitForImage(image: HTMLImageElement): Promise<void> {
 
   if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) {
     throw new Error("画像を読み込めませんでした。");
+  }
+}
+
+/** zoom/x/y が既定値なら transform を外す。既存デッキの画素を変えないため */
+function applyImageAdjust(
+  image: HTMLImageElement,
+  adjust: { zoom?: number; x?: number; y?: number } | undefined,
+): void {
+  const zoom = adjust?.zoom ?? 1;
+  const x = adjust?.x ?? 0;
+  const y = adjust?.y ?? 0;
+  if (zoom === 1 && x === 0 && y === 0) {
+    image.style.transform = "";
+  } else {
+    image.style.transform = `translate(${x}%, ${y}%) scale(${zoom})`;
   }
 }
 
@@ -354,12 +373,17 @@ async function populateSlideElement(slideElement: HTMLElement, data: unknown): P
       pre.appendChild(codeElement);
       figurePanel.replaceChildren(pre);
     } else if (data.image) {
+      const figureFrame = document.createElement("div");
+      figureFrame.className = "figure-frame";
+
       const figureImage = document.createElement("img");
       figureImage.className = "figure-image";
       figureImage.alt = data.image.alt;
       figureImage.src = data.image.src;
-      figurePanel.replaceChildren(figureImage);
+      figureFrame.appendChild(figureImage);
+      figurePanel.replaceChildren(figureFrame);
       await waitForImage(figureImage);
+      applyImageAdjust(figureImage, data.image);
     }
   }
 
@@ -374,6 +398,8 @@ async function populateSlideElement(slideElement: HTMLElement, data: unknown): P
       slot.image.alt = imageData.alt;
       slot.image.src = imageData.src;
       await waitForImage(slot.image);
+      slot.frame.style.aspectRatio = `${slot.image.naturalWidth} / ${slot.image.naturalHeight}`;
+      applyImageAdjust(slot.image, imageData);
     }
   }
 }

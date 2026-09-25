@@ -162,6 +162,112 @@ export function ImagePicker(props: Props) {
           />
         </div>
       )}
+      {value.path !== "" && <FigureAdjust id={id} value={value} onChange={onChange} />}
+    </div>
+  );
+}
+
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 4;
+const ZOOM_STEP = 0.05;
+const OFFSET_MIN = -100;
+const OFFSET_MAX = 100;
+const OFFSET_STEP = 1;
+
+function clampRound(value: number, min: number, max: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  const rounded = Math.round(value * factor) / factor;
+  return Math.min(max, Math.max(min, rounded));
+}
+
+type AdjustProps = {
+  id: string;
+  value: DraftImage;
+  onChange: (value: DraftImage, key: string | null) => void;
+};
+
+/** 図の拡大率・位置を調整する行（拡大／横位置／縦位置）。範囲外にはみ出た部分は描画時に切り取られる */
+function FigureAdjust(props: AdjustProps) {
+  const { id, value, onChange } = props;
+  const isDefault = value.zoom === 1 && value.x === 0 && value.y === 0;
+
+  const change = (field: "zoom" | "x" | "y", min: number, max: number, decimals: number) =>
+    (event: Event) => {
+      const raw = Number((event.currentTarget as HTMLInputElement).value);
+      if (!Number.isFinite(raw)) return;
+      const next = clampRound(raw, min, max, decimals);
+      onChange({ ...value, [field]: next }, `${id}:${field}`);
+    };
+
+  return (
+    <div class="field figure-adjust">
+      <div class="figure-adjust-row">
+        <label>拡大</label>
+        <input
+          type="range"
+          min={ZOOM_MIN}
+          max={ZOOM_MAX}
+          step={ZOOM_STEP}
+          value={value.zoom}
+          onInput={change("zoom", ZOOM_MIN, ZOOM_MAX, 2)}
+        />
+        <input
+          type="number"
+          min={ZOOM_MIN}
+          max={ZOOM_MAX}
+          step={ZOOM_STEP}
+          value={value.zoom}
+          onInput={change("zoom", ZOOM_MIN, ZOOM_MAX, 2)}
+        />
+      </div>
+      <div class="figure-adjust-row">
+        <label>横位置</label>
+        <input
+          type="range"
+          min={OFFSET_MIN}
+          max={OFFSET_MAX}
+          step={OFFSET_STEP}
+          value={value.x}
+          onInput={change("x", OFFSET_MIN, OFFSET_MAX, 0)}
+        />
+        <input
+          type="number"
+          min={OFFSET_MIN}
+          max={OFFSET_MAX}
+          step={OFFSET_STEP}
+          value={value.x}
+          onInput={change("x", OFFSET_MIN, OFFSET_MAX, 0)}
+        />
+      </div>
+      <div class="figure-adjust-row">
+        <label>縦位置</label>
+        <input
+          type="range"
+          min={OFFSET_MIN}
+          max={OFFSET_MAX}
+          step={OFFSET_STEP}
+          value={value.y}
+          onInput={change("y", OFFSET_MIN, OFFSET_MAX, 0)}
+        />
+        <input
+          type="number"
+          min={OFFSET_MIN}
+          max={OFFSET_MAX}
+          step={OFFSET_STEP}
+          value={value.y}
+          onInput={change("y", OFFSET_MIN, OFFSET_MAX, 0)}
+        />
+      </div>
+      <div class="figure-adjust-footer">
+        <button
+          type="button"
+          disabled={isDefault}
+          onClick={() => onChange({ ...value, zoom: 1, x: 0, y: 0 }, `${id}:reset`)}
+        >
+          リセット
+        </button>
+        <span class="hint">枠からはみ出た部分は切り取られます</span>
+      </div>
     </div>
   );
 }

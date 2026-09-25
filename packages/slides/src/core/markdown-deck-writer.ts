@@ -45,6 +45,15 @@ function imagePath(path: string): string {
   return /[\s)]/.test(path) ? `<${path}>` : path;
 }
 
+/** 既定値以外の zoom/x/y があるときだけ {zoom=1.5 x=-10 y=5} を返す。無ければ空文字 */
+function imageAttrs(image: { zoom?: number; x?: number; y?: number }): string {
+  const parts: string[] = [];
+  if (image.zoom !== undefined) parts.push(`zoom=${image.zoom}`);
+  if (image.x !== undefined) parts.push(`x=${image.x}`);
+  if (image.y !== undefined) parts.push(`y=${image.y}`);
+  return parts.length > 0 ? `{${parts.join(" ")}}` : "";
+}
+
 function headingLine(slide: SlideData): string {
   return slide.name !== undefined ? `# ${slide.title} {#${slide.name}}` : `# ${slide.title}`;
 }
@@ -92,13 +101,17 @@ function serializeSlide(slide: SlideData): string[] {
       if (slide.code) {
         blocks.push([`\`\`\`${slide.code.language ?? ""}`, ...slide.code.lines, "```"]);
       } else if (slide.image) {
-        blocks.push([`![${slide.image.alt}](${imagePath(slide.image.path)})`]);
+        const attrs = imageAttrs(slide.image);
+        blocks.push([`![${slide.image.alt}](${imagePath(slide.image.path)})${attrs}`]);
       }
     }
 
     if (layout === "table-images" && slide.images) {
       blocks.push(
-        slide.images.map((image) => `![${image.alt}](${imagePath(image.path)} "${image.title}")`),
+        slide.images.map(
+          (image) =>
+            `![${image.alt}](${imagePath(image.path)} "${image.title}")${imageAttrs(image)}`,
+        ),
       );
     }
   }

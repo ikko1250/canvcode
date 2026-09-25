@@ -27,7 +27,7 @@ deckTitle: 例
 
 # 図 {#img}
 | x | y |
-![図](assets/a.png)
+![図](assets/a.png){zoom=1.5 x=-10 y=5}
 `
 
 function parse(text: string, name = 'deck.slide.md'): DeckData {
@@ -48,7 +48,7 @@ describe('Markdown deck', () => {
     // 表のヘッダー行は読み飛ばし、<br> はセル内の改行になる
     expect(deck.slides[1]?.rows).toEqual([{ labelLines: ['A'], bodyLines: ['**強調**', '2 行目'] }])
     expect(deck.slides[2]?.items).toEqual([{ text: '一', children: ['二'] }, '三'])
-    expect(deck.slides[3]?.image).toEqual({ path: 'assets/a.png', alt: '図' })
+    expect(deck.slides[3]?.image).toEqual({ path: 'assets/a.png', alt: '図', zoom: 1.5, x: -10, y: 5 })
   })
 
   it('round-trips through Markdown and JSON without changing the deck', () => {
@@ -76,6 +76,55 @@ describe('Markdown deck', () => {
 
   it('rejects unknown file extensions', () => {
     expect(() => serializeDeck(parse(MARKDOWN), 'deck.txt')).toThrow('.md または .json')
+  })
+})
+
+describe('image zoom/x/y', () => {
+  it('parses the attribute block after an image, on both single and two-image lines', () => {
+    const md = `# 図 {#img}\n| x | y |\n![図](assets/a.png){zoom=1.5 x=-10 y=5}\n`
+    const deck = parse(md)
+    expect(deck.slides[0]?.image).toEqual({ path: 'assets/a.png', alt: '図', zoom: 1.5, x: -10, y: 5 })
+
+    const md2 = `# 比較 {#compare}\n| a | b |\n![旧](assets/old.png "旧版"){zoom=2}\n![新](assets/new.png "新版"){x=-20 y=30}\n`
+    const deck2 = parse(md2)
+    expect(deck2.slides[0]?.images).toEqual([
+      { path: 'assets/old.png', alt: '旧', title: '旧版', zoom: 2 },
+      { path: 'assets/new.png', alt: '新', title: '新版', x: -20, y: 30 },
+    ])
+  })
+
+  it('drops the attribute block for default values on normalize and serialize', () => {
+    const md = `# 図 {#img}\n| x | y |\n![図](assets/a.png){zoom=1 x=0 y=0}\n`
+    const deck = parse(md)
+    expect(deck.slides[0]?.image).toEqual({ path: 'assets/a.png', alt: '図' })
+    const markdown = serializeDeck(deck, 'deck.slide.md')
+    expect(markdown).toContain('![図](assets/a.png)\n')
+    expect(markdown).not.toContain('zoom=')
+  })
+
+  it('round-trips adjusted images through Markdown and JSON', () => {
+    const deck = parse(MARKDOWN)
+    const markdown = serializeDeck(deck, 'deck.slide.md')
+    expect(markdown).toContain('{zoom=1.5 x=-10 y=5}')
+    expect(parse(markdown)).toEqual(deck)
+    const json = serializeDeck(deck, 'deck.slide.json')
+    expect(parse(json, 'deck.slide.json')).toEqual(deck)
+  })
+
+  it('rejects malformed attribute blocks with the file name and line', () => {
+    const withAttrs = (attrs: string) => `# 図 {#img}\n| x | y |\n![図](assets/a.png){${attrs}}\n`
+    expect(() => parseMarkdownDeck(withAttrs('zoom=abc'), 'x.md')).toThrow(/^x\.md:\d+: .*画像属性/)
+    expect(() => parseMarkdownDeck(withAttrs('foo=1'), 'x.md')).toThrow(/^x\.md:\d+: .*画像属性/)
+    expect(() => parseMarkdownDeck(withAttrs('zoom=1 zoom=2'), 'x.md')).toThrow(/^x\.md:\d+: .*画像属性/)
+  })
+
+  it('rejects out-of-range or wrong-typed values in normalizeDeckData', () => {
+    const deckWith = (image: Record<string, unknown>) => ({
+      slides: [{ layout: 'table-image', title: 't', rows: [{ labelLines: ['a'], bodyLines: ['b'] }], image: { path: 'a.png', alt: 'a', ...image } }],
+    })
+    expect(() => normalizeDeckData(deckWith({ zoom: 5 }), 'x.json')).toThrow(/zoom/)
+    expect(() => normalizeDeckData(deckWith({ x: 101 }), 'x.json')).toThrow(/x/)
+    expect(() => normalizeDeckData(deckWith({ zoom: '1' }), 'x.json')).toThrow(/zoom/)
   })
 })
 

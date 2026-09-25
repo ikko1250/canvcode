@@ -162,4 +162,28 @@ describe('SlidesApi pages', () => {
     expect((await get(api, '/api/slide-pages/..%2Fx.png')).status).toBe(404)
     expect((await get(api, `/api/slide-pages/${'0'.repeat(32)}.png`)).status).toBe(404)
   })
+
+  it('changes the page hash when a figure zoom/x/y adjustment changes', async () => {
+    const { api, files } = await setup()
+    const deckText = `# 図\n| a | b |\n![図](assets/a.png)\n`
+    const created = await files.create('slides', 'zoomed', deckText, { extension: '.slide.md' })
+    const before = (await settled(api, created.id)).pages[0]
+    expect(before?.hash).toMatch(/^[a-f0-9]{32}$/)
+
+    const loaded = JSON.parse((await get(api, `/api/slides/${encodeURIComponent(created.id)}`)).body.toString()) as {
+      deck: { slides: { image?: { path: string; alt: string; zoom?: number; x?: number; y?: number } }[] }
+      mtimeMs: number
+    }
+    const { deck } = loaded
+    const image = deck.slides[0]?.image
+    if (image) Object.assign(image, { zoom: 1.5, x: -10, y: 5 })
+    const saved = await request(api, 'PUT', `/api/slides/${encodeURIComponent(created.id)}`, {
+      deck,
+      expectedMtimeMs: loaded.mtimeMs,
+    })
+    expect(saved.status).toBe(200)
+
+    const after = (await settled(api, created.id)).pages[0]
+    expect(after?.hash).not.toBe(before?.hash)
+  })
 })

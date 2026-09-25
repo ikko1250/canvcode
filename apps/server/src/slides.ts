@@ -4,7 +4,7 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { zipSync } from 'fflate'
 import { chromium, type Browser, type Page } from 'playwright'
-import { assignSlideNames, lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, serializeDeck, slideKey, slideLabel } from '@canvcode/slides'
+import { assignSlideNames, lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, pickAdjust, serializeDeck, slideKey, slideLabel } from '@canvcode/slides'
 import type { DeckData, RenderSlideData, SlideData } from '@canvcode/slides'
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '@canvcode/slides/core/slide-layout-spec'
 import { FileStore, HttpError, type FileInfo } from './files.ts'
@@ -16,7 +16,7 @@ const MAX_ASSET_BYTES = 20 * 1024 * 1024
 const DEV_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1):5173$/
 const CHROMIUM_MISSING = 'PDF / PNG の出力とキャンバスのスライド画像には Chromium が必要です。サーバーで `npx playwright install chromium` を実行してください。'
 // キャンバスに並べるスライドの画像（.canvcode/slide-pages/<ハッシュ>.png）。描き方を変えたら版を上げて作り直させる
-const PAGE_RENDER_VERSION = '1'
+const PAGE_RENDER_VERSION = '2'
 const PAGE_HASH = /^[a-f0-9]{32}$/
 // キャンバスの画像の横幅（画素）。1920×1080 のスライドを縮めて撮る
 const PAGE_IMAGE_WIDTH = 1280
@@ -520,11 +520,11 @@ export class SlidesApi {
   private async toRenderSlide(info: FileInfo, slide: SlideData, index: number): Promise<RenderSlideData> {
     const result = { ...slide } as unknown as Record<string, unknown>
     if (slide.image) {
-      const image = slide.image as { path: string; alt: string }
-      result.image = { src: await this.imageDataUrl(info, image.path), alt: image.alt }
+      const image = slide.image
+      result.image = { src: await this.imageDataUrl(info, image.path), alt: image.alt, ...pickAdjust(image) }
     }
     if (slide.images) {
-      result.images = await Promise.all(slide.images.map(async (image) => ({ src: await this.imageDataUrl(info, image.path), alt: image.alt, title: image.title })))
+      result.images = await Promise.all(slide.images.map(async (image) => ({ src: await this.imageDataUrl(info, image.path), alt: image.alt, title: image.title, ...pickAdjust(image) })))
     }
     const lint = lintSlide(slide, index)
     if (lint.computedRowHeights) result.computedRowHeights = lint.computedRowHeights
