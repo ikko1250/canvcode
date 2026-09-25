@@ -28,6 +28,8 @@ export type AnalyzeSlideRowsInput = {
 export type AnalyzeSlideRowsResult = {
   classification: RowCapacityClassification;
   rowHeights: number[] | null;
+  /** compact 幾何に収まらず全高パネルに切り替えたとき true（描画は forceFull で幾何を求める）。もともと全高の行数では false */
+  fullPanel: boolean;
   warnings: string[];
   requiredPx: number[];
   defaultRowPx: number;
@@ -45,6 +47,11 @@ function countVisualLines(text: string, charsPerLine: number): number {
   return Math.max(1, Math.ceil(charCount / charsPerLine));
 }
 
+/** 1 文字の送り幅。全角文字は fontSize 幅に letter-spacing が加わる（負なら詰まる） */
+function charAdvancePx(typography: Pick<TypographySpec, "fontSize" | "letterSpacingEm">): number {
+  return typography.fontSize * (1 + typography.letterSpacingEm);
+}
+
 function estimateColumnVisualLines(
   lines: string[],
   typography: TypographySpec,
@@ -52,7 +59,7 @@ function estimateColumnVisualLines(
 ): number {
   const charsPerLine = Math.max(
     1,
-    Math.floor(textWidthPx(typography, columnWidthPx) / typography.fontSize),
+    Math.floor(textWidthPx(typography, columnWidthPx) / charAdvancePx(typography)),
   );
 
   return lines.reduce((total, line) => total + countVisualLines(line, charsPerLine), 0);
@@ -207,6 +214,8 @@ function classifyRowCapacity(
     defaultRowPx: profile.defaultRowPx,
     budgetPx: profile.budgetPx,
     gapPx: profile.gapPx,
+    // 全高への切り替えは classifyWithFullPanelFallback だけが true にする（もともと全高の行数では false のまま）
+    fullPanel: false,
   };
 
   const allWithinDefault = requiredPx.every(
@@ -250,10 +259,48 @@ function classifyRowCapacity(
   return { classification, rowHeights: null, warnings, ...base };
 }
 
+function fitsGrid(result: AnalyzeSlideRowsResult): boolean {
+  return result.classification === "ok" || result.classification === "partial";
+}
+
+/**
+ * compact 幾何（行数だけで決まる小さいパネル）に収まらないときは、全高パネルで見積もり直す。
+ * 全高で収まれば fullPanel: true の結果を返し、compact の警告は出さない。全高でも収まらなければ compact の結果をそのまま返す
+ */
+function classifyWithFullPanelFallback(
+  layout: SlideLayout,
+  rowCount: number,
+  estimate: (profile: LayoutProfile) => number[],
+  slideName: string | undefined,
+): AnalyzeSlideRowsResult {
+  const profile = getLayoutProfile(layout, rowCount);
+  const result = classifyRowCapacity(profile, estimate(profile), slideName);
+  if (fitsGrid(result) || !profile.compact) {
+    return result;
+  }
+  const fullProfile = getLayoutProfile(layout, rowCount, { forceFull: true });
+  const fullResult = classifyRowCapacity(fullProfile, estimate(fullProfile), slideName);
+  if (!fitsGrid(fullResult)) {
+    return result;
+  }
+  const ref = formatSlideRef(slideName);
+  return {
+    ...fullResult,
+    fullPanel: true,
+    warnings: [
+      `情報: スライド${ref} — 内容が compact パネル（予算 ${profile.budgetPx}px）に収まらないため、全高パネル（予算 ${fullProfile.budgetPx}px）で描画します。`,
+      ...fullResult.warnings,
+    ],
+  };
+}
+
 export function analyzeSlideRows(input: AnalyzeSlideRowsInput): AnalyzeSlideRowsResult {
-  const profile = getLayoutProfile(input.layout, input.rows.length);
-  const requiredPx = input.rows.map((row) => estimateRowRequiredPx(row, profile));
-  return classifyRowCapacity(profile, requiredPx, input.slideName);
+  return classifyWithFullPanelFallback(
+    input.layout,
+    input.rows.length,
+    (profile) => input.rows.map((row) => estimateRowRequiredPx(row, profile)),
+    input.slideName,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +318,13 @@ function estimateBulletItemRequiredPx(item: BulletItem, profile: LayoutProfile):
 
   const walk = (node: BulletItem, depth: number): void => {
     const level = bulletLevelSpec(depth);
-    const charsPerLine = Math.max(1, Math.floor((textWidth - level.indentPx) / level.fontSize));
+    const charsPerLine = Math.max(
+      1,
+      Math.floor(
+        (textWidth - level.indentPx) /
+          charAdvancePx({ fontSize: level.fontSize, letterSpacingEm: profile.bodyTypography.letterSpacingEm }),
+      ),
+    );
     const text = typeof node === "string" ? node : node.text;
     total += countVisualLines(text, charsPerLine) * level.fontSize * level.lineHeight;
     if (typeof node !== "string") {
@@ -286,9 +339,12 @@ function estimateBulletItemRequiredPx(item: BulletItem, profile: LayoutProfile):
 }
 
 export function analyzeBulletItems(input: AnalyzeBulletItemsInput): AnalyzeSlideRowsResult {
-  const profile = getLayoutProfile("bullets", input.items.length);
-  const requiredPx = input.items.map((item) => estimateBulletItemRequiredPx(item, profile));
-  return classifyRowCapacity(profile, requiredPx, input.slideName);
+  return classifyWithFullPanelFallback(
+    "bullets",
+    input.items.length,
+    (profile) => input.items.map((item) => estimateBulletItemRequiredPx(item, profile)),
+    input.slideName,
+  );
 }
 
 // ---------------------------------------------------------------------------

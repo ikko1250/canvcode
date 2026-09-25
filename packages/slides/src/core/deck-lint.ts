@@ -72,9 +72,13 @@ export type SlideLint = {
   capacityWarnings: string[];
   /** partial 超過のときだけ: リバランス後の行高 */
   computedRowHeights?: number[];
+  /** compact パネルに収まらず全高パネルに切り替えたときだけ true */
+  computedFullPanel?: true;
 };
 
-function analyzeCapacity(slide: SlideData): { warnings: string[]; rowHeights: number[] | null } {
+type CapacityResult = { warnings: string[]; rowHeights: number[] | null; fullPanel: boolean };
+
+function analyzeCapacity(slide: SlideData): CapacityResult {
   const layout = slide.layout ?? "table";
   const slideName = slide.name !== undefined ? { slideName: slide.name } : {};
 
@@ -85,7 +89,7 @@ function analyzeCapacity(slide: SlideData): { warnings: string[]; rowHeights: nu
       ...(slide.credits ? { credits: slide.credits } : {}),
       ...slideName,
     });
-    return { warnings: analysis.warnings, rowHeights: null };
+    return { warnings: analysis.warnings, rowHeights: null, fullPanel: false };
   }
 
   if (layout === "bullets" && slide.items) {
@@ -93,17 +97,19 @@ function analyzeCapacity(slide: SlideData): { warnings: string[]; rowHeights: nu
     return {
       warnings: analysis.warnings,
       rowHeights: analysis.classification === "partial" ? analysis.rowHeights : null,
+      fullPanel: analysis.fullPanel,
     };
   }
 
   if (!slide.rows) {
-    return { warnings: [], rowHeights: null };
+    return { warnings: [], rowHeights: null, fullPanel: false };
   }
 
   const analysis = analyzeSlideRows({ layout, rows: slide.rows, ...slideName });
   return {
     warnings: analysis.warnings,
     rowHeights: analysis.classification === "partial" ? analysis.rowHeights : null,
+    fullPanel: analysis.fullPanel,
   };
 }
 
@@ -125,6 +131,9 @@ export function lintSlide(slide: SlideData, index: number): SlideLint {
   };
   if (capacity.rowHeights) {
     result.computedRowHeights = capacity.rowHeights;
+  }
+  if (capacity.fullPanel) {
+    result.computedFullPanel = true;
   }
   return result;
 }

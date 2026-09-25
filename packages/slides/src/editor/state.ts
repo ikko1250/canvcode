@@ -409,8 +409,9 @@ export function previewData(
       title: image.title,
     }));
   }
-  const heights = lintSlide(slide, index).computedRowHeights;
-  if (heights) render.computedRowHeights = heights;
+  const lint = lintSlide(slide, index);
+  if (lint.computedRowHeights) render.computedRowHeights = lint.computedRowHeights;
+  if (lint.computedFullPanel) render.computedFullPanel = true;
   return render;
 }
 

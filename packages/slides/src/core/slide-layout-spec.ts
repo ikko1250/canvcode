@@ -233,6 +233,11 @@ export type RowGridSpec = {
   columnGapPx: number;
 };
 
+export type GeometryOptions = {
+  /** compact 幾何に収まる行数でも、全高パネル（fullPanelHeight / height）を使う。行容量 lint が内容量から決める */
+  forceFull?: boolean;
+};
+
 export type SlideGeometry = {
   layout: SlideLayout;
   rowCount: number;
@@ -262,11 +267,15 @@ export function minRowPx(): number {
 }
 
 /** 全幅パネルの幾何。table はラベル列あり、bullets はラベル列なし（本文が全幅） */
-function panelGeometry(layout: "table" | "bullets", rowCount: number): SlideGeometry {
+function panelGeometry(
+  layout: "table" | "bullets",
+  rowCount: number,
+  options: GeometryOptions = {},
+): SlideGeometry {
   const s = TABLE_SPEC;
   const padV = s.padding.top + s.padding.bottom;
   const natural = rowCount * s.compactRowPx + (rowCount - 1) * s.compactGapPx;
-  const compact = natural + padV <= s.fullPanelHeight;
+  const compact = !options.forceFull && natural + padV <= s.fullPanelHeight;
 
   let panelHeight: number;
   let panelTop: number;
@@ -312,13 +321,13 @@ function panelGeometry(layout: "table" | "bullets", rowCount: number): SlideGeom
   };
 }
 
-function tableImageGeometry(rowCount: number): SlideGeometry {
+function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): SlideGeometry {
   const s = TABLE_IMAGE_SPEC;
   const t = TABLE_SPEC;
   // compact 時のパネル高は全幅表と同じ式（466 / 656）に揃える。
   const tablePadV = t.padding.top + t.padding.bottom;
   const natural = rowCount * t.compactRowPx + (rowCount - 1) * t.compactGapPx;
-  const compact = natural + tablePadV <= s.height;
+  const compact = !options.forceFull && natural + tablePadV <= s.height;
   const panelHeight = compact ? natural + tablePadV : s.height;
   // 左表パネルは右図枠（高さ s.height）内で上下中央（align-self: center）
   const panelTop = s.top + Math.round((s.height - panelHeight) / 2);
@@ -384,14 +393,18 @@ function tableImagesGeometry(rowCount: number): SlideGeometry {
   };
 }
 
-function rawGeometry(layout: SlideLayout, rowCount: number): SlideGeometry {
+function rawGeometry(
+  layout: SlideLayout,
+  rowCount: number,
+  options: GeometryOptions = {},
+): SlideGeometry {
   switch (layout) {
     case "table":
-      return panelGeometry("table", rowCount);
+      return panelGeometry("table", rowCount, options);
     case "bullets":
-      return panelGeometry("bullets", rowCount);
+      return panelGeometry("bullets", rowCount, options);
     case "table-image":
-      return tableImageGeometry(rowCount);
+      return tableImageGeometry(rowCount, options);
     case "table-images":
       return tableImagesGeometry(rowCount);
     case "title":
@@ -447,14 +460,18 @@ export function rowCountRangeMessage(
   return `${layout} レイアウトでは ${keyName} は 1〜${getMaxRowCount(layout)} 件にしてください（現在 ${rowCount} 件）。`;
 }
 
-export function computeSlideGeometry(layout: SlideLayout, rowCount: number): SlideGeometry {
+export function computeSlideGeometry(
+  layout: SlideLayout,
+  rowCount: number,
+  options: GeometryOptions = {},
+): SlideGeometry {
   if (!layoutUsesRowGrid(layout)) {
     throw new Error(`${layout} レイアウトは行グリッドを持ちません。`);
   }
   if (!isValidRowCount(layout, rowCount)) {
     throw new Error(rowCountRangeMessage(layout, rowCount));
   }
-  return rawGeometry(layout, rowCount);
+  return rawGeometry(layout, rowCount, options);
 }
 
 /** 行容量 lint 向けプロファイル（幾何 + タイポグラフィ） */
@@ -474,8 +491,12 @@ export type LayoutProfile = {
   bodyTypography: TypographySpec;
 };
 
-export function getLayoutProfile(layout: SlideLayout, rowCount: number): LayoutProfile {
-  const geometry = computeSlideGeometry(layout, rowCount);
+export function getLayoutProfile(
+  layout: SlideLayout,
+  rowCount: number,
+  options: GeometryOptions = {},
+): LayoutProfile {
+  const geometry = computeSlideGeometry(layout, rowCount, options);
   const { grid } = geometry;
   return {
     layout,
