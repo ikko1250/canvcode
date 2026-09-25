@@ -34,7 +34,15 @@ import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
-import { SNAP_CANDIDATE_LIMIT, SNAP_THRESHOLD_PX, nearestBoxes, sameGuides, snapTranslation, type SnapGuide } from './snapping.ts'
+import {
+  SNAP_CANDIDATE_LIMIT,
+  SNAP_THRESHOLD_PX,
+  nearestBoxes,
+  sameGuides,
+  snapResize,
+  snapTranslation,
+  type SnapGuide,
+} from './snapping.ts'
 import {
   distanceToSegment,
   frameCenter,
@@ -227,7 +235,14 @@ type SelectState =
       bounds: Box | null
       snapCandidates: Box[]
     }
-  | { name: 'resizing'; handle: Handle; tx: Transaction<WorkspaceRecord>; selection: TransformSelection }
+  | {
+      name: 'resizing'
+      handle: Handle
+      tx: Transaction<WorkspaceRecord>
+      selection: TransformSelection
+      // 吸い付く相手の箱（MAI-58）。枠が回転しているときは null（吸い付かせない）
+      snapCandidates: Box[] | null
+    }
   // 間隔のハンドルをドラッグしている（MAI-54）。boxes はつかんだときのワールドの箱、initial はワールドでの形にしたノード
   | {
       name: 'spacing'
@@ -401,12 +416,22 @@ export class SelectTool implements Tool {
       }
       case 'resizing': {
         const { selection, handle, tx } = state
-        const frame = resizeFrame(selection.frame, handle, pointer.world, {
+        const options = {
           keepAspect: pointer.shiftKey || selection.forceAspect,
           fromCenter: pointer.altKey,
           minW: selection.minSize.w,
           minH: selection.minSize.h,
-        })
+        }
+        let frame = resizeFrame(selection.frame, handle, pointer.world, options)
+        // 動かしている辺を、ほかのノードの辺・中心に吸い付ける（MAI-58）。Ctrl（⌘）を押している間は自由
+        let guides: SnapGuide[] = []
+        if (state.snapCandidates && !(pointer.ctrlKey || pointer.metaKey)) {
+          const threshold = SNAP_THRESHOLD_PX / editor.session.get().camera.zoom
+          const snap = snapResize(frame, handle, state.snapCandidates, threshold, options)
+          frame = snap.box
+          guides = snap.guides
+        }
+        if (!sameGuides(guides, editor.session.get().snapGuides)) editor.session.set({ snapGuides: guides })
         for (const node of editor.resizeSelection(selection, frame)) tx.put(node)
         tx.flush()
         return
@@ -483,8 +508,10 @@ export class SelectTool implements Tool {
   onPointerUp(pointer: ToolPointer): void {
     const editor = this.ctx.editor
     const state = this.state
-    // 吸い付いた線を消す（MAI-53）
-    if (state.name === 'translating' && editor.session.get().snapGuides.length > 0) editor.session.set({ snapGuides: [] })
+    // 吸い付いた線を消す（MAI-53・MAI-58）
+    if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().snapGuides.length > 0) {
+      editor.session.set({ snapGuides: [] })
+    }
     if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
       const next = new Set(editor.session.get().selectedIds)
@@ -562,8 +589,10 @@ export class SelectTool implements Tool {
       this.ctx.setCursor(null)
       // 落とす先の Portal の枠を消す（MAI-38）
       if (state.name === 'translating' && state.dropTarget) session.set({ hoveredId: null })
-      // 吸い付いた線を消す（MAI-53）
-      if (state.name === 'translating' && session.get().snapGuides.length > 0) session.set({ snapGuides: [] })
+      // 吸い付いた線を消す（MAI-53・MAI-58）
+      if ((state.name === 'translating' || state.name === 'resizing') && session.get().snapGuides.length > 0) {
+        session.set({ snapGuides: [] })
+      }
       if (state.name === 'spacing') session.set({ spacingDrag: null, hoveredSpacing: null })
       return true
     }
@@ -681,7 +710,11 @@ export class SelectTool implements Tool {
       const tx = editor.begin('resize')
       this.ctx.lift(ids)
       this.ctx.setCursor(this.cursorFor(hit, selection))
-      this.state = { name: 'resizing', handle: hit.handle, tx, selection }
+      // 吸い付きは回転 0 の枠（回していない単体のノードと、複数選択）だけ（MAI-58）
+      const { frame } = selection
+      const snapCandidates =
+        Math.abs(frame.rotation) < 1e-9 ? this.snapCandidates(ids, { x: frame.x, y: frame.y, w: frame.w, h: frame.h }) : null
+      this.state = { name: 'resizing', handle: hit.handle, tx, selection, snapCandidates }
     } else {
       const tx = editor.begin('rotate')
       this.ctx.lift(ids)

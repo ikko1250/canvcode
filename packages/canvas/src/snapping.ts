@@ -1,4 +1,5 @@
 import type { Box } from '@canvcode/core'
+import { handleSides, type Handle } from './transform.ts'
 
 // 移動中の吸い付き（MAI-53）。tldraw / Figma と同じく、動かしている選択の外接矩形の
 // 左・中央・右（x）と上・中央・下（y）の 6 本の線を、近くのノードの同じ線に合わせる。
@@ -32,19 +33,19 @@ function lines(start: number, size: number): [number, number, number] {
 
 // 1 つの軸で、いちばん近い線の組を探す。同じ距離なら先に見つけたものを使う
 function nearest(
-  moving: [number, number, number],
+  moving: readonly number[],
   candidates: readonly Box[],
   axis: 'x' | 'y',
   threshold: number,
-): { delta: number; candidate: Box } | null {
-  let best: { delta: number; candidate: Box } | null = null
+): { delta: number; candidate: Box; line: number } | null {
+  let best: { delta: number; candidate: Box; line: number } | null = null
   for (const candidate of candidates) {
     const target = axis === 'x' ? lines(candidate.x, candidate.w) : lines(candidate.y, candidate.h)
     for (const m of moving) {
       for (const t of target) {
         const delta = t - m
         if (Math.abs(delta) > threshold) continue
-        if (best === null || Math.abs(delta) < Math.abs(best.delta)) best = { delta, candidate }
+        if (best === null || Math.abs(delta) < Math.abs(best.delta)) best = { delta, candidate, line: t }
       }
     }
   }
@@ -83,6 +84,100 @@ export function snapTranslation(moving: Box, candidates: readonly Box[], thresho
     })
   }
   return { dx, dy, guides }
+}
+
+// ---- リサイズ中の吸い付き（MAI-58） ----
+
+export interface SnapResizeOptions {
+  keepAspect: boolean
+  fromCenter: boolean
+  minW: number
+  minH: number
+}
+
+// 1 つの軸で、大きさを size にしたときの始まりの位置。
+// side はハンドルの側（-1：始まり側、0：なし、1：終わり側）。反対の辺（fromCenter かハンドルのない向きなら中心）を固定する
+function placeAxis(start: number, oldSize: number, size: number, side: -1 | 0 | 1, fromCenter: boolean): number {
+  if (fromCenter || side === 0) return start + (oldSize - size) / 2
+  return side === 1 ? start : start + oldSize - size
+}
+
+// box（resizeFrame で計算した、回転 0 の新しい枠）の、ハンドルで動かしている辺だけを candidates の辺・中心に吸い付ける。
+// 動かない辺と中心は吸い付かせない。keepAspect なら、ずれの小さい方の軸だけを吸い付かせ、もう一方は縦横比から決め直す。
+// fromCenter なら、反対の辺も逆向きに同じだけ動かす。最小サイズを下回る軸は吸い付かせない
+export function snapResize<T extends Box>(
+  box: T,
+  handle: Handle,
+  candidates: readonly Box[],
+  threshold: number,
+  options: SnapResizeOptions,
+): { box: T; guides: SnapGuide[] } {
+  const { hx, hy } = handleSides(handle)
+  const factor = options.fromCenter ? 2 : 1
+  // 軸ごとに、動かしている辺に近い線を探し、吸い付けたときの大きさを求める
+  const find = (axis: 'x' | 'y') => {
+    const side = axis === 'x' ? hx : hy
+    if (side === 0) return null
+    const start = axis === 'x' ? box.x : box.y
+    const size = axis === 'x' ? box.w : box.h
+    const edge = side === 1 ? start + size : start
+    const hit = nearest([edge], candidates, axis, threshold)
+    if (!hit) return null
+    return { axis, hit, size: size + side * hit.delta * factor }
+  }
+  const fits = (w: number, h: number) => w >= options.minW && h >= options.minH
+  let x = find('x')
+  let y = find('y')
+  let { w, h } = box
+  if (options.keepAspect && box.w > 0 && box.h > 0) {
+    // 縦横比を保ったまま最小サイズに収まるものだけを残し、ずれの小さい方の軸に吸い付く
+    const scaleOf = (s: NonNullable<typeof x>) => s.size / (s.axis === 'x' ? box.w : box.h)
+    if (x && !fits(box.w * scaleOf(x), box.h * scaleOf(x))) x = null
+    if (y && !fits(box.w * scaleOf(y), box.h * scaleOf(y))) y = null
+    if (x && y) {
+      if (Math.abs(y.hit.delta) < Math.abs(x.hit.delta)) x = null
+      else y = null
+    }
+    const chosen = x ?? y
+    if (chosen) {
+      w = box.w * scaleOf(chosen)
+      h = box.h * scaleOf(chosen)
+    }
+  } else {
+    if (x && !fits(x.size, h)) x = null
+    if (y && !fits(w, y.size)) y = null
+    if (x) w = x.size
+    if (y) h = y.size
+  }
+  if (!x && !y) return { box, guides: [] }
+  const snapped = {
+    ...box,
+    x: placeAxis(box.x, box.w, w, hx, options.fromCenter),
+    y: placeAxis(box.y, box.h, h, hy, options.fromCenter),
+    w,
+    h,
+  }
+  // ガイドの長さは、移動と同じく、直したあとの箱と相手の箱を、もう一方の軸でまとめた範囲
+  const guides: SnapGuide[] = []
+  if (x) {
+    const c = x.hit.candidate
+    guides.push({
+      axis: 'x',
+      position: x.hit.line,
+      from: Math.min(snapped.y, c.y),
+      to: Math.max(snapped.y + snapped.h, c.y + c.h),
+    })
+  }
+  if (y) {
+    const c = y.hit.candidate
+    guides.push({
+      axis: 'y',
+      position: y.hit.line,
+      from: Math.min(snapped.x, c.x),
+      to: Math.max(snapped.x + snapped.w, c.x + c.w),
+    })
+  }
+  return { box: snapped, guides }
 }
 
 // 2 つの箱の距離（重なっていれば 0）
