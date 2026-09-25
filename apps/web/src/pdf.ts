@@ -37,6 +37,12 @@ class PdfJsDocument implements PdfDocument {
     return bitmap
   }
 
+  // 閉じる。PDF.js は開くたびに Worker を 1 つ作るので、それも止める（MAI-66）
+  async destroy(): Promise<void> {
+    this.texts.clear()
+    await this.doc.loadingTask.destroy()
+  }
+
   // ページの文字の断片（引用に使う。MAI-33）。ページごとに一度だけ読む
   textItems(pageIndex: number): Promise<PdfTextItem[]> {
     let pending = this.texts.get(pageIndex)

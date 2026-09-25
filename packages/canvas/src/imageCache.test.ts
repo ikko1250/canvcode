@@ -96,4 +96,20 @@ describe('ImageCache', () => {
     // 最初の 'a' が捨てられている
     expect(frame(cache, [['a', 1]])).toEqual([null])
   })
+
+  it('trims down to the given size, keeping the most recently used images (MAI-66)', async () => {
+    const cache = new ImageCache({ onReady: () => {}, idleDelayMs: 0 })
+    for (const key of ['a', 'b', 'c']) {
+      frame(cache, [[key, 1]])
+      await vi.advanceTimersByTimeAsync(10)
+    }
+    // 'a' を使い直すと、いちばん古いのは 'b' になる
+    frame(cache, [['a', 1]])
+    cache.trim(800)
+    expect(cache.stats).toMatchObject({ entries: 2, bytes: 800 })
+    expect(frame(cache, [['b', 1]])).toEqual([null])
+    expect(frame(cache, [['a', 1]])[0]?.level).toBe(1)
+    cache.trim(0)
+    expect(cache.stats).toMatchObject({ entries: 0, bytes: 0 })
+  })
 })

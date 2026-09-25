@@ -25,6 +25,8 @@ export interface PdfDocument {
   render(pageIndex: number, scale: number): Promise<ImageBitmap>
   // ページの文字の断片（位置はポイント、ページの左上が原点。引用に使う。MAI-33）
   textItems(pageIndex: number): Promise<PdfTextItem[]>
+  // 閉じて、解析した中身（Worker の側も含む）を捨てる。閉じたあとは使わない（MAI-66）
+  destroy(): Promise<void>
 }
 
 export interface PdfService {
@@ -38,6 +40,8 @@ export function isPdf(file: Blob & { name?: string }): boolean {
 // PDF のページを描くときの、1 辺と画素数の上限（大きすぎる画像を作らないように）
 const PDF_MAX_SIDE = 8192
 const PDF_MAX_PIXELS = 32 * 1024 * 1024
+// 同時に開いておく PDF の数（MAI-66）。1 つの Canvas に並ぶのはふつう 1 つの PDF のページなので、少し余裕を持たせる
+const MAX_OPEN_PDFS = 3
 
 // 取り込める画像の種類。SVG は中にスクリプトを持てるので、初版では受け付けない
 export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp']
@@ -54,7 +58,10 @@ export class AssetManager implements AssetResolver {
   private readonly baseUrl: string
   private readonly notify: (message: string) => void
   private readonly pdf: PdfService | null
+  // 開いている PDF。Map の順番は「最近使った順」。MAX_OPEN_PDFS を超えたら、使っていないものから閉じる（MAI-66）
   private readonly pdfDocuments = new Map<string, Promise<PdfDocument>>()
+  // 使っている途中（描いている・文字を読んでいる）の数。0 でないものは閉じない
+  private readonly pdfInUse = new Map<string, number>()
 
   constructor(options: AssetManagerOptions = {}) {
     this.baseUrl = options.baseUrl ?? '/api/assets'
@@ -93,29 +100,63 @@ export class AssetManager implements AssetResolver {
     return record
   }
 
-  // PDF を開く（Asset ごとに一度だけ）。アップロードが済むまでは手元のファイルから、済んだらサーバーから読む
-  pdfDocument(assetId: string): Promise<PdfDocument> {
-    let pending = this.pdfDocuments.get(assetId)
-    if (!pending) {
-      const pdf = this.pdf
-      const record = this.records.get(assetId)
-      if (!pdf || !record) return Promise.reject(new Error(`Cannot open the PDF: ${assetId}`))
-      const local = this.local.get(assetId)?.get(0)
-      pending = local ? local.arrayBuffer().then((data) => pdf.open({ data })) : pdf.open({ url: `${this.baseUrl}/${record.hash}` })
-      pending.catch(() => this.pdfDocuments.delete(assetId))
-      this.pdfDocuments.set(assetId, pending)
+  // PDF を開いて task に渡す。開いた PDF は取っておき、次からはそれを使う。
+  // アップロードが済むまでは手元のファイルから、済んだらサーバーから読む。
+  // 開いている数が MAX_OPEN_PDFS を超えたら、使っていないものから閉じる（開いたままだと、Canvas を移るたびに
+  // 数十 MB ずつ増えていた。MAI-66）。task の途中で閉じられることはない
+  async withPdfDocument<T>(assetId: string, task: (doc: PdfDocument) => Promise<T>): Promise<T> {
+    this.pdfInUse.set(assetId, (this.pdfInUse.get(assetId) ?? 0) + 1)
+    try {
+      return await task(await this.openPdf(assetId))
+    } finally {
+      const count = (this.pdfInUse.get(assetId) ?? 1) - 1
+      if (count > 0) this.pdfInUse.set(assetId, count)
+      else this.pdfInUse.delete(assetId)
+      this.closeUnusedPdfs()
     }
-    return pending
+  }
+
+  private openPdf(assetId: string): Promise<PdfDocument> {
+    let pending = this.pdfDocuments.get(assetId)
+    if (pending) {
+      // 最近使ったものとして、後ろに付け直す
+      this.pdfDocuments.delete(assetId)
+      this.pdfDocuments.set(assetId, pending)
+      return pending
+    }
+    const pdf = this.pdf
+    const record = this.records.get(assetId)
+    if (!pdf || !record) return Promise.reject(new Error(`Cannot open the PDF: ${assetId}`))
+    const local = this.local.get(assetId)?.get(0)
+    pending = local ? local.arrayBuffer().then((data) => pdf.open({ data })) : pdf.open({ url: `${this.baseUrl}/${record.hash}` })
+    const opened = pending
+    opened.catch(() => {
+      if (this.pdfDocuments.get(assetId) === opened) this.pdfDocuments.delete(assetId)
+    })
+    this.pdfDocuments.set(assetId, opened)
+    return opened
+  }
+
+  private closeUnusedPdfs(): void {
+    let excess = this.pdfDocuments.size - MAX_OPEN_PDFS
+    for (const [assetId, pending] of this.pdfDocuments) {
+      if (excess <= 0) return
+      if (this.pdfInUse.has(assetId)) continue
+      this.pdfDocuments.delete(assetId)
+      excess--
+      pending.then((doc) => doc.destroy()).catch((error: unknown) => console.warn('Failed to close a PDF', assetId, error))
+    }
   }
 
   async renderPdfPage(assetId: string, pageIndex: number, scale: number): Promise<RasterImage> {
-    const doc = await this.pdfDocument(assetId)
-    const size = await doc.pageSize(pageIndex)
-    // ワールド座標の 1 単位あたり scale 画素 → ポイントあたりの画素。大きすぎるときは抑える
-    let pointScale = scale * PDF_POINT_SCALE
-    pointScale = Math.min(pointScale, PDF_MAX_SIDE / size.width, PDF_MAX_SIDE / size.height, Math.sqrt(PDF_MAX_PIXELS / (size.width * size.height)))
-    const image = await doc.render(pageIndex, pointScale)
-    return { image, width: image.width, height: image.height, level: scale }
+    return this.withPdfDocument(assetId, async (doc) => {
+      const size = await doc.pageSize(pageIndex)
+      // ワールド座標の 1 単位あたり scale 画素 → ポイントあたりの画素。大きすぎるときは抑える
+      let pointScale = scale * PDF_POINT_SCALE
+      pointScale = Math.min(pointScale, PDF_MAX_SIDE / size.width, PDF_MAX_SIDE / size.height, Math.sqrt(PDF_MAX_PIXELS / (size.width * size.height)))
+      const image = await doc.render(pageIndex, pointScale)
+      return { image, width: image.width, height: image.height, level: scale }
+    })
   }
 
   get(assetId: string): AssetRecord | undefined {

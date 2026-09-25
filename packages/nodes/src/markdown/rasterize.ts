@@ -51,9 +51,11 @@ export function clampScale(width: number, height: number, scale: number): number
 // どの方法で画像を作れたかの回数（MAI-22 の比較用）
 export const rasterizeCounters = { bitmap: 0, canvas: 0, bitmapFallback: 0 }
 
+// Markdown の中の画像（src → data URL）。Map の順番は「最近使った順」で、MAX_INLINE_IMAGES を超えたら古いものから捨てる（MAI-66）
 const imageCache = new Map<string, Promise<string | null>>()
 // 読み終えた data URL の長さ（メモリーのベンチマーク用。MAI-67）
 const imageCacheChars = new Map<string, number>()
+const MAX_INLINE_IMAGES = 32
 
 // Markdown の中の画像のキャッシュの件数と、data URL の合計の文字数
 export function rasterizeImageCacheStats(): { entries: number; chars: number } {
@@ -65,7 +67,10 @@ export function rasterizeImageCacheStats(): { entries: number; chars: number } {
 async function toDataUrl(src: string): Promise<string | null> {
   if (src.startsWith('data:')) return src
   let cached = imageCache.get(src)
-  if (!cached) {
+  if (cached) {
+    imageCache.delete(src)
+    imageCache.set(src, cached)
+  } else {
     cached = (async () => {
       try {
         const response = await fetch(src)
@@ -82,9 +87,15 @@ async function toDataUrl(src: string): Promise<string | null> {
       }
     })()
     imageCache.set(src, cached)
-    void cached.then((url) => {
-      if (url) imageCacheChars.set(src, url.length)
+    const pending = cached
+    void pending.then((url) => {
+      if (url && imageCache.get(src) === pending) imageCacheChars.set(src, url.length)
     })
+    for (const key of imageCache.keys()) {
+      if (imageCache.size <= MAX_INLINE_IMAGES) break
+      imageCache.delete(key)
+      imageCacheChars.delete(key)
+    }
   }
   return cached
 }
