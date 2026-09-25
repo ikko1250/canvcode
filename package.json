@@ -15,6 +15,7 @@
     "lint": "oxlint",
     "snapshot": "node apps/server/src/snapshot.ts",
     "import": "node apps/server/src/import-cli.ts",
+    "bench:memory": "npm run build -w @canvcode/web && node tests/bench/memory.ts",
     "test:e2e": "playwright test --project=chromium --project=firefox"
   },
   "devDependencies": {

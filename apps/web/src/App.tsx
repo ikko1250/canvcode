@@ -38,6 +38,7 @@ import {
 } from '@canvcode/nodes'
 import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
+import { memoryBreakdown } from './memoryStats.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
@@ -87,6 +88,8 @@ function AlignIcon(props: { lines: [number, number][] }) {
 }
 
 const BENCH_NODE_COUNT = 10_000
+// 取っておく Editor の数（MAI-66）。Canvas を行き来しても、これより増えない
+const MAX_EDITORS = 8
 
 // URL の /c/<id> から Canvas の id を読む（MAI-8）
 function canvasIdFromUrl(): string | null {
@@ -220,33 +223,59 @@ export function App(props: { initial: InitialRecords }) {
   // 全画面のエディタで開いている File（MAI-30）と、開いたときに選んで見せる引用（「出典へ」。MAI-33）
   const [openFileId, setOpenFileId] = useState<string | null>(null)
   const [fileFocus, setFileFocus] = useState<{ quote: string; line: number } | null>(null)
-  // Canvas ごとの Editor（一度開いたら取っておく）と、開いたことのある Canvas（初めてなら全体を表示する）
+  // Canvas ごとの Editor（最近開いたものを MAX_EDITORS 個まで取っておく。MAI-66）と、
+  // 開いたことのある Canvas（初めてなら全体を表示する）。Map の順番は「最近使った順」
   const [editors] = useState(() => new Map<string, Editor>())
+  const [editorDisposers] = useState(() => new Map<string, () => void>())
   const [visited] = useState(() => new Set<string>())
   const getEditor = useCallback(
     (canvasId: string) => {
       let editor = editors.get(canvasId)
-      if (!editor) {
-        editor = new Editor({ workspace, canvasId })
+      if (editor) {
+        editors.delete(canvasId)
         editors.set(canvasId, editor)
-        // 前に開いたときのカメラに戻す（全体表示はしない）
-        const camera = savedCamera(canvasId)
-        if (camera) {
-          editor.session.set({ camera })
-          visited.add(canvasId)
-        }
-        // カメラが止まったら覚える
-        let timer: number | null = null
-        const target = editor
-        editor.session.subscribe((state, prev) => {
-          if (state.camera === prev.camera) return
-          if (timer !== null) window.clearTimeout(timer)
-          timer = window.setTimeout(() => saveCamera(canvasId, target.session.get().camera), 500)
-        })
+        return editor
       }
+      editor = new Editor({ workspace, canvasId })
+      editors.set(canvasId, editor)
+      // 前に開いたときのカメラに戻す（全体表示はしない）
+      const camera = savedCamera(canvasId)
+      if (camera) {
+        editor.session.set({ camera })
+        visited.add(canvasId)
+      }
+      // カメラが止まったら覚える
+      let timer: number | null = null
+      const target = editor
+      const unsubscribe = editor.session.subscribe((state, prev) => {
+        if (state.camera === prev.camera) return
+        if (timer !== null) window.clearTimeout(timer)
+        timer = window.setTimeout(() => saveCamera(canvasId, target.session.get().camera), 500)
+      })
+      editorDisposers.set(canvasId, () => {
+        if (timer !== null) window.clearTimeout(timer)
+        unsubscribe()
+        // 次に開いたとき、このカメラから始める
+        saveCamera(canvasId, target.session.get().camera)
+        visited.add(canvasId)
+        target.dispose()
+      })
       return editor
     },
-    [workspace, editors, visited],
+    [workspace, editors, editorDisposers, visited],
+  )
+  // Editor が多すぎたら、古いものから捨てる。いま表示しているもの（shown）は捨てない（Canvas を移ったあとに呼ぶ）
+  const trimEditors = useCallback(
+    (shown: Editor) => {
+      for (const [id, editor] of editors) {
+        if (editors.size <= MAX_EDITORS) break
+        if (editor === shown) continue
+        editors.delete(id)
+        editorDisposers.get(id)?.()
+        editorDisposers.delete(id)
+      }
+    },
+    [editors, editorDisposers],
   )
   const [canvasId, setCanvasId] = useState(workspace.rootCanvasId)
   const editor = getEditor(canvasId)
@@ -403,6 +432,7 @@ export function App(props: { initial: InitialRecords }) {
         setCanvasId(targetId)
         if (options.push !== false) history.pushState({ canvasId: targetId }, '', canvasUrl(targetId))
         from.session.set({ camera: fromCamera })
+        trimEditors(next)
         if (!visited.has(targetId)) {
           visited.add(targetId)
           view.zoomToFit()
@@ -422,7 +452,7 @@ export function App(props: { initial: InitialRecords }) {
         if (pending) void go(pending.targetId, pending.options)
       }
     },
-    [workspace, visited, getEditor, notify],
+    [workspace, visited, getEditor, trimEditors, notify],
   )
   const openPortal = useCallback(
     (portalId: string) => {
@@ -891,9 +921,14 @@ export function App(props: { initial: InitialRecords }) {
     ;(window as unknown as { canvcode: unknown }).canvcode = {
       workspace,
       view: created,
+      files,
+      sync,
       get editor() {
         return created.editor
       },
+      // Canvas を移る（Portal からではなく直接。メモリーのベンチマークで使う。MAI-67）
+      navigate: (canvasId: string) => navigate(canvasId),
+      memory: () => memoryBreakdown({ workspace, view: created, files, editors }),
     }
     // ワークスペースの File の一覧を読み、外からの変更の知らせを受け始める（MAI-30）
     const filesLoaded = files.start().catch((error: unknown) => {
@@ -951,7 +986,7 @@ export function App(props: { initial: InitialRecords }) {
       slidePages.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, slidePages, sync, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, slidePages, sync, editors, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {

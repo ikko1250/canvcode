@@ -127,6 +127,8 @@ const CLICK_SLOP_PX = 3
 const IMAGE_FIT_RATIO = 0.8
 // Portal のサムネイルの大きさの上限（画素）
 const THUMBNAIL_MAX = { w: 480, h: 320 }
+// Canvas を移るとき、画像のキャッシュに残す量（MAI-66）。残りは移った先の Canvas で使う（上限は ImageCache の budgetBytes）
+const IMAGE_CACHE_KEEP_ON_SWITCH_BYTES = 64 * 1024 * 1024
 const CAMERA_ANIMATION_MS = 300
 
 type Layer = 'grid' | 'scene' | 'overlay'
@@ -391,6 +393,8 @@ export class CanvasView {
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
     this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null })
     this.editorRef = editor
+    // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
+    this.images.trim(IMAGE_CACHE_KEEP_ON_SWITCH_BYTES)
     editor.session.set({
       toolId: 'select',
       drawStyle,
@@ -672,8 +676,9 @@ export class CanvasView {
     if (page?.type !== 'pdf-page') return null
     const props = page.props as PdfPageProps
     try {
-      const doc = await this.assets.pdfDocument(props.assetId)
-      const [size, items] = await Promise.all([doc.pageSize(props.pageIndex), doc.textItems(props.pageIndex)])
+      const [size, items] = await this.assets.withPdfDocument(props.assetId, (doc) =>
+        Promise.all([doc.pageSize(props.pageIndex), doc.textItems(props.pageIndex)]),
+      )
       const region = textInRegion(items, { x: rect.x * size.width, y: rect.y * size.height, w: rect.w * size.width, h: rect.h * size.height })
       const figure = looksLikeFigure(region)
         ? { assetId: props.assetId, pageIndex: props.pageIndex, rect, pageWidth: props.w, aspect: (rect.h * props.h) / (rect.w * props.w) }
@@ -1039,6 +1044,22 @@ export class CanvasView {
 
   resetStats(): void {
     this.stats.reset()
+  }
+
+  // 画面が持っている画像などの量（メモリーのベンチマーク用。MAI-67）。画像のバイト数は幅×高さ×4 で数える
+  memoryStats(): {
+    imageCache: { entries: number; bytes: number; idle: boolean }
+    thumbnails: { entries: number; bytes: number }
+    assets: AssetManager['stats']
+  } {
+    const images = this.images.stats
+    let thumbnailBytes = 0
+    for (const image of this.thumbnails.values()) thumbnailBytes += image.width * image.height * 4
+    return {
+      imageCache: { entries: images.entries, bytes: images.bytes, idle: this.images.idle },
+      thumbnails: { entries: this.thumbnails.size, bytes: thumbnailBytes },
+      assets: this.assets.stats,
+    }
   }
 
   // 毎フレーム、描画の直前に呼ばれる処理を登録する（ベンチマークなど）
@@ -1493,8 +1514,9 @@ export class CanvasView {
     await this.importFiles(files, this.toPointer(e).world)
   }
 
-  // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる
-  private async importFiles(all: File[], center: Vec): Promise<void> {
+  // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる。
+  // ドロップ・貼り付けのほか、ベンチマーク（MAI-67）からも呼ぶ
+  async importFiles(all: File[], center: Vec): Promise<void> {
     // 旧データ（.ricbackup）は、サーバーに送って取り込む（MAI-36）
     const backups = all.filter((file) => /\.ricbackup$/i.test(file.name))
     for (const file of backups) this.options.onImportBackup(file)
@@ -1541,8 +1563,9 @@ export class CanvasView {
     const editor = this.editor
     try {
       const asset = await this.assets.importPdf(file)
-      const doc = await this.assets.pdfDocument(asset.id)
-      const pageSizes = await Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.pageSize(i)))
+      const pageSizes = await this.assets.withPdfDocument(asset.id, (doc) =>
+        Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.pageSize(i))),
+      )
       if (this.editor !== editor) return null
       const title = file.name.replace(/\.pdf$/i, '') || 'PDF'
       const { portalId, canvasId } = editor.importPdf({ title, asset, pageSizes, center })
@@ -1550,7 +1573,7 @@ export class CanvasView {
       const first = pageSizes[0]
       if (first) {
         const scale = Math.min(THUMBNAIL_MAX.w / first.width, THUMBNAIL_MAX.h / first.height)
-        const image = await doc.render(0, scale)
+        const image = await this.assets.withPdfDocument(asset.id, (doc) => doc.render(0, scale))
         this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
         this.invalidate('scene')
         const canvas = document.createElement('canvas')

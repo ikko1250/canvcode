@@ -6,6 +6,7 @@ import type { ImageRequester, RasterImage } from '@canvcode/nodes'
 // - 作れたら onReady を呼び、シーンを描き直してもらう
 // - 中身が変わった（version が違う）ときは、新しいものができるまで古いものを返す
 // - 容量はバイト数で数え、上限を超えたら最も長く使われていないものから捨てる
+// - Canvas を移るときは trim で、ほかの Canvas の画像を減らす（使った順なので、直前の Canvas のものは残りやすい。MAI-66）
 
 export interface ImageCacheOptions {
   // カメラが止まってから作り始めるまでの時間
@@ -38,7 +39,8 @@ interface Entry {
 }
 
 const DEFAULT_IDLE_DELAY_MS = 150
-const DEFAULT_BUDGET_BYTES = 512 * 1024 * 1024
+// 上限（MAI-66 で 512 MB から下げた。Canvas を移るときには、さらに trim で減らす）
+const DEFAULT_BUDGET_BYTES = 256 * 1024 * 1024
 
 export class ImageCache implements ImageRequester {
   private readonly images = new Map<string, Entry>()
@@ -104,6 +106,11 @@ export class ImageCache implements ImageRequester {
       produced: this.produced,
       lastProduceMs: this.lastProduceMs,
     }
+  }
+
+  // 最も長く使われていないものから捨てて、maxBytes 以下にする（Canvas を移ったときなど。MAI-66）
+  trim(maxBytes: number): void {
+    this.evict(maxBytes)
   }
 
   // 作るべき画像がもう残っていないか（ベンチマークで「くっきりするまで」を測るのに使う）
@@ -188,9 +195,9 @@ export class ImageCache implements ImageRequester {
     }
   }
 
-  private evict(): void {
+  private evict(maxBytes = this.options.budgetBytes): void {
     for (const [key, entry] of this.images) {
-      if (this.bytes <= this.options.budgetBytes) return
+      if (this.bytes <= maxBytes) return
       this.release(entry)
       this.images.delete(key)
     }
