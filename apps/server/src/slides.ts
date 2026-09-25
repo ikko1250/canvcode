@@ -526,8 +526,9 @@ export class SlidesApi {
     if (slide.images) {
       result.images = await Promise.all(slide.images.map(async (image) => ({ src: await this.imageDataUrl(info, image.path), alt: image.alt, title: image.title })))
     }
-    const rowHeights = lintSlide(slide, index).computedRowHeights
-    if (rowHeights) result.computedRowHeights = rowHeights
+    const lint = lintSlide(slide, index)
+    if (lint.computedRowHeights) result.computedRowHeights = lint.computedRowHeights
+    if (lint.computedFullPanel) result.computedFullPanel = true
     return result as unknown as RenderSlideData
   }
 

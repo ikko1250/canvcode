@@ -77,6 +77,8 @@ export type RenderSlideData = {
   subtitle?: string[];
   credits?: string[];
   computedRowHeights?: number[];
+  /** compact 幾何に収まる行数でも全高パネルで描く（行容量 lint が内容量から決める） */
+  computedFullPanel?: boolean;
 };
 
 export const ROOT_KEYS = ["$schema", "deckTitle", "slides"] as const;
@@ -97,7 +99,7 @@ export const IMAGE_KEYS = ["path", "alt"] as const;
 export const IMAGES_ITEM_KEYS = ["path", "alt", "title"] as const;
 export const CODE_KEYS = ["lines", "language"] as const;
 
-const RENDER_SLIDE_KEYS = [...SLIDE_KEYS, "computedRowHeights"] as const;
+const RENDER_SLIDE_KEYS = [...SLIDE_KEYS, "computedRowHeights", "computedFullPanel"] as const;
 
 type Mode = "authoring" | "render";
 
@@ -500,6 +502,14 @@ export function validateRenderSlideData(value: unknown): asserts value is Render
       !heights.every((height) => typeof height === "number" && Number.isFinite(height) && height > 0)
     ) {
       throw new Error("computedRowHeights は rows と同数の正の数値配列で指定してください。");
+    }
+  }
+  if (data.computedFullPanel !== undefined) {
+    if (typeof data.computedFullPanel !== "boolean") {
+      throw new Error("computedFullPanel は true / false で指定してください。");
+    }
+    if (core.rows === undefined && core.items === undefined) {
+      throw new Error("computedFullPanel は rows または items を持つレイアウトでのみ指定できます。");
     }
   }
 }

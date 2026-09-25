@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { lintDeck } from './deck-lint.ts'
+import { lintDeck, lintSlide } from './deck-lint.ts'
 import { parseMarkdownDeck } from './markdown-deck.ts'
 import { serializeDeck } from './markdown-deck-writer.ts'
 import { normalizeDeckData, type DeckData } from './slide-schema.ts'
+import { computeSlideGeometry } from './slide-layout-spec.ts'
 
 // スライドデッキの読み書き（Markdown / JSON）と lint
 
@@ -86,5 +87,45 @@ describe('lintDeck', () => {
     expect(lint.slides[0]?.capacityWarnings).toEqual([])
     expect(lint.warnings).toHaveLength(1)
     expect(lint.warnings[0]).toContain('容量超過')
+  })
+})
+
+describe('full-panel fallback', () => {
+  it('switches a compact table-image slide to the full-height panel when the rows do not fit', () => {
+    // 3 行の table-image は compact（行高 162px、予算 576px）。4 行に折り返す本文が 2 行あると収まらない
+    const long = '相対取引、スポット市場、時間前取引を通じて、需給が一致するように調整する。'
+    const rows = [
+      { labelLines: ['電力小売'], bodyLines: [long] },
+      { labelLines: ['残余'], bodyLines: ['それでも残った、需給の差がインバランス'] },
+      { labelLines: ['料金'], bodyLines: [long] },
+    ]
+    const compact = computeSlideGeometry('table-image', 3)
+    expect(compact.compact).toBe(true)
+    const lint = lintSlide({ layout: 'table-image', title: 't', rows, image: { path: 'a.png', alt: 'a' } }, 0)
+    expect(lint.computedFullPanel).toBe(true)
+    expect(lint.capacityWarnings.some((w) => w.includes('超過'))).toBe(false)
+    expect(lint.capacityWarnings[0]).toContain('全高パネル')
+    const full = computeSlideGeometry('table-image', 3, { forceFull: true })
+    expect(full.compact).toBe(false)
+    expect(full.panelHeight).toBe(772)
+    expect(full.grid.defaultRowPx).toBeGreaterThanOrEqual(195)
+  })
+
+  it('keeps the compact panel when the rows fit', () => {
+    const rows = [
+      { labelLines: ['a'], bodyLines: ['短い'] },
+      { labelLines: ['b'], bodyLines: ['短い'] },
+      { labelLines: ['c'], bodyLines: ['短い'] },
+    ]
+    const lint = lintSlide({ layout: 'table-image', title: 't', rows, image: { path: 'a.png', alt: 'a' } }, 0)
+    expect(lint.computedFullPanel).toBeUndefined()
+    expect(lint.capacityWarnings).toEqual([])
+  })
+
+  it('still warns when even the full-height panel cannot hold the rows', () => {
+    const rows = Array.from({ length: 3 }, () => ({ labelLines: ['a'], bodyLines: ['長い本文'.repeat(40)] }))
+    const lint = lintSlide({ layout: 'table-image', title: 't', rows, image: { path: 'a.png', alt: 'a' } }, 0)
+    expect(lint.computedFullPanel).toBeUndefined()
+    expect(lint.capacityWarnings.join('\n')).toContain('超過')
   })
 })
