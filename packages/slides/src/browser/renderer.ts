@@ -239,7 +239,7 @@ function appendBulletLines(wrapper: HTMLElement, item: BulletItem, depth: number
 function populateBulletsSlide(slideElement: HTMLElement, data: RenderSlideData): void {
   const items = data.items ?? [];
   const count = items.length;
-  const geometry = computeSlideGeometry("bullets", count);
+  const geometry = computeSlideGeometry("bullets", count, { forceFull: data.computedFullPanel === true });
   const { heading, rows, panel } = createSlideStructure(slideElement, "bullets");
   panel.classList.add("research-panel--bullets");
 
@@ -295,7 +295,7 @@ async function populateSlideElement(slideElement: HTMLElement, data: unknown): P
   }
 
   const count = data.rows.length;
-  const geometry = computeSlideGeometry(layout, count);
+  const geometry = computeSlideGeometry(layout, count, { forceFull: data.computedFullPanel === true });
   const { heading, rows, panel, figurePanel, figureSlots } = createSlideStructure(
     slideElement,
     layout,
