@@ -12,6 +12,7 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
     "@lezer/highlight": "^1.2.3",
+    "@replit/codemirror-vim": "^6.4.0",
     "rbush": "^4.0.1"
   },
   "exports": {

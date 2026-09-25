@@ -1,12 +1,14 @@
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { EditorState, RangeSetBuilder, type Extension } from '@codemirror/state'
-import { Decoration, EditorView, ViewPlugin, keymap, lineNumbers, placeholder, type DecorationSet, type ViewUpdate } from '@codemirror/view'
+import { Compartment, EditorState, Prec, RangeSetBuilder, type Extension } from '@codemirror/state'
+import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, lineNumbers, placeholder, type DecorationSet, type ViewUpdate } from '@codemirror/view'
+import { getCM, vim } from '@replit/codemirror-vim'
 import { tags } from '@lezer/highlight'
 import { CODE_CARD_METRICS, CODE_FONT_FAMILY } from '@canvcode/nodes'
 import { linesOfSelection } from '@canvcode/core'
+import { registerVimKeymap, setVimHandlers, vimModeOf, type VimHandlers, type VimMode } from './vimKeymap.ts'
 
 // CodeMirror の設定（MAI-9、MAI-30）。カードの上での編集と、全画面のエディタで同じものを使う。
 // 本文の履歴（Undo）は CodeMirror 自身が持つ。キャンバスの履歴には入れない（MAI-11）
@@ -22,6 +24,13 @@ export interface CodeEditorOptions {
   placeholder?: string
   // 追加の見た目（全画面では文字を大きくするなど）
   theme?: Extension
+  // vim モード（MAI-60。全画面エディタだけ）。vim モードでは Esc を vim に渡し、onEscape は呼ばない。
+  // Ctrl（⌘）+Enter で onModEnter を呼ぶのはノーマルモードのときだけ
+  vim?: boolean
+  // :w / :q / :wq / ZZ / Space x で呼ぶ
+  vimCommands?: VimHandlers
+  // vim のモードが変わった（vim をオフにしたら null）
+  onVimModeChange?(mode: VimMode | null): void
 }
 
 export interface CodeEditorHandle {
@@ -35,6 +44,8 @@ export interface CodeEditorHandle {
   selectedQuote(): { quote: string; line: number } | null
   // 選んでいる行の範囲（1 から、終わりの行を含む）と、その行の中身。何も選んでいなければカーソルのある行（AI に渡す参照）
   selectedLines(): { startLine: number; endLine: number; snapshot: string }
+  // vim モードを切り替える（エディタは作り直さない）
+  setVim(on: boolean): void
   focus(): void
   destroy(): void
 }
@@ -125,22 +136,50 @@ const codeTheme = EditorView.theme({
   '.cm-lineNumbers .cm-gutterElement': { padding: `0 0 0 ${CODE_CARD_METRICS.paddingX}px`, minWidth: '0' },
 })
 
+// vim モード（MAI-60）。vim の拡張は、ほかのキーの割り当てより前に置く（パッケージの README）。
+// basicSetup を使っていないので、visual モードの選択を描くために drawSelection も入れる
+function vimExtension(): Extension {
+  registerVimKeymap()
+  return [
+    // 日本語入力の変換中のキー（確定の Enter、取り消しの Esc など）は vim に渡さず、IME に任せる
+    Prec.highest(EditorView.domEventHandlers({ keydown: (event, view) => event.isComposing || view.composing })),
+    vim(),
+    drawSelection(),
+  ]
+}
+
+function modeFromEvent(event: { mode: string; subMode?: string }): VimMode {
+  if (event.mode === 'visual') return event.subMode === 'linewise' ? 'visual line' : event.subMode === 'blockwise' ? 'visual block' : 'visual'
+  if (event.mode === 'insert' || event.mode === 'replace') return event.mode
+  return 'normal'
+}
+
 export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
+  const vimCompartment = new Compartment()
+  let vimOn = options.vim === true
   const keys = keymap.of([
     {
       key: 'Escape',
       run: () => {
+        // vim モードの Esc は vim のもの（ここまで来たら、何もしない）
+        if (vimOn) return false
         options.onEscape?.()
         return options.onEscape !== undefined
       },
     },
     {
       key: 'Mod-Enter',
-      run: () => {
+      run: (target) => {
+        const mode = vimOn ? vimModeOf(target) : null
+        // 挿入モードは、ただ改行する（閉じない）。visual モードでは何もしない
+        if (mode === 'insert' || mode === 'replace') return insertNewlineAndIndent(target)
+        if (mode !== null && mode !== 'normal') return true
         options.onModEnter?.()
         return options.onModEnter !== undefined
       },
     },
+    // vim の挿入モード以外では、Tab で本文を変えない（visual モードの Tab は vim の割り当て）
+    { key: 'Tab', run: (target) => vimOn && vimModeOf(target) !== 'insert', shift: (target) => vimOn && vimModeOf(target) !== 'insert' },
     indentWithTab,
     ...historyKeymap,
     ...defaultKeymap,
@@ -150,6 +189,7 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
     state: EditorState.create({
       doc: options.doc,
       extensions: [
+        vimCompartment.of(vimOn ? vimExtension() : []),
         keys,
         history(),
         EditorView.lineWrapping,
@@ -168,6 +208,18 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
       ],
     }),
   })
+  if (options.vimCommands) setVimHandlers(view, options.vimCommands)
+  // vim のモードの変化を知らせる。vim の拡張を入れ直すと、中の CodeMirror 5 互換の入れ物も作り直されるので、付け直す
+  const watchVimMode = () => {
+    const cm = getCM(view)
+    if (!vimOn || !cm) {
+      options.onVimModeChange?.(null)
+      return
+    }
+    cm.on('vim-mode-change', (event: { mode: string; subMode?: string }) => options.onVimModeChange?.(modeFromEvent(event)))
+    options.onVimModeChange?.(vimModeOf(view))
+  }
+  watchVimMode()
   return {
     view,
     text: () => view.state.doc.toString(),
@@ -197,7 +249,16 @@ export function createCodeEditor(options: CodeEditorOptions): CodeEditorHandle {
       const { from, to } = view.state.selection.main
       return linesOfSelection(view.state.doc.toString(), from, to)
     },
+    setVim(on) {
+      if (on === vimOn) return
+      vimOn = on
+      view.dispatch({ effects: vimCompartment.reconfigure(on ? vimExtension() : []) })
+      watchVimMode()
+    },
     focus: () => view.focus(),
-    destroy: () => view.destroy(),
+    destroy: () => {
+      setVimHandlers(view, null)
+      view.destroy()
+    },
   }
 }

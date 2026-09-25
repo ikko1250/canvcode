@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createCodeEditor, quoteRange, type FileManager, type QuoteDraft, type Workspace } from '@canvcode/canvas'
+import { createCodeEditor, quoteRange, type FileManager, type QuoteDraft, type VimMode, type Workspace } from '@canvcode/canvas'
 import { MARKDOWN_CARD_CSS, SOURCE_LINE_ATTR, renderMarkdown } from '@canvcode/nodes/markdown'
 import 'katex/dist/katex.min.css'
 import { buildScrollMap, previewToSource, sourceToPreview, type ScrollAnchor, type ScrollMap } from './scrollSync.ts'
 
 // 全画面のエディタ（MAI-9 の「5. 編集モードの挙動」、MAI-30、MAI-31）。Markdown は左に本文、右にプレビュー。
 // Python は本文だけ（行番号とインデントを保つ折り返しは、カードと同じ）。
-// カードの上での編集と同じく、本文は File に直接書く（少し待ってまとめて保存する）。Esc か Ctrl（⌘）+Enter で閉じる
+// カードの上での編集と同じく、本文は File に直接書く（少し待ってまとめて保存する）。Esc か Ctrl（⌘）+Enter で閉じる。
+// vim モード（MAI-60）では Esc は vim に渡し、:q / :wq / ZZ / Space x か、ノーマルモードの Ctrl（⌘）+Enter で閉じる
 
 type Mode = 'both' | 'source' | 'preview'
 
@@ -24,6 +25,34 @@ const PREVIEW_DELAY_MS = 150
 const SCROLL_ECHO_MS = 200
 
 type Pane = 'source' | 'preview'
+
+// vim モードのオン・オフ（端末ごとに、ブラウザに覚える。初めはオフ）
+const VIM_KEY = 'canvcode.fileEditor.vim'
+
+function savedVim(): boolean {
+  try {
+    return localStorage.getItem(VIM_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveVim(on: boolean): void {
+  try {
+    localStorage.setItem(VIM_KEY, on ? '1' : '0')
+  } catch {
+    // 覚えられなくても困らない
+  }
+}
+
+const VIM_MODE_LABELS: Record<VimMode, string> = {
+  normal: 'NORMAL',
+  insert: 'INSERT',
+  replace: 'REPLACE',
+  visual: 'VISUAL',
+  'visual line': 'VISUAL LINE',
+  'visual block': 'VISUAL BLOCK',
+}
 
 export function FileEditor(props: {
   workspace: Workspace
@@ -52,6 +81,10 @@ export function FileEditor(props: {
   const sourceRef = useRef<HTMLDivElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<ReturnType<typeof createCodeEditor> | null>(null)
+  const [vimOn, setVimOn] = useState(savedVim)
+  const [vimMode, setVimMode] = useState<VimMode | null>(null)
+  // エディタを作るときの値（切り替えでは作り直さず、setVim で入れ替える）
+  const vimOnRef = useRef(vimOn)
 
   // 本文を読み込んでから、エディタを作る
   useEffect(() => {
@@ -78,6 +111,13 @@ export function FileEditor(props: {
       },
       onEscape: onClose,
       onModEnter: onClose,
+      vim: vimOnRef.current,
+      vimCommands: {
+        // :w は、待ってまとめる保存を待たずに、すぐ保存する
+        save: () => void files.flush(fileId),
+        close: onClose,
+      },
+      onVimModeChange: setVimMode,
     })
     setPreviewText(text)
     editorRef.current = editor
@@ -134,18 +174,32 @@ export function FileEditor(props: {
     editor.focus()
   }
 
-  // Esc は、エディタの外（プレビュー側など）にフォーカスがあるときも閉じる
+  // vim モードを切り替える（エディタは作り直さない）
+  useEffect(() => {
+    vimOnRef.current = vimOn
+    editorRef.current?.setVim(vimOn)
+    saveVim(vimOn)
+  }, [vimOn])
+
+  const toggleVim = () => {
+    setVimOn((on) => !on)
+    editorRef.current?.focus()
+  }
+
+  // Esc は、エディタの外（プレビュー側など）にフォーカスがあるときも閉じる。
+  // vim モードでは、エディタの中の Esc は vim のもの（閉じない）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.defaultPrevented) return
-      if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+      const inEditor = e.target instanceof Node && sourceRef.current?.contains(e.target) === true
+      if ((e.key === 'Escape' && !(vimOn && inEditor)) || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault()
         onClose()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, vimOn])
 
   const [debounced, setDebounced] = useState('')
   useEffect(() => {
@@ -303,7 +357,16 @@ export function FileEditor(props: {
             AIに渡す
           </button>
         )}
-        <button className="file-editor-close" onClick={onClose} title="閉じる（Esc）">
+        <button
+          className={vimOn ? 'file-editor-vim active' : 'file-editor-vim'}
+          aria-pressed={vimOn}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={toggleVim}
+          title="vim のキーで編集する（:w で保存、:q で閉じる）"
+        >
+          vim
+        </button>
+        <button className="file-editor-close" onClick={onClose} title={vimOn ? '閉じる（:q）' : '閉じる（Esc）'}>
           ×
         </button>
       </header>
@@ -323,6 +386,7 @@ export function FileEditor(props: {
           <div className="md-card-body" dangerouslySetInnerHTML={{ __html: html }} />
         </div>
       </div>
+      {vimOn && vimMode && <footer className="file-editor-status">{VIM_MODE_LABELS[vimMode]}</footer>}
       {text === null && <div className="file-editor-loading">読み込み中…</div>}
     </div>
   )
