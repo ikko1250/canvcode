@@ -606,7 +606,11 @@ export function App(props: { initial: InitialRecords }) {
             label: 'AIに渡すIDをコピー',
             onSelect: () => {
               const loc = d.locator
-              if (loc.kind === 'pdf') void view.copyReference({ kind: 'pdf', fileId: d.fileId, pageIndex: loc.pageIndex, rect: loc.rect, text: d.quote })
+              if (loc.kind === 'pdf') {
+                // 図（文字がほとんどない）なら、ref に画像も添える
+                const figure = d.figure ? { figure: true as const } : {}
+                void view.copyReference({ kind: 'pdf', fileId: d.fileId, pageIndex: loc.pageIndex, rect: loc.rect, text: d.quote, ...figure })
+              }
               else if (loc.kind === 'markdown') void view.copyReference(view.linesReference(d.fileId, d.quote, loc.line))
             },
           },

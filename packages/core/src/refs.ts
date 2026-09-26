@@ -17,12 +17,23 @@ export function createRefId(): string {
   return `${REF_PREFIX}${randomIdSuffix(REF_ID_LENGTH)}`
 }
 
-// Canvas の範囲：ワールド座標の矩形と、その中のノード（作った時点のワールド座標）
+// Canvas の範囲：ワールド座標の矩形と、その中のノード（作った時点のワールド座標）。
+// 範囲選択の枠が PDF のページの一部にかかっていれば、そのページのノードに pdf（ページの中の範囲）を付ける
 export interface CanvasRefTarget {
   kind: 'canvas'
   canvasId: string
   rect: Box
-  nodes: { id: string; bounds: Box }[]
+  nodes: { id: string; bounds: Box; pdf?: PdfRegion }[]
+}
+
+// PDF のページの中の範囲（ページ全体を 0〜1 とした割合）と、作った時点の範囲の文字。
+// figure は、文字がほとんどない（図や表、文字のない PDF）とき。そのときは ref に画像も添える
+export interface PdfRegion {
+  fileId: string
+  pageIndex: number
+  rect: Box
+  text: string
+  figure?: true
 }
 
 // Markdown / Python の行の範囲（1 から、終わりの行を含む）。snapshot はその行の中身で、ファイルが変わったら付け直すのに使う
@@ -41,6 +52,7 @@ export interface PdfRefTarget {
   pageIndex: number
   rect: Box
   text: string
+  figure?: true
 }
 
 export type RefTarget = CanvasRefTarget | LinesRefTarget | PdfRefTarget
@@ -63,7 +75,9 @@ export function validateReference(value: unknown): ReferenceRecord {
       if (v.nodes.length > MAX_NODES) throw new Error('too many nodes')
       const nodes = v.nodes.map((n, i) => {
         const node = object(n, `nodes[${i}]`)
-        return { id: prefixed(node.id, 'node:', `nodes[${i}].id`), bounds: box(node.bounds, `nodes[${i}].bounds`) }
+        const out: CanvasRefTarget['nodes'][number] = { id: prefixed(node.id, 'node:', `nodes[${i}].id`), bounds: box(node.bounds, `nodes[${i}].bounds`) }
+        if (node.pdf !== undefined) out.pdf = pdfRegion(node.pdf, `nodes[${i}].pdf`)
+        return out
       })
       return { ...base, kind: 'canvas', canvasId: prefixed(v.canvasId, 'canvas:', 'canvasId'), rect: box(v.rect, 'rect'), nodes }
     }
@@ -73,16 +87,8 @@ export function validateReference(value: unknown): ReferenceRecord {
       if (startLine < 1 || endLine < startLine) throw new Error('invalid line range')
       return { ...base, kind: 'lines', fileId: prefixed(v.fileId, 'file:', 'fileId'), startLine, endLine, snapshot: text(v.snapshot, 'snapshot') }
     }
-    case 'pdf': {
-      const pageIndex = integer(v.pageIndex, 'pageIndex')
-      if (pageIndex < 0) throw new Error('invalid pageIndex')
-      const rect = box(v.rect, 'rect')
-      const eps = 1e-6
-      if (rect.x < -eps || rect.y < -eps || rect.x + rect.w > 1 + eps || rect.y + rect.h > 1 + eps) {
-        throw new Error('rect must be within the page (0..1)')
-      }
-      return { ...base, kind: 'pdf', fileId: prefixed(v.fileId, 'file:', 'fileId'), pageIndex, rect, text: text(v.text, 'text') }
-    }
+    case 'pdf':
+      return { ...base, kind: 'pdf', ...pdfRegion(v, '') }
     default:
       throw new Error('kind must be canvas, lines or pdf')
   }
@@ -169,6 +175,22 @@ function text(value: unknown, name: string): string {
 function prefixed(value: unknown, prefix: string, name: string): string {
   if (typeof value !== 'string' || !value.startsWith(prefix) || value.length > 200) throw new Error(`${name} must start with ${prefix}`)
   return value
+}
+
+// PDF のページの中の範囲。name は項目名の前に付ける（'' なら付けない）
+function pdfRegion(value: unknown, name: string): PdfRegion {
+  const v = object(value, name || 'reference')
+  const at = (key: string) => (name ? `${name}.${key}` : key)
+  const pageIndex = integer(v.pageIndex, at('pageIndex'))
+  if (pageIndex < 0) throw new Error(`invalid ${at('pageIndex')}`)
+  const rect = box(v.rect, at('rect'))
+  const eps = 1e-6
+  if (rect.x < -eps || rect.y < -eps || rect.x + rect.w > 1 + eps || rect.y + rect.h > 1 + eps) {
+    throw new Error(`${at('rect')} must be within the page (0..1)`)
+  }
+  const out: PdfRegion = { fileId: prefixed(v.fileId, 'file:', at('fileId')), pageIndex, rect, text: text(v.text, at('text')) }
+  if (v.figure === true) out.figure = true
+  return out
 }
 
 function box(value: unknown, name: string): Box {

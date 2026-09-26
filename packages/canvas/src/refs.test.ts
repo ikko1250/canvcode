@@ -1,13 +1,15 @@
-import type { Box } from '@canvcode/core'
+import type { Box, CanvasRefTarget } from '@canvcode/core'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   canvasRefTarget,
   fetchReference,
+  pdfRegionRequests,
   postReference,
   putReferenceImage,
   refImageRegion,
   refImageSize,
   type CanvasRefSource,
+  type PdfPageInRange,
   type RefImageSource,
 } from './refs.ts'
 
@@ -25,6 +27,7 @@ function source(fields: Partial<CanvasRefSource>): CanvasRefSource {
     lastBrush: null,
     boundsOf: (id) => bounds[id],
     nodesInBrush: () => [],
+    pdfPagesIn: () => [],
     ...fields,
   }
 }
@@ -61,6 +64,39 @@ describe('canvasRefTarget', () => {
     const rect = { x: 500, y: 500, w: 10, h: 10 }
     expect(canvasRefTarget(source({ lastBrush: { rect, ids: new Set() } }))).toEqual({ kind: 'canvas', canvasId: 'canvas:c', rect, nodes: [] })
     expect(canvasRefTarget(source({}))).toBeNull()
+  })
+})
+
+// 範囲選択の枠が PDF のページにかかったとき
+describe('PDF pages in a brush', () => {
+  // 600×800 のページ（固定していて、範囲選択では選ばれない）
+  const page: PdfPageInRange = { id: 'node:page', bounds: { x: 100, y: 1000, w: 600, h: 800 }, fileId: 'file:pdf', pageIndex: 2, assetId: 'asset:abc' }
+  const pages: Record<string, Box> = { ...bounds, 'node:page': page.bounds }
+  function brushed(rect: Box, pagesIn: PdfPageInRange[] = [page]): CanvasRefSource {
+    return source({ lastBrush: { rect, ids: new Set() }, boundsOf: (id) => pages[id], pdfPagesIn: () => pagesIn })
+  }
+
+  it('adds a locked page the brush touched to the nodes', () => {
+    const target = canvasRefTarget(brushed({ x: 160, y: 1160, w: 300, h: 200 }))
+    expect(target?.nodes).toEqual([{ id: 'node:page', bounds: page.bounds }])
+  })
+
+  it('maps the brush to a fraction of the page, clamped to the page', () => {
+    expect(pdfRegionRequests(brushed({ x: 160, y: 1160, w: 300, h: 200 }))).toEqual([
+      { nodeId: 'node:page', assetId: 'asset:abc', fileId: 'file:pdf', pageIndex: 2, rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.25 } },
+    ])
+    // ページの外にはみ出した枠は、ページの中だけ
+    expect(pdfRegionRequests(brushed({ x: 0, y: 1600, w: 400, h: 1000 }))[0]!.rect).toEqual({ x: 0, y: 0.75, w: 0.5, h: 0.25 })
+  })
+
+  it('skips a page the brush almost covers, and does nothing without a brush', () => {
+    expect(pdfRegionRequests(brushed({ x: 90, y: 990, w: 700, h: 900 }))).toEqual([])
+    expect(pdfRegionRequests(source({ selectedIds: new Set(['node:page']), pdfPagesIn: () => [page] }))).toEqual([])
+  })
+
+  it('keeps at most 8 pages', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ ...page, id: `node:p${i}`, pageIndex: i }))
+    expect(pdfRegionRequests(brushed({ x: 160, y: 1160, w: 300, h: 200 }, many))).toHaveLength(8)
   })
 })
 
@@ -150,6 +186,20 @@ describe('refImageRegion', () => {
     expect(refImageRegion(target, imageSource(['node:page'], { pdfPage }))).toBeNull()
     expect(refImageRegion(target, imageSource(['node:page', 'node:frame'], { pdfPage }))).toBeNull()
     expect(refImageRegion(target, imageSource(['node:ink']))).toBeNull()
+  })
+
+  it('adds the region when a PDF region is mostly a figure', () => {
+    const region = { fileId: 'file:pdf', pageIndex: 1, rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.25 }, text: '' }
+    const withRegion = (figure: boolean): CanvasRefTarget => ({
+      ...canvas(['node:page']),
+      nodes: [{ id: 'node:page', bounds: rect, pdf: figure ? { ...region, figure: true } : region }],
+    })
+    expect(refImageRegion(withRegion(true), imageSource(['node:page']))).toEqual(rect)
+    expect(refImageRegion(withRegion(false), imageSource(['node:page']))).toBeNull()
+    const pdfPage = () => ({ x: 100, y: 1000, w: 600, h: 800 })
+    const target = { kind: 'pdf', ...region, pageIndex: 1 } as const
+    expect(refImageRegion({ ...target, figure: true }, imageSource(['node:page'], { pdfPage }))).toEqual({ x: 160, y: 1160, w: 300, h: 200 })
+    expect(refImageRegion(target, imageSource(['node:page'], { pdfPage }))).toBeNull()
   })
 
   it('never adds an image to lines', () => {

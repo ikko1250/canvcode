@@ -45,6 +45,32 @@ describe('validateReference', () => {
     ).toBe('pdf')
   })
 
+  it('keeps the region of a PDF page on a canvas node, and the figure flag', () => {
+    const region = { fileId: 'file:p', pageIndex: 2, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }, text: 'hi', figure: true, extra: 1 }
+    const canvas = validateReference({
+      ...base,
+      kind: 'canvas',
+      canvasId: 'canvas:root',
+      rect: { x: 0, y: 0, w: 10, h: 10 },
+      nodes: [{ id: 'node:p', bounds: { x: 0, y: 0, w: 5, h: 5 }, pdf: region }],
+    })
+    expect(canvas.kind === 'canvas' && canvas.nodes[0]!.pdf).toEqual({ fileId: 'file:p', pageIndex: 2, rect: region.rect, text: 'hi', figure: true })
+    const pdf = validateReference({ ...base, kind: 'pdf', fileId: 'file:p', pageIndex: 0, rect: region.rect, text: '', figure: false })
+    expect(pdf).not.toHaveProperty('figure')
+    expect(validateReference({ ...base, kind: 'pdf', fileId: 'file:p', pageIndex: 0, rect: region.rect, text: '', figure: true })).toMatchObject({
+      figure: true,
+    })
+    expect(() =>
+      validateReference({
+        ...base,
+        kind: 'canvas',
+        canvasId: 'canvas:root',
+        rect: { x: 0, y: 0, w: 10, h: 10 },
+        nodes: [{ id: 'node:p', bounds: { x: 0, y: 0, w: 5, h: 5 }, pdf: { ...region, rect: { x: 0.9, y: 0, w: 0.2, h: 1 } } }],
+      }),
+    ).toThrow(/nodes\[0\]\.pdf\.rect must be within the page/)
+  })
+
   it('rejects invalid input', () => {
     const lines = { ...base, kind: 'lines', fileId: 'file:a', startLine: 2, endLine: 3, snapshot: '' }
     expect(() => validateReference(null)).toThrow()

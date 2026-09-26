@@ -34,6 +34,18 @@ describe('ImageCache', () => {
     expect(frame(cache, [['a', 2]])[0]?.level).toBe(4)
   })
 
+  it('loads a level right away, and reuses it', async () => {
+    const cache = new ImageCache({ onReady: () => {}, idleDelayMs: 150 })
+    const produce = vi.fn(async () => fakeImage(4))
+    expect((await cache.load('a', 'v1', 4, produce))?.level).toBe(4)
+    expect((await cache.load('a', 'v1', 4, produce))?.level).toBe(4)
+    expect(produce).toHaveBeenCalledTimes(1)
+    expect(frame(cache, [['a', 4]])[0]?.level).toBe(4)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await cache.load('b', 'v1', 1, async () => Promise.reject(new Error('x')))).toBeNull()
+    error.mockRestore()
+  })
+
   it('does not produce while the camera keeps moving', async () => {
     const onReady = vi.fn()
     const cache = new ImageCache({ onReady, idleDelayMs: 150 })

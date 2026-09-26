@@ -10,17 +10,45 @@ export interface CanvasRefSource {
   lastBrush: { rect: Box; ids: ReadonlySet<string> } | null
   boundsOf(id: string): Box | undefined
   nodesInBrush(rect: Box): string[]
+  // 枠に触れた PDF のページ（固定したページも、グループやフレームの中も含めて）
+  pdfPagesIn(rect: Box): PdfPageInRange[]
 }
+
+export interface PdfPageInRange {
+  id: string
+  bounds: Box
+  fileId: string
+  pageIndex: number
+  assetId: string
+}
+
+// 範囲選択の枠がかかった PDF のページの、ページの中の範囲。文字はまだ入っていない（ブラウザで PDF から読む）
+export interface PdfRegionRequest {
+  nodeId: string
+  assetId: string
+  fileId: string
+  pageIndex: number
+  rect: Box
+}
+
+// 範囲を付けるページの数の上限（ページごとに PDF の文字を読むので）
+const MAX_PDF_REGIONS = 8
+// 枠がページのこれ以上を覆っていれば、ページ全体とみなして範囲を付けない
+const WHOLE_PAGE = 0.95
 
 // Canvas の範囲の参照。
 // - 直前の範囲選択のあと選択を変えていなければ、その枠を範囲にする（ノードのない所も含めて見てほしいことがある）。
-//   何もない所を右クリックすると選択は外れるので、選択が空のときも枠を使い、ノードは枠の中から選び直す
+//   何もない所を右クリックすると選択は外れるので、選択が空のときも枠を使い、ノードは枠の中から選び直す。
+//   固定した PDF のページは範囲選択で選ばれないが、ページの一部を囲むことはよくあるので、ノードに加える
 // - そうでなければ、選んでいるノードを囲む箱
 // どちらもなければ null
 export function canvasRefTarget(source: CanvasRefSource): CanvasRefTarget | null {
-  const last = source.lastBrush
-  const brush = last && (source.selectedIds.size === 0 || sameIds(last.ids, source.selectedIds)) ? last : null
+  const brush = activeBrush(source)
   const ids = source.selectedIds.size > 0 ? [...source.selectedIds] : brush ? source.nodesInBrush(brush.rect) : []
+  if (brush) {
+    const known = new Set(ids)
+    for (const page of source.pdfPagesIn(brush.rect)) if (!known.has(page.id)) ids.push(page.id)
+  }
   const nodes = ids.flatMap((id) => {
     const bounds = source.boundsOf(id)
     return bounds ? [{ id, bounds: roundBox(bounds) }] : []
@@ -28,6 +56,42 @@ export function canvasRefTarget(source: CanvasRefSource): CanvasRefTarget | null
   const rect = brush?.rect ?? unionBoxes(nodes.map((n) => n.bounds))
   if (!rect || (nodes.length === 0 && !brush)) return null
   return { kind: 'canvas', canvasId: source.canvasId, rect: roundBox(rect), nodes }
+}
+
+// 範囲選択の枠が一部にかかった PDF のページと、ページの中の範囲（割合）。
+// 枠を使わないとき（選んだノードを囲む箱）や、ページのほぼ全体を囲んだときは付けない（ページ全体の文字はサーバーが返す）
+export function pdfRegionRequests(source: CanvasRefSource): PdfRegionRequest[] {
+  const brush = activeBrush(source)
+  if (!brush) return []
+  const out: PdfRegionRequest[] = []
+  for (const page of source.pdfPagesIn(brush.rect)) {
+    const { bounds } = page
+    if (!(bounds.w > 0) || !(bounds.h > 0)) continue
+    const x0 = clamp01((brush.rect.x - bounds.x) / bounds.w)
+    const y0 = clamp01((brush.rect.y - bounds.y) / bounds.h)
+    const x1 = clamp01((brush.rect.x + brush.rect.w - bounds.x) / bounds.w)
+    const y1 = clamp01((brush.rect.y + brush.rect.h - bounds.y) / bounds.h)
+    const area = (x1 - x0) * (y1 - y0)
+    if (!(area > 0) || area >= WHOLE_PAGE) continue
+    const r = (n: number) => Math.round(n * 10000) / 10000
+    const rect = { x: r(x0), y: r(y0), w: r(x1 - x0), h: r(y1 - y0) }
+    // 丸めで 1 をわずかに超えないように
+    rect.w = Math.min(rect.w, 1 - rect.x)
+    rect.h = Math.min(rect.h, 1 - rect.y)
+    out.push({ nodeId: page.id, assetId: page.assetId, fileId: page.fileId, pageIndex: page.pageIndex, rect })
+    if (out.length >= MAX_PDF_REGIONS) break
+  }
+  return out
+}
+
+// 参照の範囲に使う、直前の範囲選択の枠（そのあと選択を変えていないときだけ）
+function activeBrush(source: CanvasRefSource): { rect: Box; ids: ReadonlySet<string> } | null {
+  const last = source.lastBrush
+  return last && (source.selectedIds.size === 0 || sameIds(last.ids, source.selectedIds)) ? last : null
+}
+
+function clamp01(n: number): number {
+  return Math.min(1, Math.max(0, n))
 }
 
 // ref を保存する。ID が重なったら（まずないが）、作り直して 1 回だけ送り直す。保存した ref を返す
@@ -68,12 +132,14 @@ export interface RefImageSource {
 }
 
 // ref に添える画像に描く範囲（ワールド座標）。添えないなら null。
-// - Canvas の範囲：範囲の中に手書き線か画像のノードがあるとき（選んだグループやフレームの中も含めて）
-// - PDF の範囲：今の Canvas にそのページがあり、選んだ範囲に手書き線が重なっているとき
+// - Canvas の範囲：範囲の中に手書き線か画像のノードがあるとき（選んだグループやフレームの中も含めて）、
+//   または囲んだ PDF のページの範囲が図のとき（文字がほとんどない）
+// - PDF の範囲：今の Canvas にそのページがあり、選んだ範囲に手書き線が重なっているか、範囲が図のとき
 // 文字だけなら添えない（AI に渡すトークンを無駄にしないため）
 export function refImageRegion(target: RefTarget, source: RefImageSource): Box | null {
   if (target.kind === 'canvas') {
     if (target.canvasId !== source.canvasId || !(target.rect.w > 0) || !(target.rect.h > 0)) return null
+    if (target.nodes.some((n) => n.pdf?.figure)) return target.rect
     const ids = [...target.nodes.map((n) => n.id), ...source.search(target.rect)]
     return containsType(ids, source, CANVAS_IMAGE_TYPES) ? target.rect : null
   }
@@ -87,6 +153,7 @@ export function refImageRegion(target: RefTarget, source: RefImageSource): Box |
       h: target.rect.h * page.h,
     }
     if (!(region.w > 0) || !(region.h > 0)) return null
+    if (target.figure) return roundBox(region)
     return containsType(source.search(region), source, PDF_IMAGE_TYPES) ? roundBox(region) : null
   }
   return null

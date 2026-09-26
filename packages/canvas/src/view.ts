@@ -15,10 +15,11 @@ import {
   type Camera,
   type CanvasRefTarget,
   type LinesRefTarget,
+  type PdfRegion,
   type RefTarget,
   type Vec,
 } from '@canvcode/core'
-import { SOURCE_LINK_PREFIX, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
+import { SOURCE_LINK_PREFIX, pickImageLevel, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
 import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import {
   CLIPBOARD_MIME,
@@ -35,7 +36,18 @@ import {
 } from './clipboard.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
-import { canvasRefTarget, postReference, putReferenceImage, REF_IMAGE_MAX_EDGE, refImageRegion, refImageSize } from './refs.ts'
+import {
+  canvasRefTarget,
+  pdfRegionRequests,
+  postReference,
+  putReferenceImage,
+  REF_IMAGE_MAX_EDGE,
+  refImageRegion,
+  refImageSize,
+  type CanvasRefSource,
+  type PdfPageInRange,
+  type PdfRegionRequest,
+} from './refs.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
@@ -556,8 +568,32 @@ export class CanvasView {
   // ワールド座標の範囲を、白い背景の PNG にする（MAI-64）。長い辺は maxEdge まで。作れなければ null
   async renderRegionPng(editor: Editor, box: Box, maxEdge = REF_IMAGE_MAX_EDGE): Promise<Blob | null> {
     const { width, height, scale } = refImageSize(box, maxEdge)
+    await this.loadPdfPages(editor, box, scale)
     const canvas = this.renderRegion(editor, box, scale, width, height)
     return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+  }
+
+  // 範囲にかかった PDF のページを、描く倍率の画像で読んでおく（画像キャッシュには、画面の倍率のものしかないことがあるので）。
+  // 読めなければ、手元にある画像で描く
+  private async loadPdfPages(editor: Editor, box: Box, scale: number): Promise<void> {
+    const assets = this.assets
+    const level = pickImageLevel(scale)
+    await Promise.all(
+      this.pdfPagesIn(editor, box).map(({ assetId, pageIndex }) =>
+        this.images.load(`${assetId}#${pageIndex}`, 'v1', level, () => assets.renderPdfPage(assetId, pageIndex, level)),
+      ),
+    )
+  }
+
+  // 範囲に触れた PDF のページ（固定したページも、グループやフレームの中も含めて）
+  private pdfPagesIn(editor: Editor, box: Box): PdfPageInRange[] {
+    return editor.index.search(box).flatMap((id) => {
+      const node = editor.getNode(id)
+      const bounds = editor.index.get(id)?.worldBounds
+      if (node?.type !== 'pdf-page' || !bounds) return []
+      const { fileId, pageIndex, assetId } = node.props as PdfPageProps
+      return [{ id, bounds, fileId, pageIndex, assetId }]
+    })
   }
 
   // サムネイルをサーバーに保存する（null なら消す）。失敗しても、このタブでは見えているので知らせない
@@ -676,11 +712,8 @@ export class CanvasView {
     if (page?.type !== 'pdf-page') return null
     const props = page.props as PdfPageProps
     try {
-      const [size, items] = await this.assets.withPdfDocument(props.assetId, (doc) =>
-        Promise.all([doc.pageSize(props.pageIndex), doc.textItems(props.pageIndex)]),
-      )
-      const region = textInRegion(items, { x: rect.x * size.width, y: rect.y * size.height, w: rect.w * size.width, h: rect.h * size.height })
-      const figure = looksLikeFigure(region)
+      const region = await this.pageRegionText(props.assetId, props.pageIndex, rect)
+      const figure = region.figure
         ? { assetId: props.assetId, pageIndex: props.pageIndex, rect, pageWidth: props.w, aspect: (rect.h * props.h) / (rect.w * props.w) }
         : null
       return { fileId: props.fileId, locator: { kind: 'pdf', pageIndex: props.pageIndex, rect }, quote: region.text, figure }
@@ -690,6 +723,13 @@ export class CanvasView {
       return null
     }
   }
+  // PDF のページの範囲（ページの中の割合）の文字と、図っぽいか（文字がほとんどない）
+  private async pageRegionText(assetId: string, pageIndex: number, rect: Box): Promise<{ text: string; figure: boolean }> {
+    const [size, items] = await this.assets.withPdfDocument(assetId, (doc) => Promise.all([doc.pageSize(pageIndex), doc.textItems(pageIndex)]))
+    const region = textInRegion(items, { x: rect.x * size.width, y: rect.y * size.height, w: rect.w * size.width, h: rect.h * size.height })
+    return { text: region.text, figure: looksLikeFigure(region) }
+  }
+
 
   // 出典のノード（PDF のページ、Markdown カード）の横に引用ノートを置き、メモを書き始める。y はワールド座標
   placeQuote(draft: QuoteDraft, sourceNodeId: string, y: number): string | null {
@@ -793,25 +833,31 @@ export class CanvasView {
 
   // Canvas の範囲の参照（直前の範囲選択か、選んでいるノード）。どちらもなければ null
   canvasReference(): CanvasRefTarget | null {
+    return canvasRefTarget(this.canvasRefSource())
+  }
+
+  private canvasRefSource(): CanvasRefSource {
     const editor = this.editor
     const { selectedIds, lastBrush } = editor.session.get()
-    return canvasRefTarget({
+    return {
       canvasId: editor.canvasId,
       selectedIds,
       lastBrush,
       boundsOf: (id) => editor.index.get(id)?.worldBounds,
       nodesInBrush: (rect) => editor.nodesInBrush(rect),
-    })
+      pdfPagesIn: (rect) => this.pdfPagesIn(editor, rect),
+    }
   }
 
   // 今の Canvas の範囲を AI に渡す。範囲がなければ、そう知らせる
   async copyCanvasReference(): Promise<string | null> {
-    const target = this.canvasReference()
+    const source = this.canvasRefSource()
+    const target = canvasRefTarget(source)
     if (!target) {
       this.options.notify('AI に渡す範囲を、選ぶか範囲選択で囲んでください')
       return null
     }
-    return this.copyReference(target)
+    return this.copyReference(target, pdfRegionRequests(source))
   }
 
   // 本文の中の引用（文字列と、その始まりの行）を、行の範囲の参照にする。本文をまだ読んでいなければ、引用した文字列のまま
@@ -824,12 +870,14 @@ export class CanvasView {
 
   // AI に見てほしい場所の参照（ref）を作り、ID だけをクリップボードに載せる。ユーザーはそれを AI に貼り付け、
   // AI は MCP の resolve_reference で中身を読む。
-  // クリップボードへは、ほかの処理を待たずに書く（ブラウザは、クリックのすぐあとでないと書かせないことがある）
-  async copyReference(target: RefTarget): Promise<string | null> {
+  // クリップボードへは、ほかの処理を待たずに書く（ブラウザは、クリックのすぐあとでないと書かせないことがある）。
+  // pdfRegions は、範囲選択の枠が一部にかかった PDF のページ。その範囲の文字を読んで、ref のノードに付ける
+  async copyReference(target: RefTarget, pdfRegions: readonly PdfRegionRequest[] = []): Promise<string | null> {
     const id = createRefId()
     const copied = writeClipboardText(id)
     this.clearQuoteRegion()
-    // 手書き線や画像があれば、今の見た目を画像にしておく（ref を保存したあとで送る。MAI-64）
+    if (target.kind === 'canvas' && pdfRegions.length > 0) target = await this.withPdfRegions(target, pdfRegions)
+    // 手書き線や画像、図があれば、今の見た目を画像にしておく（ref を保存したあとで送る。MAI-64）
     const image = this.referenceImage(target)
     try {
       // 保存していない編集があれば、先に保存する（AI が今の本文を読めるように）
@@ -848,6 +896,23 @@ export class CanvasView {
       this.options.notify('AI に渡す ID を保存できませんでした。コピーした ID は使えません')
       return null
     }
+  }
+
+  // ref のノードに、PDF のページの範囲とその文字を付ける。文字を読めなかったページには付けない
+  private async withPdfRegions(target: CanvasRefTarget, requests: readonly PdfRegionRequest[]): Promise<CanvasRefTarget> {
+    const regions = new Map<string, PdfRegion>()
+    await Promise.all(
+      requests.map(async ({ nodeId, assetId, fileId, pageIndex, rect }) => {
+        try {
+          const { text, figure } = await this.pageRegionText(assetId, pageIndex, rect)
+          regions.set(nodeId, { fileId, pageIndex, rect, text, ...(figure ? { figure: true as const } : {}) })
+        } catch (error) {
+          console.warn('Failed to read the text of a PDF page', error)
+        }
+      }),
+    )
+    if (regions.size === 0) return target
+    return { ...target, nodes: target.nodes.map((node) => (regions.has(node.id) ? { ...node, pdf: regions.get(node.id)! } : node)) }
   }
 
   // ref に添える画像（範囲と PNG）。添えなくてよい範囲なら null
