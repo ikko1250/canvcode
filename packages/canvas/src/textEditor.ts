@@ -22,6 +22,8 @@ interface Session {
   nodeId: string
   tx: Transaction<WorkspaceRecord>
   textarea: HTMLTextAreaElement
+  // 窓ごとフォーカスを失ったときのカーソルの位置。窓に戻ったらここへ戻す（MAI-70）
+  pendingSelection: { start: number; end: number } | null
 }
 
 // 打った文字のすぐ右にもカーソルを置けるよう、幅が伸びるテキストには少し余白を足す（fontSize に対する倍率）
@@ -77,13 +79,13 @@ export class TextEditor {
     })
     textarea.addEventListener('input', () => this.onInput())
     textarea.addEventListener('keydown', (e) => this.onKeyDown(e))
-    textarea.addEventListener('blur', () => this.finish())
+    textarea.addEventListener('blur', () => this.onBlur())
     // キャンバスのポインタ操作（選択・ドラッグ）に渡さない
     textarea.addEventListener('pointerdown', (e) => e.stopPropagation())
     // ピンチと Ctrl（⌘）+ホイールはキャンバスのズームに渡す（止めると、ブラウザがページごと拡大してしまう）
     textarea.addEventListener('wheel', stopUnlessZoom, { passive: true })
     this.options.layer.appendChild(textarea)
-    this.session = { nodeId, tx, textarea }
+    this.session = { nodeId, tx, textarea, pendingSelection: null }
     editor.setSelection([nodeId])
     this.options.onChange(nodeId)
     this.layout()
@@ -105,6 +107,7 @@ export class TextEditor {
       if (node && spec?.deleteIfEmpty && spec.text.trim() === '') session.tx.remove(node.id)
       if (!session.tx.isDone) editor.finish(session.tx)
       session.textarea.remove()
+      if (session.pendingSelection) window.removeEventListener('focus', this.onWindowFocus)
       this.session = null
       this.options.onChange(null)
     } finally {
@@ -174,6 +177,31 @@ export class TextEditor {
     session.tx.put({ ...node, props: spec.update(session.textarea.value) })
     session.tx.flush()
     this.layout()
+  }
+
+  // ページの中でフォーカスが移ったら編集を終える。
+  // 別のアプリ（Shift+Space で窓を出す入力ツールなど）に窓ごとフォーカスを取られただけなら、編集を続ける（MAI-70）
+  private onBlur(): void {
+    const session = this.session
+    if (!session || this.finishing) return
+    if (document.hasFocus()) {
+      this.finish()
+      return
+    }
+    const { textarea } = session
+    session.pendingSelection = { start: textarea.selectionStart, end: textarea.selectionEnd }
+    window.addEventListener('focus', this.onWindowFocus)
+  }
+
+  // 窓に戻ったら、textarea にフォーカスとカーソルを戻す（ツールから送られた文字が元の位置に入るように）
+  private readonly onWindowFocus = (): void => {
+    window.removeEventListener('focus', this.onWindowFocus)
+    const session = this.session
+    const selection = session?.pendingSelection
+    if (!session || !selection) return
+    session.pendingSelection = null
+    session.textarea.focus({ preventScroll: true })
+    session.textarea.setSelectionRange(selection.start, selection.end)
   }
 
   private onKeyDown(e: KeyboardEvent): void {

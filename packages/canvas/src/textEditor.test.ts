@@ -1,12 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TextProps } from '@canvcode/nodes'
 import { Editor } from './editor.ts'
 import { TextEditor } from './textEditor.ts'
 
-// 編集用の textarea の代わり（Node には DOM がない）。スタイルと値、フォーカスの有無だけ持つ
+// 編集用の textarea の代わり（Node には DOM がない）。スタイルと値、フォーカスの有無、カーソルの位置だけ持つ
 class FakeTextarea {
   style: Record<string, string> = {}
   value = ''
+  selectionStart = 0
+  selectionEnd = 0
   spellcheck = true
   focused = false
   parent: FakeElement | null = null
@@ -31,11 +33,36 @@ class FakeTextarea {
 
   select(): void {}
 
-  setSelectionRange(): void {}
+  setSelectionRange(start: number, end: number): void {
+    this.selectionStart = start
+    this.selectionEnd = end
+  }
+
+  blur(): void {
+    this.focused = false
+    this.dispatch('blur')
+  }
 
   remove(): void {
     this.parent?.children.splice(this.parent.children.indexOf(this), 1)
     this.parent = null
+  }
+}
+
+// window の代わり。focus の購読だけ持つ
+class FakeWindow {
+  readonly listeners = new Set<() => void>()
+
+  addEventListener(_type: 'focus', listener: () => void): void {
+    this.listeners.add(listener)
+  }
+
+  removeEventListener(_type: 'focus', listener: () => void): void {
+    this.listeners.delete(listener)
+  }
+
+  dispatchFocus(): void {
+    for (const listener of [...this.listeners]) listener()
   }
 }
 
@@ -63,16 +90,23 @@ function createTextEditor() {
 
 describe('text editor', () => {
   const originalDocument = globalThis.document
+  const originalWindow = globalThis.window
+  let fakeWindow: FakeWindow
 
   beforeEach(() => {
     // 文字幅の計測は canvas を作ろうとする。取れなければ概算する（layout.ts）ので、null を返す
     globalThis.document = {
       createElement: (tag: string) => (tag === 'canvas' ? { getContext: () => null } : new FakeTextarea()),
+      hasFocus: () => true,
     } as unknown as Document
+    fakeWindow = new FakeWindow()
+    globalThis.window = fakeWindow as unknown as Window & typeof globalThis
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     globalThis.document = originalDocument
+    globalThis.window = originalWindow
   })
 
   it('changes the font size of the node being edited without ending the edit (MAI-52)', () => {
@@ -124,5 +158,67 @@ describe('text editor', () => {
     expect((editor.getNode(note.id)!.props as { fontSize: number }).fontSize).toBe(32)
     textEditor.finish()
     expect((editor.getNode(note.id)!.props as { fontSize: number }).fontSize).toBe(32)
+  })
+
+  it('keeps editing when another app takes the window focus, and restores the caret on return (MAI-70)', () => {
+    const { editor, layer, textEditor } = createTextEditor()
+    const text = editor.makeNode('text', { x: 0, y: 0, props: { text: 'hello world', fontSize: 16 } })
+    editor.createNodes([text])
+    textEditor.start(text.id)
+    const textarea = layer.children[0]!
+    textarea.setSelectionRange(2, 5)
+
+    // 窓ごとフォーカスを失った（Shift+Space で別アプリの窓が出た）
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    textarea.blur()
+    expect(textEditor.editingId).toBe(text.id)
+    expect(layer.children).toEqual([textarea])
+    expect(editor.store.activeTransaction).not.toBeNull()
+
+    // 窓に戻ると、フォーカスとカーソルが戻る
+    textarea.setSelectionRange(0, 0)
+    fakeWindow.dispatchFocus()
+    expect(textarea.focused).toBe(true)
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([2, 5])
+    expect(fakeWindow.listeners.size).toBe(0)
+    expect(textEditor.editingId).toBe(text.id)
+
+    textEditor.finish()
+    expect(textEditor.editingId).toBeNull()
+  })
+
+  it('ends editing when focus moves within the page', () => {
+    const { editor, layer, textEditor } = createTextEditor()
+    const text = editor.makeNode('text', { x: 0, y: 0, props: { text: 'hello', fontSize: 16 } })
+    editor.createNodes([text])
+    textEditor.start(text.id)
+    const textarea = layer.children[0]!
+
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    textarea.blur()
+    expect(textEditor.editingId).toBeNull()
+    expect(layer.children).toEqual([])
+    expect(editor.store.activeTransaction).toBeNull()
+    expect(fakeWindow.listeners.size).toBe(0)
+  })
+
+  it('stops waiting for the window focus once editing ends another way', () => {
+    const { editor, layer, textEditor } = createTextEditor()
+    const text = editor.makeNode('text', { x: 0, y: 0, props: { text: 'hello', fontSize: 16 } })
+    editor.createNodes([text])
+    textEditor.start(text.id)
+    const textarea = layer.children[0]!
+
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    textarea.blur()
+    expect(fakeWindow.listeners.size).toBe(1)
+    expect(() => textEditor.finish()).not.toThrow()
+    expect(textEditor.editingId).toBeNull()
+    expect(fakeWindow.listeners.size).toBe(0)
+
+    // あとで窓に戻っても何もしない
+    expect(() => fakeWindow.dispatchFocus()).not.toThrow()
+    expect(textarea.focused).toBe(false)
+    expect(textEditor.editingId).toBeNull()
   })
 })
