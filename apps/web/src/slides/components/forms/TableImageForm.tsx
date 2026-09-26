@@ -2,7 +2,7 @@
 import type { AssetSummary } from "../../api.ts";
 import type { DraftSlide, FigureKind } from "../../state.ts";
 import { ImagePicker } from "../ImagePicker.tsx";
-import type { SlideChange } from "../SlideForm.tsx";
+import type { CanvasFigureActions, SlideChange } from "../SlideForm.tsx";
 
 type Props = {
   slide: DraftSlide;
@@ -10,9 +10,10 @@ type Props = {
   assets: AssetSummary[];
   onChange: SlideChange;
   onAssetsChanged: () => void;
+  canvas?: CanvasFigureActions;
 };
 
-export function TableImageForm({ slide, deckFile, assets, onChange, onAssetsChanged }: Props) {
+export function TableImageForm({ slide, deckFile, assets, onChange, onAssetsChanged, canvas }: Props) {
   const setFigure = (figure: FigureKind): void =>
     onChange((current) => ({ ...current, figure }), null);
 
@@ -48,6 +49,7 @@ export function TableImageForm({ slide, deckFile, assets, onChange, onAssetsChan
           assets={assets}
           onChange={(image, key) => onChange((current) => ({ ...current, image }), key)}
           onAssetsChanged={onAssetsChanged}
+          canvas={canvas && { draw: () => canvas.draw("image"), open: canvas.open }}
         />
       ) : (
         <>

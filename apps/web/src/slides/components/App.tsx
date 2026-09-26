@@ -1,6 +1,9 @@
 /** @jsxImportSource preact */
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { SlideLayout } from "@canvcode/slides/core/slide-layout-spec";
+import { createId } from "@canvcode/core";
+import { canvasFigurePath, figureSlotSize, type FigureSlot } from "@canvcode/slides";
+import { figureUrl, newFigureUrl } from "../../figureUrls.ts";
 import { api, ApiError, type AssetSummary, type DeckFormat, type DeckSummary } from "../api.ts";
 import {
   breakCoalescing,
@@ -29,6 +32,7 @@ import {
   serializeDraft,
   validateDeck,
   type DraftDeck,
+  type DraftImage,
   type DraftSlide,
 } from "../state.ts";
 import { ExportDialog, type ExportOutcome } from "./ExportDialog.tsx";
@@ -104,6 +108,8 @@ export function App() {
   const [exporting, setExporting] = useState(false);
   const [exportOutcome, setExportOutcome] = useState<ExportOutcome | null>(null);
   const previewRef = useRef(new PreviewController());
+  /** 保存してキャンバスへ移るところ（離れるときの確かめを出さない） */
+  const leavingRef = useRef(false);
   /** ソースタブが最後に同期した下書き（undo/redo で変わったら再生成する） */
   const sourceDraftRef = useRef<DraftDeck | null>(null);
 
@@ -187,6 +193,7 @@ export function App() {
 
   useEffect(() => {
     const handler = (event: BeforeUnloadEvent): void => {
+      if (leavingRef.current) return;
       if (dirty || sourcePending) {
         event.preventDefault();
         event.returnValue = "";
@@ -383,6 +390,56 @@ export function App() {
     }
     return performSave(target);
   }, [open, draft, tab, sourcePending, loadError, applySource, performSave]);
+
+  // ---- キャンバスの図（提案 B） ----
+
+  /** 図の欄に新しいフレームの参照（canvas:node:…）を入れて保存し、キャンバスでそのフレームを作って移る */
+  const drawOnCanvas = useCallback(
+    async (slot: FigureSlot) => {
+      if (!open || !draft || saving) return;
+      const slide = draft.slides[selected];
+      if (!slide) return;
+      const frameId = createId("node");
+      const withFrame = (image: DraftImage, fallbackTitle: string): DraftImage => ({
+        ...image,
+        path: canvasFigurePath(frameId),
+        alt: image.alt || slide.title || "キャンバスの図",
+        title: image.title || fallbackTitle,
+      });
+      const next = replaceSlide(draft, selected, (current) =>
+        slot === "image"
+          ? { ...current, figure: "image", image: withFrame(current.image, "") }
+          : {
+              ...current,
+              images:
+                slot === "images.0"
+                  ? [withFrame(current.images[0], "図 1"), current.images[1]]
+                  : [current.images[0], withFrame(current.images[1], "図 2")],
+            },
+      );
+      update(() => next);
+      const check = validateDeck(next);
+      if (!check.deck.ok) {
+        setStatus({ kind: "error", text: check.deck.error });
+        return;
+      }
+      if (!(await performSave(next))) return;
+      const { w, h } = figureSlotSize(slot, slide.rows.length);
+      leavingRef.current = true;
+      window.location.href = newFigureUrl({ frameId, deckId: open.file, w, h, name: slide.title || "図" });
+    },
+    [open, draft, saving, selected, update, performSave],
+  );
+
+  /** 図のフレームのあるキャンバスへ移る。保存していない編集があれば、先に保存する */
+  const openOnCanvas = useCallback(
+    async (frameId: string) => {
+      if ((dirty || sourcePending) && !(await save())) return;
+      leavingRef.current = true;
+      window.location.href = figureUrl(frameId);
+    },
+    [dirty, sourcePending, save],
+  );
 
   const exportDeck = useCallback(
     async (format: "pdf" | "png") => {
@@ -630,6 +687,7 @@ export function App() {
                 onChange={(fn, key) => updateSlide(selected, fn, key)}
                 onBlur={commitEdits}
                 onAssetsChanged={() => { if (open) void refreshAssets(open.file); }}
+                canvas={{ draw: (slot) => void drawOnCanvas(slot), open: (frameId) => void openOnCanvas(frameId) }}
               />
             )}
           </div>

@@ -146,6 +146,11 @@ describe('MCP server', () => {
 
   describe('resolve_reference', () => {
     const ref = (fields: Record<string, unknown>) => ({ typeName: 'ref', id: 'ref:Ab12Cd34Ef', createdAt: Date.UTC(2026, 8, 24), ...fields }) as any
+    const PNG = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
+      Buffer.from('IHDR', 'ascii'),
+      Buffer.from([0, 0, 3, 32, 0, 0, 1, 144, 8, 6, 0, 0, 0, 0, 0, 0, 0]),
+    ])
 
     it('returns the current lines, and follows them when they move', async () => {
       const { client, files, records, workspace } = await setup()
@@ -261,6 +266,40 @@ describe('MCP server', () => {
       ])
     })
 
+    it('returns the part of a PDF page a canvas region covered, and says when it is a figure', async () => {
+      const { client, records, refImages } = await setup()
+      const root = records.rootCanvasId
+      const page = (id: string, pageIndex: number) => ({ typeName: 'node', id, type: 'pdf-page', parentId: root, x: 0, y: 0, props: { fileId: 'file:pdf', pageIndex } })
+      records.apply([page('node:p1', 0), page('node:p2', 1)], [])
+      const bounds = { x: 0, y: 0, w: 10, h: 10 }
+      const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }
+      records.putRef(
+        ref({
+          kind: 'canvas',
+          canvasId: root,
+          rect: bounds,
+          nodes: [
+            { id: 'node:p1', bounds, pdf: { fileId: 'file:pdf', pageIndex: 0, rect, text: 'この段落' } },
+            { id: 'node:p2', bounds, pdf: { fileId: 'file:pdf', pageIndex: 1, rect, text: '', figure: true } },
+          ],
+        }),
+      )
+      const unit = 'fraction of the page (0-1, origin at the top left)'
+      const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
+      expect(result.data.content.nodes.map((n: { region?: unknown }) => n.region)).toEqual([
+        { rect, rectUnit: unit, text: 'この段落' },
+        { rect, rectUnit: unit, text: '', figure: true, note: expect.stringContaining('no image was attached') },
+      ])
+
+      // 引用ツールから作る PDF の範囲も、図なら画像を見るよう伝える
+      records.putRef(ref({ id: 'ref:Zz99Zz99Zz', kind: 'pdf', fileId: 'file:pdf', pageIndex: 1, rect, text: '', figure: true }))
+      await refImages.save('ref:Zz99Zz99Zz', PNG, { x: 0, y: 0, w: 10, h: 10 }, new Date(Date.UTC(2026, 8, 25)))
+      const pdf = await client.callTool({ name: 'resolve_reference', arguments: { id: 'ref:Zz99Zz99Zz' } })
+      const content = pdf.content as { type: string; text?: string }[]
+      expect(content.map((c) => c.type)).toEqual(['image', 'text'])
+      expect(JSON.parse(content[1]!.text!).content).toMatchObject({ figure: true, note: expect.stringContaining('look at the attached image') })
+    })
+
     // 手書き線のある範囲は、画像を先に、JSON をあとに返す（MAI-64）
     describe('with a freehand stroke', () => {
       async function drawRef() {
@@ -277,11 +316,6 @@ describe('MCP server', () => {
         env.records.putRef(ref({ kind: 'canvas', canvasId: root, rect: { x: -10, y: -10, w: 400, h: 200 }, nodes: [{ id: 'node:group', bounds }] }))
         return env
       }
-      const PNG = Buffer.concat([
-        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
-        Buffer.from('IHDR', 'ascii'),
-        Buffer.from([0, 0, 3, 32, 0, 0, 1, 144, 8, 6, 0, 0, 0, 0, 0, 0, 0]),
-      ])
 
       it('returns the image first, and says how its pixels map to the canvas', async () => {
         const { client, refImages } = await drawRef()

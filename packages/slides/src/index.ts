@@ -1,3 +1,4 @@
+export * from './core/canvas-figure.ts'
 export * from './core/deck-lint.ts'
 export * from './core/inline-markup.ts'
 export * from './core/markdown-deck.ts'

@@ -63,6 +63,9 @@ export interface PieMenuContext {
   distributeSelection(axis: Axis): void
   lockSelection(): void
   duplicateSelection(): void
+  // 選んでいるフレームを、スライドの図にする・その参照（canvas:<id>）をコピーする（提案 B）
+  makeSlideFigure(): void
+  copyFigureReference(): void
 }
 
 export interface PdfMenuContext {
@@ -82,6 +85,8 @@ export interface SelectionMenuContext {
   arrangeCount: number
   // テキストか付箋を選んでいるか
   hasText: boolean
+  // フレームを 1 つだけ選んでいるか
+  frame: boolean
 }
 
 const ALIGN_EDGES: [AlignEdge, string][] = [
@@ -131,6 +136,10 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   if (selection.count >= 1) {
     items.push({ label: '固定する', onSelect: ctx.lockSelection })
     items.push({ label: '複製', onSelect: ctx.duplicateSelection })
+  }
+  if (selection.frame) {
+    items.push({ label: 'スライドの図にする…', onSelect: ctx.makeSlideFigure })
+    items.push({ label: '図の参照をコピー', onSelect: ctx.copyFigureReference })
   }
   if (pages.length === 0) return items
   return pages.length + items.length <= 8 ? [...pages, ...items] : [{ label: 'ページ', items: pages }, ...items]

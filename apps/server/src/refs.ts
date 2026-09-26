@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
-import { resolveLines, validateReference, type Box, type ReferenceRecord } from '@canvcode/core'
+import { resolveLines, validateReference, type Box, type PdfRegion, type ReferenceRecord } from '@canvcode/core'
 import { ensurePdfTextFile } from './assets.ts'
 import { HttpError, type FileStore } from './files.ts'
 import { RefConflictError, type RecordStore, type StoredRecord } from './records.ts'
@@ -158,7 +158,17 @@ export interface DescribedNode {
   size?: number
   pointCount?: number
   note?: string
+  // 範囲選択の枠が一部にかかった PDF のページの、ページの中の範囲と文字
+  region?: DescribedRegion
   children?: DescribedNode[]
+}
+
+export interface DescribedRegion {
+  rect: Box
+  rectUnit: string
+  text: string
+  figure?: true
+  note?: string
 }
 
 // 画像を添えたときに JSON に足すもの。画像のピクセルとワールド座標の対応
@@ -169,6 +179,19 @@ const IMAGE_NOTE =
   'Pixel (px, py) in the image is world point (x + px / scale, y + py / scale). The JSON is the current content and may differ.'
 const DRAW_NOTE = 'Freehand stroke. Its shape is not in the JSON: look at the attached image.'
 const DRAW_NOTE_NO_IMAGE = 'Freehand stroke. Its shape is not in the JSON (no image was attached to this reference).'
+const RECT_UNIT = 'fraction of the page (0-1, origin at the top left)'
+const FIGURE_NOTE = 'This part of the page is mostly a figure (little or no text): look at the attached image.'
+const FIGURE_NOTE_NO_IMAGE = 'This part of the page is mostly a figure (little or no text), but no image was attached to this reference.'
+
+// PDF のページの中の範囲を、AI に返す形にする
+function describeRegion(region: PdfRegion, hasImage: boolean): DescribedRegion {
+  return {
+    rect: region.rect,
+    rectUnit: RECT_UNIT,
+    text: region.text,
+    ...(region.figure ? { figure: true as const, note: hasImage ? FIGURE_NOTE : FIGURE_NOTE_NO_IMAGE } : {}),
+  }
+}
 
 // ref を、AI に返す中身にする。指している先が消えていても投げず、status と warnings で知らせる
 export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Promise<Record<string, unknown>> {
@@ -229,10 +252,11 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
         page: ref.pageIndex + 1,
         pageIndex: ref.pageIndex,
         rect: ref.rect,
-        rectUnit: 'fraction of the page (0-1, origin at the top left)',
+        rectUnit: RECT_UNIT,
       },
       content: {
         text: ref.text,
+        ...(ref.figure ? { figure: true, note: saved ? FIGURE_NOTE : FIGURE_NOTE_NO_IMAGE } : {}),
         ...(pageText === null ? {} : { pageText: truncate(pageText, MAX_PAGE_TEXT) }),
       },
     }
@@ -246,18 +270,19 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
   const budget = { left: MAX_NODES, truncated: false }
   const cache: SummaryCache = new Map()
   const nodes: DescribedNode[] = []
-  for (const { id, bounds } of ref.nodes) {
+  for (const { id, bounds, pdf } of ref.nodes) {
     if (budget.left <= 0) {
       budget.truncated = true
       break
     }
     budget.left--
     const record = deps.records.get(id)
+    const region = pdf ? { region: describeRegion(pdf, Boolean(saved)) } : {}
     if (!record) {
-      nodes.push({ id, type: 'unknown', bounds, deleted: true })
+      nodes.push({ id, type: 'unknown', bounds, deleted: true, ...region })
       continue
     }
-    nodes.push({ ...(await describeNode(record, deps, budget, Boolean(saved), cache)), bounds })
+    nodes.push({ ...(await describeNode(record, deps, budget, Boolean(saved), cache)), bounds, ...region })
   }
   if (ref.nodes.some(({ id }) => !deps.records.get(id))) warnings.push('Some nodes were deleted after the reference was made.')
   return {

@@ -50,10 +50,31 @@ ssh -L 8787:127.0.0.1:8787 <VPS>
 
 Tailscale Serve から開く場合は、CanvCode のサーバーをその tailnet URL に限定して許可し、Serve は tailnet 内だけに公開する。アプリ自体にログイン機能はないので、tailnet のアクセス制御も確認する。
 
+Tailscale 経由で本番サーバーを起動・再起動するときは、Serve が表示する HTTPS の Origin を毎回 `CANVCODE_TRUSTED_ORIGIN` に設定する。設定がないと Host / Origin の確認で API と画面の接続が拒否される。リポジトリのルートで実行する。
+
 ```bash
-CANVCODE_TRUSTED_ORIGIN=https://<machine>.<tailnet>.ts.net npm start
+# package.json / package-lock.json が変わったとき
+npm install
+
+# 画面のコードを更新したとき（型チェックと dist のビルド）
+npm run build
+
+# tailscale serve status に表示される URL に置き換える
+TAILNET_ORIGIN='https://machine.tailnet.ts.net'
+
+# ログインシェルから切り離して起動し、ログを /tmp に保存する
+setsid -f env CANVCODE_TRUSTED_ORIGIN="$TAILNET_ORIGIN" npm start >>/tmp/canvcode-main-server.log 2>&1 </dev/null
+
+# 初回、または Serve の転送先を変更するときだけ設定する
 sudo tailscale serve --bg 8787
+tailscale serve status
+
+# localhost と tailnet URL の両方で {"ok":true} が返ることを確認する
+curl http://127.0.0.1:8787/api/health
+curl "$TAILNET_ORIGIN/api/health"
 ```
+
+`npm run build` は型チェックと Web 画面のビルドを行う。サーバーは `apps/web/dist` を配信するため、画面を変更したあとにビルドせず起動すると古い画面が表示される。サーバーの起動ログは `/tmp/canvcode-main-server.log` に出る。
 
 開発時は `npm run dev`（Vite、http://127.0.0.1:5173）。ポートフォワードは `-L 5173:127.0.0.1:5173`。
 
@@ -111,6 +132,8 @@ AI にスライドを頼むときは「canvcode でスライドを作って」�
 | PDF の範囲 | 「範囲を選んで引用」（Alt+ドラッグ）で囲み、「AIに渡すIDをコピー」 |
 
 AI が受け取るのは、行ならそのときの本文（ファイルが変わっていれば探し直した位置）、キャンバスなら範囲の中のノード（カードは File の id を含むので `read_document` で読める）、PDF なら範囲の文字とページ全体の文字。
+
+キャンバスの範囲選択で PDF のページの一部を囲むと（固定したページでもよい）、そのページのノードに `region`（ページの中の範囲と、その中の文字）が付く。囲んだ所が図や表など文字の少ない所なら、範囲の画像も添える（引用ツールから作る PDF の範囲も同じ）。
 
 文書全体は応答に入れず、ファイルの絶対パスだけを付ける。AI は範囲の外まで読みたいときに、そのファイルを自分で読む。そのため AI は CanvCode のサーバーと同じマシンで動いている必要がある。
 

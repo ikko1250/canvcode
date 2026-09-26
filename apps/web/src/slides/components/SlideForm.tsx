@@ -1,5 +1,6 @@
 /** @jsxImportSource preact */
 import { layoutUsesRows, SLIDE_LAYOUTS, type SlideLayout } from "@canvcode/slides/core/slide-layout-spec";
+import type { FigureSlot } from "@canvcode/slides";
 import type { AssetSummary } from "../api.ts";
 import { LAYOUT_LABELS, switchLayout, type DraftSlide } from "../state.ts";
 import { BulletsForm } from "./forms/BulletsForm.tsx";
@@ -10,6 +11,9 @@ import { TitleForm } from "./forms/TitleForm.tsx";
 
 export type SlideChange = (fn: (slide: DraftSlide) => DraftSlide, key: string | null) => void;
 
+/** 図の欄をキャンバスのフレームで描く（提案 B）。draw は新しいフレームを作って移る、open はそのフレームへ移る */
+export type CanvasFigureActions = { draw: (slot: FigureSlot) => void; open: (frameId: string) => void };
+
 type Props = {
   slide: DraftSlide;
   deckFile: string;
@@ -17,6 +21,7 @@ type Props = {
   onChange: SlideChange;
   onBlur: () => void;
   onAssetsChanged: () => void;
+  canvas?: CanvasFigureActions;
 };
 
 export function SlideForm(props: Props) {
@@ -101,6 +106,7 @@ export function SlideForm(props: Props) {
           assets={props.assets}
           onChange={onChange}
           onAssetsChanged={props.onAssetsChanged}
+          canvas={props.canvas}
         />
       )}
 
@@ -111,6 +117,7 @@ export function SlideForm(props: Props) {
           assets={props.assets}
           onChange={onChange}
           onAssetsChanged={props.onAssetsChanged}
+          canvas={props.canvas}
         />
       )}
     </div>

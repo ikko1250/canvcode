@@ -88,7 +88,9 @@ export function createMcpServer(deps: McpDeps): McpServer {
         'Returns the location (canvas region, document lines, or PDF page region) and its content: the current text of the lines, ' +
         'the nodes in the canvas region (with document ids you can pass to read_document), or the text in the PDF region. ' +
         'Documents carry absPath (Markdown / Python file) or textPath (text extracted from a PDF, pages marked "=== page N ===") to read the whole document from disk. ' +
-        'When the region has freehand strokes or images, a PNG of the region comes first; the "image" field maps its pixels to world coordinates.',
+        'A PDF page that a canvas region only partly covers has "region": the covered part of the page (fraction of the page) and its text. ' +
+        'When the region has freehand strokes or images, or covers a part of a PDF page that is mostly a figure ("figure": true), ' +
+        'a PNG of the region comes first; the "image" field maps its pixels to world coordinates.',
       inputSchema: { id: z.string().describe('Reference id, e.g. ref:Ab12Cd34Ef (the ref: prefix may be omitted)') },
       annotations: { readOnlyHint: true },
     },
@@ -394,6 +396,7 @@ def hello():
 - Keep ids when you edit a deck: the canvas shows each slide as an image, and the notes the user drew on it follow the id when slides are reordered.
 - A header row followed by \`|---|---|\` is dropped (it is not a slide row). Only "#" and "##" headings are allowed.
 - Image paths are relative to the deck file. Images must be inside the workspace (png, jpg, webp, svg).
+- A figure can also be a frame the user drew on the canvas: write \`canvas:<frame node id>\` as the path, e.g. \`![構成図](canvas:node:AbCdEf0123456789)\`. Keep such paths as they are when you edit a deck; the picture is drawn by the user's browser, so you cannot change it (a missing frame shows as a placeholder and a warning).
 - An image line can end with an attribute block to zoom and reposition it, e.g. \`![図](assets/a.png){zoom=1.5 x=-10 y=5}\`: \`zoom\` is 0.5-4 (default 1), \`x\`/\`y\` are -100-100 percent offsets (default 0). Parts that overflow the frame are cropped. Omit the block to keep the default (unchanged) framing.
 
 ## JSON

@@ -97,6 +97,24 @@ export class ImageCache implements ImageRequester {
     return nearestLevel(entry.levels, level)
   }
 
+  // その解像度の画像を、順番待ちをせずにすぐ作る（なければ）。オフスクリーンで描く前に、くっきりした画像を用意するのに使う
+  // （AI に渡す ref の画像。MAI-64）。作れなければ null
+  async load(key: string, version: string, level: number, produce: () => Promise<RasterImage>): Promise<RasterImage | null> {
+    const entry = this.images.get(key)
+    const exact = entry?.version === version ? entry.levels.get(level) : undefined
+    if (exact) return exact
+    try {
+      const image = await produce()
+      if (this.disposed) return null
+      this.store(key, version, image)
+      this.jobs.delete(`${key}@${level}`)
+      return image
+    } catch (error) {
+      console.error('Failed to produce image', key, error)
+      return null
+    }
+  }
+
   get stats(): ImageCacheStats {
     return {
       entries: this.images.size,
