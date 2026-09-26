@@ -933,9 +933,13 @@ export class CanvasView {
     if (!this.editor.promoteSelection()) this.options.notify('昇格するノードを選んでください')
   }
 
-  // ノードを別の Canvas（子の Canvas など）に移す（MAI-38）。confirm なら、先に確かめる。
+  // ノードを別の Canvas（子の Canvas など）に移す（MAI-38）。confirm なら、先に確かめる。nextTo は Editor.moveToCanvas と同じ。
   // 移したら、移す先を知らせる。移せなかったら（循環になるなど）そう知らせる
-  async moveToCanvas(ids: string[], canvasId: string, options: { confirm?: boolean } = {}): Promise<boolean> {
+  async moveToCanvas(
+    ids: string[],
+    canvasId: string,
+    options: { confirm?: boolean; nextTo?: string } = {},
+  ): Promise<boolean> {
     this.tool.cancel()
     const editor = this.editor
     const title = editor.workspace.getCanvas(canvasId)?.title ?? ''
@@ -948,7 +952,7 @@ export class CanvasView {
       // 尋ねている間に Canvas を移った・ノードが変わった場合は、やめる
       if (!ok || this.editor !== editor || !editor.canMoveToCanvas(ids, canvasId)) return false
     }
-    const moved = editor.moveToCanvas(ids, canvasId)
+    const moved = editor.moveToCanvas(ids, canvasId, { nextTo: options.nextTo })
     if (moved) this.options.notify(`「${title}」に移動しました`)
     return moved !== null
   }

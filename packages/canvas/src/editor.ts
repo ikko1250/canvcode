@@ -788,9 +788,10 @@ export class Editor {
 
   // ids（とその子孫）を、別の Canvas（子の Canvas など）の直下に移す（1 回の Undo で戻る。履歴はこの Canvas に入る）。
   // 並びは保ったまま、移す先にすでにあるものの右に置く（空なら、今のワールドでの位置のまま）。
+  // nextTo（移す先のノード。親の Canvas に移すときのこの Canvas の持ち主の Portal など）があれば、その右に上を揃えて置く。
   // 移すノードと残るノードの間の矢印のつながりは外す。持ち主の Portal を移すと、参照先は移す先の子になる（フック）。
   // 移したノードの id を返す。移せなければ null
-  moveToCanvas(ids: Iterable<string>, canvasId: string): string[] | null {
+  moveToCanvas(ids: Iterable<string>, canvasId: string, options: { nextTo?: string } = {}): string[] | null {
     const list = [...ids]
     if (!this.canMoveToCanvas(list, canvasId)) return null
     const roots = this.movableRoots(list)
@@ -799,7 +800,8 @@ export class Editor {
     // 移す先の中身（直下のノードとその子孫）の索引。置く位置と重なり順を決める
     const target = new NodeIndex(canvasId, this.types)
     target.load(this.workspace.tree.descendantsOf(canvasId).flatMap((id) => this.getNode(id) ?? []))
-    const content = unionBoxes(target.allIds().flatMap((id) => target.get(id)?.worldBounds ?? []))
+    const anchor = options.nextTo ? target.get(options.nextTo)?.worldBounds : undefined
+    const content = anchor ?? unionBoxes(target.allIds().flatMap((id) => target.get(id)?.worldBounds ?? []))
     const offset = content
       ? { x: content.x + content.w + MOVE_TO_CANVAS_GAP - bounds.x, y: content.y - bounds.y }
       : { x: 0, y: 0 }
