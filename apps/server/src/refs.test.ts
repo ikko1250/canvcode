@@ -39,14 +39,19 @@ const post = (base: string, body: unknown) =>
 describe('/api/refs', () => {
   it('saves a reference and returns it', async () => {
     const { base, records } = await setup()
+    const before = Date.now()
     const created = await post(base, ref)
     expect(created.status).toBe(201)
     expect(await created.json()).toEqual({ id: ref.id })
-    expect(records.getRef(ref.id)).toEqual(ref)
+    // 作った時刻は、ブラウザが送った値ではなくサーバーの時計で付ける
+    const saved = records.getRef(ref.id)!
+    expect(saved).toEqual({ ...ref, createdAt: saved.createdAt })
+    expect(saved.createdAt).toBeGreaterThanOrEqual(before)
+    expect(saved.createdAt).toBeLessThanOrEqual(Date.now())
 
     const got = await fetch(`${base}/api/refs/${encodeURIComponent(ref.id)}`)
     expect(got.status).toBe(200)
-    expect(await got.json()).toEqual(ref)
+    expect(await got.json()).toEqual(saved)
   })
 
   it('refuses invalid and duplicate references', async () => {
