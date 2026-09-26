@@ -1,5 +1,6 @@
 /** @jsxImportSource preact */
 import { useEffect, useId, useState } from "preact/hooks";
+import { canvasFigureFrameId, isCanvasFigurePath } from "@canvcode/slides";
 import { api, ApiError, type AssetSummary } from "../api.ts";
 import type { DraftImage } from "../state.ts";
 
@@ -27,6 +28,8 @@ type Props = {
   assets: AssetSummary[];
   onChange: (value: DraftImage, key: string | null) => void;
   onAssetsChanged: () => void;
+  /** キャンバスのフレームを図にする（提案 B）。描く：この欄に新しいフレームを作ってキャンバスへ移る。開く：そのフレームへ移る */
+  canvas?: { draw: () => void; open: (frameId: string) => void };
 };
 
 export function ImagePicker(props: Props) {
@@ -36,6 +39,7 @@ export function ImagePicker(props: Props) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const known = props.assets.some((asset) => asset.path === value.path);
+  const canvasFrame = canvasFigureFrameId(value.path);
 
   useEffect(() => {
     setBroken(false);
@@ -113,6 +117,26 @@ export function ImagePicker(props: Props) {
         />
       </div>
 
+      {props.canvas && (
+        <div class="canvas-figure">
+          {canvasFrame ? (
+            <>
+              <span class="hint">キャンバスの図（フレームの中を描き直すと、図も変わります）</span>
+              <button type="button" onClick={() => props.canvas?.open(canvasFrame)}>
+                キャンバスで開く
+              </button>
+            </>
+          ) : (
+            <>
+              <span class="hint">図をキャンバスのフレームで描く（保存してからキャンバスへ移ります）</span>
+              <button type="button" onClick={() => props.canvas?.draw()}>
+                キャンバスで描く
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <div class="upload">
         <label>
           アップロード:
@@ -135,6 +159,8 @@ export function ImagePicker(props: Props) {
         <div class="missing">画像が未選択です。</div>
       ) : broken ? (
         <div class="missing">画像を読み込めません: {value.path}</div>
+      ) : isCanvasFigurePath(value.path) && !canvasFrame ? (
+        <div class="missing">キャンバスの図のパスが不正です（canvas:node:… の形で書きます）: {value.path}</div>
       ) : (
         <img
           class="thumb"

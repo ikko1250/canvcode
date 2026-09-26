@@ -215,6 +215,8 @@ textarea.code { font-family: ui-monospace, Consolas, "Cascadia Code", monospace;
 
 .image-picker .missing { color: #888; font-size: 12px; margin: 6px 0; }
 .image-picker .upload { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.image-picker .canvas-figure { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 6px; }
+.image-picker .canvas-figure button { flex: none; }
 
 .figure-adjust {
   padding: 8px;

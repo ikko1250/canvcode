@@ -11,10 +11,13 @@ import {
   createRefId,
   linesOfSelection,
   quoteRange,
+  isNodeRecord,
   type Box,
   type Camera,
   type CanvasRefTarget,
   type LinesRefTarget,
+  type NodeRecord,
+  type Patch,
   type PdfRegion,
   type RefTarget,
   type Vec,
@@ -52,6 +55,7 @@ import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { reconcileSlidePages, type SlidePageService } from './slidePages.ts'
+import { FIGURE_RENDER_DELAY_MS, figureFramesTouched, figureRenderBox, type FigureService } from './figures.ts'
 import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
@@ -109,6 +113,8 @@ export interface CanvasViewOptions {
   onOpenFile?: (fileId: string) => void
   // スライドデッキの画像の一覧。渡すと、デッキのカードの横にスライドの画像を並べる
   slidePages?: SlidePageService
+  // スライドの図にするフレーム。渡すと、図のフレームの中が変わったら描き直してサーバーへ送る
+  figures?: FigureService
   // 引用（MAI-33）：PDF のページの上で引用する範囲を決めた / カードの上の編集で文字を選んで「引用」を押した。
   // 呼び出し側は、「横に引用ノート」か「引用をコピー」かを選ばせる
   onQuote?: (request: QuoteRequest) => void
@@ -150,7 +156,7 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf' | 'slidePages'>>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf' | 'slidePages' | 'figures'>>
   // 引用の出典（MAI-33）
   private readonly citations: CitationResolver
   // 「出典へ」で移ってきた範囲（しばらく強調して見せる）
@@ -161,6 +167,9 @@ export class CanvasView {
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
   readonly files: FileManager | null
   readonly slidePages: SlidePageService | null
+  readonly figures: FigureService | null
+  // 描き直しを待っている図のフレーム（フレームの id → タイマーと、そのフレームのある Canvas の Editor）
+  private readonly figureTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; editor: Editor }>()
   // 知らせたスライドの画像のエラー（同じものを何度も知らせない）
   private readonly slidePageErrors = new Map<string, string>()
   // カードの上での本文の編集（MAI-30）
@@ -226,6 +235,7 @@ export class CanvasView {
     }
     this.files = options.files ?? null
     this.slidePages = options.slidePages ?? null
+    this.figures = options.figures ?? null
     this.documents = {
       get: (id) => {
         const workspace = this.editor.workspace
@@ -328,6 +338,9 @@ export class CanvasView {
     if (this.slidePages) {
       this.disposers.push(this.slidePages.onChange((fileId) => this.syncSlidePages(fileId)))
     }
+    if (this.figures) {
+      this.disposers.push(this.figures.onChange(() => this.renderMissingFigures()))
+    }
     this.attachEditor()
     this.syncSlidePages()
 
@@ -388,6 +401,8 @@ export class CanvasView {
     for (const dispose of this.editorDisposers) dispose()
     for (const dispose of this.disposers) dispose()
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
+    for (const { timer } of this.figureTimers.values()) clearTimeout(timer)
+    this.figureTimers.clear()
     this.root.remove()
   }
 
@@ -425,6 +440,7 @@ export class CanvasView {
     this.cursorOverride = null
     this.attachEditor()
     this.syncSlidePages()
+    this.renderMissingFigures()
     this.updateCursor()
     this.invalidate('all')
   }
@@ -517,6 +533,12 @@ export class CanvasView {
         }
         if (sceneChanged) this.invalidate('scene')
         this.invalidate('overlay')
+        // 図のフレームの中が確定して変わったら、描き直す（別のタブからの変更は、そのタブが描く）
+        const figures = this.figures
+        if (figures && event.phase === 'commit' && event.options.source !== 'remote') {
+          const nodes = new Map([...event.patch].filter(([, change]) => isNodeRecord(change.before) || isNodeRecord(change.after))) as Patch<NodeRecord>
+          for (const frameId of figureFramesTouched(editor, nodes, (id) => figures.isFigure(id))) this.scheduleFigure(editor, frameId)
+        }
       }),
     ]
   }
@@ -542,8 +564,50 @@ export class CanvasView {
     void this.storeThumbnail(editor.canvasId, canvas)
   }
 
-  // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像）
-  private renderRegion(editor: Editor, box: Box, scale: number, width: number, height: number): HTMLCanvasElement {
+  // ---- スライドの図にするフレーム（提案 B） ----
+
+  // この Canvas にある図のフレームのうち、サーバーにまだ画像のないものを描く
+  private renderMissingFigures(): void {
+    const figures = this.figures
+    if (!figures) return
+    const editor = this.editor
+    for (const id of editor.index.allIds()) {
+      if (editor.getNode(id)?.type === 'frame' && figures.isFigure(id) && !figures.hasImage(id)) this.scheduleFigure(editor, id, 0)
+    }
+  }
+
+  private scheduleFigure(editor: Editor, frameId: string, delay = FIGURE_RENDER_DELAY_MS): void {
+    const pending = this.figureTimers.get(frameId)
+    if (pending) clearTimeout(pending.timer)
+    const timer = setTimeout(() => {
+      this.figureTimers.delete(frameId)
+      void this.renderFigure(frameId, editor).catch((error: unknown) => console.warn('Failed to render a figure', frameId, error))
+    }, delay)
+    this.figureTimers.set(frameId, { timer, editor })
+  }
+
+  // フレームを図の PNG に描いて、サーバーへ送る。フレームが見つからなければ false
+  async renderFigure(frameId: string, editor: Editor = this.editor): Promise<boolean> {
+    const figures = this.figures
+    const bounds = editor.index.get(frameId)?.worldBounds
+    if (!figures || !bounds || editor.getNode(frameId)?.type !== 'frame' || bounds.w <= 0 || bounds.h <= 0) return false
+    const { box, maxEdge } = figureRenderBox(bounds)
+    const scale = maxEdge / Math.max(box.w, box.h)
+    const width = Math.max(1, Math.round(box.w * scale))
+    const height = Math.max(1, Math.round(box.h * scale))
+    await this.loadPdfPages(editor, box, scale)
+    // フレームとその中だけを描く（上に重なった別のノードは写さない）
+    const only = new Set([frameId, ...editor.index.descendantsOf(frameId)])
+    const canvas = this.renderRegion(editor, box, scale, width, height, only)
+    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    if (!png) return false
+    await figures.upload(frameId, png)
+    return true
+  }
+
+  // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像、スライドの図）。
+  // only を渡すと、そのノードだけを描く
+  private renderRegion(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): HTMLCanvasElement {
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -561,7 +625,8 @@ export class CanvasView {
       files: this.files ?? undefined,
       citations: this.citations,
     }
-    drawNodes(ctx, editor, visibleIds(editor, viewport), viewport)
+    const ids = visibleIds(editor, viewport)
+    drawNodes(ctx, editor, only ? ids.filter((id) => only.has(id)) : ids, viewport)
     return canvas
   }
 

@@ -396,6 +396,7 @@ def hello():
 - Keep ids when you edit a deck: the canvas shows each slide as an image, and the notes the user drew on it follow the id when slides are reordered.
 - A header row followed by \`|---|---|\` is dropped (it is not a slide row). Only "#" and "##" headings are allowed.
 - Image paths are relative to the deck file. Images must be inside the workspace (png, jpg, webp, svg).
+- A figure can also be a frame the user drew on the canvas: write \`canvas:<frame node id>\` as the path, e.g. \`![構成図](canvas:node:AbCdEf0123456789)\`. Keep such paths as they are when you edit a deck; the picture is drawn by the user's browser, so you cannot change it (a missing frame shows as a placeholder and a warning).
 - An image line can end with an attribute block to zoom and reposition it, e.g. \`![図](assets/a.png){zoom=1.5 x=-10 y=5}\`: \`zoom\` is 0.5-4 (default 1), \`x\`/\`y\` are -100-100 percent offsets (default 0). Parts that overflow the frame are cropped. Omit the block to keep the default (unchanged) framing.
 
 ## JSON

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { AssetStore } from './assets.ts'
+import { FigureStore } from './figures.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
@@ -57,7 +58,12 @@ function broadcast(event: FileEvent): void {
 }
 const files = new FileStore(WORKSPACE, DATA_DIR, broadcast)
 await files.init()
-const slides = new SlidesApi(files, WORKSPACE, PORT, DATA_DIR)
+const figures = new FigureStore(DATA_DIR)
+await figures.init()
+// フレームがあるか（消したノードは records に残らない）。スライドの図の警告と代わりの絵に使う
+const frameExists = (id: string): boolean => records.get(id)?.type === 'frame'
+const slides = new SlidesApi(files, WORKSPACE, PORT, DATA_DIR, { figures, frameExists })
+const figureHooks = slides.figureHooks()
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
@@ -125,6 +131,7 @@ const server = createServer(async (req, res) => {
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
+  if (await figures.handle(req, res, url.pathname, figureHooks)) return
   if (await slides.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await files.handle(req, res, url.pathname)) return

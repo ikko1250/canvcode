@@ -5,7 +5,7 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
-const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, hasText: false }
+const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, hasText: false, frame: false }
 
 function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}): PieMenuContext {
   return {
@@ -36,6 +36,8 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     distributeSelection: vi.fn(),
     lockSelection: vi.fn(),
     duplicateSelection: vi.fn(),
+    makeSlideFigure: vi.fn(),
+    copyFigureReference: vi.fn(),
   }
 }
 
@@ -123,6 +125,16 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(ctx.lockSelection).toHaveBeenCalledTimes(1)
     run(menu?.items, '複製')
     expect(ctx.duplicateSelection).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers to use a single selected frame as a slide figure', () => {
+    const ctx = context({}, { count: 1, frame: true })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['固定する', '複製', 'スライドの図にする…', '図の参照をコピー'])
+    run(menu?.items, 'スライドの図にする…')
+    expect(ctx.makeSlideFigure).toHaveBeenCalledTimes(1)
+    run(menu?.items, '図の参照をコピー')
+    expect(ctx.copyFigureReference).toHaveBeenCalledTimes(1)
   })
 
   it('folds the page items into a submenu when the ring would exceed 8 items', () => {

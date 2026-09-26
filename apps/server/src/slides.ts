@@ -4,9 +4,10 @@ import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { zipSync } from 'fflate'
 import { chromium, type Browser, type Page } from 'playwright'
-import { assignSlideNames, lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, pickAdjust, serializeDeck, slideKey, slideLabel } from '@canvcode/slides'
-import type { DeckData, RenderSlideData, SlideData } from '@canvcode/slides'
+import { assignSlideNames, canvasFigureFrameId, deckCanvasFigures, figurePathAt, isCanvasFigurePath, isFrameId, lintDeck, lintSlide, normalizeDeckData, parseMarkdownDeck, pickAdjust, serializeDeck, slideKey, slideLabel } from '@canvcode/slides'
+import type { DeckData, FigureSlot, RenderSlideData, SlideData } from '@canvcode/slides'
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from '@canvcode/slides/core/slide-layout-spec'
+import type { FigureHooks, FigureReference, FigureStore } from './figures.ts'
 import { FileStore, HttpError, type FileInfo } from './files.ts'
 
 const MAX_DECK_BYTES = 10 * 1024 * 1024
@@ -40,12 +41,23 @@ export class SlidesApi {
   // 失敗したときと同じ画像を頼まれても作り直さない（Chromium が無いときに、読み直しのたびに起動し直さないように）
   private readonly pageJobs = new Map<string, Promise<void>>()
   private readonly pageErrors = new Map<string, { message: string; hashes: string }>()
+  // キャンバスのフレームを図にするとき（提案 B）の、図の画像と、フレームがあるか（無ければ確かめない）
+  private readonly figures: FigureStore | undefined
+  private readonly frameExists: ((frameId: string) => boolean) | undefined
 
-  constructor(files: FileStore, workspace: string, port: number, dataDir: string) {
+  constructor(
+    files: FileStore,
+    workspace: string,
+    port: number,
+    dataDir: string,
+    options: { figures?: FigureStore; frameExists?: (frameId: string) => boolean } = {},
+  ) {
     this.files = files
     this.workspace = workspace
     this.port = port
     this.pagesDir = join(dataDir, 'slide-pages')
+    this.figures = options.figures
+    this.frameExists = options.frameExists
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, search: URLSearchParams): Promise<boolean> {
@@ -187,7 +199,7 @@ export class SlidesApi {
         if (Buffer.byteLength(text, 'utf8') > MAX_DECK_BYTES) throw new HttpError(413, '保存後のデッキファイルが大きすぎます')
         const saved = await this.files.write(info.id, text, current.hash)
         const deck = parseDeck(saved, text)
-        sendJson(res, 200, { mtimeMs: saved.mtime, text, warnings: lintDeck(deck).warnings })
+        sendJson(res, 200, { mtimeMs: saved.mtime, text, warnings: this.warningsOf(deck) })
         // 開いているキャンバスに知らせ、スライドの画像を先に作り始める
         this.files.announce(saved.id)
         void this.pages(saved, previewBaseOf(req, this.port)).catch((error: unknown) => console.error('slide pages failed', error))
@@ -233,6 +245,12 @@ export class SlidesApi {
       } else if (parts.length === 4 && parts[3] === 'asset' && req.method === 'GET') {
         const info = this.requireDeck(decodePart(parts[2]))
         const assetPath = search.get('path') ?? ''
+        if (isCanvasFigurePath(assetPath)) {
+          const { type, data } = await this.figureImage(assetPath)
+          res.writeHead(200, { 'content-type': type, 'content-length': data.length, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox" })
+          res.end(data)
+          return true
+        }
         const file = await this.resolveImage(info, assetPath)
         const data = await readFile(file)
         const type = IMAGE_TYPES[extname(file).toLowerCase()]
@@ -245,6 +263,18 @@ export class SlidesApi {
           'content-security-policy': "default-src 'none'; sandbox",
         })
         res.end(data)
+      } else if (parts.length === 4 && parts[3] === 'figure' && req.method === 'POST') {
+        const info = this.requireDeck(decodePart(parts[2]))
+        const body = await jsonBody<{ slideKey?: unknown; slot?: unknown; frameId?: unknown; alt?: unknown; replaceCode?: unknown; expectedMtimeMs?: unknown }>(req)
+        if (typeof body.slideKey !== 'string' || !body.slideKey) throw new HttpError(400, 'slideKey を指定してください')
+        if (body.slot !== 'image' && body.slot !== 'images.0' && body.slot !== 'images.1') throw new HttpError(400, 'slot は image / images.0 / images.1 のどれかです')
+        if (typeof body.frameId !== 'string' || !isFrameId(body.frameId)) throw new HttpError(400, 'フレームの id が不正です')
+        if (body.alt !== undefined && typeof body.alt !== 'string') throw new HttpError(400, 'alt は文字列で指定してください')
+        if (body.expectedMtimeMs !== undefined && body.expectedMtimeMs !== info.mtime) {
+          throw new HttpError(409, 'このファイルは外部で変更されています。最新の内容を読み直してください。', { mtimeMs: info.mtime })
+        }
+        const saved = await this.setFigure(info, body.slideKey, body.slot, body.frameId, { alt: body.alt, replaceCode: body.replaceCode === true })
+        sendJson(res, 200, saved)
       } else if (parts.length === 4 && parts[3] === 'export' && req.method === 'POST') {
         const info = this.requireDeck(decodePart(parts[2]))
         const body = await jsonBody<{ format?: 'pdf' | 'png'; scale?: number }>(req)
@@ -285,7 +315,7 @@ export class SlidesApi {
     const { text, hash } = await this.files.read(info.id)
     try {
       const deck = parseDeck(info, text)
-      return { info, text, hash, deck, warnings: lintDeck(deck).warnings }
+      return { info, text, hash, deck, warnings: this.warningsOf(deck) }
     } catch (error) {
       return { info, text, hash, warnings: [], error: errorMessage(error) }
     }
@@ -297,7 +327,7 @@ export class SlidesApi {
     const { content, deck } = prepareDeck(text, `deck${extension}`)
     const info = await this.files.create('slides', title.trim() || deck.deckTitle || '新しいデッキ', content, { extension, announce: true })
     this.renderPagesSoon(info)
-    return { info, deck, warnings: lintDeck(deck).warnings }
+    return { info, deck, warnings: this.warningsOf(deck) }
   }
 
   // デッキの中身を丸ごと置き換える。expectedHash が今のハッシュと違えば 409。読めないデッキは 400 で断る
@@ -306,7 +336,7 @@ export class SlidesApi {
     const { content, deck } = prepareDeck(text, info.path)
     const saved = await this.files.write(info.id, content, expectedHash, { announce: true })
     this.renderPagesSoon(saved)
-    return { info: saved, deck, warnings: lintDeck(deck).warnings }
+    return { info: saved, deck, warnings: this.warningsOf(deck) }
   }
 
   // 書き込む前に、デッキとして読めるか確かめる（MCP の edit_document など、デッキを文字列として直すとき）
@@ -348,7 +378,119 @@ export class SlidesApi {
       if (!page?.ready || !slide) throw new HttpError(503, state.error ?? `スライド ${index + 1} の画像を作れませんでした`)
       images.push({ index, ...(slide.name ? { name: slide.name } : {}), title: slide.title, png: await readFile(this.pagePath(page.hash)) })
     }
-    return { images, warnings: lintDeck(deck).warnings }
+    return { images, warnings: this.warningsOf(deck) }
+  }
+
+  // ---- キャンバスの図（提案 B） ----
+
+  // FigureStore から呼ばれる：参照の一覧と、画像が変わったときの作り直し
+  figureHooks(): FigureHooks {
+    return {
+      references: () => this.figureReferences(),
+      changed: async (frameId) => {
+        for (const ref of await this.figureReferences()) {
+          if (ref.id !== frameId) continue
+          for (const deckId of ref.decks) {
+            const info = this.files.getInfo(deckId)
+            // 開いているキャンバスにスライドの画像を読み直させ、先に作り始める
+            this.files.announce(info.id)
+            this.renderPagesSoon(info)
+          }
+        }
+      },
+    }
+  }
+
+  // デッキから参照されているフレーム（読めないデッキは飛ばす）
+  async figureReferences(): Promise<FigureReference[]> {
+    const byFrame = new Map<string, Set<string>>()
+    for (const info of this.files.list()) {
+      if (info.kind !== 'slides' || info.missing) continue
+      let deck: DeckData
+      try {
+        deck = parseDeck(info, (await this.files.read(info.id)).text)
+      } catch {
+        continue
+      }
+      for (const { frameId } of deckCanvasFigures(deck)) {
+        const decks = byFrame.get(frameId) ?? new Set<string>()
+        decks.add(info.id)
+        byFrame.set(frameId, decks)
+      }
+    }
+    return [...byFrame].map(([id, decks]) => ({ id, decks: [...decks] }))
+  }
+
+  // スライドの図の欄を、キャンバスのフレームにする。表だけのスライド（table）は table-image にする。
+  // コードを図の欄に置いているスライドは、replaceCode のときだけコードを外して置き換える（409 で確かめる）
+  async setFigure(
+    info: FileInfo,
+    key: string,
+    slot: FigureSlot,
+    frameId: string,
+    options: { alt?: string; replaceCode?: boolean } = {},
+  ): Promise<{ mtimeMs: number; warnings: string[] }> {
+    const { text, hash } = await this.files.read(info.id)
+    let deck: DeckData
+    try {
+      deck = parseDeck(info, text)
+    } catch (error) {
+      throw new HttpError(400, `デッキを読み込めません: ${errorMessage(error)}`)
+    }
+    const index = deck.slides.findIndex((slide, i) => slideKey(slide, i) === key)
+    const slide = deck.slides[index]
+    if (!slide) throw new HttpError(404, 'スライドが見つかりません（デッキが変わったかもしれません）')
+    const path = `canvas:${frameId}`
+    const layout = slide.layout ?? 'table'
+    let next: SlideData
+    if (slot === 'image') {
+      if (layout !== 'table' && layout !== 'table-image') throw new HttpError(400, 'このスライドには 1 枚の図を置けません（表のスライドを選んでください）')
+      if (slide.code && !options.replaceCode) throw new HttpError(409, 'このスライドの図の欄にはコードがあります。コードを外して図にしますか？', { reason: 'has-code' })
+      const rest: SlideData = { ...slide }
+      delete rest.code
+      next = { ...rest, layout: 'table-image', image: { ...slide.image, path, alt: options.alt || slide.image?.alt || 'キャンバスの図' } }
+    } else {
+      const position = slot === 'images.0' ? 0 : 1
+      const image = slide.images?.[position]
+      if (layout !== 'table-images' || !slide.images || !image) throw new HttpError(400, 'このスライドには 2 図の欄がありません')
+      const images = slide.images.map((item, i) => (i === position ? { ...item, path, ...(options.alt ? { alt: options.alt } : {}) } : item))
+      next = { ...slide, images }
+    }
+    const updated: DeckData = { ...deck, slides: deck.slides.map((item, i) => (i === index ? next : item)) }
+    let content: string
+    try {
+      content = serializeDeck(normalizeDeckData(updated, info.path), info.path)
+    } catch (error) {
+      throw new HttpError(400, errorMessage(error))
+    }
+    const saved = await this.files.write(info.id, content, hash, { announce: true })
+    this.renderPagesSoon(saved)
+    return { mtimeMs: saved.mtime, warnings: this.warningsOf(parseDeck(saved, content)) }
+  }
+
+  // lint の警告に、キャンバスの図の警告（フレームが無い・パスが不正）を足す
+  private warningsOf(deck: DeckData): string[] {
+    const warnings = [...lintDeck(deck).warnings]
+    deck.slides.forEach((slide, index) => {
+      for (const slot of ['image', 'images.0', 'images.1'] as const) {
+        const path = figurePathAt(slide, slot)
+        if (path === undefined || !isCanvasFigurePath(path)) continue
+        const frameId = canvasFigureFrameId(path)
+        if (!frameId) warnings.push(`${slideLabel(slide, index)}: キャンバスの図のパスが不正です（${path}。canvas:node:… の形で書きます）`)
+        else if (this.frameExists && !this.frameExists(frameId)) warnings.push(`${slideLabel(slide, index)}: 図のフレームが見つかりません（${frameId}）`)
+      }
+    })
+    return warnings
+  }
+
+  // canvas:… の図の画像。まだ描かれていない・フレームが無いときは、そう書いた SVG
+  private async figureImage(path: string): Promise<{ type: string; data: Buffer }> {
+    const frameId = canvasFigureFrameId(path)
+    if (!frameId) return { type: 'image/svg+xml', data: placeholderSvg('キャンバスの図のパスが不正です') }
+    if (this.frameExists && !this.frameExists(frameId)) return { type: 'image/svg+xml', data: placeholderSvg('図のフレームが見つかりません') }
+    const png = await this.figures?.read(frameId)
+    if (png) return { type: 'image/png', data: png }
+    return { type: 'image/svg+xml', data: placeholderSvg('キャンバスの図がまだありません（フレームのある Canvas を開くと描かれます）') }
   }
 
   private requireDeck(id: string): FileInfo {
@@ -395,7 +537,7 @@ export class SlidesApi {
   private async export(info: FileInfo, format: 'pdf' | 'png', requestedScale: number | undefined, previewBase: string): Promise<{ data: Buffer; name: string; warnings: string[]; elapsedMs: number }> {
     const started = Date.now()
     const deck = await this.readDeck(info)
-    const warnings = lintDeck(deck).warnings
+    const warnings = this.warningsOf(deck)
     const scale = Math.max(1, Math.min(4, Math.round(requestedScale ?? 1)))
     const { browser, page } = await openPreview(previewBase, format === 'png' ? scale : 1)
     try {
@@ -533,6 +675,10 @@ export class SlidesApi {
   }
 
   private async imageDataUrl(info: FileInfo, assetPath: string): Promise<string> {
+    if (isCanvasFigurePath(assetPath)) {
+      const { type, data } = await this.figureImage(assetPath)
+      return `data:${type};base64,${data.toString('base64')}`
+    }
     const path = await this.resolveImage(info, assetPath)
     const data = await readFile(path)
     if (data.length > MAX_ASSET_BYTES) throw new HttpError(413, `画像が大きすぎます: ${assetPath}`)
@@ -542,6 +688,17 @@ export class SlidesApi {
 }
 
 type SlidePage = { key: string; hash: string; ready: boolean }
+
+// キャンバスの図の代わりに置く絵（灰色の枠と、理由の文字）
+function placeholderSvg(message: string): Buffer {
+  const escaped = message.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c)
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="920" height="732" viewBox="0 0 920 732">` +
+      `<rect x="2" y="2" width="916" height="728" fill="#f4f5f7" stroke="#c9ced6" stroke-width="4" stroke-dasharray="16 12"/>` +
+      `<text x="460" y="366" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="26" fill="#656d76">${escaped}</text>` +
+      `</svg>`,
+  )
+}
 
 function hashesOf(items: { hash: string }[]): string {
   return items.map((item) => item.hash).join(',')

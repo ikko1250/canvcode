@@ -3,8 +3,10 @@ import type { Camera, ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
+  FigureService,
   FileManager,
   SlidePageService,
+  createFigureFrame,
   SyncClient,
   fetchReference,
   Workspace,
@@ -37,8 +39,10 @@ import {
   type TextProps,
 } from '@canvcode/nodes'
 import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
+import { canvasFigurePath } from '@canvcode/slides'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
 import { memoryBreakdown } from './memoryStats.ts'
+import { figureRequestFromUrl, type FigureRequest } from './figureUrls.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
@@ -49,6 +53,7 @@ import { DrawPalette } from './palette/DrawPalette.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
+import { FigureTargetDialog, type FigureTarget } from './workspace/FigureTargetDialog.tsx'
 import { FileEditor } from './workspace/FileEditor.tsx'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab, slideEditorUrl } from './workspace/newTab.ts'
@@ -136,7 +141,10 @@ function createWorkspace(initial: InitialRecords) {
   manager = new FileManager({ workspace })
   // スライドデッキの画像（デッキのカードの横に並べる）。デッキの本文が変わったら読み直す
   slidePages = new SlidePageService({ files: manager })
-  return { workspace, files: manager, sync, slidePages }
+  // スライドの図にするフレーム（提案 B）。デッキの本文が変わったら、どのフレームが図かを読み直す
+  const figures = new FigureService({ files: manager, isDeck: (fileId) => workspace.getFile(fileId)?.kind === 'slides' })
+  void figures.refresh()
+  return { workspace, files: manager, sync, slidePages, figures }
 }
 
 // Canvas ごとの最後のカメラ（端末ごとに、ブラウザに覚える）
@@ -216,7 +224,7 @@ type Dialog = { title: string; message: string; choices: DialogChoice<string>[];
 
 export function App(props: { initial: InitialRecords }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [{ workspace, files, sync, slidePages }] = useState(() => createWorkspace(props.initial))
+  const [{ workspace, files, sync, slidePages, figures }] = useState(() => createWorkspace(props.initial))
   const syncStatus = useSyncExternalStore(sync.subscribeStatus, sync.getStatus)
   // 旧データを送っている途中なら、その割合（0〜1）。送り終えて取り込んでいる間は 1
   const [importProgress, setImportProgress] = useState<number | null>(null)
@@ -294,6 +302,8 @@ export function App(props: { initial: InitialRecords }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; items: (MenuItem | 'separator')[]; onClose?: () => void } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
+  // フレームを入れるスライドの図の欄を選んでいるとき（「スライドの図にする…」）
+  const [figureDialog, setFigureDialog] = useState<{ frameName: string; resolve(target: FigureTarget | null): void } | null>(null)
   // Portal の名前を、その場で変えているとき（右クリックメニューの「名前を変更」）
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
   const navigating = useRef(false)
@@ -566,6 +576,102 @@ export function App(props: { initial: InitialRecords }) {
       if (view && view.editor.canvasId === pages.id) await view.showPdfRegion(file.id, ref.pageIndex, ref.rect)
     },
     [workspace, navigate, openFile, notify],
+  )
+
+  // ---- スライドの図にするフレーム（提案 B） ----
+
+  // 選んでいるフレームを、デッキのスライドの図の欄に入れる。図の欄にコードがあれば、置き換えてよいか確かめる
+  const makeSlideFigure = useCallback(async (view: CanvasView) => {
+    const [frameId] = view.editor.session.get().selectedIds
+    const frame = frameId ? view.editor.getNode(frameId) : undefined
+    if (!frameId || frame?.type !== 'frame') return
+    const frameName = (frame.props as { name?: string }).name || 'フレーム'
+    const target = await new Promise<FigureTarget | null>((resolve) => setFigureDialog({ frameName, resolve }))
+    setFigureDialog(null)
+    if (!target) return
+    if (target.replacing && target.replacing !== canvasFigurePath(frameId)) {
+      const choice = await ask('図を置き換えますか？', `今の図（${target.replacing}）を、このフレームに置き換えます。`, [{ label: '置き換える', value: 'ok' }])
+      if (choice !== 'ok') return
+    }
+    const post = (replaceCode: boolean) =>
+      fetch(`/api/slides/${encodeURIComponent(target.deckId)}/figure`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slideKey: target.slideKey, slot: target.slot, frameId, alt: frameName, replaceCode }),
+      })
+    try {
+      let response = await post(false)
+      if (response.status === 409 && ((await response.clone().json()) as { reason?: string }).reason === 'has-code') {
+        const choice = await ask('コードを外しますか？', 'このスライドの図の欄にはコードがあります。コードを外して、このフレームを図にします。', [
+          { label: 'コードを外す', value: 'ok', danger: true },
+        ])
+        if (choice !== 'ok') return
+        response = await post(true)
+      }
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string }
+        return notify(`スライドの図にできませんでした：${body.error ?? response.status}`)
+      }
+      // サーバーに聞き直す前から図として扱い、すぐ描いて送る（スライドの画像がそれで作り直される）
+      figures.markFigure(frameId, target.deckId)
+      await view.renderFigure(frameId)
+      void figures.refresh()
+      notify(`「${frameName}」をスライドの図にしました。フレームの中を描き直すと、スライドの画像も変わります`)
+    } catch (error) {
+      console.error('Failed to set a slide figure', error)
+      notify('スライドの図にできませんでした')
+    }
+  }, [figures, ask, notify])
+
+  // 選んでいるフレームの参照（canvas:<id>）をコピーする。スライドエディタの画像のパスや、AI に渡す
+  const copyFigureReference = useCallback(async (view: CanvasView) => {
+    const [frameId] = view.editor.session.get().selectedIds
+    if (!frameId) return
+    try {
+      await navigator.clipboard.writeText(canvasFigurePath(frameId))
+      notify(`${canvasFigurePath(frameId)} をコピーしました。スライドの画像のパスに貼ると、このフレームが図になります`)
+    } catch (error) {
+      console.warn('Failed to write the clipboard', error)
+      notify('クリップボードに書き込めませんでした')
+    }
+  }, [notify])
+
+  // スライドエディタから来た（?new-figure= / ?figure=）：図のフレームを作って・探して、そこへ移る
+  const openFigureRequest = useCallback(
+    async (request: FigureRequest) => {
+      if (request.kind === 'open') {
+        const canvasId = workspace.canvasOf(request.frameId)
+        if (!canvasId) return notify('図のフレームが見つかりません（消されたかもしれません）')
+        await navigate(canvasId)
+        const view = viewRef.current
+        if (view && view.editor.canvasId === canvasId) await view.focusNode(request.frameId)
+        return
+      }
+      // デッキのカード（持ち主）がある Canvas に作る。まだどこにも置いていないデッキなら、ルートに作る
+      const file = workspace.getFile(request.deckId)
+      const existing = workspace.canvasOf(request.frameId)
+      const owner = file?.parentCanvasId ? workspace.getCanvas(file.parentCanvasId) : undefined
+      const canvasId = existing ?? (owner && owner.deletedAt === null ? owner.id : workspace.rootCanvasId)
+      await navigate(canvasId)
+      const view = viewRef.current
+      if (!view || view.editor.canvasId !== canvasId) return
+      figures.markFigure(request.frameId, request.deckId)
+      const created = createFigureFrame(view.editor, {
+        frameId: request.frameId,
+        fileId: request.deckId,
+        w: request.w,
+        h: request.h,
+        name: request.name,
+        isFigure: (id) => figures.isFigure(id),
+        fallback: view.viewportCenter(),
+      })
+      await view.focusNode(request.frameId)
+      if (created) {
+        await view.renderFigure(request.frameId)
+        notify('図のフレームを作りました。この中に描くと、スライドの図になります')
+      }
+    },
+    [workspace, figures, navigate, notify],
   )
 
   // 引用する範囲を決めた・文字を選んで「引用」を押した：ノートを横に置くか、コピーするかを選ばせる
@@ -881,6 +987,7 @@ export function App(props: { initial: InitialRecords }) {
       notify,
       files,
       slidePages,
+      figures,
       pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
       onOpenPortal: (portalId) => openPortal(portalId),
@@ -945,6 +1052,7 @@ export function App(props: { initial: InitialRecords }) {
     const initial = canvasIdFromUrl()
     const initialRef = refIdFromUrl()
     const initialFile = fileIdFromUrl()
+    const initialFigure = figureRequestFromUrl(location.search)
     if (initial && initial !== workspace.rootCanvasId && workspace.getCanvas(initial)) void navigate(initial, { push: false })
     else if (!initialFile) history.replaceState({ canvasId: workspace.rootCanvasId }, '', canvasUrl(workspace.rootCanvasId))
     // /f/<id>（新しいタブで開いた File など。MAI-63）なら、File の持ち主の Canvas を履歴の下に敷いてから、全画面のエディタで開く。
@@ -964,6 +1072,8 @@ export function App(props: { initial: InitialRecords }) {
     }
     // /r/<id>（AI に渡す参照）なら、ルートから、その場所へ移る
     if (initialRef) void openReference(initialRef)
+    // スライドエディタの「キャンバスで描く」「キャンバスで開く」から来た
+    if (initialFigure) void filesLoaded.then(() => openFigureRequest(initialFigure))
     // ページを閉じる・隠すときは、保存していない編集をすぐ保存する
     const onHide = () => {
       void files.flush()
@@ -990,7 +1100,7 @@ export function App(props: { initial: InitialRecords }) {
       slidePages.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, slidePages, sync, editors, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, slidePages, figures, sync, editors, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference, openFigureRequest])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
@@ -1134,7 +1244,7 @@ export function App(props: { initial: InitialRecords }) {
         </div>
 
         <PieMenus
-          enabled={!openFileId && !dialog && !renaming}
+          enabled={!openFileId && !dialog && !figureDialog && !renaming}
           menus={buildPieMenus({
             toolId: session.toolId,
             setTool: (toolId) => editor.session.set({ toolId }),
@@ -1181,6 +1291,7 @@ export function App(props: { initial: InitialRecords }) {
               count: session.selectedIds.size,
               arrangeCount: arrangeTargets.length,
               hasText: selectedTextNodes.length > 0,
+              frame: session.selectedIds.size === 1 && editor.getNode([...session.selectedIds][0])?.type === 'frame',
             },
             panToPage: (direction) => view?.panToPage(direction),
             unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
@@ -1191,6 +1302,8 @@ export function App(props: { initial: InitialRecords }) {
             distributeSelection: (axis) => editor.distributeSelection(axis),
             lockSelection: () => editor.setLocked([...editor.session.get().selectedIds], true),
             duplicateSelection: () => view?.duplicateSelection(),
+            makeSlideFigure: () => view && void makeSlideFigure(view),
+            copyFigureReference: () => view && void copyFigureReference(view),
           })}
         />
 
@@ -1431,6 +1544,7 @@ export function App(props: { initial: InitialRecords }) {
             }}
           />
         )}
+        {figureDialog && <FigureTargetDialog frameName={figureDialog.frameName} onChoose={figureDialog.resolve} />}
         {dialog && (
           <ConfirmDialog
             title={dialog.title}

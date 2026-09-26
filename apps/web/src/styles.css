@@ -677,6 +677,75 @@ body,
   color: #cf222e;
 }
 
+/* フレームを入れるスライドの図の欄を選ぶ（提案 B） */
+.dialog.figure-target {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.figure-target-deck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.figure-target-deck select {
+  flex: 1;
+  padding: 4px 6px;
+  font: inherit;
+}
+
+.figure-target-slides {
+  max-height: min(50vh, 420px);
+  margin: 0 0 16px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.figure-target-slides li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.figure-target-slides li.disabled {
+  color: #8c959f;
+}
+
+.figure-target-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.figure-target-slides button {
+  padding: 3px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.figure-target-slides button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.figure-target-note {
+  font-size: 12px;
+}
+
+.figure-target-error {
+  color: #cf222e;
+}
+
 /* Portal の名前を変える入力欄。Portal の名前の帯に重ねる */
 .portal-rename {
   position: absolute;

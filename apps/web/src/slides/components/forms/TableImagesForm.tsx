@@ -2,7 +2,7 @@
 import type { AssetSummary } from "../../api.ts";
 import type { DraftImage, DraftSlide } from "../../state.ts";
 import { ImagePicker } from "../ImagePicker.tsx";
-import type { SlideChange } from "../SlideForm.tsx";
+import type { CanvasFigureActions, SlideChange } from "../SlideForm.tsx";
 
 type Props = {
   slide: DraftSlide;
@@ -10,9 +10,10 @@ type Props = {
   assets: AssetSummary[];
   onChange: SlideChange;
   onAssetsChanged: () => void;
+  canvas?: CanvasFigureActions;
 };
 
-export function TableImagesForm({ slide, deckFile, assets, onChange, onAssetsChanged }: Props) {
+export function TableImagesForm({ slide, deckFile, assets, onChange, onAssetsChanged, canvas }: Props) {
   const setImage = (index: 0 | 1, image: DraftImage, key: string | null): void =>
     onChange(
       (current) => ({
@@ -36,6 +37,7 @@ export function TableImagesForm({ slide, deckFile, assets, onChange, onAssetsCha
         assets={assets}
         onChange={(image, key) => setImage(0, image, key)}
         onAssetsChanged={onAssetsChanged}
+        canvas={canvas && { draw: () => canvas.draw("images.0"), open: canvas.open }}
       />
       <ImagePicker
         label="図 2（右）"
@@ -45,6 +47,7 @@ export function TableImagesForm({ slide, deckFile, assets, onChange, onAssetsCha
         assets={assets}
         onChange={(image, key) => setImage(1, image, key)}
         onAssetsChanged={onAssetsChanged}
+        canvas={canvas && { draw: () => canvas.draw("images.1"), open: canvas.open }}
       />
     </>
   );
