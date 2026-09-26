@@ -132,3 +132,27 @@ test('vim mode: IME composition in normal mode does not insert text', async ({ p
   await expect.poll(() => doc(page)).toBe('日本abcd\nefgh\nijkl')
   await expect(editor.locator('.file-editor-status')).toHaveText('INSERT')
 })
+
+test('vim mode: o continues a markdown list, and u undoes it like the default o', async ({ page }) => {
+  const { editor } = await openEditor(page, { vim: true, body: '- a\nplain' })
+  await page.keyboard.press('o')
+  await expect(editor.locator('.file-editor-status')).toHaveText('INSERT')
+  await page.keyboard.type('b')
+  expect(await editorState(page)).toEqual({ doc: '- a\n- b\nplain', head: 7 })
+  // 元の o と同じく、打った文字、続けた記号の順に戻す
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('u')
+  expect(await doc(page)).toBe('- a\n- \nplain')
+  await page.keyboard.press('u')
+  expect(await doc(page)).toBe('- a\nplain')
+  // 箇条書きでない行は元の o
+  await page.keyboard.press('G')
+  await page.keyboard.press('o')
+  await page.keyboard.type('c')
+  expect(await doc(page)).toBe('- a\nplain\nc')
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('u')
+  expect(await doc(page)).toBe('- a\nplain\n')
+  await page.keyboard.press('u')
+  expect(await doc(page)).toBe('- a\nplain')
+})

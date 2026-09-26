@@ -7,7 +7,7 @@ import { Editor } from './editor.ts'
 import { SelectTool, type ToolContext, type ToolPointer } from './tools.ts'
 import { Workspace } from './workspace.ts'
 
-// Portal・階層・ゴミ箱・昇格・子キャンバスへの移動（MAI-8、MAI-29、MAI-38）
+// Portal・階層・ゴミ箱・昇格・子キャンバス・親キャンバスへの移動（MAI-8、MAI-29、MAI-38、MAI-69）
 
 function setup() {
   const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
@@ -311,5 +311,73 @@ describe('moving items into a child canvas', () => {
     tool.onPointerUp(pointer(300, 50))
     expect(requests).toHaveLength(1)
     expect(root.getNode(x)).toMatchObject({ x: 250, y: 0 })
+  })
+})
+
+describe('moving items to the parent canvas', () => {
+  // 親の Canvas に Portal（a）と遠くのノードを置き、a の中にノードを作る
+  function nested() {
+    const env = setup()
+    const { root, open, rect } = env
+    const a = root.createPortal({ x: 100, y: 200 })
+    const far = rect(root, 3000, 0)
+    const child = open(a.canvasId)
+    return { ...env, a, far, child, portalBounds: root.index.get(a.portalId)!.worldBounds, x: rect(child, 500, 500) }
+  }
+
+  it('places the items right of the owner portal, top aligned, in one undo step of the child canvas', () => {
+    const { workspace, root, child, a, portalBounds, x } = nested()
+    const y = child.makeNode('geo', { x: 700, y: 600, props: { shape: 'rect', w: 100, h: 100 } })
+    child.createNodes([y])
+    expect(child.canMoveToCanvas([x, y.id], 'canvas:root')).toBe(true)
+    expect(child.moveToCanvas([x, y.id], 'canvas:root', { nextTo: a.portalId })).toEqual([x, y.id])
+    expect(workspace.getNode(x)!.parentId).toBe('canvas:root')
+    // 並びは保ったまま、Portal の右に上を揃えて置く。重なり順は最も手前
+    const left = portalBounds.x + portalBounds.w + 80
+    expect(root.index.get(x)!.worldBounds).toMatchObject({ x: left, y: portalBounds.y })
+    expect(root.index.get(y.id)!.worldBounds).toMatchObject({ x: left + 200, y: portalBounds.y + 100 })
+    expect(root.index.allIds().slice(-2)).toEqual([x, y.id])
+    expect(child.index.allIds()).toEqual([])
+    child.undo()
+    expect(new Set(child.index.allIds())).toEqual(new Set([x, y.id]))
+    expect(child.getNode(x)).toMatchObject({ parentId: a.canvasId, x: 500, y: 500 })
+  })
+
+  it('falls back to the right of all content when the node to place next to is not in the parent', () => {
+    const { root, child, x } = nested()
+    child.moveToCanvas([x], 'canvas:root', { nextTo: 'node:missing' })
+    // far（3000, 0、幅 100）の右
+    expect(root.index.get(x)!.worldBounds).toMatchObject({ x: 3180, y: 0 })
+  })
+
+  it('moves the canvases of owner portals along to the parent', () => {
+    const { root, child, canvas, a } = nested()
+    const b = child.createPortal({ x: 0, y: 0 })
+    child.moveToCanvas([b.portalId], 'canvas:root', { nextTo: a.portalId })
+    expect(canvas(b.canvasId)).toMatchObject({ parentCanvasId: 'canvas:root', ownerNodeId: b.portalId })
+    expect(root.getNode(b.portalId)).toBeDefined()
+    child.undo()
+    expect(canvas(b.canvasId).parentCanvasId).toBe(a.canvasId)
+  })
+
+  it('has no parent to move to at the root', () => {
+    const { root, canvas, rect } = setup()
+    rect(root, 0, 0)
+    expect(canvas('canvas:root').parentCanvasId).toBeNull()
+  })
+
+  it('unbinds arrows that connect moved items with ones that stay', () => {
+    const { workspace, child, rect, a, x } = nested()
+    const stay = rect(child, 800, 500)
+    const arrow = child.makeNode('arrow', { x: 500, y: 500 })
+    child.transact('arrow', (tx) => {
+      tx.put(arrow)
+      tx.put(makeBinding(arrow.id, x, { terminal: 'start', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+      tx.put(makeBinding(arrow.id, stay, { terminal: 'end', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+    })
+    child.moveToCanvas([x, arrow.id], 'canvas:root', { nextTo: a.portalId })
+    expect(workspace.bindingsOfArrow(arrow.id).map((b) => b.toId)).toEqual([x])
+    child.undo()
+    expect(workspace.bindingsOfArrow(arrow.id)).toHaveLength(2)
   })
 })

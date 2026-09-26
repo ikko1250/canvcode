@@ -36,6 +36,19 @@ describe('RecordStore', () => {
     reopened.close()
   })
 
+  it('deletes refs older than a cutoff and returns their ids', () => {
+    const store = new RecordStore(dataDir())
+    const ref = (id: string, createdAt: number) => ({ typeName: 'ref', id, createdAt, kind: 'lines', fileId: 'file:a', startLine: 1, endLine: 1, snapshot: 'a' }) as const
+    store.putRef(ref('ref:Old0000001', 100))
+    store.putRef(ref('ref:Old0000002', 199))
+    store.putRef(ref('ref:New0000001', 200))
+    expect(store.deleteRefsOlderThan(200).sort()).toEqual(['ref:Old0000001', 'ref:Old0000002'])
+    expect(store.getRef('ref:Old0000001')).toBeUndefined()
+    expect(store.getRef('ref:New0000001')).toBeDefined()
+    expect(store.deleteRefsOlderThan(200)).toEqual([])
+    store.close()
+  })
+
   it('reads one record and the children of a parent', () => {
     const store = new RecordStore(dataDir())
     const root = store.rootCanvasId

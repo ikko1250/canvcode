@@ -6,12 +6,14 @@ import { locateQuote } from './text.ts'
 // ユーザーが AI に貼り付けると、AI は MCP の resolve_reference で中身を取り出す。
 // - 同期するレコード（WorkspaceRecord）には入れない。サーバーの workspace.db の refs テーブルに、REST で 1 件ずつ保存する
 // - 作った時点でしか分からないこと（ノードのワールド座標、PDF の範囲の文字、行の中身）は、ここに持たせておく
-// - 消さない。指している先が消えていても、解決するときに status で知らせる
+// - 作ってから REF_TTL_MS（3 日）で、サーバーが消す。それまでは、指している先が消えていても、解決するときに status で知らせる
 
 export const REF_PREFIX = 'ref:'
 export const REF_ID_PATTERN = /^ref:[0-9A-Za-z]{8,24}$/
 // 10 文字の base62 は約 59 ビット。ワークスペースの中で重なることはまずなく、重なればサーバーが 409 を返す
 const REF_ID_LENGTH = 10
+// ref を残しておく期間（MAI-65）。createdAt からこれだけ経つと、サーバーが画像と一緒に消す
+export const REF_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 export function createRefId(): string {
   return `${REF_PREFIX}${randomIdSuffix(REF_ID_LENGTH)}`

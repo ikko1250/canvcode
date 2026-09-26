@@ -551,7 +551,7 @@ export function App(props: { initial: InitialRecords }) {
         console.error('Failed to read a reference', error)
         return notify('参照を読み込めませんでした')
       }
-      if (!ref) return notify(`参照が見つかりません：${id}`)
+      if (!ref) return notify(`参照が見つかりません（作ってから 3 日で消えます）：${id}`)
       if (ref.kind === 'canvas') {
         const canvas = workspace.getCanvas(ref.canvasId)
         if (!canvas) return notify('参照しているキャンバスは削除されています')
@@ -868,6 +868,17 @@ export function App(props: { initial: InitialRecords }) {
             })
           },
         })
+        // 親キャンバスに移動（MAI-69）：この Canvas の持ち主の Portal の右に置く。ルートや未配置のキャンバスでは出さない
+        const current = workspace.getCanvas(editor.canvasId)
+        const parentCanvasId = current?.parentCanvasId
+        const selectedIds = selected.map((n) => n.id)
+        if (parentCanvasId && editor.canMoveToCanvas(selectedIds, parentCanvasId)) {
+          const nextTo = current?.ownerNodeId ?? undefined
+          items.push({
+            label: '親キャンバスに移動',
+            onSelect: () => void view.moveToCanvas(selectedIds, parentCanvasId, { nextTo }),
+          })
+        }
         items.push({ label: '複製', shortcut: 'Ctrl+D', onSelect: () => view.duplicateSelection() })
         // 整列・等間隔（MAI-54）：2 つ以上（等間隔は 3 つ以上）を選んでいるとき、次の階層で向きを選ばせる
         const arrangeCount = editor.arrangeTargets().length

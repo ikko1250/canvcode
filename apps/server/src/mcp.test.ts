@@ -348,6 +348,7 @@ describe('MCP server', () => {
       const result = await call(client, 'resolve_reference', { id: 'ref:Zz99Zz99Zz' })
       expect(result.isError).toBe(true)
       expect(result.text).toContain('copy it again')
+      expect(result.text).toContain('deleted 3 days after')
     })
   })
 })

@@ -31,7 +31,8 @@ export async function handleRefs(
     }
     let ref: ReferenceRecord
     try {
-      ref = validateReference(JSON.parse((await readBody(req)).toString('utf8')))
+      // 作った時刻はサーバーの時計で付け直す。3 日で消す（MAI-65）判定が、ブラウザの時計のずれに左右されないように
+      ref = { ...validateReference(JSON.parse((await readBody(req)).toString('utf8'))), createdAt: Date.now() }
     } catch (error) {
       sendJson(res, error instanceof HttpError ? error.status : 400, { error: error instanceof Error ? error.message : 'invalid reference' })
       return true

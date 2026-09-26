@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Vim, getCM } from '@replit/codemirror-vim'
-import { createCodeEditor, type CodeEditorHandle } from './codeEditor.ts'
+import { createCodeEditor, type CodeEditorHandle, type CodeEditorOptions } from './codeEditor.ts'
 import { vimModeOf, type VimMode } from './vimKeymap.ts'
 
 // vim モードのキーの割り当て（MAI-60 の段階 1）。jsdom の上で CodeMirror を動かし、キーを vim に渡して確かめる。
@@ -12,7 +12,10 @@ Range.prototype.getBoundingClientRect = () => new DOMRect()
 
 const editors: CodeEditorHandle[] = []
 
-function open(doc: string, options: { onEscape?(): void; onModEnter?(): void; onVimModeChange?(mode: VimMode | null): void } = {}) {
+function open(
+  doc: string,
+  options: { language?: CodeEditorOptions['language']; onEscape?(): void; onModEnter?(): void; onVimModeChange?(mode: VimMode | null): void } = {},
+) {
   const parent = document.createElement('div')
   document.body.appendChild(parent)
   const save = vi.fn()
@@ -26,6 +29,11 @@ function open(doc: string, options: { onEscape?(): void; onModEnter?(): void; on
 function press(editor: CodeEditorHandle, keys: string) {
   const cm = getCM(editor.view)!
   for (const key of keys.match(/<[^>]+>|./g) ?? []) Vim.handleKey(cm, key, 'user')
+}
+
+// 挿入モードで文字を打つ（挿入モードの文字は vim が扱わず、CodeMirror が入れる）
+function type(editor: CodeEditorHandle, text: string) {
+  editor.view.dispatch({ ...editor.view.state.replaceSelection(text), userEvent: 'input.type' })
 }
 
 function head(editor: CodeEditorHandle) {
@@ -160,6 +168,92 @@ describe('visual モードの Tab / Shift-Tab', () => {
     expect(editor.view.state.doc.lineAt(from).number).toBe(1)
     expect(editor.view.state.doc.lineAt(to).number).toBe(2)
     expect(vimModeOf(editor.view)).toBe('visual line')
+  })
+})
+
+describe('o で箇条書きを続ける（MAI-71）', () => {
+  function openMarkdown(doc: string) {
+    return open(doc, { language: 'markdown' }).editor
+  }
+
+  it('箇条書きの行では、次の行に記号を付けて挿入モードに入る', () => {
+    const editor = openMarkdown('- a')
+    press(editor, 'o')
+    expect(editor.text()).toBe('- a\n- ')
+    expect(vimModeOf(editor.view)).toBe('insert')
+    expect(head(editor)).toBe(editor.text().length)
+  })
+
+  it('行の途中にカーソルがあっても、行の終わりから続ける', () => {
+    const editor = openMarkdown('- abc\nx')
+    press(editor, 'o')
+    expect(editor.text()).toBe('- abc\n- \nx')
+    expect(head(editor)).toBe(8)
+  })
+
+  it('番号付きの箇条書きは次の番号を付け、後ろの番号を振り直す', () => {
+    const editor = openMarkdown('1. a\n2. b')
+    press(editor, 'o')
+    expect(editor.text()).toBe('1. a\n2. \n3. b')
+    expect(head(editor)).toBe(8)
+  })
+
+  it('チェックボックスは空のチェックボックスで続ける', () => {
+    const editor = openMarkdown('- [x] a')
+    press(editor, 'o')
+    expect(editor.text()).toBe('- [x] a\n- [ ] ')
+  })
+
+  it('引用は > で続ける', () => {
+    const editor = openMarkdown('> a')
+    press(editor, 'o')
+    expect(editor.text()).toBe('> a\n> ')
+  })
+
+  it('箇条書きでない行・Markdown でないとき・中身が空の項目は、元の o と同じ', () => {
+    const plain = openMarkdown('  a')
+    press(plain, 'o')
+    expect(plain.text()).toBe('  a\n  ')
+    const code = open('- a', { language: 'python' }).editor
+    press(code, 'o')
+    expect(code.text()).toBe('- a\n')
+    const empty = openMarkdown('- a\n- ')
+    press(empty, 'Go')
+    expect(empty.text()).toBe('- a\n- \n')
+    expect(vimModeOf(empty.view)).toBe('insert')
+  })
+
+  it('Undo は元の o と同じ（打った文字、続けた記号の順に戻す）。. で繰り返せる', () => {
+    // 元の o も、打った文字と改行を別々に戻す（codemirror-vim の作り）
+    const plain = openMarkdown('a')
+    press(plain, 'o')
+    type(plain, 'b')
+    press(plain, '<Esc>u')
+    expect(plain.text()).toBe('a\n')
+    press(plain, 'u')
+    expect(plain.text()).toBe('a')
+
+    const editor = openMarkdown('- a')
+    press(editor, 'o<Esc>u')
+    expect(editor.text()).toBe('- a')
+    press(editor, 'o')
+    type(editor, 'b')
+    press(editor, '<Esc>u')
+    expect(editor.text()).toBe('- a\n- ')
+    press(editor, 'u')
+    expect(editor.text()).toBe('- a')
+    press(editor, 'o')
+    type(editor, 'b')
+    press(editor, '<Esc>.')
+    expect(editor.text()).toBe('- a\n- b\n- b')
+  })
+
+  it('回数付き（3o）は元の o と同じ', () => {
+    const editor = openMarkdown('- a')
+    press(editor, '3o')
+    type(editor, 'b')
+    press(editor, '<Esc>')
+    expect(editor.text()).toBe('- a\nb\nb\nb')
   })
 })
 

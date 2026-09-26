@@ -1,5 +1,7 @@
 import type { EditorView } from '@codemirror/view'
+import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown'
 import { Vim, getCM } from '@replit/codemirror-vim'
+import type { ActionArgs, ActionFn } from '@replit/codemirror-vim'
 
 // 全画面エディタの vim モードのキーの割り当て（MAI-60 の段階 1）。
 // 元の ~/.config/nvim/init.lua の表と対応が分かるように、表と同じ順に並べる。
@@ -37,6 +39,16 @@ export function vimModeOf(view: EditorView): VimMode | null {
 
 // 文脈を付けない割り当て（normal / visual / 操作待ち。挿入モードは含まない）。型は string だが、undefined を渡す
 const ANY_MODE = undefined as unknown as string
+
+// 元の動作（アクション）。codemirror-vim は外に出していないが、アクションを呼ぶときの this がこれになる
+type VimAction = (cm: Parameters<ActionFn>[0], actionArgs: Partial<ActionArgs>, vim: Parameters<ActionFn>[2]) => void
+interface VimActions {
+  enterInsertMode: VimAction
+  newLineAndEnterInsertMode: VimAction
+}
+
+// 記号だけで中身が空の行（「- 」「1. 」「- [ ] 」「> 」、空行）
+const EMPTY_ITEM = /^[\s>]*(?:(?:[-+*]|\d+[.)])(?: +\[[ xX]\])?)?\s*$/
 
 let registered = false
 
@@ -80,6 +92,30 @@ export function registerVimKeymap(): void {
     found?.close()
   })
   Vim.mapCommand('ZZ', 'action', 'canvcodeSaveAndClose', {}, { context: 'normal' })
+
+  // o：箇条書き・引用の行では、挿入モードの Enter と同じく記号を続ける（MAI-71）。
+  // Markdown 以外・箇条書きでない行・中身が空の項目・回数付き（3o）は、元の o と同じ。
+  // 元の o の割り当ての印（isEdit / interlaceInsertRepeat）も付けて、Undo と . の繰り返しを元の o と同じにする
+  Vim.defineAction('canvcodeOpenLineBelow', function (this: VimActions, cm, actionArgs, vim) {
+    const view = cm.cm6
+    const line = view.state.doc.lineAt(view.state.selection.main.head)
+    if (actionArgs.repeat === 1 && !EMPTY_ITEM.test(line.text)) {
+      vim.insertMode = true
+      view.dispatch({ selection: { anchor: line.to } })
+      // Markdown でなければ、何もせず false を返す。
+      // 履歴の扱いを元の o の改行（input.type.compose.start）に合わせて、userEvent を input から input.type にする
+      const continued = insertNewlineContinueMarkup({
+        state: view.state,
+        dispatch: (tr) => view.dispatch({ changes: tr.changes, selection: tr.selection, scrollIntoView: true, userEvent: 'input.type' }),
+      })
+      if (continued) {
+        this.enterInsertMode(cm, { repeat: 1 }, vim)
+        return
+      }
+    }
+    this.newLineAndEnterInsertMode(cm, actionArgs, vim)
+  })
+  Vim.mapCommand('o', 'action', 'canvcodeOpenLineBelow', { after: true }, { context: 'normal', isEdit: true, interlaceInsertRepeat: true })
 
   // 選択範囲のインデントを増やす・減らす（選択は保つ）
   Vim.noremap('<Tab>', '>gv', 'visual')
