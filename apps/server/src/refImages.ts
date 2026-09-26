@@ -1,11 +1,11 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { REF_ID_PATTERN, type Box } from '@canvcode/core'
 
 // ref に添える画像（MAI-64）。手書き線や画像のある範囲は、座標より画像のほうが AI に読み取りやすいので、
 // ブラウザが ID をコピーしたときに範囲を PNG に描いて送ってくる。.canvcode/ref-images/<ref の id>.png に置き、
 // 画像のピクセルとワールド座標の対応・撮った時刻は、同じ名前の .json に置く。
-// ref は書き換えないので、画像も一度だけ受け付ける。ref を消す仕組みはまだないが、消すときは remove で一緒に消す
+// ref は書き換えないので、画像も一度だけ受け付ける。ref は 3 日で消し、そのとき remove で画像も一緒に消す（MAI-65）
 
 export interface RefImageInfo extends Box {
   // 1 ワールド単位あたりのピクセル数
@@ -61,6 +61,22 @@ export class RefImageStore {
     if (!base) return
     await rm(`${base}.json`, { force: true })
     await rm(`${base}.png`, { force: true })
+  }
+
+  // 画像のファイルがある ref の id（書きかけの .tmp は数えない）
+  async list(): Promise<string[]> {
+    let names: string[]
+    try {
+      names = await readdir(this.dir)
+    } catch {
+      return []
+    }
+    const ids = new Set<string>()
+    for (const name of names) {
+      const match = /^ref_([0-9A-Za-z]{8,24})\.(png|json)$/.exec(name)
+      if (match) ids.add(`ref:${match[1]}`)
+    }
+    return [...ids]
   }
 
   private base(refId: string): string | null {

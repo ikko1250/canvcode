@@ -95,7 +95,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     async ({ id }) => {
       const normalized = normalizeRefId(id)
       const ref = normalized ? deps.records.getRef(normalized) : undefined
-      if (!ref) return error(`Unknown reference id ${normalized ?? JSON.stringify(id)}. Ask the user to copy it again from CanvCode.`)
+      if (!ref) return error(`Unknown reference id ${normalized ?? JSON.stringify(id)}. References are deleted 3 days after they are created. Ask the user to copy it again from CanvCode.`)
       const resolved = await resolveReference(ref, deps)
       // 範囲の画像があれば、画像を先に置く（画像を先に置くと読み取りがよくなる。MAI-64）
       const image = resolved.image ? await deps.refImages?.read(ref.id) : null

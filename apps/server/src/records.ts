@@ -56,6 +56,7 @@ export class RecordStore {
       CREATE TABLE IF NOT EXISTS deleted (id TEXT PRIMARY KEY, rev INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS deleted_rev ON deleted (rev);
       CREATE TABLE IF NOT EXISTS refs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS refs_created_at ON refs (created_at);
     `)
     this.migrate(existed)
     if (this.meta('root') === null) this.createRoot()
@@ -147,6 +148,20 @@ export class RecordStore {
   getRef(id: string): ReferenceRecord | undefined {
     const row = this.db.prepare('SELECT body FROM refs WHERE id = ?').get(id) as { body: string } | undefined
     return row ? (JSON.parse(row.body) as ReferenceRecord) : undefined
+  }
+
+  // created_at が cutoff より前の ref を消し、消した id を返す（MAI-65）
+  deleteRefsOlderThan(cutoff: number): string[] {
+    this.db.exec('BEGIN')
+    try {
+      const ids = (this.db.prepare('SELECT id FROM refs WHERE created_at < ?').all(cutoff) as { id: string }[]).map((row) => row.id)
+      this.db.prepare('DELETE FROM refs WHERE created_at < ?').run(cutoff)
+      this.db.exec('COMMIT')
+      return ids
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   // 動かしたまま、一貫した写しを作る（MAI-13 の「8. バックアップ」）

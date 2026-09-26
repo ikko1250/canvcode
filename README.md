@@ -102,7 +102,7 @@ AI にスライドを頼むときは「canvcode でスライドを作って」�
 
 ### AI に見てほしい場所を渡す
 
-範囲を選んで「AIに渡す」を押すと、`ref:XXXXXXXXXX` という ID がクリップボードに入る。それを Claude Code などに貼り付けると、AI が `resolve_reference` でその場所の中身を読む。ID は `.canvcode/workspace.db` に保存され、ブラウザで `/r/<ID>` を開くと、その場所に移る。
+範囲を選んで「AIに渡す」を押すと、`ref:XXXXXXXXXX` という ID がクリップボードに入る。それを Claude Code などに貼り付けると、AI が `resolve_reference` でその場所の中身を読む。ID は `.canvcode/workspace.db` に保存され、ブラウザで `/r/<ID>` を開くと、その場所に移る。ID は作ってから 3 日で、添えた画像と一緒に消える。
 
 | 範囲 | 操作 |
 | --- | --- |

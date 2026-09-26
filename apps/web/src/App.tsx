@@ -541,7 +541,7 @@ export function App(props: { initial: InitialRecords }) {
         console.error('Failed to read a reference', error)
         return notify('参照を読み込めませんでした')
       }
-      if (!ref) return notify(`参照が見つかりません：${id}`)
+      if (!ref) return notify(`参照が見つかりません（作ってから 3 日で消えます）：${id}`)
       if (ref.kind === 'canvas') {
         const canvas = workspace.getCanvas(ref.canvasId)
         if (!canvas) return notify('参照しているキャンバスは削除されています')
