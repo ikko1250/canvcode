@@ -40,6 +40,8 @@ const WORKSPACE = resolve(
 const DATA_DIR = join(WORKSPACE, '.canvcode')
 const assets = new AssetStore(DATA_DIR)
 await assets.init()
+// フォントを埋め込んでいない PDF の、空のまま取り出したテキストを作り直す（裏で行う）
+void assets.reextractEmptyPdfTexts()
 const thumbnails = new ThumbnailStore(DATA_DIR)
 await thumbnails.init()
 const records = new RecordStore(DATA_DIR)

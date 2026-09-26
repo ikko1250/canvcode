@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
 
 // 画像の Asset の保存と配信（MAI-10、MAI-13、MAI-26）。
 // - 実体は <ワークスペース>/.canvcode/assets/<ハッシュ>.<拡張子> に置く。名前が中身の SHA-256 なので、
@@ -13,6 +14,8 @@ import { join, resolve } from 'node:path'
 //   全文検索の画面は初版の範囲外なので、取り出しておくだけ
 // - 同じテキストを、ページの区切りを入れた <ハッシュ>.txt にも置く。AI に渡す ref には、このファイルのパスを付ける
 //   （PDF をそのまま読めないモデルもあるので。ファイルがない古い PDF は ensurePdfTextFile が pages.json から作る）
+// - フォントを埋め込んでいない PDF（日本語の CID フォントなど）は、PDF.js に付いている CMap と標準フォントで読む。
+//   これを渡していなかったころ（pages.json の version 1）の空のテキストは、reextractEmptyPdfTexts が作り直す
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -28,6 +31,8 @@ const VARIANT_SIZES = new Set([256, 1024])
 const MAX_ORIGINAL_BYTES = 200 * 1024 * 1024
 const MAX_VARIANT_BYTES = 10 * 1024 * 1024
 const HASH_PATTERN = /^[0-9a-f]{64}$/
+const PAGES_VERSION = 2
+const PDFJS_DIR = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
 
 interface AssetMeta {
   mime: string
@@ -153,7 +158,13 @@ export class AssetStore {
   private async extractPdfText(hash: string, data: Buffer): Promise<void> {
     try {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      const task = pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: false })
+      const task = pdfjs.getDocument({
+        data: new Uint8Array(data),
+        useSystemFonts: false,
+        cMapUrl: join(PDFJS_DIR, 'cmaps') + '/',
+        cMapPacked: true,
+        standardFontDataUrl: join(PDFJS_DIR, 'standard_fonts') + '/',
+      })
       const doc = await task.promise
       const pages: string[] = []
       for (let i = 1; i <= doc.numPages; i++) {
@@ -161,10 +172,29 @@ export class AssetStore {
         pages.push(content.items.map((item) => ('str' in item ? item.str + (item.hasEOL ? '\n' : '') : '')).join(''))
       }
       await task.destroy()
-      await writeAtomic(join(this.dir, `${hash}.pages.json`), Buffer.from(JSON.stringify({ version: 1, pages })))
+      await writeAtomic(join(this.dir, `${hash}.pages.json`), Buffer.from(JSON.stringify({ version: PAGES_VERSION, pages })))
       await writeAtomic(join(this.dir, `${hash}.txt`), Buffer.from(pdfTextFile(pages)))
     } catch (error) {
       console.error('failed to extract the text of a PDF', hash, error)
+    }
+  }
+
+  // CMap を渡さずに取り出した古いテキスト（version 1）で、どのページにも文字がないものを、PDF から取り出し直す。
+  // 文字のある version 1 は正しく読めていたので、そのままにする
+  async reextractEmptyPdfTexts(): Promise<void> {
+    for (const name of await readdir(this.dir)) {
+      const match = /^([0-9a-f]{64})\.pages\.json$/.exec(name)
+      if (!match) continue
+      const hash = match[1]
+      try {
+        const saved = JSON.parse(await readFile(join(this.dir, name), 'utf8')) as { version?: number; pages?: unknown }
+        if ((saved.version ?? 1) >= PAGES_VERSION || !Array.isArray(saved.pages)) continue
+        if (saved.pages.some((page) => typeof page !== 'string' || page.trim())) continue
+        const data = await readFile(join(this.dir, `${hash}.pdf`)).catch(() => null)
+        if (data) await this.extractPdfText(hash, data)
+      } catch (error) {
+        console.error('failed to re-extract the text of a PDF', hash, error)
+      }
     }
   }
 

@@ -7,6 +7,11 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 // Vite の機能（?url）で Worker を読み込むので、packages/canvas ではなくここに置いている。
 GlobalWorkerOptions.workerSrc = workerUrl
 
+// フォントを埋め込んでいない PDF（日本語の CID フォントなど）を読むための CMap と標準フォント。
+// vite.config.ts が /pdfjs/ から配る。字の形は OS のフォントで描く
+const PDFJS_DATA = `${import.meta.env.BASE_URL}pdfjs/`
+const DATA_OPTIONS = { cMapUrl: `${PDFJS_DATA}cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS_DATA}standard_fonts/` }
+
 class PdfJsDocument implements PdfDocument {
   private readonly doc: PDFDocumentProxy
   private readonly texts = new Map<number, Promise<PdfTextItem[]>>()
@@ -74,7 +79,7 @@ class PdfJsDocument implements PdfDocument {
 
 export const pdfService: PdfService = {
   async open(source) {
-    const task = getDocument('data' in source ? { data: new Uint8Array(source.data) } : { url: source.url })
+    const task = getDocument({ ...('data' in source ? { data: new Uint8Array(source.data) } : { url: source.url }), ...DATA_OPTIONS })
     return new PdfJsDocument(await task.promise)
   },
 }
