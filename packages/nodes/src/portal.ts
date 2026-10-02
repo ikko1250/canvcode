@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from './defineNodeType.ts'
-import { TEXT_FONT_FAMILY } from './text/layout.ts'
+import { TEXT_FONT_FAMILY } from './text/fonts.ts'
 
 // Portal（MAI-7 の `portal`、MAI-8、MAI-29）。別の Canvas への入口。
 // - role が 'owner' なら持ち主の Portal。参照先の Canvas は、この Portal が置かれた Canvas の子になる（木構造）

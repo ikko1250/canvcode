@@ -1,5 +1,6 @@
 import type { AssetRecord, Box, NodeRecord, Vec } from '@canvcode/core'
 import type { TextStyle } from './text/layout.ts'
+import type { TextParagraph } from './text/richText.ts'
 
 // ノードの型の定義（MAI-9）。基本図形も Portal や Markdown カードも、同じ形で定義する。
 // 段階 2 で使う項目だけを先に入れている。編集モード・テキストの取り出し・右クリックメニュー・
@@ -13,6 +14,8 @@ export interface RenderInfo {
   detail: 'full' | 'rough'
   // 時間のかかる画像（Markdown を画像にしたものなど）を頼む先（MAI-9 の「3. 時間のかかる素材の扱い」）
   images?: ImageRequester
+  // 影などの効果（MAI-86）を省くか。見えているノードが多いときに基盤が立てる（MAI-14）
+  noEffects?: boolean
   // 文字を編集中のノードか（MAI-24）。編集中は textarea が文字を見せるので、型は文字だけを描かない
   editing?: boolean
   // 画像などの Asset を引く先（MAI-26）
@@ -81,12 +84,42 @@ export interface ImageRequester {
   get(key: string, version: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null
 }
 
+// 箱の外へのはみ出しの幅（辺ごと。ローカル座標。MAI-86）
+export interface Outset {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+// 数値（上下左右が同じ）も辺ごとの形にする。負の値は 0
+export function outsetSides(outset: number | Outset | undefined): Outset {
+  if (outset === undefined) return { left: 0, top: 0, right: 0, bottom: 0 }
+  if (typeof outset === 'number') {
+    const d = Math.max(0, outset)
+    return { left: d, top: d, right: d, bottom: d }
+  }
+  return { left: Math.max(0, outset.left), top: Math.max(0, outset.top), right: Math.max(0, outset.right), bottom: Math.max(0, outset.bottom) }
+}
+
+// 箱を辺ごとに広げる
+export function outsetBox(box: Box, outset: Outset): Box {
+  return { x: box.x - outset.left, y: box.y - outset.top, w: box.w + outset.left + outset.right, h: box.h + outset.top + outset.bottom }
+}
+
 export interface NodeTypeDef<P extends object> {
   type: string
+  // props の形の版。形を変えたら上げて、migrate で前の版から移す（MAI-74）
   version: number
   defaultProps(): P
+  // 前の版（fromVersion）の props を、今の版の形にする
+  migrate?(props: any, fromVersion: number): P
   // ノードのローカル座標でのバウンディングボックス
   getBounds(node: NodeRecord<P>): Box
+  // 描くものが getBounds の箱の外へはみ出す幅（ローカル座標。図形の外側の線など。MAI-85）。定義しなければ 0。
+  // 数値なら上下左右が同じ、Outset なら辺ごと（ずらした影は片側へ大きくはみ出す。MAI-86）。
+  // 選択枠・吸い付き・整列は getBounds の箱のまま使い、カリング・当たり判定の候補探し・サムネイルの範囲は、この分だけ広げた箱を使う
+  renderOutset?(node: NodeRecord<P>): number | Outset
   // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）。
   // zoom は、画面上で大きさが決まる部分（フレームの名前など）の判定に使う
   hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number): boolean
@@ -96,6 +129,8 @@ export interface NodeTypeDef<P extends object> {
   renderRough?(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
   // 簡略描画に使う色
   roughColor?(node: NodeRecord<P>): string
+  // ノードが使っている色（塗り・線・文字・文字の範囲ごとの色など）。カラーピッカーの「このキャンバスで使った色」に出す（MAI-81）
+  colors?(node: NodeRecord<P>): string[]
   // リサイズしたときの新しい props（MAI-23）。定義しなければリサイズできない。
   // リサイズできる型は、getBounds の箱の原点を (0, 0) にする
   resize?(node: NodeRecord<P>, size: { w: number; h: number }): P
@@ -113,6 +148,9 @@ export interface NodeTypeDef<P extends object> {
   reference?(node: NodeRecord<P>): DocumentReference | null
   // role を変えた props（貼り付けで持ち主をショートカットにするときなど）
   withRole?(node: NodeRecord<P>, role: 'owner' | 'shortcut'): P
+  // ノードが参照している画像の Asset の id（画像ノード、画像の塗り（MAI-83）の図形）。
+  // コピーするとき、クリップボードに Asset のレコードを一緒に載せる（別のタブ・ワークスペースでも読めるように）
+  assets?(node: NodeRecord<P>): string[]
   // 引用ノートは、参照している SourceAnchor の id を返す（逆リンクの索引に使う。MAI-33）
   citation?(node: NodeRecord<P>): string | null
   // ローカル座標の点にあるリンク（Ctrl（⌘）+クリックで開く。MAI-21）
@@ -124,7 +162,9 @@ export interface NodeTypeDef<P extends object> {
 }
 
 export interface TextEditSpec<P> {
+  // 文字（プレーンテキスト）
   text: string
+  // ノードの既定のスタイル。範囲ごとの書式（rich）は、これに重ねる
   style: TextStyle
   // 文字を置く箱（ローカル座標）。autoWidth のときは、幅は文字に合わせて伸びる
   box: Box
@@ -132,11 +172,24 @@ export interface TextEditSpec<P> {
   verticalAlign: 'top' | 'middle'
   // 文字を変えたときの新しい props
   update(text: string): P
+  // 範囲ごとに書式を持てる型（テキスト・付箋。MAI-74）。ない型（図形のラベルなど）は、プレーンテキストとして編集する
+  rich?: {
+    paragraphs: TextParagraph[]
+    update(paragraphs: TextParagraph[]): P
+  }
   // 空のまま編集を終えたら、ノードを消すか（テキストは消し、付箋や図形のラベルは残す）
   deleteIfEmpty: boolean
 }
 
 export type AnyNodeTypeDef = NodeTypeDef<any>
+
+// 古い版のノードを、型の今の版の形にする（MAI-74）。サーバーから読んだとき・貼り付けたときに通す。
+// 今の版ならそのまま返す。移したノードは、次に変えて保存するときに新しい版で保存される
+export function upgradeNode(def: AnyNodeTypeDef | undefined, node: NodeRecord): NodeRecord {
+  const from = node.version ?? 1
+  if (!def?.migrate || from >= def.version) return node
+  return { ...node, version: def.version, props: def.migrate(node.props, from) }
+}
 
 export function defineNodeType<P extends object>(def: NodeTypeDef<P>): NodeTypeDef<P> {
   return def

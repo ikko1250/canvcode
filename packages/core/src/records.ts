@@ -17,6 +17,8 @@ export interface NodeRecord<P extends object = object> {
   locked: boolean
   props: P
   meta: Record<string, unknown>
+  // props の形の版（ノードの型の version）。なければ 1。型が版を上げたら、読み込むときに今の形へ移す（MAI-74）
+  version?: number
 }
 
 // 画像や PDF の実体への参照（MAI-7、MAI-10）。キャンバスではなくワークスペースに属する。

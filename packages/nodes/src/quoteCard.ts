@@ -1,6 +1,7 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType, pickImageLevel, type RenderInfo } from './defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, TEXT_FONT_FAMILY, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
+import { TEXT_FONT_FAMILY } from './text/fonts.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
 
 // 引用ノート（MAI-33）。PDF や Markdown の範囲を引用したノート。
 // 上から、出典の帯（資料の名前と位置）、引用した文字（または切り抜いた図）、自分のメモ。

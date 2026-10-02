@@ -163,6 +163,11 @@ export class AssetManager implements AssetResolver {
     return this.records.get(assetId)
   }
 
+  // 画像の Asset（PDF を除く）。新しく取り込んだもの・あとで登録したものほど後ろ（画像の塗りを選ぶ一覧。MAI-83）
+  images(): AssetRecord[] {
+    return [...this.records.values()].filter((record) => record.mime.startsWith('image/'))
+  }
+
   // すでにある Asset のレコードを登録する（貼り付けたノードが別のタブの Asset を参照しているときなど）
   register(record: AssetRecord): void {
     if (!this.records.has(record.id)) this.records.set(record.id, record)

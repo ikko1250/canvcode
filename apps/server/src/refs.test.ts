@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RecordStore } from './records.ts'
 import { RefImageStore } from './refImages.ts'
-import { handleRefs } from './refs.ts'
+import { handleRefs, plainTextOfProps } from './refs.ts'
 
 // AI に渡す参照（ref）の保存と取得
 
@@ -111,5 +111,21 @@ describe('/api/refs/<id>/image', () => {
     expect((await put(url(base, 'x=0&y=0&w=0&h=10'), fakePng(10, 10))).status).toBe(400)
     expect((await put(url(base, 'x=0&y=0'), fakePng(10, 10))).status).toBe(400)
     expect((await fetch(url(base))).status).toBe(405)
+  })
+})
+
+describe('plainTextOfProps', () => {
+  it('adds Markdown-like markers to list paragraphs, numbered the same way as the canvas (MAI-78)', () => {
+    const p = (text: string, list?: object) => (list ? { runs: [{ text }], list } : { runs: [{ text }] })
+    const paragraphs = [
+      p('見出し'),
+      p('一', { type: 'ordered', level: 0, style: 'circled' }),
+      p('入れ子', { type: 'bullet', level: 1 }),
+      p('二', { type: 'ordered', level: 0 }),
+      p('区切り'),
+      p('また一', { type: 'ordered', level: 0 }),
+      p('壊れた', { type: 'x', level: 0 }),
+    ]
+    expect(plainTextOfProps({ paragraphs })).toBe('見出し\n1. 一\n  - 入れ子\n2. 二\n区切り\n1. また一\n壊れた')
   })
 })

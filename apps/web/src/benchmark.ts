@@ -1,5 +1,6 @@
 import { fitBox, indicesBetween, type Camera, type NodeRecord } from '@canvcode/core'
 import type { CanvasView, Editor, StatsSummary } from '@canvcode/canvas'
+import { defaultShadow, solidPaint } from '@canvcode/nodes'
 
 // 1 万ノードのベンチマーク（MAI-14、MAI-20）。
 // 手元の PC のブラウザで開いて測る。決まった動きでパンとズームを行い、段階ごとにフレーム時間を集計する。
@@ -21,8 +22,9 @@ function seededRandom(seed: number): () => number {
   }
 }
 
-// 格子状に count 個の図形を作る。履歴には残さない
-export function generateNodes(editor: Editor, count: number): void {
+// 格子状に count 個の図形を作る。履歴には残さない。
+// shadows なら、すべての図形にドロップシャドウを付ける（影の描画の重さを測る。MAI-86）
+export function generateNodes(editor: Editor, count: number, options: { shadows?: boolean } = {}): void {
   const random = seededRandom(7)
   const columns = Math.ceil(Math.sqrt(count))
   const spacing = 160
@@ -36,7 +38,14 @@ export function generateNodes(editor: Editor, count: number): void {
       x: (i % columns) * spacing + (spacing - w) / 2,
       y: Math.floor(i / columns) * spacing + (spacing - h) / 2,
       index: indices[i],
-      props: { shape: random() < 0.5 ? 'rect' : 'ellipse', w, h, ...colors },
+      props: {
+        shape: random() < 0.5 ? 'rect' : 'ellipse',
+        w,
+        h,
+        fill: solidPaint(colors.fill),
+        stroke: solidPaint(colors.stroke),
+        ...(options.shadows ? { shadows: [{ ...defaultShadow(), y: 6, blur: 12 }] } : {}),
+      },
     })
     nodes.push(node)
   }

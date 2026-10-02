@@ -14,6 +14,9 @@ import type { SnapGuide } from './snapping.ts'
 import type { Axis } from './arrange.ts'
 import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
+import { gradientHandles, type GradientHandles } from './gradientHandles.ts'
+import { CORNER_HANDLE_RADIUS_PX, cornerHandles, type CornerHandles } from './cornerHandles.ts'
+import { BLOCK_ARROW_HANDLE_SIZE_PX, blockArrowHandles, type BlockArrowHandles } from './blockArrowHandles.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
 // - 画面に見えているノードだけを、重なり順に描く
@@ -22,6 +25,8 @@ import type { ScreenHandles } from './transform.ts'
 
 // 画面上の大きさがこれより小さいノードは簡略に描く（CSS ピクセル）
 const ROUGH_THRESHOLD_PX = 4
+// 描くノードがこれより多いときは、影などの効果を省く（MAI-86。影のぼかしは重いので、ノードが多い全体表示を軽くする）
+export const EFFECTS_NODE_LIMIT = 2000
 // 線の太さ分だけ画面より少し広く探す（CSS ピクセル）
 const CULL_MARGIN_PX = 16
 
@@ -35,6 +40,10 @@ const SPACING_COLOR = '#e64980'
 const SPACING_BAR_PX = 2
 const SPACING_BAR_HOVER_PX = 4
 const SPACING_LABEL_FONT_PX = 12
+// グラデーションのハンドル（MAI-82）：始点・終点（中心・半径）は白い丸、止め色はその色の丸（選んでいるものは大きく、青い縁）
+const GRADIENT_END_RADIUS_PX = 5
+const GRADIENT_STOP_RADIUS_PX = 6
+const GRADIENT_SELECTED_STOP_RADIUS_PX = 7.5
 
 export interface Viewport {
   camera: Camera
@@ -99,6 +108,7 @@ export function drawNodes(
     documents: view.documents,
     files: view.files,
     citations: view.citations,
+    noEffects: ids.length > EFFECTS_NODE_LIMIT,
   }
   let drawn = 0
   let lastRoughColor = ''
@@ -216,14 +226,21 @@ export function drawOverlay(
     ctx.setLineDash([])
   }
 
+  // ホバー中のノードは、形の縁（角丸・楕円。型の outline）をなぞる。選んでいるノードは箱の枠（Figma と同じ。MAI-84）
   if (state.hoveredId && !state.selectedIds.has(state.hoveredId)) {
-    outlineNode(ctx, editor, state.hoveredId, view)
+    outlineNode(ctx, editor, state.hoveredId, view, true)
   }
   for (const id of state.selectedIds) outlineNode(ctx, editor, id, view)
 
   // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
   const found = editor.session.get().editingId ? null : selectionHandles(editor)
   if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
+  // 角丸のハンドル（MAI-84）
+  const corners = cornerHandles(editor)
+  if (corners) drawCornerHandles(ctx, corners, view.dpr)
+  // ブロック矢印の形のハンドル（MAI-87）
+  const arrowShape = blockArrowHandles(editor)
+  if (arrowShape) drawBlockArrowHandles(ctx, arrowShape, view.dpr)
   // 間隔のハンドル（MAI-54）。選択枠のハンドルの上に描く
   const spacing = editor.session.get().editingId ? [] : spacingHandles(editor)
   if (spacing.length > 0) drawSpacingHandles(ctx, spacing, state.hoveredSpacing ?? null, state.spacingDrag ?? null, view.dpr)
@@ -244,6 +261,10 @@ export function drawOverlay(
       ctx.stroke()
     }
   }
+
+  // 塗りのグラデーションのハンドル（MAI-82）
+  const gradient = gradientHandles(editor)
+  if (gradient) drawGradientHandles(ctx, gradient, view.dpr)
 
   // 範囲選択の枠
   if (state.brush) {
@@ -289,7 +310,8 @@ export function drawOverlay(
   return drawn
 }
 
-function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport): void {
+// shape なら、型の outline（角丸・楕円の縁）があればそれをなぞる。なければ箱の枠
+function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport, shape = false): void {
   const entry = editor.index.get(id)
   if (!entry) return
   // group の大きさは索引が子から計算しているので、索引の値を使う
@@ -310,12 +332,15 @@ function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, 
     ctx.stroke()
     return
   }
-  const points = [
-    corner(local.x, local.y),
-    corner(local.x + local.w, local.y),
-    corner(local.x + local.w, local.y + local.h),
-    corner(local.x, local.y + local.h),
-  ]
+  const outline = shape ? editor.getType(entry.node).outline?.(entry.node) : undefined
+  const points = outline
+    ? outline.map((p) => corner(p.x, p.y))
+    : [
+        corner(local.x, local.y),
+        corner(local.x + local.w, local.y),
+        corner(local.x + local.w, local.y + local.h),
+        corner(local.x, local.y + local.h),
+      ]
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.beginPath()
   ctx.moveTo(points[0].x, points[0].y)
@@ -357,6 +382,41 @@ function drawSelectionHandles(ctx: CanvasRenderingContext2D, handles: ScreenHand
   }
 }
 
+// 角丸のハンドル：角の内側の小さな白い丸（青い縁）
+function drawCornerHandles(ctx: CanvasRenderingContext2D, handles: CornerHandles, dpr: number): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.fillStyle = '#ffffff'
+  ctx.strokeStyle = SELECTION_COLOR
+  ctx.lineWidth = 1.5 * dpr
+  for (const point of handles.points) {
+    ctx.beginPath()
+    ctx.arc(point.x * dpr, point.y * dpr, CORNER_HANDLE_RADIUS_PX * dpr, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+  }
+}
+
+// ブロック矢印の形のハンドル：黄色のひし形（青い縁。角丸・選択枠のハンドルと見分ける。PowerPoint の調整ハンドルと同じ色）
+function drawBlockArrowHandles(ctx: CanvasRenderingContext2D, found: BlockArrowHandles, dpr: number): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.fillStyle = '#ffd43b'
+  ctx.strokeStyle = SELECTION_COLOR
+  ctx.lineWidth = 1.5 * dpr
+  const r = BLOCK_ARROW_HANDLE_SIZE_PX * dpr
+  for (const { point } of found.handles) {
+    const x = point.x * dpr
+    const y = point.y * dpr
+    ctx.beginPath()
+    ctx.moveTo(x, y - r)
+    ctx.lineTo(x + r, y)
+    ctx.lineTo(x, y + r)
+    ctx.lineTo(x - r, y)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+  }
+}
+
 // 間隔のハンドル：隙間の真ん中に、軸と直角のピンクの棒（隣どうしの重なりの範囲だけ）。
 // ホバー中・ドラッグ中の棒は太く、ドラッグ中は棒の横に今の間隔（整数）を出す
 function drawSpacingHandles(
@@ -395,4 +455,60 @@ function drawSpacingHandles(
     }
   }
   ctx.lineCap = 'butt'
+}
+
+// グラデーションのハンドル：始点→終点の線（白に薄い影）、端の白い丸、線の上の止め色。
+// 円形では、中心から半径の点への線と、その半径の楕円の目安（点線）を出す
+function drawGradientHandles(ctx: CanvasRenderingContext2D, handles: GradientHandles, dpr: number): void {
+  const d = (p: { x: number; y: number }) => ({ x: p.x * dpr, y: p.y * dpr })
+  const start = d(handles.start)
+  const end = d(handles.end)
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.save()
+  ctx.lineCap = 'round'
+  // 線（どの地の色でも見えるよう、暗い縁取りの上に白）
+  for (const [color, width] of [
+    ['rgba(0, 0, 0, 0.35)', 3],
+    ['#ffffff', 1.5],
+  ] as const) {
+    ctx.strokeStyle = color
+    ctx.lineWidth = width * dpr
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(end.x, end.y)
+    ctx.stroke()
+  }
+  const circle = (p: { x: number; y: number }, radius: number, fill: string, stroke: string, lineWidth: number) => {
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, radius * dpr, 0, Math.PI * 2)
+    ctx.fillStyle = fill
+    ctx.fill()
+    ctx.lineWidth = lineWidth * dpr
+    ctx.strokeStyle = stroke
+    ctx.stroke()
+  }
+  // 止め色（選んでいるものを最後に、上に描く）
+  const stops = [...handles.stops].sort((a, b) => Number(a.index === handles.selectedStop) - Number(b.index === handles.selectedStop))
+  for (const { index, point, stop } of stops) {
+    const selected = index === handles.selectedStop
+    const p = d(point)
+    // 不透明度のある色が分かるよう、白の上に重ねる
+    circle(p, selected ? GRADIENT_SELECTED_STOP_RADIUS_PX : GRADIENT_STOP_RADIUS_PX, '#ffffff', selected ? SELECTION_COLOR : '#ffffff', selected ? 2.5 : 2)
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, (selected ? GRADIENT_SELECTED_STOP_RADIUS_PX : GRADIENT_STOP_RADIUS_PX) * dpr - 2 * dpr, 0, Math.PI * 2)
+    ctx.globalAlpha = Math.max(0.15, stop.opacity)
+    ctx.fillStyle = stop.color
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+  // 端（位置 0・1 の止め色の上に重なるので、小さな丸で縁だけ見せる）
+  for (const p of [start, end]) {
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, GRADIENT_END_RADIUS_PX * dpr, 0, Math.PI * 2)
+    ctx.lineWidth = 1.5 * dpr
+    ctx.strokeStyle = SELECTION_COLOR
+    ctx.stroke()
+  }
+  circle(start, 2.5, SELECTION_COLOR, '#ffffff', 1)
+  ctx.restore()
 }

@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType, type FileContentSource } from '../defineNodeType.ts'
-import { TEXT_FONT_FAMILY } from '../text/layout.ts'
+import { TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { layoutCode, type CodeLayout, type CodeMetrics } from './codeLayout.ts'
 
 // コードカード（MAI-7 の `code-card`、MAI-5、MAI-31）。いまは Python の File を表示・編集する。

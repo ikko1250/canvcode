@@ -15,6 +15,8 @@ import {
 } from '@canvcode/core'
 import {
   GEO_DEFAULT_SIZE,
+  blockArrowDefaultSize,
+  isBlockArrowShape,
   PORTAL_DEFAULT_SIZE,
   TITLE_FONT_SIZE,
   arrowLabelPoint,
@@ -27,12 +29,18 @@ import {
   type DrawProps,
   textLayout,
   type FrameProps,
+  type ChartProps,
+  CHART_DEFAULT_SIZE,
   type GeoProps,
+  type GeoShape,
   type NoteProps,
   type TextProps,
 } from '@canvcode/nodes'
 import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
+import { BlockArrowHandleDrag, hitBlockArrowHandle } from './blockArrowHandles.ts'
+import { CornerRadiusDrag, hitCornerHandle, updateCornerHandles } from './cornerHandles.ts'
+import { GradientHandleDrag, hitGradientHandle, paintEditingTarget } from './gradientHandles.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import {
@@ -111,6 +119,8 @@ export interface ToolContext {
 export function selectionHandles(editor: Editor): { selection: TransformSelection; handles: ScreenHandles } | null {
   // 矢印を 1 つだけ選んでいるときは、枠ではなく端と曲がりのハンドルを出す（arrowHandles）
   if (arrowHandles(editor)) return null
+  // 塗りのグラデーションを編集している間は、そのハンドルだけを出す（MAI-82）
+  if (paintEditingTarget(editor)) return null
   const selection = editor.transformSelection()
   if (!selection) return null
   const camera = editor.session.get().camera
@@ -258,6 +268,12 @@ type SelectState =
     }
   | { name: 'draggingArrowEnd'; tx: Transaction<WorkspaceRecord>; drag: ArrowTerminalDrag }
   | { name: 'bendingArrow'; tx: Transaction<WorkspaceRecord>; arrowId: string }
+  // グラデーションのハンドルをドラッグしている（MAI-82）
+  | { name: 'draggingGradient'; tx: Transaction<WorkspaceRecord>; nodeId: string; drag: GradientHandleDrag }
+  // 角丸のハンドルをドラッグしている（MAI-84）
+  | { name: 'draggingCorner'; tx: Transaction<WorkspaceRecord>; drag: CornerRadiusDrag }
+  // ブロック矢印の形のハンドルをドラッグしている（MAI-87）
+  | { name: 'draggingBlockArrow'; tx: Transaction<WorkspaceRecord>; drag: BlockArrowHandleDrag }
   | {
       name: 'rotating'
       tx: Transaction<WorkspaceRecord>
@@ -299,6 +315,15 @@ export class SelectTool implements Tool {
         this.ctx.setCursor(null)
       }
     }
+    // 塗りのグラデーションのハンドル（MAI-82）。編集している間は、ほかのハンドルより先に調べる
+    const gradientHit = hitGradientHandle(editor, pointer.screen)
+    if (gradientHit) {
+      const nodeId = gradientHit.handles.nodeId
+      const tx = editor.begin(gradientHit.hit.handle === 'line' ? 'add gradient stop' : 'edit gradient')
+      this.ctx.lift([nodeId])
+      this.state = { name: 'draggingGradient', tx, nodeId, drag: new GradientHandleDrag(editor, tx, nodeId, gradientHit.hit) }
+      return
+    }
     // 矢印の端と曲がりのハンドル（MAI-28）
     const arrowHit = hitArrowHandle(editor, pointer)
     if (arrowHit) {
@@ -309,6 +334,22 @@ export class SelectTool implements Tool {
         arrowHit.handle === 'bend'
           ? { name: 'bendingArrow', tx, arrowId }
           : { name: 'draggingArrowEnd', tx, drag: new ArrowTerminalDrag(this.ctx, tx, arrowId, arrowHit.handle) }
+      return
+    }
+    // 角丸のハンドル（MAI-84）。角の内側にあり、選択枠のハンドルとは重ならない
+    const cornerHit = hitCornerHandle(editor, pointer.screen)
+    if (cornerHit) {
+      const tx = editor.begin('corner radius')
+      this.ctx.lift([cornerHit.nodeId])
+      this.state = { name: 'draggingCorner', tx, drag: new CornerRadiusDrag(editor, tx, cornerHit.nodeId, cornerHit.corner, pointer.world) }
+      return
+    }
+    // ブロック矢印の形のハンドル（MAI-87）。箱の縁の上にあることもあるので、選択枠のハンドルより先に調べる
+    const blockArrowHit = hitBlockArrowHandle(editor, pointer.screen)
+    if (blockArrowHit) {
+      const tx = editor.begin('block arrow shape')
+      this.ctx.lift([blockArrowHit.nodeId])
+      this.state = { name: 'draggingBlockArrow', tx, drag: new BlockArrowHandleDrag(editor, tx, blockArrowHit.nodeId, blockArrowHit.kind, pointer.world) }
       return
     }
     // 選択枠のハンドルは、ノードより先に調べる
@@ -350,7 +391,16 @@ export class SelectTool implements Tool {
     const state = this.state
     switch (state.name) {
       case 'idle': {
-        if (hitArrowHandle(editor, pointer)) {
+        // 角丸のハンドルは、選んだ図形の上にポインタがあるときだけ出す（MAI-84）
+        updateCornerHandles(editor, pointer.world)
+        const gradientHit = hitGradientHandle(editor, pointer.screen)
+        if (gradientHit) {
+          this.ctx.setCursor(gradientHit.hit.handle === 'line' ? 'copy' : 'pointer')
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          this.setHoveredSpacing(null)
+          return
+        }
+        if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen) || hitBlockArrowHandle(editor, pointer.screen)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
@@ -387,6 +437,18 @@ export class SelectTool implements Tool {
       }
       case 'draggingArrowEnd': {
         state.drag.move(pointer)
+        return
+      }
+      case 'draggingGradient': {
+        state.drag.move(pointer.world, pointer.shiftKey)
+        return
+      }
+      case 'draggingCorner': {
+        state.drag.move(pointer.world, pointer.altKey)
+        return
+      }
+      case 'draggingBlockArrow': {
+        state.drag.move(pointer.world)
         return
       }
       case 'selectingQuote': {
@@ -563,6 +625,9 @@ export class SelectTool implements Tool {
       if (state.name === 'draggingArrowEnd') state.drag.end()
       editor.finish(state.tx)
       this.ctx.drop()
+    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner' || state.name === 'draggingBlockArrow') {
+      editor.finish(state.tx)
+      this.ctx.drop()
     }
     this.state = { name: 'idle' }
   }
@@ -583,7 +648,10 @@ export class SelectTool implements Tool {
       state.name === 'rotating' ||
       state.name === 'spacing' ||
       state.name === 'draggingArrowEnd' ||
-      state.name === 'bendingArrow'
+      state.name === 'bendingArrow' ||
+      state.name === 'draggingGradient' ||
+      state.name === 'draggingCorner' ||
+      state.name === 'draggingBlockArrow'
     ) {
       state.tx.cancel()
       this.ctx.drop()
@@ -863,30 +931,36 @@ function dragBox<P extends object>(editor: Editor, creating: BoxCreation<P>, poi
   return boxFromPoints(creating.startLocal, end)
 }
 
-// ---- 図形ツール（矩形・楕円） ----
+// ---- ドラッグした箱に置くツールの共通部分（図形・グラフ） ----
 
-export class GeoTool implements Tool {
-  readonly id: 'rect' | 'ellipse'
+// type のノードを、ドラッグした箱（Shift で正方形）に置く。クリックだけなら、クリックした位置を中心に既定の大きさで置く。
+// 置いたら選択ツールに戻る
+abstract class BoxPlacementTool<P extends { w: number; h: number }> implements Tool {
+  abstract readonly id: ToolId
   readonly cursor = 'crosshair'
-  private creating: BoxCreation<GeoProps> | null = null
-  private readonly ctx: ToolContext
+  private creating: BoxCreation<P> | null = null
+  protected readonly ctx: ToolContext
 
-  constructor(ctx: ToolContext, shape: 'rect' | 'ellipse') {
+  constructor(ctx: ToolContext) {
     this.ctx = ctx
-    this.id = shape
   }
+
+  protected abstract readonly nodeType: string
+  // 置くノードの props（w・h は置くときに決める）
+  protected abstract initialProps(): Partial<P>
+  protected abstract defaultSize(): { w: number; h: number }
 
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
     const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin(`create ${this.id}`)
-    const node = editor.makeNode('geo', {
+    const node = editor.makeNode(this.nodeType, {
       x: local.x,
       y: local.y,
       parentId,
-      props: { shape: this.id, w: 1, h: 1 },
-    }) as NodeRecord<GeoProps>
+      props: { ...this.initialProps(), w: 1, h: 1 },
+    }) as NodeRecord<P>
     tx.put(node)
     tx.flush()
     editor.setSelection([node.id])
@@ -912,12 +986,12 @@ export class GeoTool implements Tool {
     if (!creating) return
     this.creating = null
     if (dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) {
-      // クリックだけなら、既定の大きさでクリックした位置を中心に置く
+      const size = this.defaultSize()
       creating.tx.put({
         ...creating.node,
-        x: creating.startLocal.x - GEO_DEFAULT_SIZE / 2,
-        y: creating.startLocal.y - GEO_DEFAULT_SIZE / 2,
-        props: { ...creating.node.props, w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE },
+        x: creating.startLocal.x - size.w / 2,
+        y: creating.startLocal.y - size.h / 2,
+        props: { ...creating.node.props, w: size.w, h: size.h },
       })
     }
     this.ctx.editor.finish(creating.tx)
@@ -937,6 +1011,43 @@ export class GeoTool implements Tool {
 
   onExit(): void {
     this.cancel()
+  }
+}
+
+// ---- 図形ツール（矩形・楕円・ブロック矢印（MAI-87）） ----
+
+export class GeoTool extends BoxPlacementTool<GeoProps> {
+  readonly id: GeoShape
+  protected readonly nodeType = 'geo'
+
+  constructor(ctx: ToolContext, shape: GeoShape) {
+    super(ctx)
+    this.id = shape
+  }
+
+  protected initialProps(): Partial<GeoProps> {
+    return { shape: this.id }
+  }
+
+  // ブロック矢印は横長など、形ごとの大きさ
+  protected defaultSize(): { w: number; h: number } {
+    return isBlockArrowShape(this.id) ? blockArrowDefaultSize(this.id) : { w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE }
+  }
+}
+
+// ---- グラフツール（MAI-88。円グラフ） ----
+
+// 型の既定の props（3 行の初期データ）で置く。クリックだけなら 240×240
+export class ChartTool extends BoxPlacementTool<ChartProps> {
+  readonly id = 'pieChart' as const
+  protected readonly nodeType = 'chart'
+
+  protected initialProps(): Partial<ChartProps> {
+    return { kind: 'pie' }
+  }
+
+  protected defaultSize(): { w: number; h: number } {
+    return { w: CHART_DEFAULT_SIZE, h: CHART_DEFAULT_SIZE }
   }
 }
 
@@ -1135,7 +1246,7 @@ export class NoteTool implements Tool {
   }
 
   // 編集モードには、手を離してから入る。押した瞬間に入ると、そのあとのブラウザの既定の動作で
-  // フォーカスがキャンバスに移り、textarea からフォーカスが外れて編集が終わってしまう
+  // フォーカスがキャンバスに移り、編集用の要素からフォーカスが外れて編集が終わってしまう
   onPointerUp(): void {
     const creating = this.creating
     if (!creating) return

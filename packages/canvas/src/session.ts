@@ -1,10 +1,30 @@
 import type { Box, Camera } from '@canvcode/core'
+import type { BlockArrowShape } from '@canvcode/nodes'
 import type { SnapGuide } from './snapping.ts'
 import type { Axis } from './arrange.ts'
+import type { PaintEditing } from './gradientHandles.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'title' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow' | 'portal' | 'markdown' | 'code'
+// ブロック矢印（MAI-87）のツールは、図形の形の名前（BlockArrowShape）と同じ
+export type ToolId =
+  | 'select'
+  | 'hand'
+  | 'rect'
+  | 'ellipse'
+  | BlockArrowShape
+  // 円グラフ（MAI-88）
+  | 'pieChart'
+  | 'text'
+  | 'title'
+  | 'note'
+  | 'frame'
+  | 'draw'
+  | 'eraser'
+  | 'arrow'
+  | 'portal'
+  | 'markdown'
+  | 'code'
 
 export interface SessionState {
   camera: Camera
@@ -33,6 +53,11 @@ export interface SessionState {
   hoveredSpacing: { axis: Axis; gapIndex: number } | null
   // 間隔のハンドルをドラッグしている間の、今の間隔（棒の横に数字で出す）
   spacingDrag: { axis: Axis; gap: number } | null
+  // 塗りを編集している図形と、選んでいる止め色（MAI-82）。デザインパネルでグラデーションの塗りを開いている間だけ。
+  // その図形を 1 つだけ選んでいれば、図形の上にグラデーションのハンドルを出す（gradientHandles.ts）
+  paintEditing: PaintEditing | null
+  // 角丸のハンドルを出している図形（MAI-84）。角丸を持てる図形を 1 つだけ選び、ポインタがその上にあるとき（cornerHandles.ts）
+  cornerHandlesId: string | null
 }
 
 export interface DrawStyle {
@@ -70,6 +95,8 @@ export class Session {
       snapGuides: [],
       hoveredSpacing: null,
       spacingDrag: null,
+      paintEditing: null,
+      cornerHandlesId: null,
       ...initial,
     }
   }

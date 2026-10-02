@@ -12,6 +12,7 @@ import {
   linesOfSelection,
   quoteRange,
   isNodeRecord,
+  type AssetRecord,
   type Box,
   type Camera,
   type CanvasRefTarget,
@@ -22,8 +23,16 @@ import {
   type RefTarget,
   type Vec,
 } from '@canvcode/core'
-import { SOURCE_LINK_PREFIX, pickImageLevel, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
-import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
+import {
+  SOURCE_LINK_PREFIX,
+  BLOCK_ARROW_SHAPES,
+  fontsSettled,
+  pickImageLevel,
+  resetTextMetrics,
+  textMetricsGeneration,
+  type CitationResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
+import { AssetManager, IMAGE_MIME_TYPES, isPdf, isSupportedImage, type PdfService } from './assets.ts'
+import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
   CLIPBOARD_MIME,
   copySelection,
@@ -60,9 +69,10 @@ import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
+import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
 import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
-import { ImageCache } from './imageCache.ts'
+import { ImageCache, MissingImageRecorder } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
 import { TextEditor } from './textEditor.ts'
 import {
@@ -71,6 +81,7 @@ import {
   DrawTool,
   EraserTool,
   FrameTool,
+  ChartTool,
   GeoTool,
   HIT_MARGIN_PX,
   HandTool,
@@ -194,6 +205,9 @@ export class CanvasView {
   // Canvas のサムネイル（Portal に見せる。MAI-8 の「4. 親の Canvas 上でのプレビュー」）。
   // 作ったらサーバーにも保存し（.canvcode/thumbnails/）、まだ手元にないものは初めて描くときにサーバーから読む
   private readonly thumbnails = new Map<string, RasterImage>()
+  // Editor ごとに、索引（ノードの形）を作り直したときのレイアウトの世代（フォントの読み込み。MAI-75）
+  private readonly fontGenerations = new WeakMap<Editor, number>()
+  private fontRelayoutPending = false
   private readonly thumbnailRequests = new Set<string>()
   private readonly documents: DocumentResolver
   private spaceHeld = false
@@ -272,7 +286,7 @@ export class CanvasView {
       position: 'absolute',
       inset: '0',
       // 'hidden' ではなく 'clip'。'hidden' だとスクロールできる要素として扱われ、編集中のカードが画面外へはみ出しているとき、
-      // CodeMirror や textarea がキャレットを見せようとして root 自体をスクロールし、キャンバスごとずれてしまう
+      // CodeMirror や文字の編集用の要素がキャレットを見せようとして root 自体をスクロールし、キャンバスごとずれてしまう
       overflow: 'clip',
       touchAction: 'none',
       userSelect: 'none',
@@ -341,6 +355,13 @@ export class CanvasView {
     if (this.figures) {
       this.disposers.push(this.figures.onChange(() => this.renderMissingFigures()))
     }
+    // フォント（Web フォント）を読み込み終えたら、測った文字の幅を捨ててレイアウトし直す（MAI-75）
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined
+    if (fonts && typeof fonts.addEventListener === 'function') {
+      const onFontsLoaded = () => this.scheduleFontRelayout()
+      fonts.addEventListener('loadingdone', onFontsLoaded)
+      this.disposers.push(() => fonts.removeEventListener('loadingdone', onFontsLoaded))
+    }
     this.attachEditor()
     this.syncSlidePages()
 
@@ -350,6 +371,8 @@ export class CanvasView {
     this.listen(this.root, 'pointercancel', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointerleave', () => {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
+      // 角丸のハンドルも、ポインタが外へ出たら消す（MAI-84）
+      if (this.editor.session.get().cornerHandlesId) this.editor.session.set({ cornerHandlesId: null })
     })
     this.listen(this.root, 'wheel', (e) => this.onWheel(e), { passive: false })
     // overflow: clip が効かないブラウザ向けの保険。root がスクロールされたら 0 に戻す（MAI-55）
@@ -418,7 +441,7 @@ export class CanvasView {
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
-    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null })
+    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
     this.editorRef = editor
     // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
     this.images.trim(IMAGE_CACHE_KEEP_ON_SWITCH_BYTES)
@@ -439,6 +462,8 @@ export class CanvasView {
     this.panPointer = null
     this.cursorOverride = null
     this.attachEditor()
+    // 離れている間にフォントを読み込んでいたら、この Canvas のノードの形も測り直す（MAI-75）
+    this.refreshTextLayout(editor, false)
     this.syncSlidePages()
     this.renderMissingFigures()
     this.updateCursor()
@@ -503,6 +528,10 @@ export class CanvasView {
       ['hand', new HandTool(toolContext)],
       ['rect', new GeoTool(toolContext, 'rect')],
       ['ellipse', new GeoTool(toolContext, 'ellipse')],
+      // ブロック矢印（MAI-87）。図形と同じく、ドラッグした箱に置く
+      ...BLOCK_ARROW_SHAPES.map((shape): [ToolId, Tool] => [shape, new GeoTool(toolContext, shape)]),
+      // 円グラフ（MAI-88）。3 行の初期データで、ドラッグした箱に置く
+      ['pieChart', new ChartTool(toolContext)],
       ['text', new TextTool(toolContext)],
       ['title', new TextTool(toolContext, 'title')],
       ['note', new NoteTool(toolContext)],
@@ -520,7 +549,7 @@ export class CanvasView {
       editor.store.listen((event) => {
         // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
         if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
-        // 編集中のノードが（Undo などで）変わったら、textarea の位置を合わせ直す
+        // 編集中のノードが（Undo などで）変わったら、編集用の要素の位置を合わせ直す
         if (this.textEditor.editingId && event.patch.has(this.textEditor.editingId)) this.textEditor.layout()
         const documentEditing = this.documentEditor?.editingId
         if (documentEditing && event.patch.has(documentEditing)) this.documentEditor?.layout()
@@ -547,6 +576,8 @@ export class CanvasView {
   // PDF のページの Canvas なら、1 ページ目だけを描く（MAI-46）
   async captureThumbnail(): Promise<void> {
     const editor = this.editor
+    // 読み込み中のフォントがあれば、読み込んでから測った形で描く（MAI-75）
+    await this.settleFonts(editor)
     const bounds = editor.thumbnailBounds()
     if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
       if (this.thumbnails.delete(editor.canvasId)) void this.storeThumbnail(editor.canvasId, null)
@@ -555,13 +586,48 @@ export class CanvasView {
     const scale = Math.min(THUMBNAIL_MAX.w / bounds.w, THUMBNAIL_MAX.h / bounds.h, 2)
     const width = Math.max(1, Math.round(bounds.w * scale))
     const height = Math.max(1, Math.round(bounds.h * scale))
-    const canvas = this.renderRegion(editor, bounds, scale, width, height)
+    const canvas = await this.renderRegionLoaded(editor, bounds, scale, width, height)
     const image = await createImageBitmap(canvas)
     const previous = this.thumbnails.get(editor.canvasId)?.image
     if (previous instanceof ImageBitmap) previous.close()
     this.thumbnails.set(editor.canvasId, { image, width, height, level: 1 })
     this.invalidate('scene')
     void this.storeThumbnail(editor.canvasId, canvas)
+  }
+
+  // ---- フォントの読み込み（MAI-75） ----
+
+  // loadingdone は続けて届くことがあるので、まとめて 1 回だけやり直す
+  private scheduleFontRelayout(): void {
+    if (this.fontRelayoutPending) return
+    this.fontRelayoutPending = true
+    queueMicrotask(() => {
+      this.fontRelayoutPending = false
+      this.relayoutForFonts()
+    })
+  }
+
+  // 測った文字の幅を捨て、今の Canvas のノードの形（索引の大きさ）・編集中の文字・絵を合わせ直す
+  private relayoutForFonts(): void {
+    resetTextMetrics()
+    this.refreshTextLayout(this.editor, true)
+  }
+
+  // editor の索引を、今のレイアウトの世代で作り直す。force でなければ、もう作り直してあれば何もしない
+  private refreshTextLayout(editor: Editor, force: boolean): void {
+    const generation = textMetricsGeneration()
+    if (!force && (this.fontGenerations.get(editor) ?? 0) === generation) return
+    editor.index.refresh(editor.index.allIds())
+    this.fontGenerations.set(editor, generation)
+    if (editor !== this.editor) return
+    this.textEditor.layout()
+    this.invalidate('all')
+  }
+
+  // 画像に描く前に、頼んだフォントの読み込みを待ち、読み込めたら測り直す（スライドの図・PNG・サムネイル）
+  private async settleFonts(editor: Editor): Promise<void> {
+    if (await fontsSettled()) this.relayoutForFonts()
+    this.refreshTextLayout(editor, false)
   }
 
   // ---- スライドの図にするフレーム（提案 B） ----
@@ -589,6 +655,7 @@ export class CanvasView {
   // フレームを図の PNG に描いて、サーバーへ送る。フレームが見つからなければ false
   async renderFigure(frameId: string, editor: Editor = this.editor): Promise<boolean> {
     const figures = this.figures
+    if (figures) await this.settleFonts(editor)
     const bounds = editor.index.get(frameId)?.worldBounds
     if (!figures || !bounds || editor.getNode(frameId)?.type !== 'frame' || bounds.w <= 0 || bounds.h <= 0) return false
     const { box, maxEdge } = figureRenderBox(bounds)
@@ -598,16 +665,37 @@ export class CanvasView {
     await this.loadPdfPages(editor, box, scale)
     // フレームとその中だけを描く（上に重なった別のノードは写さない）
     const only = new Set([frameId, ...editor.index.descendantsOf(frameId)])
-    const canvas = this.renderRegion(editor, box, scale, width, height, only)
+    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height, only)
     const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
     if (!png) return false
     await figures.upload(frameId, png)
     return true
   }
 
+  // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）のうち、
+  // 頼んだ解像度のものが手元になかったものを読み込んでから、描き直す（読み込み中のプレースホルダーや粗い画像を写さない）。
+  // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
+  // （上限を超えれば、いつもどおり古いものから捨てる）
+  private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): Promise<HTMLCanvasElement> {
+    const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:'))
+    const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder)
+    if (recorder.size === 0) return canvas
+    // 読み込めなかった画像は諦め、プレースホルダーのまま書き出す（1 つの失敗で書き出し全体を失敗させない）
+    if ((await recorder.loadAll()) === 0) return canvas
+    return this.renderRegion(editor, box, scale, width, height, only)
+  }
+
   // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像、スライドの図）。
   // only を渡すと、そのノードだけを描く
-  private renderRegion(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): HTMLCanvasElement {
+  private renderRegion(
+    editor: Editor,
+    box: Box,
+    scale: number,
+    width: number,
+    height: number,
+    only?: ReadonlySet<string>,
+    images: ImageRequester = this.images,
+  ): HTMLCanvasElement {
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -619,7 +707,7 @@ export class CanvasView {
       width,
       height,
       dpr: 1,
-      images: this.images,
+      images,
       assets: this.assets,
       documents: this.documents,
       files: this.files ?? undefined,
@@ -633,8 +721,9 @@ export class CanvasView {
   // ワールド座標の範囲を、白い背景の PNG にする（MAI-64）。長い辺は maxEdge まで。作れなければ null
   async renderRegionPng(editor: Editor, box: Box, maxEdge = REF_IMAGE_MAX_EDGE): Promise<Blob | null> {
     const { width, height, scale } = refImageSize(box, maxEdge)
+    await this.settleFonts(editor)
     await this.loadPdfPages(editor, box, scale)
-    const canvas = this.renderRegion(editor, box, scale, width, height)
+    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height)
     return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
   }
 
@@ -1322,7 +1411,9 @@ export class CanvasView {
       state.focusedGroupId !== prev.focusedGroupId ||
       state.snapGuides !== prev.snapGuides ||
       state.hoveredSpacing !== prev.hoveredSpacing ||
-      state.spacingDrag !== prev.spacingDrag
+      state.spacingDrag !== prev.spacingDrag ||
+      state.paintEditing !== prev.paintEditing ||
+      state.cornerHandlesId !== prev.cornerHandlesId
     ) {
       this.invalidate('overlay')
     }
@@ -1458,6 +1549,11 @@ export class CanvasView {
     }
     if (e.key === 'Escape') {
       if (this.tool.cancel()) return
+      // 塗りのグラデーションを編集していれば、編集を終える（選択はそのまま。MAI-82）
+      if (editor.session.get().paintEditing) {
+        editor.session.set({ paintEditing: null })
+        return
+      }
       // group の中に入っていれば、group を選んで外に出る。そうでなければ選択を外す
       const focused = editor.session.get().focusedGroupId
       if (focused) {
@@ -1503,6 +1599,12 @@ export class CanvasView {
     if (mod && e.altKey && e.code === 'KeyA') {
       e.preventDefault()
       void this.copyCanvasReference()
+      return
+    }
+    // Ctrl（⌘）+Alt+V：クリップボードの画像を、選んでいる図形の塗りにする（MAI-83）。Option+V は文字になるので code で見る
+    if (mod && e.altKey && e.code === 'KeyV') {
+      e.preventDefault()
+      void this.pasteImageFill()
       return
     }
     if (mod && e.key.toLowerCase() === 'v') {
@@ -1555,6 +1657,11 @@ export class CanvasView {
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
+      // 塗りのグラデーションを編集している間は、ノードではなく、選んでいる止め色を消す（MAI-82）
+      if (paintEditingTarget(editor)) {
+        removeSelectedStop(editor)
+        return
+      }
       void this.deleteSelection()
       return
     }
@@ -1575,7 +1682,7 @@ export class CanvasView {
 
   // ---- クリップボードとファイル（MAI-26） ----
 
-  // 文字の入力欄（編集中の textarea など）でのコピー・貼り付けは、ブラウザに任せる
+  // 文字の入力欄（編集中の文字など）でのコピー・貼り付けは、そちらに任せる
   private ownsClipboardEvent(e: ClipboardEvent): boolean {
     return (
       !isEditableKeyboardTarget(e.target) &&
@@ -1645,7 +1752,77 @@ export class CanvasView {
     if (files.length === 0) return
     e.preventDefault()
     this.root.focus({ preventScroll: true })
-    await this.importFiles(files, this.toPointer(e).world)
+    const point = this.toPointer(e).world
+    // Alt（Option）を押しながら図形の上へ画像を落とすと、その図形の塗りにする（MAI-83）。押していなければ、画像ノードを置く
+    const target = e.altKey ? imageFillTargetAt(this.editor, point) : null
+    const image = files.find(isSupportedImage)
+    if (target && image) {
+      await this.setImageFillFromFile([target.id], image)
+      return
+    }
+    await this.importFiles(files, point)
+  }
+
+  // ---- 画像の塗り（MAI-83） ----
+
+  // 画像のファイルを Asset にして、ids の図形の塗りにする。変えたノードの id を返す（読めなければ知らせて空）
+  async setImageFillFromFile(ids: readonly string[], file: Blob & { name?: string }): Promise<string[]> {
+    const editor = this.editor
+    const asset = await this.importImageFile(file)
+    if (!asset || this.editor !== editor) return []
+    const changed = setImageFill(editor, ids, asset.id)
+    if (changed.length > 0) editor.setSelection(changed)
+    return changed
+  }
+
+  // 画像のファイルを Asset にする（塗りに使う。ノードは置かない）。画像でない・読めなければ知らせて null
+  async importImageFile(file: Blob & { name?: string }): Promise<AssetRecord | null> {
+    if (!isSupportedImage(file)) {
+      this.options.notify(`${file.name ?? ''}：塗りにできるのは画像（PNG・JPEG・GIF・WebP・AVIF・BMP）だけです`)
+      return null
+    }
+    try {
+      return await this.assets.importImage(file)
+    } catch (error) {
+      console.error('Failed to import image', file.name, error)
+      this.options.notify(`画像を読み込めませんでした：${file.name ?? ''}`)
+      return null
+    }
+  }
+
+  // クリップボードの画像を Asset にする。paste イベントは Ctrl+V（と Shift 付き）でしか来ないので、
+  // 非同期のクリップボード API で読む（ブラウザが許可を求めることがある）。画像がなければ知らせて null
+  async importClipboardImage(): Promise<AssetRecord | null> {
+    let blob: Blob | null = null
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((t) => IMAGE_MIME_TYPES.includes(t))
+        if (type) {
+          blob = await item.getType(type)
+          break
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to read the clipboard', error)
+    }
+    if (!blob) {
+      this.options.notify('クリップボードに画像がありません')
+      return null
+    }
+    return this.importImageFile(blob)
+  }
+
+  // クリップボードの画像を、選んでいる図形の塗りにする（Ctrl（⌘）+Alt+V）
+  async pasteImageFill(ids: Iterable<string> = this.editor.session.get().selectedIds): Promise<string[]> {
+    const editor = this.editor
+    const targets = [...ids].filter((id) => canHoldImageFill(editor.getNode(id)))
+    if (targets.length === 0) {
+      this.options.notify('画像を塗りに貼り付けるには、図形を選んでください')
+      return []
+    }
+    const asset = await this.importClipboardImage()
+    if (!asset || this.editor !== editor) return []
+    return setImageFill(editor, targets, asset.id)
   }
 
   // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる。

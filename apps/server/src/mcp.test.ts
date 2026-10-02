@@ -188,7 +188,21 @@ describe('MCP server', () => {
           node('node:frame', 'frame', root, { name: '設計', w: 300, h: 200 }),
           node('node:note', 'note', 'node:frame', { text: 'ここを直す' }),
           node('node:card', 'markdown-card', root, { fileId: doc.id }),
+          // 範囲ごとに書式を持つテキスト（版 2。MAI-74）も、プレーンテキストで渡す
+          {
+            ...node('node:rich', 'text', root, {
+              paragraphs: [{ runs: [{ text: '赤い', format: { color: '#ff0000' } }, { text: '文字' }] }, { runs: [{ text: '二行目' }] }],
+            }),
+            version: 2,
+          },
           node('node:gone', 'geo', root, { label: 'x' }),
+          // 画像の塗りの図形（MAI-83）は、画像ノードと同じく Asset の id を渡す
+          node('node:photo', 'geo', root, { label: '写真', fill: { type: 'image', assetId: 'asset:abc', scaleMode: 'fill', crop: { x: 0, y: 0, w: 1, h: 1 }, tileScale: 1, opacity: 1 } }),
+          // グラフ（MAI-88）は、行のラベル・値と割合を渡す
+          node('node:chart', 'chart', root, {
+            kind: 'pie', w: 240, h: 240, innerRadius: 0.5, startAngle: 0, showLabels: true, showPercent: true,
+            rows: [{ label: '東', value: 3 }, { label: '西', value: 1, color: '#ff0000' }, { label: '空', value: 0 }],
+          }),
         ],
         [],
       )
@@ -202,7 +216,10 @@ describe('MCP server', () => {
           nodes: [
             { id: 'node:frame', bounds },
             { id: 'node:card', bounds },
+            { id: 'node:rich', bounds },
             { id: 'node:gone', bounds },
+            { id: 'node:photo', bounds },
+            { id: 'node:chart', bounds },
           ],
         }),
       )
@@ -211,7 +228,13 @@ describe('MCP server', () => {
       expect(result.data.content.nodes).toEqual([
         { id: 'node:frame', type: 'frame', name: '設計', bounds, children: [{ id: 'node:note', type: 'note', parentId: 'node:frame', text: 'ここを直す' }] },
         { id: 'node:card', type: 'markdown-card', bounds, file: { id: doc.id, kind: 'markdown', title: 'メモ', path: 'メモ.md', absPath: join(workspace, 'メモ.md') } },
+        { id: 'node:rich', type: 'text', bounds, text: '赤い文字\n二行目' },
         { id: 'node:gone', type: 'unknown', bounds, deleted: true },
+        { id: 'node:photo', type: 'geo', bounds, label: '写真', assetId: 'asset:abc' },
+        {
+          id: 'node:chart', type: 'chart', bounds,
+          chart: { kind: 'pie', innerRadius: 0.5, rows: [{ label: '東', value: 3, percent: 75 }, { label: '西', value: 1, percent: 25, color: '#ff0000' }, { label: '空', value: 0 }] },
+        },
       ])
       expect(result.data.content.truncated).toBe(false)
       expect(result.data.warnings.join()).toContain('deleted')

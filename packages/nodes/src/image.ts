@@ -1,5 +1,5 @@
 import type { AssetRecord, NodeRecord } from '@canvcode/core'
-import { defineNodeType } from './defineNodeType.ts'
+import { defineNodeType, type RasterImage, type RenderInfo } from './defineNodeType.ts'
 
 // 画像（MAI-7 の `image`、MAI-26）。実体は Asset にあり、ノードは assetId で参照する。
 // 倍率に応じて、縮小版（長辺 256px・1024px）と原本を切り替えて描く（MAI-14）。
@@ -33,8 +33,19 @@ export function scaledSize(width: number, height: number, size: number): { width
   return { width: Math.max(1, Math.round(width * s)), height: Math.max(1, Math.round(height * s)) }
 }
 
-const PLACEHOLDER_FILL = '#eef0f3'
+// 読み込み中の画像の色（画像の塗り（MAI-83）のプレースホルダーにも使う）
+export const IMAGE_PLACEHOLDER_FILL = '#eef0f3'
+const PLACEHOLDER_FILL = IMAGE_PLACEHOLDER_FILL
 const PLACEHOLDER_STROKE = '#d0d4da'
+
+// Asset の画像を、画面上で長辺 longSidePx 画素に要る縮小版で、画像キャッシュに頼む（画像ノードと画像の塗り（MAI-83）が同じ項目を使う）。
+// 手元になければ null（できたら描き直される）
+export function requestAssetImage(info: Pick<RenderInfo, 'images' | 'assets'>, asset: AssetRecord, longSidePx: number): RasterImage | null {
+  const { images, assets } = info
+  if (!images || !assets) return null
+  const size = pickImageVariant(asset, longSidePx)
+  return images.get(asset.id, 'v1', size, () => assets.load(asset.id, size))
+}
 
 export const imageType = defineNodeType<ImageProps>({
   type: 'image',
@@ -53,14 +64,11 @@ export const imageType = defineNodeType<ImageProps>({
     const { assetId, w, h, crop } = node.props
     const asset = info.assets?.get(assetId)
     let raster = null
-    if (asset && info.assets && info.images) {
+    if (asset) {
       // 切り抜いているときは、見えている部分が画面の大きさになるよう、画像全体をそれだけ大きく読む
       const cw = crop?.w || 1
       const ch = crop?.h || 1
-      const needed = Math.max(w / cw, h / ch) * info.zoom * info.devicePixelRatio
-      const size = pickImageVariant(asset, needed)
-      const assets = info.assets
-      raster = info.images.get(assetId, 'v1', size, () => assets.load(assetId, size))
+      raster = requestAssetImage(info, asset, Math.max(w / cw, h / ch) * info.zoom * info.devicePixelRatio)
     }
     if (!raster) {
       // 読み込み中（または Asset が見つからない）
@@ -80,6 +88,8 @@ export const imageType = defineNodeType<ImageProps>({
   },
 
   roughColor: () => PLACEHOLDER_STROKE,
+
+  assets: (node) => (node.props.assetId ? [node.props.assetId] : []),
 
   resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
   minSize: { w: 8, h: 8 },

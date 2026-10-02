@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType, pickImageLevel } from './defineNodeType.ts'
-import { TEXT_FONT_FAMILY } from './text/layout.ts'
+import { TEXT_FONT_FAMILY } from './text/fonts.ts'
 
 // PDF の 1 ページ（MAI-7 の `pdf-page`、MAI-5、MAI-32）。
 // - 原本の PDF は Asset。ページは、表示の倍率に合う解像度で PDF.js が描いた画像を、画像キャッシュに頼んで貼る

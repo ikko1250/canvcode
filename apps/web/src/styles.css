@@ -1020,3 +1020,896 @@ body,
   color: var(--text);
   pointer-events: none;
 }
+
+/* デザインパネル（MAI-73）。右上に重ね、選んでいるノードの見た目のプロパティを並べる。
+   高さは中身に合わせ、画面より長ければパネルの中でスクロールする（キャンバスのホイールには渡らない） */
+.design-panel {
+  position: absolute;
+  right: 12px;
+  top: 52px;
+  width: 232px;
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  font-size: 12px;
+}
+
+.design-panel-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.design-panel-title {
+  font-weight: 600;
+}
+
+.design-panel-count {
+  flex: 1;
+  color: var(--muted);
+}
+
+/* 図形の見た目と図形の中の文字を分けるタブ */
+.design-panel-tabs {
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+}
+
+.design-panel button.design-panel-tab {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.design-panel button.design-panel-tab:hover {
+  background: #eef1f5;
+}
+
+.design-panel button.design-panel-tab.active {
+  background: #eef1f5;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.design-panel button,
+.design-panel-toggle {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.design-panel button:hover {
+  background: #eef1f5;
+}
+
+.design-panel button.active {
+  background: #e3ebfd;
+  border-color: #b9ccf8;
+  color: var(--accent);
+}
+
+.design-panel button svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.design-panel-toggle {
+  position: absolute;
+  right: 12px;
+  top: 52px;
+  height: 28px;
+  background: var(--panel-bg);
+  border-color: var(--panel-border);
+  font-size: 12px;
+}
+
+.design-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.design-section:last-child {
+  border-bottom: none;
+}
+
+.design-section h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.design-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 26px;
+  margin-bottom: 4px;
+}
+
+.design-label {
+  flex: 0 0 52px;
+  padding-top: 5px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.design-label.scrub {
+  cursor: ew-resize;
+}
+
+.design-control {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.design-number {
+  display: flex;
+  align-items: center;
+  width: 84px;
+  height: 24px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.design-number:focus-within,
+.design-hex:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.design-number input,
+.design-hex {
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.design-number input {
+  flex: 1;
+  width: 0;
+  text-align: right;
+  outline: none;
+}
+
+.design-unit {
+  padding-right: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.design-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* 値が混在しているときは、つまみの位置に意味がないので薄くする */
+.design-slider.mixed {
+  opacity: 0.4;
+}
+
+/* 色の見本（MAI-81）。押すとカラーピッカーを開く。不透明度のある色が分かるよう、市松模様の上に色を重ねる */
+.design-panel button.design-swatch {
+  min-width: 0;
+  position: relative;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.design-swatch > span {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+/* 混在：斜めの縞 */
+.design-panel button.design-swatch.mixed {
+  background: repeating-linear-gradient(45deg, #d9dde3 0 4px, #ffffff 4px 8px);
+}
+
+/* 塗りなし：白地に赤の斜線 */
+.design-panel button.design-swatch.none {
+  background: linear-gradient(to top right, transparent calc(50% - 1px), #e03131 calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)), #ffffff;
+}
+
+.design-color-field .design-hex {
+  width: 0;
+  min-width: 56px;
+}
+
+.design-number.design-opacity {
+  flex: 0 0 52px;
+  width: 52px;
+}
+
+/* 塗りの行（見本・HEX か種類・不透明度・−）は 1 行に収める（MAI-82）。HEX・種類の欄が縮む */
+.design-paint-field > .design-control {
+  gap: 3px;
+}
+
+.design-paint-field .design-hex {
+  padding: 0 3px;
+  font-size: 11px;
+}
+
+.design-paint-field .design-opacity input {
+  padding: 0 2px;
+}
+
+.design-paint-field .design-opacity .design-unit {
+  padding-right: 3px;
+}
+
+.design-paint-field .design-hex,
+.design-panel .design-paint-field button.design-paint-kind {
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 44px;
+}
+
+.design-paint-field .design-number.design-opacity {
+  flex: 0 0 40px;
+  width: 40px;
+}
+
+.design-paint-field .design-color-popup {
+  margin-top: 2px;
+}
+
+.design-panel button.design-fill-toggle {
+  min-width: 0;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* 塗りの種類（グラデーション。MAI-82）。押すとピッカーを開く */
+.design-panel button.design-paint-kind {
+  width: 0;
+  height: 22px;
+  padding: 0 4px;
+  text-align: left;
+}
+
+/* 塗りの種類の切り替え（単色・線形・円形）。ピッカーの幅いっぱいに並べる */
+.design-paint-types {
+  display: flex;
+}
+
+.design-panel .design-paint-types button {
+  flex: 1;
+  min-width: 0;
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
+/* グラデーションの編集（MAI-82）。止め色の帯は、市松模様の上に今のグラデーション。印はその止め色 */
+.design-gradient {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.design-gradient-bar {
+  position: relative;
+  height: 16px;
+  margin: 6px 8px 10px;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+  cursor: copy;
+  touch-action: none;
+}
+
+.design-gradient-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+}
+
+.design-panel button.design-gradient-stop {
+  position: absolute;
+  top: 50%;
+  min-width: 0;
+  width: 14px;
+  height: 22px;
+  margin: -11px 0 0 -7px;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 6px 6px, #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  cursor: ew-resize;
+}
+
+.design-panel button.design-gradient-stop > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.design-panel button.design-gradient-stop.selected {
+  box-shadow: 0 0 0 2px var(--accent), 0 1px 2px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+}
+
+.design-gradient-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.design-panel button.design-gradient-remove {
+  height: 22px;
+  font-size: 11px;
+}
+
+/* 画像の塗り（MAI-83）。表示のしかたの切り替え・切り抜きの範囲・タイルの倍率・画像の選択 */
+.design-image-paint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ピッカーは狭いので、表示のしかたは 2 列に並べる */
+.design-image-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.design-panel .design-image-modes button {
+  min-width: 0;
+  padding: 0 2px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.design-image-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.design-panel .design-image-actions button {
+  flex: 1;
+  min-width: 0;
+  padding: 0 2px;
+  white-space: nowrap;
+  height: 24px;
+  font-size: 11px;
+}
+
+.design-image-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.design-panel button.design-image-chip {
+  min-width: 0;
+  height: 40px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #eef0f3;
+}
+
+.design-panel button.design-image-chip.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.design-image-chip img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+/* カラーピッカー（MAI-81）。パネルの中、項目の下に開く */
+.design-color-popup {
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.design-color-square {
+  position: relative;
+  height: 120px;
+  border-radius: 4px;
+  background-image: linear-gradient(to top, #000000, transparent), linear-gradient(to right, #ffffff, transparent);
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+
+.design-color-square:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.design-color-thumb {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.design-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.design-slider.design-hue-slider,
+.design-slider.design-alpha-slider {
+  flex: 1;
+  height: 10px;
+  border-radius: 5px;
+  appearance: none;
+}
+
+.design-slider.design-hue-slider {
+  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+}
+
+.design-slider.design-alpha-slider {
+  background: linear-gradient(to right, transparent, var(--alpha-color, #1f2328)), repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+}
+
+.design-panel button.design-eyedropper {
+  min-width: 0;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+}
+
+.design-eyedropper svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.design-color-group-title {
+  margin-bottom: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.design-color-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.design-panel button.design-color-chip {
+  min-width: 0;
+  position: relative;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 6px 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.design-color-chip > span {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.design-panel button.design-color-chip.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.design-hex {
+  flex: 1;
+  height: 24px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.design-segmented {
+  gap: 2px;
+}
+
+/* 一覧から選ぶ（リストの記号・番号の形。MAI-78） */
+.design-select {
+  width: 100%;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+}
+
+.design-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* フォントの選択（MAI-75）。一覧はパネルの中に開く（パネルのスクロールで切れないように） */
+.design-font-field .design-control {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.design-panel button.design-font-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  border-color: var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+  text-align: left;
+}
+
+.design-font-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-font-missing-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f59f00;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 選んでいるフォントがこの端末にないときの説明 */
+.design-font-missing {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #b35c00;
+}
+
+.design-font-name.mixed,
+.design-font-caret {
+  color: var(--muted);
+}
+
+.design-font-popup {
+  /* デザインパネルの左に重ねる別のペイン（位置は FontField.tsx が決める） */
+  position: fixed;
+  z-index: 30;
+  box-sizing: border-box;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.design-font-popup-header {
+  padding: 2px 4px 4px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.design-font-filter {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+}
+
+.design-font-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.design-font-list {
+  max-height: min(360px, calc(100vh - 140px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.design-font-group {
+  padding: 4px 4px 2px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.design-font-option {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.design-font-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.design-font-option-missing {
+  flex: none;
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 400;
+  color: #b35c00;
+}
+
+.design-font-option.active {
+  background: #eef1f5;
+}
+
+.design-font-option.selected {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.design-font-empty {
+  padding: 4px 6px;
+  color: var(--muted);
+}
+
+.design-panel button.design-font-local {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 文字の編集中に、デザインパネルにフォーカスが移っても、選んでいる範囲を見せる（MAI-74。CSS Custom Highlight API） */
+::highlight(canvcode-text-selection) {
+  background-color: rgba(59, 91, 219, 0.28);
+}
+
+/* 文字を編集している間の書式のツールバー（MAI-79）。編集中のテキストの上に、ズームによらない大きさで出す。
+   z-index は付けず、後に置くデザインパネル・パレットの下にする */
+.text-format-toolbar {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 3px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  user-select: none;
+}
+
+.text-format-toolbar button {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.text-format-toolbar button:hover {
+  background: #eef1f5;
+}
+
+.text-format-toolbar button.active {
+  background: #e3ebfd;
+  border-color: #b9ccf8;
+  color: var(--accent);
+}
+
+.text-format-toolbar button svg {
+  display: block;
+  margin: 0 auto;
+}
+
+/* 太字などが混在している（一部の文字だけオン） */
+.text-format-toolbar button.mixed,
+.design-panel button.mixed {
+  background: #f1f4f9;
+  border-color: #d5dbe5;
+  border-style: dashed;
+}
+
+/* 角丸（MAI-84）：角ごとの 4 つの入力は、角の位置どおりに 2×2 に並べる */
+.design-corner-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 8px;
+}
+
+.design-corner-cell .design-label {
+  flex-basis: 28px;
+}
+
+.design-corner-cell .design-number {
+  width: 100%;
+}
+
+/* 影（MAI-86）：影ごとのまとまり。隠した影は薄く見せる */
+.design-shadow {
+  margin: 2px 0 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--panel-border);
+}
+
+.design-shadow.hidden .design-corner-grid,
+.design-shadow.hidden .design-paint-field {
+  opacity: 0.5;
+}
+
+.design-shadow-controls {
+  flex-wrap: nowrap;
+}
+
+.design-shadow-controls .design-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.design-shadows-head .design-control {
+  justify-content: flex-end;
+}
+
+/* グラフのデータの表（MAI-88）：見本・ラベル・値・− を 1 行に */
+.design-chart-head .design-control {
+  justify-content: flex-end;
+}
+
+.design-panel button.design-chart-paste {
+  border-color: var(--panel-border);
+  font-size: 11px;
+}
+
+.design-chart-message {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.design-chart-table {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 6px;
+}
+
+.design-chart-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* 色を自動で割り当てている行の見本は、角を丸くして見分ける */
+.design-chart-row.auto .design-swatch,
+.design-chart-row.auto .design-swatch > span {
+  border-radius: 50%;
+}
+
+.design-chart-cell {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+}
+
+.design-chart-cell.numeric {
+  flex: 0 0 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.design-chart-cell:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.design-chart-auto {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.design-panel .design-chart-auto button {
+  border-color: var(--panel-border);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.design-mixed {
+  flex: 1;
+  color: var(--muted);
+}

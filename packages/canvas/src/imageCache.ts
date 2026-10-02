@@ -240,3 +240,34 @@ function nearestLevel(levels: Map<number, RasterImage>, level: number): RasterIm
   }
   return above ?? below
 }
+
+// 書き出し（サムネイル・スライドの図・ref の画像）の前の描画で、filter に合う画像のうち、頼んだ解像度のものが手元になかったものを覚える
+// ImageRequester（MAI-83）。描いたあとで loadAll で読み込み、描き直す。
+// 読み込めなかった画像（404・壊れた画像など）は諦める：loadAll は失敗しても reject せず、その画像はプレースホルダーのまま書き出す
+export class MissingImageRecorder implements ImageRequester {
+  private readonly missing = new Map<string, { key: string; version: string; level: number; produce: () => Promise<RasterImage> }>()
+
+  private readonly cache: ImageCache
+  private readonly filter: (key: string) => boolean
+
+  constructor(cache: ImageCache, filter: (key: string) => boolean) {
+    this.cache = cache
+    this.filter = filter
+  }
+
+  get(key: string, version: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null {
+    const image = this.cache.get(key, version, level, produce)
+    if (this.filter(key) && image?.level !== level) this.missing.set(`${key}@${level}`, { key, version, level, produce })
+    return image
+  }
+
+  get size(): number {
+    return this.missing.size
+  }
+
+  // 覚えた画像を読み込む。読み込めた数を返す（失敗したものは数えない）
+  async loadAll(): Promise<number> {
+    const results = await Promise.allSettled([...this.missing.values()].map(({ key, version, level, produce }) => this.cache.load(key, version, level, produce)))
+    return results.filter((result) => result.status === 'fulfilled' && result.value !== null).length
+  }
+}

@@ -203,7 +203,8 @@ export class SyncClient {
     this.workspace.store.transact(
       'remote',
       (tx) => {
-        for (const record of records) if (!mine.has(record.id)) tx.put(record)
+        // 古い版のノード（版を上げる前に保存したもの）は、今の形にしてから入れる（MAI-74）。保存し直すのは、次に変えたとき
+        for (const record of records) if (!mine.has(record.id)) tx.put(this.workspace.upgrade(record))
         for (const id of deleted) if (!mine.has(id)) tx.remove(id)
       },
       { history: 'ignore', source: 'remote' },

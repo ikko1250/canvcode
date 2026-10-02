@@ -158,10 +158,22 @@ export interface DescribedNode {
   color?: string
   size?: number
   pointCount?: number
+  // グラフ（MAI-88）のデータ
+  chart?: DescribedChart
   note?: string
   // 範囲選択の枠が一部にかかった PDF のページの、ページの中の範囲と文字
   region?: DescribedRegion
   children?: DescribedNode[]
+}
+
+// グラフ（MAI-88）。行ごとのラベルと値、正の値の合計に対する割合（%。小数 1 桁。0・負の値の行は扇にしないので持たない）。
+// color は行で決めた色だけ（決めていない行は、画面ではテンプレートの色を行の順で割り当てる）
+export interface DescribedChart {
+  kind: string
+  rows: { label: string; value: number; percent?: number; color?: string }[]
+  // ドーナツの穴（外の半径に対する割合）。0 なら持たない
+  innerRadius?: number
+  truncated?: true
 }
 
 export interface DescribedRegion {
@@ -300,6 +312,35 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
   }
 }
 
+// テキスト・付箋の文字（プレーンテキスト）。版 2 は段落と run（paragraphs）で持ち、版 1 は text の文字列（MAI-74）。
+// サーバーはノードの型を読み込まないので、両方の形を構造的に読む。
+// 箇条書き・番号付きリストの段落（MAI-78）は、AI が構造を読めるよう Markdown の形で記号を付ける（階層ごとに 2 つの空白、
+// 箇条書きは「- 」、番号付きは「1. 」。番号は画面と同じ数え方（richText.ts の listNumbers）で、形（a. や ① など）は 1. にそろえる）
+export function plainTextOfProps(props: Record<string, unknown>): string {
+  const paragraphs = props.paragraphs
+  if (Array.isArray(paragraphs)) {
+    let counters: ({ type: string; n: number } | undefined)[] = []
+    return paragraphs
+      .map((paragraph) => {
+        const runs = (paragraph as { runs?: unknown })?.runs
+        const text = Array.isArray(runs) ? runs.map((run) => (typeof run?.text === 'string' ? run.text : '')).join('') : ''
+        const list = (paragraph as { list?: { type?: unknown; level?: unknown } })?.list
+        if (!list || (list.type !== 'bullet' && list.type !== 'ordered')) {
+          counters = []
+          return text
+        }
+        const level = typeof list.level === 'number' && Number.isFinite(list.level) ? Math.max(0, Math.min(8, Math.round(list.level))) : 0
+        counters = counters.slice(0, level + 1)
+        const previous = counters[level]
+        const n = previous && previous.type === list.type ? previous.n + 1 : 1
+        counters[level] = { type: list.type, n }
+        return `${'  '.repeat(level)}${list.type === 'bullet' ? '-' : `${n}.`} ${text}`
+      })
+      .join('\n')
+  }
+  return typeof props.text === 'string' ? props.text : ''
+}
+
 // ノードを、AI が読める形にする。ノードの型は @canvcode/nodes にあるが、サーバーは読み込まないので props を構造的に読む
 async function describeNode(
   record: StoredRecord,
@@ -326,12 +367,23 @@ async function describeNode(
   }
   switch (type) {
     case 'text':
-    case 'note':
-      out.text = str('text')
+    case 'note': {
+      const text = plainTextOfProps(props)
+      out.text = text ? truncate(text, MAX_NODE_TEXT) : undefined
       break
-    case 'geo':
+    }
+    case 'geo': {
+      out.label = str('label')
+      // 画像の塗り（MAI-83）は、画像ノードと同じく Asset の id を渡す
+      const fill = props.fill as { type?: unknown; assetId?: unknown } | null | undefined
+      if (fill?.type === 'image' && typeof fill.assetId === 'string') out.assetId = fill.assetId
+      break
+    }
     case 'arrow':
       out.label = str('label')
+      break
+    case 'chart':
+      out.chart = describeChart(props)
       break
     case 'frame':
       out.name = str('name')
@@ -390,6 +442,33 @@ async function describeNode(
     if (children.length) out.children = children
   }
   for (const key of Object.keys(out) as (keyof DescribedNode)[]) if (out[key] === undefined) delete out[key]
+  return out
+}
+
+// グラフのデータ（MAI-88）。nodes の chart.ts と同じく、行を構造的に読む（読めない値は 0）
+const MAX_CHART_ROWS = 200
+const MAX_CHART_LABEL = 200
+
+export function describeChart(props: Record<string, unknown>): DescribedChart {
+  const rows = (Array.isArray(props.rows) ? props.rows : [])
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
+    .map((row) => ({
+      label: typeof row.label === 'string' ? truncate(row.label, MAX_CHART_LABEL) : '',
+      value: typeof row.value === 'number' && Number.isFinite(row.value) ? row.value : 0,
+      color: typeof row.color === 'string' ? row.color : undefined,
+    }))
+  const total = rows.reduce((sum, row) => sum + (row.value > 0 ? row.value : 0), 0)
+  const out: DescribedChart = {
+    kind: typeof props.kind === 'string' ? props.kind : 'pie',
+    rows: rows.slice(0, MAX_CHART_ROWS).map(({ label, value, color }) => ({
+      label,
+      value,
+      ...(total > 0 && value > 0 ? { percent: Math.round((value / total) * 1000) / 10 } : {}),
+      ...(color ? { color } : {}),
+    })),
+  }
+  if (typeof props.innerRadius === 'number' && props.innerRadius > 0) out.innerRadius = props.innerRadius
+  if (rows.length > MAX_CHART_ROWS) out.truncated = true
   return out
 }
 

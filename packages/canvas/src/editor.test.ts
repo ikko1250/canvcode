@@ -61,3 +61,61 @@ describe('editor', () => {
     expect(editor.history.canUndo('canvas:other')).toBe(false)
   })
 })
+
+// 塗りなしの図形（MAI-81）：枠の線にだけ当たる。選んだあとは中を押しても掴める
+describe('hit test of a shape without fill', () => {
+  it('passes clicks inside to the node below until it is selected', () => {
+    const editor = new Editor()
+    const below = rect(editor, 40, 40, 20, 20)
+    editor.createNodes([below])
+    const hollow = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, fill: null, strokeWidth: 2 } })
+    editor.createNodes([hollow])
+    expect(editor.hitTest({ x: 50, y: 50 }, 0)?.id).toBe(below.id)
+    expect(editor.hitTest({ x: 20, y: 20 }, 0)).toBeNull()
+    expect(editor.hitTest({ x: 0.5, y: 20 }, 0)?.id).toBe(hollow.id)
+    editor.setSelection([hollow.id])
+    // 中の何もないところは、選んでいる図形に当たる。下のノードの上は、下のノード
+    expect(editor.hitTest({ x: 20, y: 20 }, 0)?.id).toBe(hollow.id)
+    expect(editor.hitTest({ x: 50, y: 50 }, 0)?.id).toBe(below.id)
+    expect(editor.hitTest({ x: 150, y: 20 }, 0)).toBeNull()
+  })
+})
+
+// 外側の線（MAI-85）：箱の外へはみ出した線も索引で引け（当たり判定・カリング）、サムネイルの範囲にも入る。選択の箱は形のまま
+describe('a shape with an outside border', () => {
+  it('indexes the drawn area beyond its bounds', () => {
+    const editor = new Editor()
+    const node = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, fill: null, strokeWidth: 10, strokeAlign: 'outside' } })
+    editor.createNodes([node])
+    const entry = editor.index.get(node.id)!
+    expect(entry.worldBounds).toEqual({ x: 0, y: 0, w: 100, h: 100 })
+    expect(entry.inkBounds).toEqual({ x: -10, y: -10, w: 120, h: 120 })
+    expect(editor.index.search({ x: -8, y: 50, w: 0, h: 0 })).toEqual([node.id])
+    expect(editor.hitTest({ x: -8, y: 50 }, 0)?.id).toBe(node.id)
+    expect(editor.hitTest({ x: 3, y: 50 }, 0)).toBeNull()
+    expect(editor.thumbnailBounds()).toEqual({ x: -10, y: -10, w: 120, h: 120 })
+    // group は子の描く範囲を合わせる
+    const other = rect(editor, 20, 20, 10, 10)
+    editor.createNodes([other])
+    editor.setSelection([node.id, other.id])
+    const group = editor.groupSelected()!
+    expect(editor.index.get(group)!.inkBounds).toEqual({ x: -10, y: -10, w: 120, h: 120 })
+  })
+})
+
+// ドロップシャドウ（MAI-86）：ずらし・ぼかし・広がりの分だけ、辺ごとに描く範囲を広げる。当たり判定は形のまま（Figma と同じ）
+describe('a shape with a drop shadow', () => {
+  it('indexes the shadow area per side but does not hit it', () => {
+    const editor = new Editor()
+    const shadows = [{ type: 'drop', x: 10, y: 20, blur: 4, spread: 2, color: '#000000', opacity: 0.5 }]
+    const node = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, strokeWidth: 0, shadows } })
+    editor.createNodes([node])
+    const entry = editor.index.get(node.id)!
+    // 届く幅は広がり 2 + ぼかし 4 × 1.5 = 8。左は 8 − 10 < 0 なので 0、右は 18、上は 0、下は 28
+    expect(entry.worldBounds).toEqual({ x: 0, y: 0, w: 100, h: 100 })
+    expect(entry.inkBounds).toEqual({ x: 0, y: 0, w: 118, h: 128 })
+    expect(editor.index.search({ x: 110, y: 120, w: 0, h: 0 })).toEqual([node.id])
+    expect(editor.hitTest({ x: 110, y: 120 }, 0)).toBeNull()
+    expect(editor.thumbnailBounds()).toEqual({ x: 0, y: 0, w: 118, h: 128 })
+  })
+})

@@ -13,7 +13,7 @@ async function openWithNotes(page: Page, xs: number[]): Promise<string[]> {
     ({ xs, y }) => {
       const { editor, view } = (window as any).canvasInputFixture
       view.setCamera({ x: 0, y: 0, zoom: 1 })
-      const notes = xs.map((x: number) => editor.makeNode('note', { x, y, props: { text: 'メモ' } }))
+      const notes = xs.map((x: number) => editor.makeNode('note', { x, y, props: { paragraphs: [{ runs: [{ text: 'メモ' }] }] } }))
       editor.createNodes(notes)
       const ids = notes.map((n: { id: string }) => n.id)
       editor.setSelection(ids)
