@@ -540,7 +540,8 @@ export class Editor {
       const bounds = this.index.get(id)?.worldBounds
       if (bounds) return bounds
     }
-    return unionBoxes(this.index.allIds().flatMap((id) => this.index.get(id)?.worldBounds ?? []))
+    // 外側の線（MAI-85）なども切れないよう、描く範囲で合わせる
+    return unionBoxes(this.index.allIds().flatMap((id) => this.index.get(id)?.inkBounds ?? []))
   }
 
   // ---- Python・Markdown の Canvas（MAI-37、MAI-42） ----

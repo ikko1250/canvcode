@@ -36,6 +36,9 @@ export interface IndexEntry {
   // ノードのローカル座標でのバウンディングボックス（group は子から計算したもの）
   localBounds: Box
   worldBounds: Box
+  // 描くものの範囲（ワールド座標）。型の renderOutset（外側の線など。MAI-85）の分だけ worldBounds より広い。
+  // 索引（search）はこの箱で引く（カリング・当たり判定の候補）
+  inkBounds: Box
   // 属する木の根（Canvas 直下のノード）
   root: string
   item: IndexItem | null
@@ -272,18 +275,26 @@ export class NodeIndex {
         localBounds = type.getBounds(node)
       }
       const worldBounds = transformBox(worldMatrix, localBounds)
+      const outset = type.container === 'group' ? 0 : (type.renderOutset?.(node) ?? 0)
+      // group は子の描く範囲を合わせる（フレームは子を枠で切り抜くので、枠のまま）
+      const inkBounds =
+        type.container === 'group'
+          ? (unionBoxes([worldBounds, ...childEntries.map((child) => child.inkBounds)]) ?? worldBounds)
+          : outset > 0
+          ? transformBox(worldMatrix, { x: localBounds.x - outset, y: localBounds.y - outset, w: localBounds.w + outset * 2, h: localBounds.h + outset * 2 })
+          : worldBounds
       const item =
         type.container === 'group'
           ? null
           : {
-              minX: worldBounds.x,
-              minY: worldBounds.y,
-              maxX: worldBounds.x + worldBounds.w,
-              maxY: worldBounds.y + worldBounds.h,
+              minX: inkBounds.x,
+              minY: inkBounds.y,
+              maxX: inkBounds.x + inkBounds.w,
+              maxY: inkBounds.y + inkBounds.h,
               id,
             }
       if (item) items.push(item)
-      const entry: IndexEntry = { node, worldMatrix, localBounds, worldBounds, root: rootId, item }
+      const entry: IndexEntry = { node, worldMatrix, localBounds, worldBounds, inkBounds, root: rootId, item }
       this.entries.set(id, entry)
       members.add(id)
       return entry

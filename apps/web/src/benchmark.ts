@@ -37,7 +37,7 @@ export function generateNodes(editor: Editor, count: number): void {
       x: (i % columns) * spacing + (spacing - w) / 2,
       y: Math.floor(i / columns) * spacing + (spacing - h) / 2,
       index: indices[i],
-      props: { shape: random() < 0.5 ? 'rect' : 'ellipse', w, h, fill: solidPaint(colors.fill), stroke: colors.stroke },
+      props: { shape: random() < 0.5 ? 'rect' : 'ellipse', w, h, fill: solidPaint(colors.fill), stroke: solidPaint(colors.stroke) },
     })
     nodes.push(node)
   }

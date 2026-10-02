@@ -10,9 +10,9 @@ describe('used colors', () => {
     const editor = new Editor()
     // makeNode は今の一番手前の上に重ねる index を付けるので、1 つずつ作る
     const add = (node: ReturnType<Editor['makeNode']>) => editor.createNodes([node])
-    add(editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 10, h: 10, fill: solidPaint('#FF0000'), stroke: '#0000ff' } }))
-    add(editor.makeNode('geo', { x: 20, y: 0, props: { shape: 'rect', w: 10, h: 10, fill: solidPaint('#ff0000', 0.5), stroke: '#0000ff' } }))
-    add(editor.makeNode('geo', { x: 40, y: 0, props: { shape: 'rect', w: 10, h: 10, fill: null, stroke: '#00ff00' } }))
+    add(editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 10, h: 10, fill: solidPaint('#FF0000'), stroke: solidPaint('#0000ff') } }))
+    add(editor.makeNode('geo', { x: 20, y: 0, props: { shape: 'rect', w: 10, h: 10, fill: solidPaint('#ff0000', 0.5), stroke: solidPaint('#0000ff') } }))
+    add(editor.makeNode('geo', { x: 40, y: 0, props: { shape: 'rect', w: 10, h: 10, fill: null, stroke: solidPaint('#00ff00') } }))
     const base = { color: '#111111', fontSize: 12, fontFamily: 'sans-serif', bold: false, italic: false, underline: false, strikethrough: false }
     const paragraphs = applyRunFormat(richTextFromPlain('hello'), 0, 2, { color: '#ff0000' }, base)
     add(editor.makeNode('text', { x: 0, y: 40, props: { paragraphs, color: '#111111' } }))

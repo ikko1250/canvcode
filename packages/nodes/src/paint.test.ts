@@ -114,13 +114,13 @@ describe('geo fill (version 2)', () => {
   it('migrates the version 1 color string to a solid paint', () => {
     const old = geo({ fill: '#ffc9c9' as never }, 1)
     const upgraded = upgradeNode(geoType, old) as NodeRecord<GeoProps>
-    expect(upgraded.version).toBe(2)
+    expect(upgraded.version).toBe(3)
     expect(upgraded.props.fill).toEqual(solidPaint('#ffc9c9'))
     // 版 1 で fill を持たないものは既定の色
     const { fill: _, ...noFill } = geo({}, 1).props
     expect((upgradeNode(geoType, { ...geo({}, 1), props: noFill as GeoProps }) as NodeRecord<GeoProps>).props.fill).toEqual(solidPaint(GEO_DEFAULT_FILL))
     // 今の版はそのまま
-    const current = geo({ fill: null })
+    const current = geo({ fill: null }, 3)
     expect(upgradeNode(geoType, current)).toBe(current)
   })
 
@@ -132,6 +132,8 @@ describe('geo fill (version 2)', () => {
       rect: () => calls.push('rect'),
       ellipse: () => calls.push('ellipse'),
       stroke: () => calls.push('stroke'),
+      moveTo: () => {},
+      setLineDash: () => {},
       lineWidth: 0,
       strokeStyle: '',
     })
@@ -167,10 +169,10 @@ describe('geo fill (version 2)', () => {
   })
 
   it('lists its colors and uses the stroke for the rough color when there is no fill', () => {
-    expect(geoType.colors!(geo({ fill: solidPaint('#ff0000'), stroke: '#0000ff' }))).toEqual(['#ff0000', '#0000ff'])
-    expect(geoType.colors!(geo({ fill: null, stroke: '#0000ff', strokeWidth: 0 }))).toEqual([])
+    expect(geoType.colors!(geo({ fill: solidPaint('#ff0000'), stroke: solidPaint('#0000ff') }))).toEqual(['#ff0000', '#0000ff'])
+    expect(geoType.colors!(geo({ fill: null, stroke: solidPaint('#0000ff'), strokeWidth: 0 }))).toEqual([])
     expect(geoType.roughColor!(geo({ fill: solidPaint('#ff0000', 0.5) }))).toBe('rgba(255, 0, 0, 0.5)')
-    expect(geoType.roughColor!(geo({ fill: null, stroke: '#0000ff' }))).toBe('rgba(0, 0, 255, 0.35)')
+    expect(geoType.roughColor!(geo({ fill: null, stroke: solidPaint('#0000ff') }))).toBe('rgba(0, 0, 255, 0.35)')
   })
 })
 
@@ -269,7 +271,7 @@ describe('gradient paint', () => {
 
   it('renders a gradient geo and keeps its colors', () => {
     const fill = linearGradient(stops)
-    expect(geoType.colors!(geo({ fill, stroke: '#00ff00' }))).toEqual(['#ff0000', '#0000ff', '#00ff00'])
+    expect(geoType.colors!(geo({ fill, stroke: solidPaint('#00ff00') }))).toEqual(['#ff0000', '#0000ff', '#00ff00'])
     expect(geoType.roughColor!(geo({ fill }))).toBe('rgba(128, 0, 128, 0.75)')
   })
 })
@@ -394,7 +396,7 @@ describe('image paint', () => {
     expect(paintColors(fill)).toEqual([])
     expect(paintCss(fill)).toBe(colorWithAlpha(IMAGE_PAINT_PREVIEW_COLOR, 0.5))
     expect(paintCss(imagePaint(asset.id, { scaleMode: 'fit' }), undefined, () => '/a.png')).toBe('url("/a.png") center / contain no-repeat #eef0f3')
-    expect(geoType.colors!(geo({ fill, stroke: '#00ff00' }))).toEqual(['#00ff00'])
+    expect(geoType.colors!(geo({ fill, stroke: solidPaint('#00ff00') }))).toEqual(['#00ff00'])
     expect(geoType.assets!(geo({ fill }))).toEqual([asset.id])
     expect(geoType.assets!(geo({ fill: solidPaint('#ffffff') }))).toEqual([])
     // 画像から単色・グラデーションへは、既定の色から

@@ -80,3 +80,25 @@ describe('hit test of a shape without fill', () => {
     expect(editor.hitTest({ x: 150, y: 20 }, 0)).toBeNull()
   })
 })
+
+// 外側の線（MAI-85）：箱の外へはみ出した線も索引で引け（当たり判定・カリング）、サムネイルの範囲にも入る。選択の箱は形のまま
+describe('a shape with an outside border', () => {
+  it('indexes the drawn area beyond its bounds', () => {
+    const editor = new Editor()
+    const node = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, fill: null, strokeWidth: 10, strokeAlign: 'outside' } })
+    editor.createNodes([node])
+    const entry = editor.index.get(node.id)!
+    expect(entry.worldBounds).toEqual({ x: 0, y: 0, w: 100, h: 100 })
+    expect(entry.inkBounds).toEqual({ x: -10, y: -10, w: 120, h: 120 })
+    expect(editor.index.search({ x: -8, y: 50, w: 0, h: 0 })).toEqual([node.id])
+    expect(editor.hitTest({ x: -8, y: 50 }, 0)?.id).toBe(node.id)
+    expect(editor.hitTest({ x: 3, y: 50 }, 0)).toBeNull()
+    expect(editor.thumbnailBounds()).toEqual({ x: -10, y: -10, w: 120, h: 120 })
+    // group は子の描く範囲を合わせる
+    const other = rect(editor, 20, 20, 10, 10)
+    editor.createNodes([other])
+    editor.setSelection([node.id, other.id])
+    const group = editor.groupSelected()!
+    expect(editor.index.get(group)!.inkBounds).toEqual({ x: -10, y: -10, w: 120, h: 120 })
+  })
+})

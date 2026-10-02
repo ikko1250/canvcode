@@ -91,6 +91,9 @@ export interface NodeTypeDef<P extends object> {
   migrate?(props: any, fromVersion: number): P
   // ノードのローカル座標でのバウンディングボックス
   getBounds(node: NodeRecord<P>): Box
+  // 描くものが getBounds の箱の外へはみ出す幅（ローカル座標。図形の外側の線など。MAI-85）。定義しなければ 0。
+  // 選択枠・吸い付き・整列は getBounds の箱のまま使い、カリング・当たり判定の候補探し・サムネイルの範囲は、この分だけ広げた箱を使う
+  renderOutset?(node: NodeRecord<P>): number
   // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）。
   // zoom は、画面上で大きさが決まる部分（フレームの名前など）の判定に使う
   hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number): boolean

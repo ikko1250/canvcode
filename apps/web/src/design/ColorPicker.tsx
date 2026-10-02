@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
-import { GEO_DEFAULT_FILL, isGradientPaint, normalizeColor, solidPaint, type Fill, type ImagePaint, type PaintType } from '@canvcode/nodes'
+import { GEO_DEFAULT_FILL, GEO_DEFAULT_STROKE, isGradientPaint, normalizeColor, solidPaint, type Fill, type ImagePaint, type PaintType } from '@canvcode/nodes'
 import { MIXED_LABEL, Slider, type ValueEditor } from './controls.tsx'
 import { GradientEditor, type PaintEditing, type PaintEditingLink } from './GradientEditor.tsx'
 import { ImagePaintEditor, type PaintImageSource } from './ImagePaintEditor.tsx'
@@ -346,9 +346,15 @@ export function ColorField(props: { label: string; value: SharedValue<string>; e
 
 // ---- 塗りの項目 ----
 
-// 最後に「塗りなし」にした塗り。＋で塗りを足すときは、これに戻す（なければ図形の既定の色）。
+// 最後に「塗りなし」「線なし」にした塗り（役割ごと）。＋で足すときは、これに戻す（なければ図形の既定の色）。
 // 選び直すとパネルの項目は作り直されるので、項目の外（このタブの間）で覚えておく
-let lastRemovedFill: Fill = null
+export type PaintRole = 'fill' | 'stroke'
+const lastRemoved: Record<PaintRole, Fill> = { fill: null, stroke: null }
+const DEFAULT_PAINT: Record<PaintRole, () => Fill> = { fill: () => solidPaint(GEO_DEFAULT_FILL), stroke: () => solidPaint(GEO_DEFAULT_STROKE) }
+const NONE_TITLES: Record<PaintRole, { add: string; remove: string }> = {
+  fill: { add: '塗りを足す', remove: '塗りなしにする' },
+  stroke: { add: '線を足す', remove: '線なしにする' },
+}
 
 const PAINT_TYPE_OPTIONS = [
   { value: 'solid', title: '単色', label: '単色' },
@@ -375,9 +381,12 @@ export function PaintField(props: {
   // 図形の上のグラデーションのハンドルとのつなぎ（1 つの図形を選んでいるときだけ）と、今の編集の状態（session.paintEditing）
   link?: PaintEditingLink | null
   paintEditing?: PaintEditing | null
+  // 塗りか線か（MAI-85）。−・＋のボタンの名前と、＋で足す既定の色が変わる
+  role?: PaintRole
   onDone?: () => void
 }) {
-  const { label, value, editor, canOpacity, canNone, canGradient = false, canImage = false, images = null, sizes = [], link = null, paintEditing = null, onDone } = props
+  const { label, value, editor, canOpacity, canNone, canGradient = false, canImage = false, images = null, sizes = [], link = null, paintEditing = null, role = 'fill', onDone } = props
+  const noneTitles = NONE_TITLES[role]
   const { open, setOpen, rootRef } = usePickerOpen(link?.ownsPointer)
   const summary = paintSummary(value, images ? (assetId) => images.url(assetId) : undefined)
   const gradient = value.kind === 'same' && isGradientPaint(value.value) ? value.value : null
@@ -488,12 +497,12 @@ export function PaintField(props: {
         {showOpacity && <OpacityInput label={`${label}の不透明度`} value={summary.opacity} onCommit={(o) => editor.set({ change: 'opacity', opacity: o })} onDone={onDone} />}
         {canNone &&
           (summary.allNone ? (
-            <button className="design-fill-toggle" title="塗りを足す" aria-label="塗りを足す" onPointerDown={(e) => e.preventDefault()} onClick={() => editor.set(lastRemovedFill ?? solidPaint(GEO_DEFAULT_FILL))}>
+            <button className="design-fill-toggle" title={noneTitles.add} aria-label={noneTitles.add} onPointerDown={(e) => e.preventDefault()} onClick={() => editor.set(lastRemoved[role] ?? DEFAULT_PAINT[role]())}>
               +
             </button>
           ) : (
-            <button className="design-fill-toggle" title="塗りなしにする" aria-label="塗りなしにする" onPointerDown={(e) => e.preventDefault()} onClick={() => {
-                if (value.kind === 'same' && value.value) lastRemovedFill = value.value
+            <button className="design-fill-toggle" title={noneTitles.remove} aria-label={noneTitles.remove} onPointerDown={(e) => e.preventDefault()} onClick={() => {
+                if (value.kind === 'same' && value.value) lastRemoved[role] = value.value
                 editor.set(null)
               }}>
               −

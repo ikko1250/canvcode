@@ -2,6 +2,7 @@ import type { NodeRecord } from '@canvcode/core'
 import { cornerRadii, effectiveCornerRadii, insideRoundedRect, roundedRectPath, roundedRectPolygon, type CornerRadius } from './cornerRadius.ts'
 import { defineNodeType } from './defineNodeType.ts'
 import { colorWithAlpha, fillPreviewColor, fillShape, paintColors, solidPaint, toFill, type Fill } from './paint.ts'
+import { hasVisibleStroke, strokeInset, strokeOutline, strokeOutset, strokeStyleOf, toStrokePaint, type StrokeOutline, type StrokeProps, type StrokeStyle } from './stroke.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
 
 // 矩形・楕円などの図形（MAI-7 の `geo`）
@@ -9,13 +10,14 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // 版 1 の色の文字列は、読み込むときに単色の塗りへ移す。
 // 塗りの種類（グラデーション（MAI-82）・画像（MAI-83））を足しても版は上げない（fill の形は同じ。読めない種類は toFill が既定にする）
 // 角丸（MAI-84）の cornerRadius も版は上げない（足しただけの省略できる値。ないときは 0。読めない値も 0）
-export interface GeoProps {
+// 版 3（MAI-85）：線（stroke）を色の文字列から単色の塗り（stroke.ts の StrokePaint。色と不透明度、線なしは null）にした。
+// 版 2 までの色の文字列は、読み込むときに単色へ移す。線の位置・種類・破線の長さと間隔（strokeAlign など）は省略できる値
+// （ないときは中央・実線）
+export interface GeoProps extends StrokeProps {
   shape: 'rect' | 'ellipse'
   w: number
   h: number
   fill: Fill
-  stroke: string
-  strokeWidth: number
   // 図形の中央に書く文字（MAI-24）
   label: string
   // 角の半径（MAI-84。矩形だけ）。ワールド座標の px。数値なら 4 つの角が同じ、配列なら [左上, 右上, 右下, 左下]。
@@ -27,43 +29,54 @@ export type GeoNode = NodeRecord<GeoProps>
 
 export const GEO_DEFAULT_SIZE = 120
 export const GEO_DEFAULT_FILL = '#e8eefc'
+export const GEO_DEFAULT_STROKE = '#3b5bdb'
+export const GEO_DEFAULT_STROKE_WIDTH = 2
 const ELLIPSE_OUTLINE_POINTS = 64
 
 export const geoType = defineNodeType<GeoProps>({
   type: 'geo',
-  version: 2,
+  version: 3,
 
   defaultProps: () => ({
     shape: 'rect',
     w: GEO_DEFAULT_SIZE,
     h: GEO_DEFAULT_SIZE,
     fill: solidPaint(GEO_DEFAULT_FILL),
-    stroke: '#3b5bdb',
-    strokeWidth: 2,
+    stroke: solidPaint(GEO_DEFAULT_STROKE),
+    strokeWidth: GEO_DEFAULT_STROKE_WIDTH,
     label: '',
   }),
 
-  migrate: (props, fromVersion) => (fromVersion < 2 ? { ...props, fill: toFill(props.fill, solidPaint(GEO_DEFAULT_FILL)) } : props),
+  migrate(props, fromVersion) {
+    let next = props
+    if (fromVersion < 2) next = { ...next, fill: toFill(next.fill, solidPaint(GEO_DEFAULT_FILL)) }
+    if (fromVersion < 3) next = { ...next, stroke: toStrokePaint(next.stroke, solidPaint(GEO_DEFAULT_STROKE)) }
+    return next
+  },
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: node.props.h }),
 
+  // 線の外側の半分（中央）・全部（外側）は、箱の外へはみ出して描く（MAI-85）
+  renderOutset: (node) => strokeOutset(strokeStyleOf(node.props)),
+
   // 塗りなしの図形は、Figma と同じく枠の線（と文字）にだけ当たる（中を押すと、下のノードを選べる）。
   // ただし線も文字もなく何も見えないときは、見失わないよう中にも当てる。選んでいる図形は中でも掴める（Editor.hitTest）
+  // 線の位置（MAI-85）に合わせ、縁の外へはみ出した線（中央・外側）にも当て、塗りなしなら線の内側の縁より内には当てない
   hitTest(node, point, margin) {
-    const { strokeWidth, label } = node.props
+    const { label } = node.props
+    const stroke = strokeStyleOf(node.props)
+    const visible = hasVisibleStroke(stroke)
     const fill = fillOf(node.props)
-    const hollow = fill === null && (strokeWidth > 0 || label !== '')
-    const outer = hollow ? strokeWidth / 2 + margin : margin
-    if (!insideShape(node.props, point, outer)) return false
+    const hollow = fill === null && (visible || label !== '')
+    if (!insideShape(node.props, point, strokeOutset(stroke) + margin)) return false
     if (!hollow) return true
     if (label !== '' && insideBox(labelBox(node.props), point)) return true
     // 枠の線の内側の縁より内側なら当たらない
-    const inner = strokeWidth / 2 + margin
-    return strokeWidth > 0 && !insideShape(node.props, point, -inner)
+    return visible && !insideShape(node.props, point, -(strokeInset(stroke) + margin))
   },
 
   render(ctx, node, info) {
-    const { w, h, shape, stroke, strokeWidth } = node.props
+    const { w, h, shape } = node.props
     ctx.beginPath()
     // 矩形は角丸（MAI-84）のパス。半径が 0 なら rect と同じ
     if (shape === 'rect') roundedRectPath(ctx, { x: 0, y: 0, w, h }, geoCornerRadii(node.props))
@@ -71,11 +84,8 @@ export const geoType = defineNodeType<GeoProps>({
     // 画像の塗り（MAI-83）は、このパス（矩形・楕円・角丸）で切り抜いて描く
     fillShape(ctx, fillOf(node.props), { x: 0, y: 0, w, h }, info)
     // 画面上で 0.5 ピクセル未満になる線は、見た目にほぼ影響しないので描かない（MAI-14）
-    if (strokeWidth * info.zoom >= 0.5) {
-      ctx.lineWidth = strokeWidth
-      ctx.strokeStyle = stroke
-      ctx.stroke()
-    }
+    const stroke = strokeStyleOf(node.props)
+    if (stroke.width * info.zoom >= 0.5) strokeOutline(ctx, stroke, geoOutline(node.props))
     if (node.props.label && !info.editing) {
       const layout = labelLayout(node.props)
       const box = labelBox(node.props)
@@ -84,10 +94,13 @@ export const geoType = defineNodeType<GeoProps>({
     }
   },
 
-  // 塗りなしは、線の色を薄くして見せる
-  roughColor: (node) => fillPreviewColor(fillOf(node.props)) ?? colorWithAlpha(node.props.stroke, 0.35),
+  // 塗りなしは、線の色を薄くして見せる（線もなければ見せない）
+  roughColor: (node) => fillPreviewColor(fillOf(node.props)) ?? roughStrokeColor(strokeStyleOf(node.props)),
 
-  colors: (node) => [...paintColors(fillOf(node.props)), ...(node.props.strokeWidth > 0 ? [node.props.stroke] : [])],
+  colors: (node) => {
+    const stroke = strokeStyleOf(node.props)
+    return [...paintColors(fillOf(node.props)), ...(stroke.paint && stroke.width > 0 ? [stroke.paint.color] : [])]
+  },
 
   // 画像の塗りの Asset（MAI-83）
   assets: (node) => {
@@ -124,6 +137,21 @@ export const geoType = defineNodeType<GeoProps>({
 // 塗り。版 1 のまま（移す前）のレコードが来ても描けるよう、色の文字列も読む
 function fillOf(props: GeoProps): Fill {
   return typeof props.fill === 'string' ? toFill(props.fill) : props.fill
+}
+
+// 線を描く形（矩形は角丸のパス、楕円）
+function geoOutline(props: GeoProps): StrokeOutline {
+  const box = { x: 0, y: 0, w: props.w, h: props.h }
+  return props.shape === 'rect' ? { kind: 'rect', box, radii: geoCornerRadii(props) } : { kind: 'ellipse', box }
+}
+
+function roughStrokeColor(stroke: StrokeStyle): string {
+  return hasVisibleStroke(stroke) ? colorWithAlpha(stroke.paint!.color, 0.35 * stroke.paint!.opacity) : 'transparent'
+}
+
+// 線を持てる図形か（MAI-85。geo のすべて。のちのブロック矢印もここに足す）
+export function hasBorder(node: NodeRecord): node is GeoNode {
+  return node.type === 'geo'
 }
 
 // 角丸を持てる図形か（MAI-84。矩形だけ）

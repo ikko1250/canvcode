@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { applyFillChange, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { applyFillChange, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -27,7 +27,7 @@ describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
     const { geo, text, arrow } = setup()
     expect(sectionIds([geo])).toEqual(['fill', 'corner', 'stroke', 'layer'])
-    expect(fieldIds([geo])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'layer.opacity'])
+    expect(fieldIds([geo])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
@@ -64,8 +64,8 @@ describe('design sections', () => {
 
   it('writes the matching prop per type and returns the same node when unchanged', () => {
     const { geo, arrow, note } = setup()
-    expect((strokeColorField.write(geo, '#123456').props as { stroke: string }).stroke).toBe('#123456')
-    expect((strokeColorField.write(arrow, '#123456').props as { color: string }).color).toBe('#123456')
+    expect((strokeColorField.write(geo, { change: 'color', color: '#123456' }).props as { stroke: unknown }).stroke).toEqual(solidPaint('#123456'))
+    expect((strokeColorField.write(arrow, { change: 'color', color: '#123456' }).props as { color: string }).color).toBe('#123456')
     expect((fillField.write(note, { change: 'color', color: '#abcdef' }).props as { color: string }).color).toBe('#abcdef')
     expect(strokeWidthField.write(geo, 2)).toBe(geo)
     expect(opacityField.write(geo, 1)).toBe(geo)
@@ -77,17 +77,17 @@ describe('design sections', () => {
     const apply = <T,>(node: NodeRecord, field: { write(node: NodeRecord, value: T): NodeRecord }, value: T) =>
       editNodes(editor, [node.id], (n) => field.write(n, value), 'design')
     apply(geo, fillField, { change: 'color', color: '#ff8800' })
-    apply(geo, strokeColorField, '#0000ff')
+    apply(geo, strokeColorField, { change: 'color', color: '#0000ff' })
     apply(geo, strokeWidthField, 6)
     apply(text, fontSizeField, 32)
     apply(text, textColorField, '#e03131')
     apply(text, textAlignField, 'center')
-    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: solidPaint('#ff8800'), stroke: '#0000ff', strokeWidth: 6 })
+    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: solidPaint('#ff8800'), stroke: solidPaint('#0000ff'), strokeWidth: 6 })
     expect(editor.getNode(text.id)!.props).toMatchObject({ fontSize: 32, color: '#e03131', align: 'center' })
     editor.undo()
     expect(editor.getNode(text.id)!.props).toMatchObject({ fontSize: 32, color: '#e03131', align: 'left' })
     for (let i = 0; i < 5; i++) editor.undo()
-    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: solidPaint('#e8eefc'), stroke: '#3b5bdb', strokeWidth: 2 })
+    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: solidPaint('#e8eefc'), stroke: solidPaint('#3b5bdb'), strokeWidth: 2 })
     expect(editor.getNode(text.id)!.props).toMatchObject({ fontSize: 12, color: '#1f2328' })
   })
 
@@ -107,6 +107,52 @@ describe('design sections', () => {
     expect(designSections().filter((s) => s.id === 'fill')).toHaveLength(1)
     expect(designSections().find((s) => s.id === 'fill')!.title).toBe('ボーダー')
     registerDesignSection({ id: 'fill', title: '塗り', order: 100, fields: [fillField] })
+  })
+})
+
+describe('border fields (MAI-85)', () => {
+  it('shows position and dash only for shapes with a stroke, and the dash lengths per dash style', () => {
+    const { editor, geo, geo2, arrow } = setup()
+    expect(fieldIds([geo, geo2])).toContain('stroke.align')
+    // 線なしの図形は、色と太さだけ
+    editNodes(editor, [geo.id], (n) => strokeColorField.write(n, null), 'design')
+    const noStroke = editor.getNode(geo.id)!
+    expect((noStroke.props as { stroke: unknown }).stroke).toBeNull()
+    expect(fieldIds([noStroke])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'layer.opacity'])
+    // 破線は長さと間隔、点線は間隔だけ
+    const dashed = strokeDashField.write(geo2, 'dashed')
+    expect(fieldIds([dashed]).filter((id) => id.startsWith('stroke.'))).toEqual(['stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'stroke.dashLength', 'stroke.dashGap'])
+    expect(fieldIds([strokeDashField.write(geo2, 'dotted')]).filter((id) => id.startsWith('stroke.dash'))).toEqual(['stroke.dash', 'stroke.dashGap'])
+    // 矢印と混ぜれば、共通の色と太さだけ（線なしは選べない）
+    expect(fieldIds([dashed, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
+    const control = strokeColorField.control as { none: (node: NodeRecord) => boolean; opacity: (node: NodeRecord) => boolean }
+    expect(control.none(arrow)).toBe(false)
+    expect(control.opacity(geo2)).toBe(true)
+  })
+
+  it('writes the stroke paint, position, dash style and lengths', () => {
+    const { geo, arrow } = setup()
+    const translucent = strokeColorField.write(geo, { change: 'opacity', opacity: 0.4 })
+    expect((translucent.props as { stroke: unknown }).stroke).toEqual(solidPaint('#3b5bdb', 0.4))
+    expect(strokeColorField.read(translucent)).toEqual(solidPaint('#3b5bdb', 0.4))
+    // 矢印は色だけ。不透明度・線なしは変えない
+    expect(strokeColorField.write(arrow, { change: 'opacity', opacity: 0.4 })).toBe(arrow)
+    expect(strokeColorField.write(arrow, null)).toBe(arrow)
+    // 太さ 0 の図形に線を足すと、既定の太さになる
+    const thin = { ...geo, props: { ...(geo.props as object), stroke: null, strokeWidth: 0 } }
+    expect(strokeColorField.write(thin, solidPaint('#ff0000')).props).toMatchObject({ stroke: solidPaint('#ff0000'), strokeWidth: 2 })
+
+    expect(strokeAlignField.read(geo)).toBe('center')
+    expect(strokeAlignField.write(geo, 'center')).toBe(geo)
+    expect(strokeAlignField.write(geo, 'outside').props).toMatchObject({ strokeAlign: 'outside' })
+    // 破線にすると、太さに合わせた長さ・間隔（px）を入れる。持っていれば、それを使う
+    const dashed = strokeDashField.write(geo, 'dashed')
+    expect(dashed.props).toMatchObject({ strokeDash: 'dashed', strokeDashLength: 8, strokeDashGap: 4 })
+    const longer = strokeDashLengthField.write(dashed, 20)
+    expect(longer.props).toMatchObject({ strokeDashLength: 20 })
+    expect(strokeDashGapField.write(longer, 0).props).toMatchObject({ strokeDashGap: 0.5 })
+    const solid = strokeDashField.write(longer, 'solid')
+    expect(strokeDashField.write(solid, 'dotted').props).toMatchObject({ strokeDash: 'dotted', strokeDashLength: 20, strokeDashGap: 4 })
   })
 })
 

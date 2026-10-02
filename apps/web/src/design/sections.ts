@@ -2,6 +2,14 @@ import { createElement } from 'react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
   canRoundCorners,
+  clampDash,
+  defaultDashGap,
+  defaultDashLength,
+  GEO_DEFAULT_STROKE_WIDTH,
+  hasBorder,
+  strokeStyleOf,
+  type StrokeAlign,
+  type StrokeDash,
   cornerRadii,
   toCornerRadius,
   type CornerRadius,
@@ -189,13 +197,42 @@ export const cornerRadiusField: DesignField<CornerRadiusChange> = {
 
 // ---- 線 ----
 
-// 図形の枠、矢印、フリーハンドの線の色
-export const strokeColorField = propField<string>({
+// 線（MAI-73）は、図形の枠（MAI-85 のボーダー）・矢印・フリーハンドの線で、色と太さを共通の項目にする（混ぜて選んでも出す）。
+// 位置・種類・破線の長さと間隔は、図形だけの項目（選んでいるノードがすべて図形で、線があるときだけ出す）
+
+// 線の色。値は塗り（Fill）の形にそろえ、塗りの項目と同じ PaintField（単色だけ）で見せる。
+// 図形の線は単色の塗り（色・不透明度。線なしは null。stroke.ts の StrokePaint）。
+// 矢印・フリーハンドの線は色の文字列（color）のまま：単色として読み、書くときは色だけを変える（不透明度・線なしは出さない。付箋の地と同じ）
+const STROKE_COLOR_KEYS: Readonly<Record<string, string>> = { arrow: 'color', draw: 'color' }
+
+function readStroke(node: NodeRecord): Fill {
+  if (hasBorder(node)) return strokeStyleOf(node.props).paint
+  const color = (node.props as Record<string, unknown>)[STROKE_COLOR_KEYS[node.type]]
+  return solidPaint(typeof color === 'string' ? color : '#000000')
+}
+
+export const strokeColorField: DesignField<FillChange> = {
   id: 'stroke.color',
   label: '色',
-  keys: { geo: 'stroke', arrow: 'color', draw: 'color' },
-  control: { kind: 'color' },
-})
+  control: { kind: 'paint', role: 'stroke', opacity: hasBorder, none: hasBorder, gradient: () => false, image: () => false },
+  appliesTo: (node) => hasBorder(node) || STROKE_COLOR_KEYS[node.type] !== undefined,
+  read: readStroke,
+  write(node, change) {
+    if (!strokeColorField.appliesTo(node)) return node
+    const current = readStroke(node)
+    const next = applyFillChange(current, change)
+    // 線は単色だけ
+    if ((next !== null && next.type !== 'solid') || sameValue(next, current)) return node
+    if (hasBorder(node)) {
+      const props = { ...node.props, stroke: next }
+      // 太さ 0 の図形に線を足したら、見えるよう既定の太さにする
+      if (current === null && next !== null && !(node.props.strokeWidth > 0)) props.strokeWidth = GEO_DEFAULT_STROKE_WIDTH
+      return { ...node, props }
+    }
+    if (next === null || (current?.type === 'solid' && next.color === current.color)) return node
+    return { ...node, props: { ...(node.props as object), [STROKE_COLOR_KEYS[node.type]]: next.color } }
+  },
+}
 
 export const strokeWidthField = propField<number>({
   id: 'stroke.width',
@@ -203,6 +240,96 @@ export const strokeWidthField = propField<number>({
   keys: { geo: 'strokeWidth', arrow: 'size', draw: 'size' },
   control: { kind: 'number', min: 0, max: 40, step: 0.5, unit: 'px', slider: true },
 })
+
+// 図形の線があるか（位置・種類の項目を出すか）
+function hasBorderStroke(node: NodeRecord): boolean {
+  return hasBorder(node) && strokeStyleOf(node.props).paint !== null
+}
+
+function strokeIcon(draw: (stroke: string) => ReturnType<typeof createElement>[]) {
+  return function StrokeIcon() {
+    return createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true }, ...draw('currentColor'))
+  }
+}
+
+// 位置のアイコン：点線の四角が形の縁、太い四角が線（内側・中央・外側）
+function borderAlignIcon(inset: number) {
+  return strokeIcon((color) => [
+    createElement('rect', { key: 'edge', x: 3.5, y: 3.5, width: 9, height: 9, fill: 'none', stroke: color, strokeWidth: 0.75, strokeDasharray: '1.5 1.5', opacity: 0.7 }),
+    createElement('rect', { key: 'line', x: 3.5 + inset, y: 3.5 + inset, width: 9 - inset * 2, height: 9 - inset * 2, fill: 'none', stroke: color, strokeWidth: 2 }),
+  ])
+}
+
+const STROKE_ALIGN_OPTIONS: SegmentOption[] = [
+  { value: 'inside', title: '内側', icon: borderAlignIcon(1.5) },
+  { value: 'center', title: '中央', icon: borderAlignIcon(0) },
+  { value: 'outside', title: '外側', icon: borderAlignIcon(-1.5) },
+]
+
+export const strokeAlignField: DesignField<StrokeAlign> = {
+  id: 'stroke.align',
+  label: '位置',
+  control: { kind: 'segmented', options: STROKE_ALIGN_OPTIONS },
+  appliesTo: hasBorderStroke,
+  read: (node) => strokeStyleOf(node.props as object).align,
+  write(node, value) {
+    if (!hasBorder(node) || strokeStyleOf(node.props).align === value) return node
+    return { ...node, props: { ...node.props, strokeAlign: value } }
+  },
+}
+
+function dashIcon(dash: string, cap: 'butt' | 'round') {
+  return strokeIcon((color) => [createElement('line', { key: 'l', x1: 2, x2: 14, y1: 8, y2: 8, stroke: color, strokeWidth: 2, strokeDasharray: dash, strokeLinecap: cap })])
+}
+
+const STROKE_DASH_OPTIONS: SegmentOption[] = [
+  { value: 'solid', title: '実線', icon: dashIcon('none', 'butt') },
+  { value: 'dashed', title: '破線', icon: dashIcon('4 2', 'butt') },
+  { value: 'dotted', title: '点線', icon: dashIcon('0 4', 'round') },
+]
+
+// 線の種類。破線・点線にするとき、長さ・間隔を持たなければ、今の太さに合わせた既定（太さの 4 倍・2 倍の px）を入れる
+export const strokeDashField: DesignField<StrokeDash> = {
+  id: 'stroke.dash',
+  label: '種類',
+  control: { kind: 'segmented', options: STROKE_DASH_OPTIONS },
+  appliesTo: hasBorderStroke,
+  read: (node) => strokeStyleOf(node.props as object).dash,
+  write(node, value) {
+    if (!hasBorder(node) || strokeStyleOf(node.props).dash === value) return node
+    const props = { ...node.props, strokeDash: value }
+    if (value !== 'solid') {
+      const width = strokeStyleOf(node.props).width
+      if (!(typeof props.strokeDashLength === 'number' && props.strokeDashLength > 0)) props.strokeDashLength = defaultDashLength(width)
+      if (!(typeof props.strokeDashGap === 'number' && props.strokeDashGap > 0)) props.strokeDashGap = defaultDashGap(width)
+    }
+    return { ...node, props }
+  },
+}
+
+// 破線の長さ・間隔（px）。長さは破線だけ、間隔は破線・点線（点の縁どうしの間）
+function dashLengthField(id: string, label: string, key: 'strokeDashLength' | 'strokeDashGap', dashes: readonly StrokeDash[]): DesignField<number> {
+  const read = (node: NodeRecord) => {
+    const style = strokeStyleOf(node.props as object)
+    return key === 'strokeDashLength' ? style.dashLength : style.dashGap
+  }
+  return {
+    id,
+    label,
+    control: { kind: 'number', min: 0.5, max: 100, step: 0.5, unit: 'px' },
+    appliesTo: (node) => hasBorderStroke(node) && dashes.includes(strokeStyleOf(node.props as object).dash),
+    read,
+    write(node, value) {
+      if (!hasBorder(node)) return node
+      const next = clampDash(value)
+      if (read(node) === next && node.props[key] === next) return node
+      return { ...node, props: { ...node.props, [key]: next } }
+    },
+  }
+}
+
+export const strokeDashLengthField = dashLengthField('stroke.dashLength', '長さ', 'strokeDashLength', ['dashed'])
+export const strokeDashGapField = dashLengthField('stroke.dashGap', '間隔', 'strokeDashGap', ['dashed', 'dotted'])
 
 // ---- 文字 ----
 
@@ -497,7 +624,7 @@ export const opacityField: DesignField<number> = {
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
   { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },
-  { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
+  { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
   { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]

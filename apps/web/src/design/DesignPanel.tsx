@@ -222,6 +222,7 @@ function FieldView(props: {
           sizes={nodes.map(paintBoxSize)}
           link={paint.link}
           paintEditing={paint.editing}
+          role={control.role}
           onDone={onDone}
         />
       )

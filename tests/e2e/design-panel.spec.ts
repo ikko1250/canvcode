@@ -50,7 +50,7 @@ test('changes geo fill / stroke / stroke width from the panel, each undoable', a
   await fill.press('Enter')
   await expect(fill).toHaveValue('#ff8800')
 
-  const strokeWidth = panel.locator('[data-section="stroke"] .design-number input')
+  const strokeWidth = panel.locator('[data-section="stroke"]').getByRole('textbox', { name: '太さ', exact: true })
   await strokeWidth.fill('6')
   await strokeWidth.press('Enter')
   await expect(strokeWidth).toHaveValue('6')
@@ -70,7 +70,7 @@ test('a slider drag is one undo step', async ({ page }) => {
   await clickWorld(page, 160, 180)
   const panel = page.getByTestId('design-panel')
   const slider = panel.locator('[data-section="stroke"] input.design-slider')
-  const strokeWidth = panel.locator('[data-section="stroke"] .design-number input')
+  const strokeWidth = panel.locator('[data-section="stroke"]').getByRole('textbox', { name: '太さ', exact: true })
   const box = (await slider.boundingBox())!
   await page.mouse.move(box.x + 4, box.y + box.height / 2)
   await page.mouse.down()

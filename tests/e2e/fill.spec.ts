@@ -152,14 +152,16 @@ test('picks colors from the picker: template colors, colors used on this canvas,
   await expect(fill.locator('input.design-hex')).toHaveValue('#d9d9d9')
 })
 
-test('uses the same picker for stroke colors (without opacity)', async ({ page }) => {
+// 図形の線（MAI-85）は単色の塗り：同じピッカーで、不透明度も持つ（グラデーション・画像は選べない）
+test('uses the same picker for stroke colors (solid only, with opacity)', async ({ page }) => {
   await openApp(page)
   await clickWorld(page, 115, 135)
   const stroke = page.getByTestId('design-panel').locator('[data-section="stroke"]')
   await stroke.getByRole('button', { name: '色を選ぶ' }).click()
   const picker = stroke.getByRole('dialog')
   await expect(picker).toBeVisible()
-  await expect(picker.getByRole('slider', { name: '色の不透明度のスライダー' })).toHaveCount(0)
+  await expect(picker.getByRole('slider', { name: '色の不透明度のスライダー' })).toHaveCount(1)
+  await expect(picker.getByRole('button', { name: '線形のグラデーション' })).toHaveCount(0)
   await picker.getByRole('group', { name: 'テンプレート：キャンバス' }).locator('[data-color="#e03131"]').click()
   await expect(stroke.locator('input.design-hex')).toHaveValue('#e03131')
 })
