@@ -90,7 +90,8 @@ test('changes the fill opacity and removes the fill; a shape without fill is hit
 
   // 選んだままなら、中の何もないところを押しても選んだまま
   await clickWorld(page, 115, 135)
-  await expect(page.getByTestId('design-panel').locator('.design-panel-count')).toHaveText('図形')
+  // 図形は見た目と文字のタブに分かれる。開いているのは見た目のタブ
+  await expect(page.getByTestId('design-panel').getByRole('tab', { selected: true })).toHaveText('図形')
   // 選びを外すと、中を押しても選ばれない。下の図形の上を押すと、下の図形が選ばれる
   await clickWorld(page, 700, 600)
   await clickWorld(page, 115, 135)

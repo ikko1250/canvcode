@@ -238,5 +238,6 @@ test('pastes a clipboard image into the fill of the selected shape with Ctrl+Alt
   await expectKind(page, 325, 350, 'red')
   await expectKind(page, 375, 350, 'blue')
   // 画像ノードは作らない（選んでいるのは図形のまま）
-  await expect(page.getByTestId('design-panel').locator('.design-panel-count')).toHaveText('図形')
+  // 図形は見た目と文字のタブに分かれる。開いているのは見た目のタブ
+  await expect(page.getByTestId('design-panel').getByRole('tab', { selected: true })).toHaveText('図形')
 })

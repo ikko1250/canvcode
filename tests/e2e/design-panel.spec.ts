@@ -100,11 +100,13 @@ test('shows mixed values and only common fields for a multi selection', async ({
   await page.keyboard.press('Control+z')
   await expect(fill).toHaveAttribute('placeholder', '混在')
 
-  // 図形とテキスト：共通なのは不透明度だけ
+  // 図形とテキスト：見た目で共通なのは不透明度だけ。文字（図形の中の文字とテキスト）は「文字」のタブ
   await clickWorld(page, 515, 330, ['Shift'])
-  await expect(panel.locator('.design-panel-count')).toHaveText('3 個')
+  await expect(panel.getByRole('tab', { selected: true })).toHaveText('3 個')
   await expect(panel.locator('.design-section')).toHaveCount(1)
   await expect(panel.locator('[data-section="layer"]')).toBeVisible()
+  await panel.getByRole('tab', { name: '文字' }).click()
+  await expect(panel.locator('[data-section="text"]')).toBeVisible()
 })
 
 test('changes text font size / color / align, and keys in the panel do not reach the canvas', async ({ page }) => {

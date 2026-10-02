@@ -113,6 +113,23 @@ async function inkLines(page: Page, png: Buffer): Promise<InkLine[]> {
   }, png.toString('base64'))
 }
 
+// 2 つの列の並びを、重なるか 2px 以内で続くものどうしの塊にまとめ、塊ごとにそれぞれの並びの左右の端を返す（ない側は null）
+function jointColumns(a: [number, number][], b: [number, number][]) {
+  const all = [...a.map((c) => ({ c, from: 'drawn' as const })), ...b.map((c) => ({ c, from: 'editing' as const }))].sort((x, y) => x.c[0] - y.c[0])
+  const groups: { span: [number, number]; drawn: [number, number] | null; editing: [number, number] | null }[] = []
+  for (const { c, from } of all) {
+    let group = groups.at(-1)
+    if (!group || c[0] - group.span[1] > 2) {
+      group = { span: [c[0], c[1]], drawn: null, editing: null }
+      groups.push(group)
+    }
+    group.span[1] = Math.max(group.span[1], c[1])
+    const prev = group[from]
+    group[from] = prev ? [Math.min(prev[0], c[0]), Math.max(prev[1], c[1])] : [c[0], c[1]]
+  }
+  return groups
+}
+
 // Canvas で描いた文字と、編集中の DOM の文字の位置（行の上下、行の中の文字・記号の左右）を比べる（画素は 1px までのずれを許す）
 // width は写す幅（右揃えでは、編集中の選択枠が行末の文字に重なるので、枠の手前までにする）
 async function expectEditorMatchesCanvas(page: Page, width = 420) {
@@ -139,10 +156,14 @@ async function expectEditorMatchesCanvas(page: Page, width = 420) {
   for (const [i, line] of drawn.entries()) {
     expect(Math.abs(editing[i].rows[0] - line.rows[0])).toBeLessThanOrEqual(1)
     expect(Math.abs(editing[i].rows[1] - line.rows[1])).toBeLessThanOrEqual(1)
-    expect(editing[i].columns.length).toBe(line.columns.length)
-    for (const [k, [left, right]] of line.columns.entries()) {
-      expect(Math.abs(editing[i].columns[k][0] - left)).toBeLessThanOrEqual(1)
-      expect(Math.abs(editing[i].columns[k][1] - right)).toBeLessThanOrEqual(1)
+    // 字の間の隙間がちょうど続けて数える幅（2px）の前後だと、1px のずれで片方だけ 2 つの列に分かれる（漢字が詰まったフォント）。
+    // 両方の列をまとめた塊ごとに、それぞれの左右の端を比べる
+    const groups = jointColumns(line.columns, editing[i].columns)
+    for (const group of groups) {
+      expect(group.drawn, `line ${i} drawn ${JSON.stringify(line.columns)}`).not.toBeNull()
+      expect(group.editing, `line ${i} editing ${JSON.stringify(editing[i].columns)}`).not.toBeNull()
+      expect(Math.abs(group.editing![0] - group.drawn![0])).toBeLessThanOrEqual(1)
+      expect(Math.abs(group.editing![1] - group.drawn![1])).toBeLessThanOrEqual(1)
     }
   }
   return drawn

@@ -128,7 +128,8 @@ export function DesignPanel(props: {
 
   const allSections = visibleSections(nodes, undefined, textSelection)
   if (allSections.length === 0) return null
-  const tabs = [...new Set(allSections.map(({ tab }) => tab ?? MAIN_TAB))]
+  // 見た目のタブ（MAIN_TAB）をいつも先頭にする（文字のセクションが見た目のセクションより上に並ぶ組み合わせでも）
+  const tabs = [...new Set(allSections.map(({ tab }) => tab ?? MAIN_TAB))].sort((a, b) => Number(b === MAIN_TAB) - Number(a === MAIN_TAB))
   const editingLabel = editingId !== null && ids.includes(editingId) && tabs.includes(TEXT_SECTION_TAB) ? TEXT_SECTION_TAB : null
   const tab = chosenTab !== null && tabs.includes(chosenTab) ? chosenTab : (editingLabel ?? tabs[0])
   const sections = tabs.length > 1 ? allSections.filter((visible) => (visible.tab ?? MAIN_TAB) === tab) : allSections
