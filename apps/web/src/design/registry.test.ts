@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_TEXT_COLOR, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { fillColorField, fontSizeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { fillColorField, fontFamilyField, fontSizeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -29,15 +29,15 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['fill', 'stroke', 'layer'])
     expect(fieldIds([geo])).toEqual(['fill.color', 'stroke.color', 'stroke.width', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
   })
 
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
-    // テキストと付箋：文字の大きさ・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
+    // テキストと付箋：フォント・文字の大きさ・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
+    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -158,5 +158,47 @@ describe('text format fields per range (MAI-74)', () => {
     expect((colored.props as NoteProps).paragraphs).toEqual([{ runs: [{ text: 'memo', format: red }] }])
     expect((colored.props as NoteProps).color).toBe((note.props as NoteProps).color)
     expect(textColorField.write(colored, NOTE_TEXT_COLOR).props).toMatchObject({ paragraphs: richTextFromPlain('memo') })
+  })
+})
+
+describe('font field (MAI-75)', () => {
+  const mplus = { fontFamily: 'M PLUS 1p' }
+
+  function setupFonts() {
+    const editor = new Editor()
+    const text = editor.makeNode('text', {
+      x: 0,
+      y: 0,
+      props: { paragraphs: [{ runs: [{ text: 'abc', format: mplus }, { text: ' def' }] }] },
+    })
+    const note = editor.makeNode('note', { x: 300, y: 0, props: { paragraphs: richTextFromPlain('memo') } })
+    editor.createNodes([text, note])
+    return { editor, text: editor.getNode(text.id)!, note: editor.getNode(note.id)! }
+  }
+  const valueOf = (nodes: NodeRecord[], selection: TextSelection | null = null) =>
+    visibleSections(nodes, undefined, selection)
+      .flatMap((s) => s.fields)
+      .find((f) => f.field.id === 'text.fontFamily')!.value
+
+  it('reads the default font for old records without fontFamily, and mixed fonts per range', () => {
+    const { text, note } = setupFonts()
+    const { fontFamily: _, ...oldProps } = note.props as NoteProps
+    expect(valueOf([{ ...note, props: oldProps }])).toEqual({ kind: 'same', value: 'sans-serif' })
+    expect(valueOf([text])).toEqual({ kind: 'mixed', values: ['M PLUS 1p', 'sans-serif'] })
+    expect(valueOf([text], { nodeId: text.id, start: 0, end: 3 })).toEqual({ kind: 'same', value: 'M PLUS 1p' })
+    expect(valueOf([text, note]).kind).toBe('mixed')
+  })
+
+  it('writes the font to the selected range, or to the whole node', () => {
+    const { text, note } = setupFonts()
+    const ranged = fontFamilyField.write(text, 'serif', { start: 4, end: 7 })
+    expect((ranged.props as TextProps).paragraphs).toEqual([
+      { runs: [{ text: 'abc', format: mplus }, { text: ' ' }, { text: 'def', format: { fontFamily: 'serif' } }] },
+    ])
+    expect((ranged.props as TextProps).fontFamily).toBe('sans-serif')
+    const whole = fontFamilyField.write(text, 'M PLUS 1p')
+    expect(whole.props).toMatchObject({ fontFamily: 'M PLUS 1p', paragraphs: [{ runs: [{ text: 'abc def' }] }] })
+    expect(fontFamilyField.write(whole, 'M PLUS 1p')).toBe(whole)
+    expect(fontFamilyField.write(note, 'serif').props).toMatchObject({ fontFamily: 'serif', paragraphs: richTextFromPlain('memo') })
   })
 })

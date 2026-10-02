@@ -1,5 +1,7 @@
 import {
   cleanFormat,
+  fontFamilyCss,
+  fontFamilyFromCss,
   normalizeRichText,
   paragraphAttributes,
   paragraphText,
@@ -11,7 +13,8 @@ import {
 } from '@canvcode/nodes'
 
 // 文字の編集用の DOM（contenteditable）と、範囲ごとに書式を持つテキスト（MAI-74）の行き来。
-// - 書き出し：段落ごとに div、run ごとに span。span には書式（既定から変えた値）を属性で持たせ、見た目は style で付ける。
+// - 書き出し：段落ごとに div、run ごとに span。span には書式（既定から変えた値）を属性で持たせ、見た目は style で付ける
+//   （フォントは Canvas と同じ CSS の font-family。MAI-75）。
 //   空の段落は <br> だけを持ち、div にその段落の書式を持たせる（そこで打った文字の書式になる）
 // - 読み取り：ブラウザがその場で変えた DOM（文字を打つ・IME・段落の中での削除）も読めるようにする。
 //   段落は div などのブロックと、途中の <br> で分ける。文字の書式は、いちばん近い祖先の書式の属性から読み、
@@ -46,6 +49,7 @@ function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextSty
   if (paragraphText(paragraph) === '') {
     if (runs[0].format) div.setAttribute(RUN_FORMAT_ATTRIBUTE, JSON.stringify(runs[0].format))
     div.style.color = styles[0].color
+    div.style.fontFamily = fontFamilyCss(styles[0].fontFamily)
     div.append(doc.createElement('br'))
     return div
   }
@@ -55,6 +59,7 @@ function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextSty
     span.setAttribute(RUN_FORMAT_ATTRIBUTE, JSON.stringify(run.format ?? {}))
     span.style.fontSize = `${styles[i].fontSize}px`
     span.style.color = styles[i].color
+    span.style.fontFamily = fontFamilyCss(styles[i].fontFamily)
     span.textContent = run.text
     div.append(span)
   }
@@ -196,7 +201,7 @@ export function readRichTextDom(
 }
 
 // 文字の書式：いちばん近い祖先（root より内側）の書式の属性。見つからなければ found が false。
-// ブラウザが作った要素（消した文字の見た目を残すために style を付けた span など）の色・大きさも読む。
+// ブラウザが作った要素（消した文字の見た目を残すために style を付けた span など）の色・大きさ・フォントも読む。
 // 書き出した span は書式がなくても属性（{}）を持つので、その style（既定の値）は読まない
 function formatOf(node: Node, root: HTMLElement): { found: boolean; format: TextRunFormat | undefined } {
   const styled: TextRunFormat = {}
@@ -211,6 +216,7 @@ function formatOf(node: Node, root: HTMLElement): { found: boolean; format: Text
     if (style?.color && styled.color === undefined) styled.color = cssColorToHex(style.color)
     const size = style?.fontSize ? Number.parseFloat(style.fontSize) : NaN
     if (Number.isFinite(size) && style.fontSize.endsWith('px') && styled.fontSize === undefined) styled.fontSize = size
+    if (style?.fontFamily && styled.fontFamily === undefined) styled.fontFamily = fontFamilyFromCss(style.fontFamily)
   }
   const format = cleanFormat(styled)
   return format ? { found: true, format } : { found: false, format: undefined }

@@ -11,7 +11,7 @@ import type { ComponentType } from 'react'
 // 後の課題（グラデーション・角丸・ボーダー・シャドウなど）は、registerDesignSection でセクションを足すか、
 // 既存のセクションに項目を足す。項目の入力部品で足りないものは、セクションの Component で自由に描ける
 
-// 入力部品の種類（controls.tsx の部品）
+// 入力部品の種類（controls.tsx・FontField.tsx の部品）
 export type FieldControl =
   | { kind: 'color' }
   | {
@@ -28,6 +28,8 @@ export type FieldControl =
       fromDisplay?: (value: number) => number
     }
   | { kind: 'segmented'; options: readonly SegmentOption[] }
+  // フォントの一覧から選ぶ（MAI-75。値はフォントの名前）
+  | { kind: 'font' }
 
 export interface SegmentOption {
   value: string

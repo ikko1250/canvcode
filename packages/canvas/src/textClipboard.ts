@@ -1,9 +1,9 @@
-import { normalizeRichText, paragraphText, type TextParagraph, type TextRunFormat } from '@canvcode/nodes'
+import { fontFamilyCss, normalizeRichText, paragraphText, type TextParagraph, type TextRunFormat } from '@canvcode/nodes'
 import { decodeBase64, encodeBase64 } from './clipboard.ts'
 
 // 文字の編集中のコピー・貼り付け（MAI-74）。範囲ごとの書式を残すため、アプリ内の形式（段落と run の JSON）も載せる。
 // 書式は既定に重ねた実際の値（resolveRichText）で載せ、貼り付け先で、その既定と同じ値を落とす。
-// text/html には、ほかのアプリでも色・大きさが残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく
+// text/html には、ほかのアプリでも色・大きさ・フォントが残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく
 
 export const TEXT_CLIPBOARD_MIME = 'application/x-canvcode-text+json'
 const HTML_ATTRIBUTE = 'data-canvcode-text'
@@ -56,6 +56,7 @@ function styleOf(format: TextRunFormat | undefined): string {
   const parts: string[] = []
   if (format?.color) parts.push(`color: ${format.color}`)
   if (format?.fontSize) parts.push(`font-size: ${format.fontSize}px`)
+  if (format?.fontFamily) parts.push(`font-family: ${fontFamilyCss(format.fontFamily)}`)
   return escapeHtml(parts.join('; '))
 }
 

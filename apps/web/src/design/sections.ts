@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   applyRunFormat,
+  baseFormatOf,
   clearRunFormat,
   formatAt,
   formatsInRange,
@@ -15,7 +16,6 @@ import {
   type TextParagraph,
   type TextProps,
   type TextRunFormat,
-  type TextStyle,
 } from '@canvcode/nodes'
 import { sameValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption } from './registry.ts'
@@ -59,11 +59,9 @@ interface TextFormatType {
   props: Partial<Record<keyof TextRunFormat, string>>
 }
 
-const formatOfStyle = (style: TextStyle): Required<TextRunFormat> => ({ color: style.color, fontSize: style.fontSize })
-
 const TEXT_FORMAT_TYPES: Record<string, TextFormatType> = {
-  text: { base: (props) => formatOfStyle(textStyle(props as TextProps)), props: { color: 'color', fontSize: 'fontSize' } },
-  note: { base: (props) => formatOfStyle(noteStyle(props as NoteProps)), props: { fontSize: 'fontSize' } },
+  text: { base: (props) => baseFormatOf(textStyle(props as TextProps)), props: { color: 'color', fontSize: 'fontSize', fontFamily: 'fontFamily' } },
+  note: { base: (props) => baseFormatOf(noteStyle(props as NoteProps)), props: { fontSize: 'fontSize', fontFamily: 'fontFamily' } },
 }
 
 // 文字の範囲ごとに持てる書式の項目（MAI-74）。
@@ -112,6 +110,14 @@ export function textFormatField<K extends keyof TextRunFormat>(options: {
     },
   }
 }
+
+// フォント（MAI-75）。値はフォントの名前（fonts.ts）。一覧は fontList.ts
+export const fontFamilyField = textFormatField({
+  id: 'text.fontFamily',
+  label: 'フォント',
+  key: 'fontFamily',
+  control: { kind: 'font' },
+})
 
 export const fontSizeField = textFormatField({
   id: 'text.fontSize',
@@ -180,7 +186,7 @@ export const opacityField: DesignField<number> = {
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillColorField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
-  { id: 'text', title: '文字', order: 300, fields: [fontSizeField, textColorField, textAlignField] },
+  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, textColorField, textAlignField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]
 

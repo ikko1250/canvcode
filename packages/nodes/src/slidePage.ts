@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType, type RasterImage } from './defineNodeType.ts'
-import { TEXT_FONT_FAMILY } from './text/layout.ts'
+import { TEXT_FONT_FAMILY } from './text/fonts.ts'
 
 // スライドデッキの 1 枚（PDF の `pdf-page` と同じ扱い）。
 // - サーバーが Chromium で撮った PNG（中身のハッシュが名前）を貼る。デッキを保存するたびに、変わったスライドだけ撮り直す

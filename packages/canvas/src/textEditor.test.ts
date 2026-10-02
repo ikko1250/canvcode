@@ -214,6 +214,41 @@ describe('rich text editing (MAI-74)', () => {
     textEditor.finish()
   })
 
+  it('changes the font of the selected range and of the node, and shows it in the editor (MAI-75)', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'hello world', { fontSize: 16 })
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const [node] = textNodes(element)
+    setCaret(node, 6, node, 11)
+    expect(textEditor.formatRange({ fontFamily: 'M PLUS 1p' })).toBe(true)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'hello ' }, { text: 'world', format: { fontFamily: 'M PLUS 1p' } }] }])
+    const spans = element.querySelectorAll('span')
+    expect(spans[1].style.fontFamily).toContain('M PLUS 1p')
+    expect(spans[0].style.fontFamily).toContain('Noto Sans JP')
+
+    // ノードの既定のフォントは、編集用の要素の font に出る
+    textEditor.updateNode((n) => ({ ...n, props: { ...(n.props as TextProps), fontFamily: 'serif' } }))
+    expect(element.style.fontFamily).toContain('serif')
+    expect(element.querySelectorAll('span')[0].style.fontFamily).toContain('Mincho')
+    textEditor.finish()
+  })
+
+  it('reads the font of an element the browser inserted (MAI-75)', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'ab')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const span = document.createElement('span')
+    span.style.fontFamily = `'M PLUS 1p', sans-serif`
+    span.textContent = 'X'
+    element.firstElementChild!.append(span)
+    setCaret(span.firstChild!, 1)
+    element.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: 'X' }))
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'ab' }, { text: 'X', format: { fontFamily: 'M PLUS 1p' } }] }])
+    textEditor.finish()
+  })
+
   it('continues the format of the previous character when typing, and reads it back from the DOM', () => {
     const { editor, layer, textEditor } = setup()
     const red = { color: '#ff0000' }
@@ -309,6 +344,7 @@ describe('rich text editing (MAI-74)', () => {
     expect(copy.store['text/plain']).toBe('ig r')
     expect(copy.store[TEXT_CLIPBOARD_MIME]).toBeTruthy()
     expect(copy.store['text/html']).toContain('font-size: 40px')
+    expect(copy.store['text/html']).toContain('font-family: ')
     textEditor.finish()
 
     // 既定の違う別のテキストに貼る：見た目（実際の値）が同じになるように書式を持つ

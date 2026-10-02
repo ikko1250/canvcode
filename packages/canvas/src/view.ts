@@ -22,7 +22,13 @@ import {
   type RefTarget,
   type Vec,
 } from '@canvcode/core'
-import { SOURCE_LINK_PREFIX, pickImageLevel, type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
+import {
+  SOURCE_LINK_PREFIX,
+  fontsSettled,
+  pickImageLevel,
+  resetTextMetrics,
+  textMetricsGeneration,
+  type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
 import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import {
   CLIPBOARD_MIME,
@@ -194,6 +200,9 @@ export class CanvasView {
   // Canvas のサムネイル（Portal に見せる。MAI-8 の「4. 親の Canvas 上でのプレビュー」）。
   // 作ったらサーバーにも保存し（.canvcode/thumbnails/）、まだ手元にないものは初めて描くときにサーバーから読む
   private readonly thumbnails = new Map<string, RasterImage>()
+  // Editor ごとに、索引（ノードの形）を作り直したときのレイアウトの世代（フォントの読み込み。MAI-75）
+  private readonly fontGenerations = new WeakMap<Editor, number>()
+  private fontRelayoutPending = false
   private readonly thumbnailRequests = new Set<string>()
   private readonly documents: DocumentResolver
   private spaceHeld = false
@@ -341,6 +350,13 @@ export class CanvasView {
     if (this.figures) {
       this.disposers.push(this.figures.onChange(() => this.renderMissingFigures()))
     }
+    // フォント（Web フォント）を読み込み終えたら、測った文字の幅を捨ててレイアウトし直す（MAI-75）
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined
+    if (fonts && typeof fonts.addEventListener === 'function') {
+      const onFontsLoaded = () => this.scheduleFontRelayout()
+      fonts.addEventListener('loadingdone', onFontsLoaded)
+      this.disposers.push(() => fonts.removeEventListener('loadingdone', onFontsLoaded))
+    }
     this.attachEditor()
     this.syncSlidePages()
 
@@ -439,6 +455,8 @@ export class CanvasView {
     this.panPointer = null
     this.cursorOverride = null
     this.attachEditor()
+    // 離れている間にフォントを読み込んでいたら、この Canvas のノードの形も測り直す（MAI-75）
+    this.refreshTextLayout(editor, false)
     this.syncSlidePages()
     this.renderMissingFigures()
     this.updateCursor()
@@ -547,6 +565,8 @@ export class CanvasView {
   // PDF のページの Canvas なら、1 ページ目だけを描く（MAI-46）
   async captureThumbnail(): Promise<void> {
     const editor = this.editor
+    // 読み込み中のフォントがあれば、読み込んでから測った形で描く（MAI-75）
+    await this.settleFonts(editor)
     const bounds = editor.thumbnailBounds()
     if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
       if (this.thumbnails.delete(editor.canvasId)) void this.storeThumbnail(editor.canvasId, null)
@@ -562,6 +582,41 @@ export class CanvasView {
     this.thumbnails.set(editor.canvasId, { image, width, height, level: 1 })
     this.invalidate('scene')
     void this.storeThumbnail(editor.canvasId, canvas)
+  }
+
+  // ---- フォントの読み込み（MAI-75） ----
+
+  // loadingdone は続けて届くことがあるので、まとめて 1 回だけやり直す
+  private scheduleFontRelayout(): void {
+    if (this.fontRelayoutPending) return
+    this.fontRelayoutPending = true
+    queueMicrotask(() => {
+      this.fontRelayoutPending = false
+      this.relayoutForFonts()
+    })
+  }
+
+  // 測った文字の幅を捨て、今の Canvas のノードの形（索引の大きさ）・編集中の文字・絵を合わせ直す
+  private relayoutForFonts(): void {
+    resetTextMetrics()
+    this.refreshTextLayout(this.editor, true)
+  }
+
+  // editor の索引を、今のレイアウトの世代で作り直す。force でなければ、もう作り直してあれば何もしない
+  private refreshTextLayout(editor: Editor, force: boolean): void {
+    const generation = textMetricsGeneration()
+    if (!force && (this.fontGenerations.get(editor) ?? 0) === generation) return
+    editor.index.refresh(editor.index.allIds())
+    this.fontGenerations.set(editor, generation)
+    if (editor !== this.editor) return
+    this.textEditor.layout()
+    this.invalidate('all')
+  }
+
+  // 画像に描く前に、頼んだフォントの読み込みを待ち、読み込めたら測り直す（スライドの図・PNG・サムネイル）
+  private async settleFonts(editor: Editor): Promise<void> {
+    if (await fontsSettled()) this.relayoutForFonts()
+    this.refreshTextLayout(editor, false)
   }
 
   // ---- スライドの図にするフレーム（提案 B） ----
@@ -589,6 +644,7 @@ export class CanvasView {
   // フレームを図の PNG に描いて、サーバーへ送る。フレームが見つからなければ false
   async renderFigure(frameId: string, editor: Editor = this.editor): Promise<boolean> {
     const figures = this.figures
+    if (figures) await this.settleFonts(editor)
     const bounds = editor.index.get(frameId)?.worldBounds
     if (!figures || !bounds || editor.getNode(frameId)?.type !== 'frame' || bounds.w <= 0 || bounds.h <= 0) return false
     const { box, maxEdge } = figureRenderBox(bounds)
@@ -633,6 +689,7 @@ export class CanvasView {
   // ワールド座標の範囲を、白い背景の PNG にする（MAI-64）。長い辺は maxEdge まで。作れなければ null
   async renderRegionPng(editor: Editor, box: Box, maxEdge = REF_IMAGE_MAX_EDGE): Promise<Blob | null> {
     const { width, height, scale } = refImageSize(box, maxEdge)
+    await this.settleFonts(editor)
     await this.loadPdfPages(editor, box, scale)
     const canvas = this.renderRegion(editor, box, scale, width, height)
     return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))

@@ -1,6 +1,7 @@
 import { multiply, transformOf, type NodeRecord, type WorkspaceRecord, type Transaction } from '@canvcode/core'
 import {
   applyRunFormat,
+  baseFormatOf,
   cssFont,
   formatAt,
   formatOfCharAt,
@@ -721,7 +722,7 @@ function editParagraphs(spec: TextEditSpec<object>): TextParagraph[] {
 
 // ノードの既定の書式（run が持たない値）
 function baseFormat(style: TextStyle): Required<TextRunFormat> {
-  return { color: style.color, fontSize: style.fontSize }
+  return baseFormatOf(style)
 }
 
 function applyEditorStyle(element: HTMLElement, spec: TextEditSpec<object>): void {

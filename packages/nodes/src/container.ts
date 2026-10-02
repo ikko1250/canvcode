@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from './defineNodeType.ts'
-import { TEXT_FONT_FAMILY } from './text/layout.ts'
+import { TEXT_FONT_FAMILY } from './text/fonts.ts'
 
 // 子を持つノード（MAI-7、MAI-25）。子は parentId で親を指し、位置は親のローカル座標で持つ。
 

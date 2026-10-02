@@ -1,3 +1,4 @@
+import { DEFAULT_FONT_FAMILY, fontFamilyCss, registerTextMetricsCache, requestFontLoad } from './fonts.ts'
 import { richTextFromPlain, type TextParagraph, type TextRunFormat } from './richText.ts'
 
 // 文字のレイアウトと描画（MAI-24）。テキスト・付箋・図形のラベルで共通に使う。
@@ -8,9 +9,7 @@ import { richTextFromPlain, type TextParagraph, type TextRunFormat } from './ric
 // - 行頭に来てはいけない句読点・閉じ括弧・小書きの仮名などは、前の文字とくっつけて扱う（簡単な禁則処理）。
 //   CSS の line-break: strict に合わせているので、編集用の DOM にも line-break: strict を指定する
 
-// DOM（編集用の要素）と Canvas で同じフォントになるよう、フォント名を明示する（MAI-21）
-export const TEXT_FONT_FAMILY =
-  "'Noto Sans JP', 'Noto Sans CJK JP', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', sans-serif"
+// フォントは fonts.ts（MAI-75）。テキストと付箋は範囲ごとにフォントを変えられ、ほかは既定のフォント（TEXT_FONT_FAMILY）
 
 export type TextAlign = 'left' | 'center' | 'right'
 
@@ -21,6 +20,8 @@ export interface TextStyle {
   fontWeight: 400 | 700
   color: string
   align: TextAlign
+  // フォントの名前（fonts.ts）。なければ既定のフォント（MAI-75）
+  fontFamily?: string
 }
 
 // テキストと付箋の文字の大きさの段階（MAI-50）。パレットの「大きく」「小さく」で、この中を行き来する
@@ -72,8 +73,13 @@ export interface TextLayout {
   maxFontSize: number
 }
 
-export function cssFont(style: Pick<TextStyle, 'fontSize' | 'fontWeight'>): string {
-  return `${style.fontWeight} ${style.fontSize}px ${TEXT_FONT_FAMILY}`
+export function cssFont(style: Pick<TextStyle, 'fontSize' | 'fontWeight' | 'fontFamily'>): string {
+  return `${style.fontWeight} ${style.fontSize}px ${fontFamilyCss(style.fontFamily)}`
+}
+
+// ノードの既定のスタイルから、run の書式の既定（run が持たない値）を作る（MAI-74、MAI-75）
+export function baseFormatOf(style: TextStyle): Required<TextRunFormat> {
+  return { color: style.color, fontSize: style.fontSize, fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY }
 }
 
 // ---- 文字幅の計測 ----
@@ -91,6 +97,7 @@ function getMeasureContext() {
 }
 
 const widthCache = new Map<string, Map<string, number>>()
+registerTextMetricsCache(() => widthCache.clear())
 
 // フォントごとに、語の幅をキャッシュして測る。Canvas がない環境（Node でのテスト）では概算する
 function measurerFor(style: TextStyle): Measure {
@@ -105,6 +112,8 @@ function measurerFor(style: TextStyle): Measure {
     let width = cache.get(text)
     if (width === undefined) {
       if (ctx) {
+        // Web フォントなら読み込みを頼む（読み込み終えたら、キャッシュを捨てて測り直す。fonts.ts）
+        requestFontLoad(style.fontFamily, font, text)
         ctx.font = font
         width = ctx.measureText(text).width
       } else {
@@ -125,6 +134,7 @@ function approximateWidth(text: string, fontSize: number): number {
 // フォントの上下の高さ（ベースラインから上と下。CSS ピクセル）。DOM（編集中の文字）と同じ値を使うため、Canvas から読む。
 // 読めない環境（Node でのテスト、古いブラウザ）では概算する
 const metricsCache = new Map<string, { ascent: number; descent: number }>()
+registerTextMetricsCache(() => metricsCache.clear())
 
 function fontMetrics(style: TextStyle): { ascent: number; descent: number } {
   const font = cssFont(style)
@@ -229,7 +239,12 @@ export function breakUnits(paragraph: string): string[] {
 // 書式を既定に重ねた、run の文字のスタイル（MAI-74）
 export function runStyle(base: TextStyle, format: TextRunFormat | undefined): TextStyle {
   if (!format) return base
-  return { ...base, fontSize: format.fontSize ?? base.fontSize, color: format.color ?? base.color }
+  return {
+    ...base,
+    fontSize: format.fontSize ?? base.fontSize,
+    color: format.color ?? base.color,
+    fontFamily: format.fontFamily ?? base.fontFamily,
+  }
 }
 
 // プレーンテキストのレイアウト（図形・矢印のラベル、引用ノートなど）。maxWidth が null なら折り返さない（段落ごとに 1 行）
@@ -252,7 +267,8 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
       starts.push(offset)
       offset += run.text.length
     }
-    const strut: TextStyle = { ...base, fontSize: Math.min(...styles.map((style) => style.fontSize)) }
+    // 空の段落は、編集中の DOM では段落の要素がその書式（大きさ・フォント）を持つので、strut もその書式にする（richTextDom.ts）
+    const strut: TextStyle = text === '' ? styles[0] : { ...base, fontSize: Math.min(...styles.map((style) => style.fontSize)) }
     const styleAt = (at: number): TextStyle => {
       for (let i = runs.length - 1; i >= 0; i--) if (starts[i] <= at && runs[i].text.length > 0) return styles[i]
       return styles[0]

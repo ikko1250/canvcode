@@ -11,6 +11,7 @@ import {
   type TextSelection,
 } from '@canvcode/canvas'
 import { ColorField, NumberField, SegmentedField, type ValueEditor } from './controls.tsx'
+import { FontField } from './FontField.tsx'
 import { textRangeOf, visibleSections, type DesignField } from './registry.ts'
 import './sections.ts'
 
@@ -19,7 +20,7 @@ import './sections.ts'
 // - 1 回の変更は 1 つのトランザクション。スライダーなどのドラッグ中の変更は、離すまでを 1 つにまとめる（Undo 1 回）
 // - パネルの中のキー入力は、キャンバスのショートカットに渡さない（data-own-keys）。ボタンはフォーカスを奪わない
 // - 閉じると右上の小さなボタンだけになる。開け閉めはブラウザに覚える（storage.ts）
-// - 文字を編集中に範囲を選んでいれば、文字の色・大きさはその範囲の値を見せ、その範囲に当てる（MAI-74）。
+// - 文字を編集中に範囲を選んでいれば、文字の色・大きさ・フォントはその範囲の値を見せ、その範囲に当てる（MAI-74、MAI-75）。
 //   パネルにフォーカスが移っても文字の編集は終わらない（data-keep-text-editing）。値を入れ終えたら、編集中の文字にフォーカスを戻す
 
 export function DesignPanel(props: {
@@ -149,6 +150,8 @@ function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; ed
       return <NumberField label={field.label} value={value} editor={editor} control={control} onDone={onDone} />
     case 'segmented':
       return <SegmentedField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
+    case 'font':
+      return <FontField label={field.label} value={value} editor={editor} onDone={onDone} />
   }
 }
 

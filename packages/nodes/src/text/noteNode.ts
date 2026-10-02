@@ -1,6 +1,7 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
 import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
 
 // 付箋（MAI-7 の `note`、MAI-24）。幅は自由に変えられ、高さは文字に合わせて伸びる（MAI-34）。
@@ -8,13 +9,16 @@ import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, ty
 // 高さは props から計算するので、前からある付箋も読み込んだときにそのまま文字に合った大きさになる。
 // 文字の大きさと揃え（左・中央・右）はノード単位で変えられる（MAI-50）。align のない古い付箋は左揃え。
 // 文字はテキストと同じく段落と run で持ち、範囲ごとに色・大きさを変えられる（MAI-74）。color は地の色で、文字の既定の色は NOTE_TEXT_COLOR。
-// 版 1 は文字をプレーンテキスト（text）で持っていた
+// 版 1 は文字をプレーンテキスト（text）で持っていた。
+// fontFamily（文字の既定のフォント。MAI-75）は版を上げずに足した。持たない古い付箋は既定のフォントで描く
 export interface NoteProps {
   paragraphs: TextParagraph[]
   w: number
   h: number
   color: string
   fontSize: number
+  // フォントの名前（fonts.ts。MAI-75）。古いレコードにはない（fontFamilyOf で既定として読む）
+  fontFamily: string
   align: TextAlign
 }
 
@@ -28,22 +32,31 @@ export const NOTE_DEFAULT_FONT_SIZE = 12
 export const NOTE_TEXT_COLOR = '#2b2930'
 
 export function noteStyle(props: NoteProps): TextStyle {
-  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: NOTE_TEXT_COLOR, align: textAlignOf(props.align) }
+  return {
+    fontSize: props.fontSize,
+    lineHeight: LINE_HEIGHT,
+    fontWeight: 400,
+    color: NOTE_TEXT_COLOR,
+    align: textAlignOf(props.align),
+    fontFamily: fontFamilyOf(props.fontFamily),
+  }
 }
 
 function textWidth(props: NoteProps): number {
   return Math.max(1, props.w - PADDING * 2)
 }
 
-const layoutCache = new WeakMap<NoteProps, TextLayout>()
+// フォントを読み込み終えて測り直すとき（textMetricsGeneration が変わる）は計算し直す（MAI-75）
+const layoutCache = new WeakMap<NoteProps, { generation: number; layout: TextLayout }>()
 
 function noteLayout(props: NoteProps): TextLayout {
-  let layout = layoutCache.get(props)
-  if (!layout) {
-    layout = layoutRichText(paragraphsOf(props), noteStyle(props), textWidth(props))
-    layoutCache.set(props, layout)
+  const generation = textMetricsGeneration()
+  let cached = layoutCache.get(props)
+  if (!cached || cached.generation !== generation) {
+    cached = { generation, layout: layoutRichText(paragraphsOf(props), noteStyle(props), textWidth(props)) }
+    layoutCache.set(props, cached)
   }
-  return layout
+  return cached.layout
 }
 
 // 実際の高さ：props.h か、文字がすべて収まる高さの大きいほう
@@ -59,7 +72,7 @@ export const noteType = defineNodeType<NoteProps>({
   type: 'note',
   version: 2,
 
-  defaultProps: () => ({ paragraphs: richTextFromPlain(''), w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, align: 'left' }),
+  defaultProps: () => ({ paragraphs: richTextFromPlain(''), w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, fontFamily: DEFAULT_FONT_FAMILY, align: 'left' }),
 
   migrate: (props, fromVersion) => (fromVersion < 2 ? migratePlainTextProps<NoteProps>(props) : props),
 
