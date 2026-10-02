@@ -89,7 +89,7 @@ test('shows mixed values and only common fields for a multi selection', async ({
   await clickWorld(page, 160, 180)
   await clickWorld(page, 360, 180, ['Shift'])
   const panel = page.getByTestId('design-panel')
-  await expect(panel.getByRole('tab', { selected: true })).toHaveText('2 個')
+  await expect(panel.getByRole('tab', { selected: true })).toHaveAccessibleName('2 個')
   const fill = panel.locator('[data-section="fill"] input.design-hex')
   await expect(fill).toHaveValue('')
   await expect(fill).toHaveAttribute('placeholder', '混在')
@@ -100,13 +100,13 @@ test('shows mixed values and only common fields for a multi selection', async ({
   await page.keyboard.press('Control+z')
   await expect(fill).toHaveAttribute('placeholder', '混在')
 
-  // 図形とテキスト：見た目で共通なのは不透明度だけ。文字（図形の中の文字とテキスト）は「文字」のタブ
+  // 図形とテキスト：見た目で共通なのは不透明度だけ。不透明度はタブによらず一番下に出すので、
+  // 残るのは文字（図形の中の文字とテキスト）だけになり、タブは出さずに文字の項目をそのまま並べる
   await clickWorld(page, 515, 330, ['Shift'])
-  await expect(panel.getByRole('tab', { selected: true })).toHaveText('3 個')
-  await expect(panel.locator('.design-section')).toHaveCount(1)
-  await expect(panel.locator('[data-section="layer"]')).toBeVisible()
-  await panel.getByRole('tab', { name: '文字' }).click()
+  await expect(panel.locator('.design-panel-title')).toHaveText('3 個')
+  await expect(panel.getByRole('tab')).toHaveCount(0)
   await expect(panel.locator('[data-section="text"]')).toBeVisible()
+  await expect(panel.locator('.design-panel-footer [data-section="layer"]')).toBeVisible()
 })
 
 test('changes text font size / color / align, and keys in the panel do not reach the canvas', async ({ page }) => {
@@ -159,7 +159,7 @@ test('edits the text style of a shape in the text tab, and opens the font list a
   await clickWorld(page, 160, 180)
   const panel = page.getByTestId('design-panel')
   // 最初は図形のタブ。文字の書式は出さない
-  await expect(panel.getByRole('tab', { selected: true })).toHaveText('図形')
+  await expect(panel.getByRole('tab', { selected: true })).toHaveAccessibleName('図形')
   await expect(panel.locator('[data-section="text"]')).toHaveCount(0)
 
   await panel.getByRole('tab', { name: '文字' }).click()

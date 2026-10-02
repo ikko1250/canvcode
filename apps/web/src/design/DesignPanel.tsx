@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { ArrowUpRight, Boxes, ChartPie, Frame, Group, Image, PenLine, Shapes, StickyNote, Type, X } from 'lucide-react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   KEEP_TEXT_EDITING_ATTRIBUTE,
@@ -20,7 +21,7 @@ import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
 import { ShadowsField } from './ShadowsField.tsx'
 import { ChartDataField } from './ChartDataField.tsx'
-import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
+import { textRangeOf, visibleSections, type DesignField, type DesignIcon, type VisibleSection } from './registry.ts'
 import { TEXT_SECTION_TAB, TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
 import type { PaintEditingLink } from './GradientEditor.tsx'
 import type { PaintImageSource } from './ImagePaintEditor.tsx'
@@ -43,6 +44,8 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 図形の中の文字の書式は「文字」のタブに分ける（section.tab）。タブが 2 つ以上あるときだけ、見出しにタブを並べる。
 //   図形の文字を編集している間は、選んでいなければ「文字」のタブを開く
 // - 図形の「形」（MAI-87）で矩形・楕円・ブロック矢印を切り替え、ブロック矢印の軸の太さなどを % で変える。図形の上の形のハンドルでも変えられる（blockArrowHandles.ts）
+// - 見出しはノードの種類のアイコンと名前。タブはアイコンのボタン。行の左は項目のアイコン（DesignField.icon。名前はツールチップ）で、
+//   見出しを出さないセクション（hideTitle）は区切り線だけで分ける。不透明度など footer のセクションは、タブによらず一番下に出す
 
 export function DesignPanel(props: {
   editor: Editor
@@ -128,25 +131,70 @@ export function DesignPanel(props: {
 
   const allSections = visibleSections(nodes, undefined, textSelection)
   if (allSections.length === 0) return null
+  const footerSections = allSections.filter(({ section }) => section.footer)
+  const tabSections = allSections.filter(({ section }) => !section.footer)
   // 見た目のタブ（MAIN_TAB）をいつも先頭にする（文字のセクションが見た目のセクションより上に並ぶ組み合わせでも）
-  const tabs = [...new Set(allSections.map(({ tab }) => tab ?? MAIN_TAB))].sort((a, b) => Number(b === MAIN_TAB) - Number(a === MAIN_TAB))
+  const tabs = [...new Set(tabSections.map(({ tab }) => tab ?? MAIN_TAB))].sort((a, b) => Number(b === MAIN_TAB) - Number(a === MAIN_TAB))
   const editingLabel = editingId !== null && ids.includes(editingId) && tabs.includes(TEXT_SECTION_TAB) ? TEXT_SECTION_TAB : null
-  const tab = chosenTab !== null && tabs.includes(chosenTab) ? chosenTab : (editingLabel ?? tabs[0])
-  const sections = tabs.length > 1 ? allSections.filter((visible) => (visible.tab ?? MAIN_TAB) === tab) : allSections
+  const tab = chosenTab !== null && tabs.includes(chosenTab) ? chosenTab : (editingLabel ?? tabs[0] ?? MAIN_TAB)
+  const sections = tabs.length > 1 ? tabSections.filter((visible) => (visible.tab ?? MAIN_TAB) === tab) : tabSections
   const mainTitle = nodes.length > 1 ? `${nodes.length} 個` : typeLabel(nodes[0])
+  const mainIcon = nodes.length > 1 ? Boxes : typeIcon(nodes[0])
 
   if (!open) {
     return (
       <button
         className="design-panel-toggle"
         title="デザインパネルを開く"
+        aria-label="デザインパネルを開く"
         onPointerDown={(e) => e.preventDefault()}
         onClick={() => onOpenChange(true)}
       >
-        デザイン
+        <PanelIcon icon={mainIcon} />
       </button>
     )
   }
+
+  const sectionView = ({ section, fields, showComponent }: VisibleSection) => (
+    <section key={section.id} className="design-section" data-section={section.id}>
+      {!section.hideTitle && <h3>{section.title}</h3>}
+      {fieldRows(fields).map((row) =>
+        row.kind === 'toggles' ? (
+          <ToggleGroup
+            key={row.group}
+            label={row.group}
+            items={row.fields.map(({ field, value }) => {
+              const control = field.control as Extract<DesignField['control'], { kind: 'toggle' }>
+              const key = TEXT_TOGGLE_FORMATS.find((k) => TEXT_TOGGLE_FIELDS[k] === field)!
+              const editing = editingTextOf(textEditor, nodes)
+              const shown = editing ? editingToggleValue(editing, key) : (value as SharedValue<boolean>)
+              return {
+                id: field.id,
+                title: control.title,
+                icon: control.icon,
+                value: shown,
+                onToggle: () => {
+                  endRunning(true)
+                  applyTextToggle(editor, textEditor, nodes, key, shown)
+                },
+              }
+            })}
+          />
+        ) : (
+          <FieldView
+            key={row.field.field.id}
+            field={row.field.field}
+            value={row.field.value}
+            editor={valueEditor(row.field.field)}
+            nodes={nodes}
+            paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null, images: paintImages }}
+            onDone={backToCanvas}
+          />
+        ),
+      )}
+      {showComponent && section.Component && <section.Component nodes={nodes} />}
+    </section>
+  )
 
   return (
     <aside
@@ -157,73 +205,52 @@ export function DesignPanel(props: {
       data-testid="design-panel"
     >
       <header className="design-panel-header">
-        <span className="design-panel-title">デザイン</span>
-        {tabs.length > 1 ? (
+        <span className="design-panel-heading">
+          <PanelIcon icon={mainIcon} />
+          <span className="design-panel-title">{mainTitle}</span>
+        </span>
+        {tabs.length > 1 && (
           <div className="design-panel-tabs" role="tablist" aria-label="デザインのタブ">
-            {tabs.map((id) => (
-              <button
-                key={id}
-                role="tab"
-                aria-selected={id === tab}
-                className={id === tab ? 'design-panel-tab active' : 'design-panel-tab'}
-                onPointerDown={(e) => e.preventDefault()}
-                onClick={() => setChosenTab(id)}
-              >
-                {id === MAIN_TAB ? mainTitle : id}
-              </button>
-            ))}
+            {tabs.map((id) => {
+              const name = id === MAIN_TAB ? mainTitle : id
+              const tabIcon = id === MAIN_TAB ? mainIcon : (TAB_ICONS[id] ?? mainIcon)
+              return (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={id === tab}
+                  aria-label={name}
+                  title={name}
+                  className={id === tab ? 'design-panel-tab active' : 'design-panel-tab'}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onClick={() => setChosenTab(id)}
+                >
+                  <PanelIcon icon={tabIcon} />
+                </button>
+              )
+            })}
           </div>
-        ) : (
-          <span className="design-panel-count">{mainTitle}</span>
         )}
-        <button className="design-panel-close" title="閉じる" onPointerDown={(e) => e.preventDefault()} onClick={() => onOpenChange(false)}>
-          ×
+        <button
+          className="design-panel-close"
+          title="閉じる"
+          aria-label="閉じる"
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={() => onOpenChange(false)}
+        >
+          <PanelIcon icon={X} />
         </button>
       </header>
       {/* 選択が変わったら作り直し、入力中の文字を捨てる */}
       <UsedColorsContext.Provider value={getUsedColors}>
         <div key={`${selectionKey}:${tab}`} className="design-panel-body">
-          {sections.map(({ section, fields, showComponent }) => (
-            <section key={section.id} className="design-section" data-section={section.id}>
-              <h3>{section.title}</h3>
-              {fieldRows(fields).map((row) =>
-                row.kind === 'toggles' ? (
-                  <ToggleGroup
-                    key={row.group}
-                    label={row.group}
-                    items={row.fields.map(({ field, value }) => {
-                      const control = field.control as Extract<DesignField['control'], { kind: 'toggle' }>
-                      const key = TEXT_TOGGLE_FORMATS.find((k) => TEXT_TOGGLE_FIELDS[k] === field)!
-                      const editing = editingTextOf(textEditor, nodes)
-                      const shown = editing ? editingToggleValue(editing, key) : (value as SharedValue<boolean>)
-                      return {
-                        id: field.id,
-                        title: control.title,
-                        icon: control.icon,
-                        value: shown,
-                        onToggle: () => {
-                          endRunning(true)
-                          applyTextToggle(editor, textEditor, nodes, key, shown)
-                        },
-                      }
-                    })}
-                  />
-                ) : (
-                  <FieldView
-                    key={row.field.field.id}
-                    field={row.field.field}
-                    value={row.field.value}
-                    editor={valueEditor(row.field.field)}
-                    nodes={nodes}
-                    paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null, images: paintImages }}
-                    onDone={backToCanvas}
-                  />
-                ),
-              )}
-              {showComponent && section.Component && <section.Component nodes={nodes} />}
-            </section>
-          ))}
+          {sections.map(sectionView)}
         </div>
+        {footerSections.length > 0 && (
+          <div key={selectionKey} className="design-panel-footer">
+            {footerSections.map(sectionView)}
+          </div>
+        )}
       </UsedColorsContext.Provider>
     </aside>
   )
@@ -241,11 +268,12 @@ function FieldView(props: {
   const control = field.control
   switch (control.kind) {
     case 'color':
-      return <ColorField label={field.label} value={value} editor={editor} onDone={onDone} />
+      return <ColorField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'paint':
       return (
         <PaintField
           label={field.label}
+          icon={field.icon}
           value={value}
           editor={editor}
           canOpacity={nodes.every((node) => control.opacity?.(node) ?? true)}
@@ -261,21 +289,21 @@ function FieldView(props: {
         />
       )
     case 'number':
-      return <NumberField label={field.label} value={value} editor={editor} control={control} onDone={onDone} />
+      return <NumberField label={field.label} icon={field.icon} value={value} editor={editor} control={control} onDone={onDone} />
     case 'segmented':
-      return <SegmentedField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
+      return <SegmentedField label={field.label} icon={field.icon} value={value} editor={editor} options={control.options} onDone={onDone} />
     case 'font':
-      return <FontField label={field.label} value={value} editor={editor} onDone={onDone} />
+      return <FontField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'lineHeight':
-      return <LineHeightField label={field.label} value={value} editor={editor} onDone={onDone} />
+      return <LineHeightField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'cornerRadius':
-      return <CornerRadiusField label={field.label} value={value} editor={editor} onDone={onDone} />
+      return <CornerRadiusField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'shadows':
-      return <ShadowsField label={field.label} value={value} editor={editor} onDone={onDone} />
+      return <ShadowsField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'chartData':
-      return <ChartDataField label={field.label} value={value} editor={editor} onDone={onDone} />
+      return <ChartDataField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'select':
-      return <SelectField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
+      return <SelectField label={field.label} icon={field.icon} value={value} editor={editor} options={control.options} onDone={onDone} />
     case 'toggle':
       // fieldRows で ToggleGroup にまとめる
       return null
@@ -357,4 +385,31 @@ const TYPE_LABELS: Record<string, string> = {
 
 function typeLabel(node: NodeRecord | undefined): string {
   return (node && TYPE_LABELS[node.type]) ?? node?.type ?? ''
+}
+
+const TYPE_ICONS: Record<string, DesignIcon> = {
+  geo: Shapes,
+  text: Type,
+  note: StickyNote,
+  arrow: ArrowUpRight,
+  draw: PenLine,
+  image: Image,
+  chart: ChartPie,
+  group: Group,
+  frame: Frame,
+}
+
+// 見出し・タブ・閉じるボタンのアイコン
+function PanelIcon(props: { icon: DesignIcon }) {
+  const Icon = props.icon
+  return <Icon size={18} strokeWidth={1.75} aria-hidden />
+}
+
+function typeIcon(node: NodeRecord | undefined): DesignIcon {
+  return (node && TYPE_ICONS[node.type]) ?? Shapes
+}
+
+// 見た目のタブのほかのタブのアイコン（section.tab の名前ごと）
+const TAB_ICONS: Record<string, DesignIcon> = {
+  [TEXT_SECTION_TAB]: Type,
 }

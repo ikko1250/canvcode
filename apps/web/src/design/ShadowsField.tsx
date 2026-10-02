@@ -1,6 +1,7 @@
 import { sharedOf, type SharedValue } from '@canvcode/canvas'
 import { defaultShadow, SHADOW_BLUR_MAX, SHADOW_OFFSET_LIMIT, SHADOW_SPREAD_LIMIT, solidPaint, type Fill, type Shadow, type ShadowType } from '@canvcode/nodes'
-import { MIXED_LABEL, NumberField, type ValueEditor } from './controls.tsx'
+import { FieldLabel, MIXED_LABEL, NumberField, type ValueEditor } from './controls.tsx'
+import type { DesignIcon } from './registry.ts'
 import { PaintField } from './ColorPicker.tsx'
 import { shadowRows, type FillChange, type ShadowsChange } from './sections.ts'
 
@@ -23,13 +24,13 @@ const NUMBER_FIELDS: { key: NumberKey; label: string; min: number; max: number }
   { key: 'spread', label: '広がり', min: -SHADOW_SPREAD_LIMIT, max: SHADOW_SPREAD_LIMIT },
 ]
 
-export function ShadowsField(props: { label: string; value: SharedValue<Shadow[]>; editor: ValueEditor<ShadowsChange>; onDone?: () => void }) {
-  const { label, value, editor, onDone } = props
+export function ShadowsField(props: { label: string; icon?: DesignIcon; value: SharedValue<Shadow[]>; editor: ValueEditor<ShadowsChange>; onDone?: () => void }) {
+  const { label, icon, value, editor, onDone } = props
   const rows = shadowRows(value)
   return (
     <div className="design-shadows" data-testid="shadows-field">
       <div className="design-field design-shadows-head">
-        <span className="design-label">{label}</span>
+        <FieldLabel label={label} icon={icon} />
         <div className="design-control">
           {rows === null && <span className="design-mixed">{MIXED_LABEL}</span>}
           <button

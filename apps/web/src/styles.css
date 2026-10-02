@@ -1022,91 +1022,119 @@ body,
 }
 
 /* デザインパネル（MAI-73）。右上に重ね、選んでいるノードの見た目のプロパティを並べる。
-   高さは中身に合わせ、画面より長ければパネルの中でスクロールする（キャンバスのホイールには渡らない） */
+   高さは中身に合わせ、画面より長ければパネルの中でスクロールする（キャンバスのホイールには渡らない）。
+   見た目は temp/ui-designs のコンパクト案：行の左にアイコン、灰色の地の入力、セクションの間は区切り線だけ */
+.design-panel,
+.design-panel-toggle {
+  --dp-surface: #ffffff;
+  --dp-text: #252a31;
+  --dp-secondary: #747e8c;
+  --dp-line: #eaedf1;
+  --dp-field: #f5f6f8;
+  --dp-hover: #eef1f6;
+  --dp-accent: #326ce8;
+  --dp-selected: #eaf0ff;
+  --dp-shadow: rgba(24, 41, 68, 0.08);
+  --dp-radius: 8px;
+  --dp-control-height: 32px;
+}
+
 .design-panel {
   position: absolute;
   right: 12px;
   top: 52px;
-  width: 232px;
+  width: 300px;
+  max-width: calc(100% - 24px);
   max-height: calc(100% - 64px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  font-size: 12px;
+  background: var(--dp-surface);
+  color: var(--dp-text);
+  border: 1px solid var(--dp-line);
+  border-radius: 14px;
+  box-shadow: 0 10px 36px var(--dp-shadow), 0 2px 8px var(--dp-shadow);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .design-panel-header {
   position: sticky;
   top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 6px 6px 10px;
-  background: var(--panel-bg);
-  border-bottom: 1px solid var(--panel-border);
+  gap: 4px;
+  min-height: 48px;
+  padding: 0 10px 0 14px;
+  background: var(--dp-surface);
+  border-bottom: 1px solid var(--dp-line);
+}
+
+.design-panel-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.design-panel-heading svg {
+  flex: 0 0 auto;
+  color: var(--dp-secondary);
 }
 
 .design-panel-title {
-  font-weight: 600;
+  overflow: hidden;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.design-panel-count {
-  flex: 1;
-  color: var(--muted);
-}
-
-/* 図形の見た目と図形の中の文字を分けるタブ */
+/* 図形の見た目と図形の中の文字を分けるタブ（アイコンのボタン） */
 .design-panel-tabs {
-  flex: 1;
   display: flex;
-  gap: 2px;
-  min-width: 0;
+  gap: 4px;
 }
 
-.design-panel button.design-panel-tab {
-  height: 22px;
-  padding: 0 8px;
+.design-panel button.design-panel-tab,
+.design-panel button.design-panel-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
   border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.design-panel button.design-panel-tab:hover {
-  background: #eef1f5;
+  color: var(--dp-secondary);
 }
 
 .design-panel button.design-panel-tab.active {
-  background: #eef1f5;
-  color: var(--text);
-  font-weight: 600;
+  background: var(--dp-selected);
+  color: var(--dp-accent);
+}
+
+.design-panel button.design-panel-close {
+  margin-left: 2px;
 }
 
 .design-panel button,
 .design-panel-toggle {
   min-width: 24px;
-  height: 24px;
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--dp-line);
+  border-radius: var(--dp-radius);
+  background: var(--dp-surface);
+  color: var(--dp-text);
   font: inherit;
   cursor: pointer;
 }
 
 .design-panel button:hover {
-  background: #eef1f5;
+  background: var(--dp-hover);
 }
 
 .design-panel button.active {
-  background: #e3ebfd;
-  border-color: #b9ccf8;
-  color: var(--accent);
+  background: var(--dp-selected);
+  border-color: transparent;
+  color: var(--dp-accent);
 }
 
 .design-panel button svg {
@@ -1118,41 +1146,74 @@ body,
   position: absolute;
   right: 12px;
   top: 52px;
-  height: 28px;
-  background: var(--panel-bg);
-  border-color: var(--panel-border);
-  font-size: 12px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 12px;
+  color: var(--dp-secondary);
+  box-shadow: 0 4px 16px var(--dp-shadow);
+}
+
+.design-panel-toggle:hover {
+  background: var(--dp-hover);
+  color: var(--dp-text);
+}
+
+.design-panel-toggle svg {
+  display: block;
+  margin: 0 auto;
 }
 
 .design-section {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--panel-border);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--dp-line);
 }
 
-.design-section:last-child {
+.design-panel-body .design-section:last-child,
+.design-panel-footer .design-section:last-child {
   border-bottom: none;
 }
 
+/* タブによらず出す項目（不透明度）。タブの中身との間に区切り線 */
+.design-panel-footer {
+  border-top: 1px solid var(--dp-line);
+}
+
 .design-section h3 {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--dp-secondary);
 }
 
 .design-field {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  min-height: 26px;
-  margin-bottom: 4px;
+  min-height: var(--dp-control-height);
+  margin-bottom: 6px;
+}
+
+.design-field:last-child {
+  margin-bottom: 0;
 }
 
 .design-label {
   flex: 0 0 52px;
-  padding-top: 5px;
-  color: var(--muted);
+  padding-top: 7px;
+  color: var(--dp-secondary);
+  font-size: 12px;
   user-select: none;
+}
+
+/* アイコンの名前（名前はツールチップ） */
+.design-label.icon {
+  flex: 0 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--dp-control-height);
+  padding-top: 0;
 }
 
 .design-label.scrub {
@@ -1162,36 +1223,50 @@ body,
 .design-control {
   flex: 1;
   min-width: 0;
+  min-height: var(--dp-control-height);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
+/* スライダーと数字を 1 行に（スライダーが伸びる） */
+.design-control.with-slider {
+  flex-wrap: nowrap;
+  gap: 12px;
+}
+
+.design-control.with-slider .design-slider {
+  flex: 1;
+  min-width: 0;
+}
+
 .design-number {
+  box-sizing: border-box;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  width: 84px;
-  height: 24px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
+  width: 76px;
+  height: var(--dp-control-height);
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius);
+  background: var(--dp-field);
 }
 
 .design-number:focus-within,
 .design-hex:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--dp-accent);
 }
 
 .design-number input,
 .design-hex {
   min-width: 0;
-  height: 22px;
-  padding: 0 4px;
+  height: 100%;
+  padding: 0 8px;
   border: none;
   background: transparent;
-  color: var(--text);
+  color: var(--dp-text);
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
@@ -1199,20 +1274,70 @@ body,
 .design-number input {
   flex: 1;
   width: 0;
+  padding-right: 4px;
   text-align: right;
   outline: none;
 }
 
 .design-unit {
-  padding-right: 5px;
-  color: var(--muted);
+  padding-right: 8px;
+  color: var(--dp-secondary);
   font-size: 11px;
 }
 
+/* スライダー：細い溝（左から今の値までをアクセントの色）と丸いつまみ。--fill は Slider が入れる今の位置 */
 .design-slider {
   width: 100%;
   margin: 0;
-  accent-color: var(--accent);
+  accent-color: var(--dp-accent);
+}
+
+.design-slider:not(.design-hue-slider):not(.design-alpha-slider) {
+  height: 16px;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--dp-accent) var(--fill, 0%), var(--dp-line) var(--fill, 0%));
+}
+
+.design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--dp-line);
+}
+
+.design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-moz-range-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--dp-accent);
+}
+
+.design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dp-accent);
+  appearance: none;
+}
+
+.design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dp-accent);
+}
+
+.design-slider:focus-visible {
+  outline: 2px solid var(--dp-selected);
+  outline-offset: 2px;
 }
 
 /* 値が混在しているときは、つまみの位置に意味がないので薄くする */
@@ -1264,12 +1389,11 @@ body,
 
 /* 塗りの行（見本・HEX か種類・不透明度・−）は 1 行に収める（MAI-82）。HEX・種類の欄が縮む */
 .design-paint-field > .design-control {
-  gap: 3px;
+  gap: 6px;
 }
 
 .design-paint-field .design-hex {
-  padding: 0 3px;
-  font-size: 11px;
+  padding: 0 8px;
 }
 
 .design-paint-field .design-opacity input {
@@ -1288,8 +1412,8 @@ body,
 }
 
 .design-paint-field .design-number.design-opacity {
-  flex: 0 0 40px;
-  width: 40px;
+  flex: 0 0 56px;
+  width: 56px;
 }
 
 .design-paint-field .design-color-popup {
@@ -1561,11 +1685,12 @@ body,
 }
 
 .design-hex {
+  box-sizing: border-box;
   flex: 1;
-  height: 24px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
+  height: var(--dp-control-height);
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius);
+  background: var(--dp-field);
 }
 
 .design-segmented {
@@ -1575,18 +1700,18 @@ body,
 /* 一覧から選ぶ（リストの記号・番号の形。MAI-78） */
 .design-select {
   width: 100%;
-  height: 24px;
-  padding: 0 4px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
-  color: var(--text);
+  height: var(--dp-control-height);
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius);
+  background: var(--dp-field);
+  color: var(--dp-text);
   font: inherit;
 }
 
 .design-select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--dp-accent);
 }
 
 /* フォントの選択（MAI-75）。一覧はパネルの中に開く（パネルのスクロールで切れないように） */
@@ -1600,11 +1725,10 @@ body,
   align-items: center;
   gap: 4px;
   width: 100%;
-  height: 24px;
-  padding: 0 6px;
-  border-color: var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
+  height: var(--dp-control-height);
+  padding: 0 8px;
+  border-color: transparent;
+  background: var(--dp-field);
   text-align: left;
 }
 

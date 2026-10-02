@@ -1,9 +1,9 @@
-import { Fragment, useEffect, useRef, useState, type ComponentType, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useEffect, useRef, useState, type ComponentType, type CSSProperties, type HTMLAttributes, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { CORNER_RADIUS_MAX, cornerRadii, type CornerRadius, type LineHeight, type LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, parseLineHeight, parseNumber } from './parse.ts'
 import { useDraft } from './useDraft.ts'
-import type { FieldControl, SegmentOption, SelectOption } from './registry.ts'
+import type { DesignIcon, FieldControl, SegmentOption, SelectOption } from './registry.ts'
 import type { CornerRadiusChange, LineHeightChange } from './sections.ts'
 
 // デザインパネルの入力部品（MAI-73）。数字・切り替えボタン・スライダー（色は ColorPicker.tsx）。
@@ -23,10 +23,26 @@ export const MIXED_LABEL = '混在'
 
 interface FieldProps<T> {
   label: string
+  // 行の左に名前の代わりに出すアイコン（registry.ts の DesignField.icon）
+  icon?: DesignIcon
   value: SharedValue<T>
   editor: ValueEditor<T>
   // 入力を終えたら、キャンバスにフォーカスを戻す（Esc・Enter のあと）
   onDone?: () => void
+}
+
+// ---- 項目の名前 ----
+
+// 行の左の名前。アイコンがあればアイコンを出し、名前はツールチップにする（入力の名前は各部品の aria-label）。
+// 数字の項目は、ここを左右にドラッグして値を変える（props に pointer のハンドラーを渡す）
+export function FieldLabel(props: { label: string; icon?: DesignIcon; title?: string } & Omit<HTMLAttributes<HTMLSpanElement>, 'title'>) {
+  const { label, icon: Icon, title, className, ...rest } = props
+  const classes = ['design-label', Icon ? 'icon' : '', className ?? ''].filter(Boolean).join(' ')
+  return (
+    <span className={classes} title={title ?? label} {...rest}>
+      {Icon ? <Icon size={16} strokeWidth={1.75} aria-hidden /> : label}
+    </span>
+  )
 }
 
 // ---- 数字 ----
@@ -35,7 +51,7 @@ type NumberControl = Extract<FieldControl, { kind: 'number' }>
 
 // extra は入力の右に並べるもの（角丸の「角ごと」のボタンなど）。className は行に足すクラス
 export function NumberField(props: FieldProps<number> & { control: NumberControl; extra?: ReactNode; className?: string }) {
-  const { label, value, editor, control, onDone, extra, className } = props
+  const { label, icon, value, editor, control, onDone, extra, className } = props
   const toDisplay = control.toDisplay ?? ((v: number) => v)
   const fromDisplay = control.fromDisplay ?? ((v: number) => v)
   const step = control.step ?? 1
@@ -95,19 +111,33 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
   }
 
   const sliderValue = shown ?? control.min ?? 0
+  // スライダーは数字の左に置く（数字の欄は右端にそろえる）
+  const hasSlider = Boolean(control.slider && control.min !== undefined && control.max !== undefined)
   return (
     <div className={className ? `design-field ${className}` : 'design-field'}>
-      <span
-        className="design-label scrub"
+      <FieldLabel
+        label={label}
+        icon={icon}
+        className="scrub"
         title={`${label}（左右にドラッグで変える）`}
         onPointerDown={onScrubDown}
         onPointerMove={onScrubMove}
         onPointerUp={(e) => onScrubEnd(e, true)}
         onPointerCancel={(e) => onScrubEnd(e, false)}
-      >
-        {label}
-      </span>
-      <div className="design-control">
+      />
+      <div className={hasSlider ? 'design-control with-slider' : 'design-control'}>
+        {hasSlider && (
+          <Slider
+            label={label}
+            min={control.min!}
+            max={control.max!}
+            step={step}
+            value={sliderValue}
+            mixed={value.kind === 'mixed'}
+            onPreview={(v) => editor.preview(toValue(v))}
+            onEnd={(commit) => editor.end(commit)}
+          />
+        )}
         <span className="design-number">
           <input
             type="text"
@@ -122,18 +152,6 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
           />
           {control.unit && <span className="design-unit">{control.unit}</span>}
         </span>
-        {control.slider && control.min !== undefined && control.max !== undefined && (
-          <Slider
-            label={label}
-            min={control.min}
-            max={control.max}
-            step={step}
-            value={sliderValue}
-            mixed={value.kind === 'mixed'}
-            onPreview={(v) => editor.preview(toValue(v))}
-            onEnd={(commit) => editor.end(commit)}
-          />
-        )}
         {extra}
       </div>
     </div>
@@ -149,7 +167,7 @@ const CORNER_LABELS = ['左上', '右上', '右下', '左下'] as const
 // 一緒の入力は、角や選んだノードで値が違えば「混在」。角ごとの入力も、選んだノードでその角の値が違えば「混在」。
 // 角ごとに出すかはパネルの見た目だけで、値は変えない（角の値が違うノードを選んだときは、はじめから角ごとに出す）
 export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'> & { editor: ValueEditor<CornerRadiusChange> }) {
-  const { label, value, editor, onDone } = props
+  const { label, icon, value, editor, onDone } = props
   const all = (value.kind === 'same' ? [value.value] : value.values).map(cornerRadii)
   const [separate, setSeparate] = useState(() => all.some((radii) => radii.some((r) => r !== radii[0])))
   const shared = (values: number[]): SharedValue<number> =>
@@ -177,6 +195,7 @@ export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'
     <div className="design-corner-radius" data-testid="corner-radius-field">
       <NumberField
         label={label}
+        icon={icon}
         value={shared(all.flat())}
         editor={editorFor(null)}
         control={CORNER_RADIUS_CONTROL}
@@ -215,7 +234,7 @@ const LINE_HEIGHT_UNITS: { unit: LineHeightUnit; label: string; title: string }[
 // 「24px」と打てば px、「150%」なら倍率 1.5、単位のない数字は今の単位で読む。単位のボタンは、見た目を変えずに単位だけを変える。
 // ↑↓ で倍率は 0.05・px は 1 刻み（Shift で 10 倍）
 export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & { editor: ValueEditor<LineHeightChange> }) {
-  const { label, value, editor, onDone } = props
+  const { label, icon, value, editor, onDone } = props
   const { draft, setDraft, take } = useDraft()
   const current = value.kind === 'same' ? value.value : null
   // 選んでいるノードがみな同じ単位なら、その単位（値が混在していても）
@@ -249,7 +268,7 @@ export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & 
 
   return (
     <div className="design-field">
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control">
         <span className="design-number">
           <input
@@ -331,6 +350,8 @@ export function Slider(props: {
       max={max}
       step={step}
       value={value}
+      // 溝の左から今の値までを色で埋める（styles.css の --fill。Firefox は ::-moz-range-progress）
+      style={{ '--fill': `${max > min ? ((Math.min(max, Math.max(min, value)) - min) / (max - min)) * 100 : 0}%` } as CSSProperties}
       onChange={(e) => {
         changing.current = true
         onPreview(Number(e.target.value))
@@ -354,10 +375,10 @@ export function Slider(props: {
 
 // ボタンは pointerdown を止めて、キャンバス（や文字の編集）からフォーカスを奪わない
 export function SegmentedField(props: FieldProps<string> & { options: readonly SegmentOption[] }) {
-  const { label, value, editor, options } = props
+  const { label, icon, value, editor, options } = props
   return (
     <div className="design-field">
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control design-segmented" role="group" aria-label={label}>
         {options.map((option) => {
           const active = value.kind === 'same' && value.value === option.value
@@ -393,11 +414,11 @@ export interface ToggleItem {
 
 // 太字・斜体などのボタンを 1 行に並べる。オンなら押した見た目、混在なら薄く押した見た目（aria-pressed="mixed"）。
 // 押してもフォーカスを奪わない（編集中の文字の選択がそのまま残る）
-export function ToggleGroup(props: { label: string; items: readonly ToggleItem[] }) {
-  const { label, items } = props
+export function ToggleGroup(props: { label: string; icon?: DesignIcon; items: readonly ToggleItem[] }) {
+  const { label, icon, items } = props
   return (
     <div className="design-field">
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control design-segmented" role="group" aria-label={label}>
         {items.map((item) => (
           <ToggleButton key={item.id} item={item} />
@@ -435,7 +456,7 @@ function toggleState(value: SharedValue<boolean> | null): boolean | 'mixed' {
 
 // 混在しているときは「混在」を選べない見出しとして出す。選んだらキャンバス（編集中の文字）にフォーカスを戻す
 export function SelectField(props: FieldProps<string> & { options: readonly SelectOption[] }) {
-  const { label, value, editor, options, onDone } = props
+  const { label, icon, value, editor, options, onDone } = props
   const groups: { name: string | undefined; options: SelectOption[] }[] = []
   for (const option of options) {
     const last = groups.at(-1)
@@ -450,7 +471,7 @@ export function SelectField(props: FieldProps<string> & { options: readonly Sele
     ))
   return (
     <div className="design-field">
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control">
         <select
           className="design-select"

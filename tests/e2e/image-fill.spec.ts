@@ -222,7 +222,7 @@ test('drops an image onto a shape with Alt to fill it, and places an image node 
 
   // Alt なしなら、画像ノードを置く（図形の塗りは変えない）
   await drop(150, 600, false)
-  await expect(page.getByTestId('design-panel').locator('.design-panel-count')).toHaveText('画像')
+  await expect(page.getByTestId('design-panel').locator('.design-panel-title')).toHaveText('画像')
 })
 
 test('pastes a clipboard image into the fill of the selected shape with Ctrl+Alt+V', async ({ page, context, browserName }) => {
@@ -239,5 +239,5 @@ test('pastes a clipboard image into the fill of the selected shape with Ctrl+Alt
   await expectKind(page, 375, 350, 'blue')
   // 画像ノードは作らない（選んでいるのは図形のまま）
   // 図形は見た目と文字のタブに分かれる。開いているのは見た目のタブ
-  await expect(page.getByTestId('design-panel').getByRole('tab', { selected: true })).toHaveText('図形')
+  await expect(page.getByTestId('design-panel').getByRole('tab', { selected: true })).toHaveAccessibleName('図形')
 })

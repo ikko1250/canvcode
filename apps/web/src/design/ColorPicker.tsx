@@ -11,7 +11,8 @@ import {
 } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { GEO_DEFAULT_FILL, GEO_DEFAULT_STROKE, isGradientPaint, normalizeColor, solidPaint, type Fill, type ImagePaint, type PaintType } from '@canvcode/nodes'
-import { MIXED_LABEL, Slider, type ValueEditor } from './controls.tsx'
+import { FieldLabel, MIXED_LABEL, Slider, type ValueEditor } from './controls.tsx'
+import type { DesignIcon } from './registry.ts'
 import { GradientEditor, type PaintEditing, type PaintEditingLink } from './GradientEditor.tsx'
 import { ImagePaintEditor, type PaintImageSource } from './ImagePaintEditor.tsx'
 import { useDraft } from './useDraft.ts'
@@ -309,14 +310,14 @@ function HexInput(props: { label: string; value: string | null; placeholder: str
 
 // ---- 色（文字列）の項目 ----
 
-export function ColorField(props: { label: string; value: SharedValue<string>; editor: ValueEditor<string>; onDone?: () => void }) {
-  const { label, value, editor, onDone } = props
+export function ColorField(props: { label: string; icon?: DesignIcon; value: SharedValue<string>; editor: ValueEditor<string>; onDone?: () => void }) {
+  const { label, icon, value, editor, onDone } = props
   const { open, setOpen, rootRef } = usePickerOpen()
   const current = value.kind === 'same' ? value.value : null
   const toColor = (change: ColorPickerChange) => ('color' in change ? change.color : null)
   return (
     <div className="design-field design-color-field" ref={rootRef}>
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control">
         <SwatchButton label={label} color={current} state={current ? 'color' : 'mixed'} open={open} onToggle={() => setOpen(!open)} />
         <HexInput label={label} value={current} placeholder={value.kind === 'mixed' ? MIXED_LABEL : ''} onCommit={(c) => editor.set(c)} onDone={onDone} />
@@ -367,6 +368,7 @@ const PAINT_TYPE_LABELS: Record<PaintType, string> = { solid: '単色', linear: 
 
 export function PaintField(props: {
   label: string
+  icon?: DesignIcon
   value: SharedValue<Fill>
   editor: ValueEditor<FillChange>
   // 不透明度・塗りなし・グラデーションを選べるか（選んでいるノードのすべてが持てるとき）
@@ -385,7 +387,7 @@ export function PaintField(props: {
   role?: PaintRole
   onDone?: () => void
 }) {
-  const { label, value, editor, canOpacity, canNone, canGradient = false, canImage = false, images = null, sizes = [], link = null, paintEditing = null, role = 'fill', onDone } = props
+  const { label, icon, value, editor, canOpacity, canNone, canGradient = false, canImage = false, images = null, sizes = [], link = null, paintEditing = null, role = 'fill', onDone } = props
   const noneTitles = NONE_TITLES[role]
   const { open, setOpen, rootRef } = usePickerOpen(link?.ownsPointer)
   const summary = paintSummary(value, images ? (assetId) => images.url(assetId) : undefined)
@@ -469,7 +471,7 @@ export function PaintField(props: {
   const selectedStop = gradient?.stops[stopIndex]
   return (
     <div className="design-field design-color-field design-paint-field" ref={rootRef}>
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control">
         <SwatchButton
           label={label}

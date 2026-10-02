@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { fontFamilyCss, fontLabel, type FontCategory, type FontOption } from '@canvcode/nodes'
-import { MIXED_LABEL, type ValueEditor } from './controls.tsx'
+import { FieldLabel, MIXED_LABEL, type ValueEditor } from './controls.tsx'
+import type { DesignIcon } from './registry.ts'
 import { FALLBACK_FONT_LABEL, canQueryLocalFonts, fontOptions, isFontMissing, loadLocalFonts } from './fontList.ts'
 
 // フォントを選ぶ部品（MAI-75）。押すと、デザインパネルの左に別のペインを重ねて、フォントの一覧を開く（名前はそのフォントで見せる）。
@@ -18,8 +19,8 @@ const GROUP_TITLES: Record<FontCategory, string> = {
   system: 'この端末',
 }
 
-export function FontField(props: { label: string; value: SharedValue<string>; editor: ValueEditor<string>; onDone?: () => void }) {
-  const { label, value, editor, onDone } = props
+export function FontField(props: { label: string; icon?: DesignIcon; value: SharedValue<string>; editor: ValueEditor<string>; onDone?: () => void }) {
+  const { label, icon, value, editor, onDone } = props
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -115,7 +116,7 @@ export function FontField(props: { label: string; value: SharedValue<string>; ed
 
   return (
     <div className="design-field design-font-field">
-      <span className="design-label">{label}</span>
+      <FieldLabel label={label} icon={icon} />
       <div className="design-control">
         <button
           ref={buttonRef}

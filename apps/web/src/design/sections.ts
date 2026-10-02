@@ -1,4 +1,5 @@
 import { createElement } from 'react'
+import { Blend } from 'lucide-react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
   chartRowsOf,
@@ -893,12 +894,14 @@ function textSectionTab(nodes: readonly NodeRecord[]): string | undefined {
 // ---- レイヤー ----
 
 // 不透明度はノードのレコードの opacity（0〜1）。パネルでは 0〜100 % で見せる。
+// どのタブを開いていても、パネルの一番下に出す（footer）
 // group と frame は子に効かない（描画はノードごと）ので出さない
 const CONTAINER_TYPES = new Set(['group', 'frame'])
 
 export const opacityField: DesignField<number> = {
   id: 'layer.opacity',
   label: '不透明度',
+  icon: Blend,
   appliesTo: (node: NodeRecord) => !CONTAINER_TYPES.has(node.type),
   read: (node) => node.opacity,
   write: (node, opacity) => (node.opacity === opacity ? node : { ...node, opacity }),
@@ -922,7 +925,7 @@ export const builtinDesignSections: DesignSection[] = [
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
   { id: 'effects', title: '効果', order: 250, fields: [shadowsField] },
   { id: 'text', title: '文字', order: 300, tab: textSectionTab, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
-  { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
+  { id: 'layer', title: 'レイヤー', order: 900, hideTitle: true, footer: true, fields: [opacityField] },
 
 ]
 

@@ -70,9 +70,14 @@ export interface SegmentOption {
   icon?: ComponentType
 }
 
+// 行の左に出すアイコン（lucide-react のアイコンなど）。名前（label）はツールチップと読み上げに使う
+export type DesignIcon = ComponentType<{ className?: string; size?: number; strokeWidth?: number; 'aria-hidden'?: boolean }>
+
 export interface DesignField<T = unknown> {
   id: string
   label: string
+  // 行の左に、名前の文字の代わりに出すアイコン。ないときは名前の文字を出す
+  icon?: DesignIcon
   // この項目を持つノードか
   appliesTo(node: NodeRecord): boolean
   read(node: NodeRecord): T
@@ -94,6 +99,10 @@ export interface DesignSection {
   title: string
   // 小さいほど上に出す
   order: number
+  // 見出し（title）を出さない。項目の行のアイコンで分かるセクション。セクションの間の区切り線だけを残す
+  hideTitle?: boolean
+  // タブによらず、パネルの一番下にいつも出す（不透明度など、どのタブにも共通の項目）。tab より先に見る
+  footer?: boolean
   // パネルのタブ（ない・undefined は最初のタブ。ノードの見た目）。選んでいるノードで決めるときは関数。
   // 出すセクションのタブが 2 つ以上あれば、パネルの上にタブを並べ、選んだタブのセクションだけを出す（図形の中の文字は「文字」のタブ）
   tab?: string | ((nodes: readonly NodeRecord[]) => string | undefined)

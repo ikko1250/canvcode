@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { chartRowColor, parseChartNumber, parseChartTable, type ChartRow } from '@canvcode/nodes'
-import { MIXED_LABEL, type ValueEditor } from './controls.tsx'
+import { FieldLabel, MIXED_LABEL, type ValueEditor } from './controls.tsx'
+import type { DesignIcon } from './registry.ts'
 import { ColorPicker, SwatchButton, type ColorPickerChange } from './ColorPicker.tsx'
 import { useDraft } from './useDraft.ts'
 import type { ChartRowsChange } from './sections.ts'
@@ -15,8 +16,8 @@ import type { ChartRowsChange } from './sections.ts'
 // - 複数のグラフを選んで、データが違えば「混在」と出す（＋・貼り付けは、どのグラフにも当たる）
 // パネルの中なので、キー入力はキャンバスに渡らない（data-own-keys）
 
-export function ChartDataField(props: { label: string; value: SharedValue<ChartRow[]>; editor: ValueEditor<ChartRowsChange>; onDone?: () => void }) {
-  const { label, value, editor, onDone } = props
+export function ChartDataField(props: { label: string; icon?: DesignIcon; value: SharedValue<ChartRow[]>; editor: ValueEditor<ChartRowsChange>; onDone?: () => void }) {
+  const { label, icon, value, editor, onDone } = props
   const rows = value.kind === 'same' ? value.value : null
   const rootRef = useRef<HTMLDivElement>(null)
   // 貼り付けで表を置き換えたら、入力中の文字を捨てる（古い文字で、新しい行を上書きしないように）
@@ -67,7 +68,7 @@ export function ChartDataField(props: { label: string; value: SharedValue<ChartR
   return (
     <div className="design-chart" data-testid="chart-data-field" ref={rootRef} onPaste={onPaste}>
       <div className="design-field design-chart-head">
-        <span className="design-label">{label}</span>
+        <FieldLabel label={label} icon={icon} />
         <div className="design-control">
           {rows === null && <span className="design-mixed">{MIXED_LABEL}</span>}
           <button

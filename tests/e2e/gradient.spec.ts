@@ -196,11 +196,13 @@ test('switches a solid fill to gradients and edits stops, angle and center in th
   // 足した止め色は、その位置の色（不透明度も半分）。選んでいる止め色の色を変える（赤）
   await fill.getByRole('group', { name: 'テンプレート：キャンバス' }).locator('[data-color="#e03131"]').click()
   await expect(stops.nth(1).locator('span')).toHaveCSS('background-color', 'rgba(224, 49, 49, 0.5)')
-  // 印をドラッグで動かす
+  // 印をドラッグで動かす（パネルが画面より長いとき、印がパネルの中でスクロールして隠れていることがある）
+  await stops.nth(1).scrollIntoViewIfNeeded()
+  const barBox = (await bar.boundingBox())!
   const mark = (await stops.nth(1).boundingBox())!
   await page.mouse.move(mark.x + mark.width / 2, mark.y + mark.height / 2)
   await page.mouse.down()
-  await page.mouse.move(box.x + box.width * 0.25, mark.y + mark.height / 2, { steps: 5 })
+  await page.mouse.move(barBox.x + barBox.width * 0.25, mark.y + mark.height / 2, { steps: 5 })
   await page.mouse.up()
   await expect(fill.getByRole('textbox', { name: '位置' })).toHaveValue(/^2[4-6]$/)
   await stops.nth(1).press('Delete')
