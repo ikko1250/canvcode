@@ -1234,6 +1234,40 @@ body,
   width: 52px;
 }
 
+/* 塗りの行（見本・HEX か種類・不透明度・−）は 1 行に収める（MAI-82）。HEX・種類の欄が縮む */
+.design-paint-field > .design-control {
+  gap: 3px;
+}
+
+.design-paint-field .design-hex {
+  padding: 0 3px;
+  font-size: 11px;
+}
+
+.design-paint-field .design-opacity input {
+  padding: 0 2px;
+}
+
+.design-paint-field .design-opacity .design-unit {
+  padding-right: 3px;
+}
+
+.design-paint-field .design-hex,
+.design-panel .design-paint-field button.design-paint-kind {
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 44px;
+}
+
+.design-paint-field .design-number.design-opacity {
+  flex: 0 0 40px;
+  width: 40px;
+}
+
+.design-paint-field .design-color-popup {
+  margin-top: 2px;
+}
+
 .design-panel button.design-fill-toggle {
   min-width: 0;
   flex: 0 0 22px;
@@ -1246,10 +1280,9 @@ body,
 
 /* 塗りの種類（グラデーション。MAI-82）。押すとピッカーを開く */
 .design-panel button.design-paint-kind {
-  flex: 1 1 0;
   width: 0;
-  min-width: 56px;
   height: 22px;
+  padding: 0 4px;
   text-align: left;
 }
 
