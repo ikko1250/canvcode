@@ -38,6 +38,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 画像の塗り（MAI-83）の画像は、CanvasView の Asset（ワークスペースの画像・ファイル・クリップボード）から選ぶ（paintImageSource）
 // - 影（MAI-86）は「効果」に一覧で出す（ShadowsField。＋・−・表示の切り替え、影ごとの値）
 // - 角丸（MAI-84）は、4 つの角を一緒に変える入力と、角ごとの 4 つの入力（CornerRadiusField）。図形の上の角丸のハンドルでも変えられる（cornerHandles.ts）
+// - 図形の「形」（MAI-87）で矩形・楕円・ブロック矢印を切り替え、ブロック矢印の軸の太さなどを % で変える。図形の上の形のハンドルでも変えられる（blockArrowHandles.ts）
 
 export function DesignPanel(props: {
   editor: Editor

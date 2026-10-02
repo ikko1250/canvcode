@@ -3,6 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { defaultShadow, NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
+import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
 import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
@@ -26,8 +27,8 @@ const fieldIds = (nodes: NodeRecord[]) => visibleSections(nodes).flatMap((s) => 
 describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
     const { geo, text, arrow } = setup()
-    expect(sectionIds([geo])).toEqual(['fill', 'corner', 'stroke', 'effects', 'layer'])
-    expect(fieldIds([geo])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
+    expect(sectionIds([geo])).toEqual(['shape', 'fill', 'corner', 'stroke', 'effects', 'layer'])
+    expect(fieldIds([geo])).toEqual(['shape.shape', 'fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
@@ -100,8 +101,8 @@ describe('design sections', () => {
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['fill', 'corner', 'test-border', 'stroke', 'effects', 'layer'])
-    expect(visibleSections([geo], all)[2].fields[0].value).toEqual({ kind: 'same', value: 0 })
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'fill', 'corner', 'test-border', 'stroke', 'effects', 'layer'])
+    expect(visibleSections([geo], all)[3].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
     expect(designSections().filter((s) => s.id === 'fill')).toHaveLength(1)
@@ -118,7 +119,7 @@ describe('border fields (MAI-85)', () => {
     editNodes(editor, [geo.id], (n) => strokeColorField.write(n, null), 'design')
     const noStroke = editor.getNode(geo.id)!
     expect((noStroke.props as { stroke: unknown }).stroke).toBeNull()
-    expect(fieldIds([noStroke])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'effects.shadows', 'layer.opacity'])
+    expect(fieldIds([noStroke])).toEqual(['shape.shape', 'fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'effects.shadows', 'layer.opacity'])
     // 破線は長さと間隔、点線は間隔だけ
     const dashed = strokeDashField.write(geo2, 'dashed')
     expect(fieldIds([dashed]).filter((id) => id.startsWith('stroke.'))).toEqual(['stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'stroke.dashLength', 'stroke.dashGap'])
@@ -567,5 +568,39 @@ describe('shadows field (MAI-86)', () => {
     editNodes(editor, [geo2.id], (node) => shadowsField.write(node, { op: 'update', index: 0, patch: { type: 'inner' } }), 'design')
     expect(shadowRows(value() as never)).toBeNull()
     expect(applyShadowsChange([], [defaultShadow(), { bad: true } as never])).toEqual([defaultShadow()])
+  })
+})
+
+// 図形の形とブロック矢印の形のパラメータ（MAI-87）
+describe('shape section', () => {
+  it('switches the shape and shows the block arrow parameters only for block arrows', () => {
+    const { editor, geo, geo2 } = setup()
+    editNodes(editor, [geo.id], (n) => geoShapeField.write(n, 'blockArrow'), 'design')
+    const arrow = editor.getNode(geo.id)!
+    expect(arrow.props).toMatchObject({ shape: 'blockArrow', fill: solidPaint('#e8eefc') })
+    expect(fieldIds([arrow]).slice(0, 4)).toEqual(['shape.shape', 'shape.arrowShaft', 'shape.arrowHeadLength', 'shape.arrowHeadWidth'])
+    // 値がないときは形の既定を見せる
+    expect(visibleSections([arrow])[0].fields.map((f) => f.value)).toEqual([
+      { kind: 'same', value: 'blockArrow' },
+      { kind: 'same', value: 0.5 },
+      { kind: 'same', value: 0.5 },
+      { kind: 'same', value: 1 },
+    ])
+    // シェブロンは切り込みだけ。矩形と混ぜると形だけ（混在）
+    const chevron = { ...arrow, props: { ...arrow.props, shape: 'chevron' } }
+    expect(fieldIds([chevron]).slice(0, 2)).toEqual(['shape.shape', 'shape.chevronDepth'])
+    expect(visibleSections([arrow, geo2])[0].fields.map((f) => f.field.id)).toEqual(['shape.shape'])
+    expect(visibleSections([arrow, geo2])[0].fields[0].value.kind).toBe('mixed')
+    // 値を書き、形を変えると値は消える。それぞれ Undo できる
+    editNodes(editor, [geo.id], (n) => arrowShaftField.write(n, 0.3), 'design')
+    editNodes(editor, [geo.id], (n) => arrowHeadWidthField.write(n, 20), 'design')
+    expect(editor.getNode(geo.id)!.props).toMatchObject({ arrowShaft: 0.3, arrowHeadWidth: 10 })
+    expect(arrowHeadLengthField.write(editor.getNode(geo.id)!, 0.5)).not.toBe(editor.getNode(geo.id))
+    expect(chevronDepthField.appliesTo(editor.getNode(geo.id)!)).toBe(false)
+    editNodes(editor, [geo.id], (n) => geoShapeField.write(n, 'chevron'), 'design')
+    expect(editor.getNode(geo.id)!.props).not.toHaveProperty('arrowShaft')
+    editor.undo()
+    expect(editor.getNode(geo.id)!.props).toMatchObject({ shape: 'blockArrow', arrowShaft: 0.3 })
+    expect(geoShapeField.write(editor.getNode(geo.id)!, 'blockArrow')).toBe(editor.getNode(geo.id))
   })
 })

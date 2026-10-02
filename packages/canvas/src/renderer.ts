@@ -16,6 +16,7 @@ import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } fr
 import type { ScreenHandles } from './transform.ts'
 import { gradientHandles, type GradientHandles } from './gradientHandles.ts'
 import { CORNER_HANDLE_RADIUS_PX, cornerHandles, type CornerHandles } from './cornerHandles.ts'
+import { BLOCK_ARROW_HANDLE_SIZE_PX, blockArrowHandles, type BlockArrowHandles } from './blockArrowHandles.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
 // - 画面に見えているノードだけを、重なり順に描く
@@ -237,6 +238,9 @@ export function drawOverlay(
   // 角丸のハンドル（MAI-84）
   const corners = cornerHandles(editor)
   if (corners) drawCornerHandles(ctx, corners, view.dpr)
+  // ブロック矢印の形のハンドル（MAI-87）
+  const arrowShape = blockArrowHandles(editor)
+  if (arrowShape) drawBlockArrowHandles(ctx, arrowShape, view.dpr)
   // 間隔のハンドル（MAI-54）。選択枠のハンドルの上に描く
   const spacing = editor.session.get().editingId ? [] : spacingHandles(editor)
   if (spacing.length > 0) drawSpacingHandles(ctx, spacing, state.hoveredSpacing ?? null, state.spacingDrag ?? null, view.dpr)
@@ -387,6 +391,27 @@ function drawCornerHandles(ctx: CanvasRenderingContext2D, handles: CornerHandles
   for (const point of handles.points) {
     ctx.beginPath()
     ctx.arc(point.x * dpr, point.y * dpr, CORNER_HANDLE_RADIUS_PX * dpr, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+  }
+}
+
+// ブロック矢印の形のハンドル：黄色のひし形（青い縁。角丸・選択枠のハンドルと見分ける。PowerPoint の調整ハンドルと同じ色）
+function drawBlockArrowHandles(ctx: CanvasRenderingContext2D, found: BlockArrowHandles, dpr: number): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.fillStyle = '#ffd43b'
+  ctx.strokeStyle = SELECTION_COLOR
+  ctx.lineWidth = 1.5 * dpr
+  const r = BLOCK_ARROW_HANDLE_SIZE_PX * dpr
+  for (const { point } of found.handles) {
+    const x = point.x * dpr
+    const y = point.y * dpr
+    ctx.beginPath()
+    ctx.moveTo(x, y - r)
+    ctx.lineTo(x + r, y)
+    ctx.lineTo(x, y + r)
+    ctx.lineTo(x - r, y)
+    ctx.closePath()
     ctx.fill()
     ctx.stroke()
   }

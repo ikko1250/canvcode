@@ -15,6 +15,8 @@ import {
 } from '@canvcode/core'
 import {
   GEO_DEFAULT_SIZE,
+  blockArrowDefaultSize,
+  isBlockArrowShape,
   PORTAL_DEFAULT_SIZE,
   TITLE_FONT_SIZE,
   arrowLabelPoint,
@@ -28,11 +30,13 @@ import {
   textLayout,
   type FrameProps,
   type GeoProps,
+  type GeoShape,
   type NoteProps,
   type TextProps,
 } from '@canvcode/nodes'
 import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
+import { BlockArrowHandleDrag, hitBlockArrowHandle } from './blockArrowHandles.ts'
 import { CornerRadiusDrag, hitCornerHandle, updateCornerHandles } from './cornerHandles.ts'
 import { GradientHandleDrag, hitGradientHandle, paintEditingTarget } from './gradientHandles.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
@@ -266,6 +270,8 @@ type SelectState =
   | { name: 'draggingGradient'; tx: Transaction<WorkspaceRecord>; nodeId: string; drag: GradientHandleDrag }
   // 角丸のハンドルをドラッグしている（MAI-84）
   | { name: 'draggingCorner'; tx: Transaction<WorkspaceRecord>; drag: CornerRadiusDrag }
+  // ブロック矢印の形のハンドルをドラッグしている（MAI-87）
+  | { name: 'draggingBlockArrow'; tx: Transaction<WorkspaceRecord>; drag: BlockArrowHandleDrag }
   | {
       name: 'rotating'
       tx: Transaction<WorkspaceRecord>
@@ -336,6 +342,14 @@ export class SelectTool implements Tool {
       this.state = { name: 'draggingCorner', tx, drag: new CornerRadiusDrag(editor, tx, cornerHit.nodeId, cornerHit.corner, pointer.world) }
       return
     }
+    // ブロック矢印の形のハンドル（MAI-87）。箱の縁の上にあることもあるので、選択枠のハンドルより先に調べる
+    const blockArrowHit = hitBlockArrowHandle(editor, pointer.screen)
+    if (blockArrowHit) {
+      const tx = editor.begin('block arrow shape')
+      this.ctx.lift([blockArrowHit.nodeId])
+      this.state = { name: 'draggingBlockArrow', tx, drag: new BlockArrowHandleDrag(editor, tx, blockArrowHit.nodeId, blockArrowHit.kind, pointer.world) }
+      return
+    }
     // 選択枠のハンドルは、ノードより先に調べる
     const handleHit = this.hitSelectionHandle(pointer)
     if (handleHit) {
@@ -384,7 +398,7 @@ export class SelectTool implements Tool {
           this.setHoveredSpacing(null)
           return
         }
-        if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen)) {
+        if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen) || hitBlockArrowHandle(editor, pointer.screen)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
@@ -429,6 +443,10 @@ export class SelectTool implements Tool {
       }
       case 'draggingCorner': {
         state.drag.move(pointer.world, pointer.altKey)
+        return
+      }
+      case 'draggingBlockArrow': {
+        state.drag.move(pointer.world)
         return
       }
       case 'selectingQuote': {
@@ -605,7 +623,7 @@ export class SelectTool implements Tool {
       if (state.name === 'draggingArrowEnd') state.drag.end()
       editor.finish(state.tx)
       this.ctx.drop()
-    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner') {
+    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner' || state.name === 'draggingBlockArrow') {
       editor.finish(state.tx)
       this.ctx.drop()
     }
@@ -630,7 +648,8 @@ export class SelectTool implements Tool {
       state.name === 'draggingArrowEnd' ||
       state.name === 'bendingArrow' ||
       state.name === 'draggingGradient' ||
-      state.name === 'draggingCorner'
+      state.name === 'draggingCorner' ||
+      state.name === 'draggingBlockArrow'
     ) {
       state.tx.cancel()
       this.ctx.drop()
@@ -910,15 +929,15 @@ function dragBox<P extends object>(editor: Editor, creating: BoxCreation<P>, poi
   return boxFromPoints(creating.startLocal, end)
 }
 
-// ---- 図形ツール（矩形・楕円） ----
+// ---- 図形ツール（矩形・楕円・ブロック矢印（MAI-87）） ----
 
 export class GeoTool implements Tool {
-  readonly id: 'rect' | 'ellipse'
+  readonly id: GeoShape
   readonly cursor = 'crosshair'
   private creating: BoxCreation<GeoProps> | null = null
   private readonly ctx: ToolContext
 
-  constructor(ctx: ToolContext, shape: 'rect' | 'ellipse') {
+  constructor(ctx: ToolContext, shape: GeoShape) {
     this.ctx = ctx
     this.id = shape
   }
@@ -959,12 +978,13 @@ export class GeoTool implements Tool {
     if (!creating) return
     this.creating = null
     if (dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) {
-      // クリックだけなら、既定の大きさでクリックした位置を中心に置く
+      // クリックだけなら、既定の大きさでクリックした位置を中心に置く（ブロック矢印は横長など、形ごとの大きさ）
+      const size = isBlockArrowShape(this.id) ? blockArrowDefaultSize(this.id) : { w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE }
       creating.tx.put({
         ...creating.node,
-        x: creating.startLocal.x - GEO_DEFAULT_SIZE / 2,
-        y: creating.startLocal.y - GEO_DEFAULT_SIZE / 2,
-        props: { ...creating.node.props, w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE },
+        x: creating.startLocal.x - size.w / 2,
+        y: creating.startLocal.y - size.h / 2,
+        props: { ...creating.node.props, w: size.w, h: size.h },
       })
     }
     this.ctx.editor.finish(creating.tx)

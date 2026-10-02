@@ -1,11 +1,28 @@
 import type { Box, Camera } from '@canvcode/core'
+import type { BlockArrowShape } from '@canvcode/nodes'
 import type { SnapGuide } from './snapping.ts'
 import type { Axis } from './arrange.ts'
 import type { PaintEditing } from './gradientHandles.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
-export type ToolId = 'select' | 'hand' | 'rect' | 'ellipse' | 'text' | 'title' | 'note' | 'frame' | 'draw' | 'eraser' | 'arrow' | 'portal' | 'markdown' | 'code'
+// ブロック矢印（MAI-87）のツールは、図形の形の名前（BlockArrowShape）と同じ
+export type ToolId =
+  | 'select'
+  | 'hand'
+  | 'rect'
+  | 'ellipse'
+  | BlockArrowShape
+  | 'text'
+  | 'title'
+  | 'note'
+  | 'frame'
+  | 'draw'
+  | 'eraser'
+  | 'arrow'
+  | 'portal'
+  | 'markdown'
+  | 'code'
 
 export interface SessionState {
   camera: Camera

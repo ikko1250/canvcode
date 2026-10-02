@@ -4,7 +4,7 @@ import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 
 // パイメニューの中身（MAI-39。以前は画面の下端のツールバーに並べていたもの）。
 // 項目を足すときは、ここに足す。1 つの輪は 8 項目くらいまでにして、多ければサブメニューにまとめる。
-// ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 › / 文字 › テキスト・タイトル・付箋 / Portal › 空・PDF・Python・Markdown・スライド / Card › Python・Markdown
+// ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 ›（矩形・楕円・ブロック矢印 ›・フレーム・矢印）/ 文字 › テキスト・タイトル・付箋 / Portal › 空・PDF・Python・Markdown・スライド / Card › Python・Markdown
 // 操作（MAI-57、キー o）：今の選択とキャンバスに応じた項目。項目が 1 つもなければ、メニューそのものを出さない
 
 // ツールの名前（並びは以前のツールバーと同じ）
@@ -13,6 +13,11 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   hand: '手のひら',
   rect: '矩形',
   ellipse: '楕円',
+  // ブロック矢印（MAI-87。図形 › ブロック矢印 ›）
+  blockArrow: '右向き',
+  blockArrowBoth: '両向き',
+  blockArrowBent: '曲がった矢印',
+  chevron: 'シェブロン',
   text: 'テキスト',
   // テキストと同じノードで、文字が大きいだけ（MAI-62）
   title: 'タイトル',
@@ -161,7 +166,10 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
         tool('hand'),
         tool('draw'),
         tool('eraser'),
-        group('図形', ['rect', 'ellipse', 'frame', 'arrow']),
+        {
+          label: '図形',
+          items: [tool('rect'), tool('ellipse'), group('ブロック矢印', ['blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']), tool('frame'), tool('arrow')],
+        },
         group('文字', ['text', 'title', 'note']),
         {
           label: 'Portal',

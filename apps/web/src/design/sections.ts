@@ -1,6 +1,13 @@
 import { createElement } from 'react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
+  blockArrowParams,
+  clampBlockArrowRatio,
+  GEO_SHAPES,
+  isBlockArrow,
+  isBlockArrowShape,
+  type BlockArrowParams,
+  type GeoShape,
   defaultShadow,
   hasShadows,
   shadowsOf,
@@ -73,6 +80,77 @@ import { propField, registerDesignSection, type DesignField, type DesignSection,
 
 // デザインパネルに最初から出すセクション（MAI-73）。
 // 塗り・線・文字・レイヤーの 4 つ。後の課題は、ここに項目を足すか、別のファイルで registerDesignSection する
+
+// ---- 形 ----
+
+// 図形の形（MAI-87）。矩形・楕円とブロック矢印（右向き・両向き・曲がった矢印・シェブロン）を切り替える。
+// 形を変えると、ブロック矢印の形のパラメータ（arrowShaft など）は消し、新しい形の既定から始める（形ごとに基準と既定が違う）。
+// 塗り・線・影・文字はそのまま。上下・左向きの矢印は回転で作る
+const SHAPE_OPTIONS: readonly SelectOption[] = [
+  { value: 'rect', label: '矩形', group: '基本' },
+  { value: 'ellipse', label: '楕円', group: '基本' },
+  { value: 'blockArrow', label: '右向きの矢印', group: 'ブロック矢印' },
+  { value: 'blockArrowBoth', label: '両向きの矢印', group: 'ブロック矢印' },
+  { value: 'blockArrowBent', label: '曲がった矢印', group: 'ブロック矢印' },
+  { value: 'chevron', label: 'シェブロン', group: 'ブロック矢印' },
+]
+
+export const geoShapeField: DesignField<GeoShape> = {
+  id: 'shape.shape',
+  label: '形',
+  control: { kind: 'select', options: SHAPE_OPTIONS },
+  appliesTo: (node) => node.type === 'geo',
+  read: (node) => {
+    const shape = (node.props as GeoProps).shape
+    return GEO_SHAPES.includes(shape) ? shape : 'rect'
+  },
+  write(node, shape) {
+    if (node.type !== 'geo' || !GEO_SHAPES.includes(shape)) return node
+    const props = node.props as GeoProps
+    if (props.shape === shape) return node
+    const { arrowShaft: _shaft, arrowHeadLength: _length, arrowHeadWidth: _width, ...rest } = props
+    return { ...node, props: { ...rest, shape } }
+  },
+}
+
+// ブロック矢印の形のパラメータ（MAI-87。軸の太さ、先（矢じり）の長さと幅）。箱に対する割合（blockArrow.ts）を % で見せる。値がないときは形の既定を見せる。
+// シェブロンは切り込みの深さだけ（矢じりの長さの値を使う）。図形の上のハンドル（blockArrowHandles.ts）でも変えられる
+const ARROW_PARAM_KEYS = { shaft: 'arrowShaft', headLength: 'arrowHeadLength', headWidth: 'arrowHeadWidth' } as const
+
+function blockArrowParamField(id: string, label: string, param: keyof BlockArrowParams, when: (shape: GeoShape) => boolean): DesignField<number> {
+  const key = ARROW_PARAM_KEYS[param]
+  const applies = (node: NodeRecord): node is NodeRecord<GeoProps> => isBlockArrow(node) && when(node.props.shape)
+  return {
+    id,
+    label,
+    control: {
+      kind: 'number',
+      min: 0,
+      max: 200,
+      step: 1,
+      unit: '%',
+      toDisplay: (value) => Math.round(value * 1000) / 10,
+      fromDisplay: (value) => value / 100,
+    },
+    appliesTo: applies,
+    read: (node) => {
+      const props = node.props as GeoProps
+      return isBlockArrowShape(props.shape) ? blockArrowParams(props.shape, props)[param] : 0
+    },
+    write(node, value) {
+      if (!applies(node)) return node
+      const next = clampBlockArrowRatio(value)
+      if (node.props[key] === next) return node
+      return { ...node, props: { ...node.props, [key]: next } }
+    },
+  }
+}
+
+const notChevron = (shape: GeoShape) => shape !== 'chevron'
+export const arrowShaftField = blockArrowParamField('shape.arrowShaft', '軸の太さ', 'shaft', notChevron)
+export const arrowHeadLengthField = blockArrowParamField('shape.arrowHeadLength', '先の長さ', 'headLength', notChevron)
+export const arrowHeadWidthField = blockArrowParamField('shape.arrowHeadWidth', '先の幅', 'headWidth', notChevron)
+export const chevronDepthField = blockArrowParamField('shape.chevronDepth', '切り込み', 'headLength', (shape) => shape === 'chevron')
 
 // ---- 塗り ----
 
@@ -682,6 +760,7 @@ export const opacityField: DesignField<number> = {
 }
 
 export const builtinDesignSections: DesignSection[] = [
+  { id: 'shape', title: '形', order: 50, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
   { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
   { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },

@@ -11,6 +11,7 @@ import { noteType } from './text/noteNode.ts'
 import { textType } from './text/textNode.ts'
 
 export * from './arrow.ts'
+export * from './blockArrow.ts'
 export * from './code/codeCard.ts'
 export * from './code/codeLayout.ts'
 export * from './container.ts'

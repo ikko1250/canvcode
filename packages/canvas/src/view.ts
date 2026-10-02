@@ -25,6 +25,7 @@ import {
 } from '@canvcode/core'
 import {
   SOURCE_LINK_PREFIX,
+  BLOCK_ARROW_SHAPES,
   fontsSettled,
   pickImageLevel,
   resetTextMetrics,
@@ -526,6 +527,8 @@ export class CanvasView {
       ['hand', new HandTool(toolContext)],
       ['rect', new GeoTool(toolContext, 'rect')],
       ['ellipse', new GeoTool(toolContext, 'ellipse')],
+      // ブロック矢印（MAI-87）。図形と同じく、ドラッグした箱に置く
+      ...BLOCK_ARROW_SHAPES.map((shape): [ToolId, Tool] => [shape, new GeoTool(toolContext, shape)]),
       ['text', new TextTool(toolContext)],
       ['title', new TextTool(toolContext, 'title')],
       ['note', new NoteTool(toolContext)],
