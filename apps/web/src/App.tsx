@@ -50,6 +50,8 @@ import { buildPieMenus } from './pie/menus.ts'
 import { PieMenus } from './pie/PieMenu.tsx'
 import { ArrangePalette } from './palette/ArrangePalette.tsx'
 import { DrawPalette } from './palette/DrawPalette.tsx'
+import { DesignPanel } from './design/DesignPanel.tsx'
+import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
@@ -300,6 +302,8 @@ export function App(props: { initial: InitialRecords }) {
   // 画面の下に短く出す知らせ（受け付けないファイルをドロップしたときなど）
   const [notices, setNotices] = useState<{ id: number; message: string }[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  // 右のデザインパネル（MAI-73）を開いているか。ブラウザに覚える
+  const [designOpen, setDesignOpen] = useState(loadDesignPanelOpen)
   const [menu, setMenu] = useState<{ x: number; y: number; items: (MenuItem | 'separator')[]; onClose?: () => void } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   // フレームを入れるスライドの図の欄を選んでいるとき（「スライドの図にする…」）
@@ -1392,6 +1396,19 @@ export function App(props: { initial: InitialRecords }) {
             />
           )}
         </div>
+
+        {/* 右のデザインパネル（MAI-73）。選んでいるノードの見た目のプロパティを変える */}
+        <DesignPanel
+          key={editor.canvasId}
+          editor={editor}
+          view={view}
+          nodes={[...session.selectedIds].flatMap((id) => editor.getNode(id) ?? [])}
+          open={designOpen}
+          onOpenChange={(open) => {
+            setDesignOpen(open)
+            saveDesignPanelOpen(open)
+          }}
+        />
 
         {showStats && stats && (
           <div className="stats">

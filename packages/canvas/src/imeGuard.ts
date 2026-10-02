@@ -52,10 +52,14 @@ export function isImeEvent(event: KeyboardEvent, options?: { enterGuardThreshold
   return false
 }
 
+// この属性を付けた要素の中でのキー入力は、文字の入力欄と同じく、キャンバス・パイメニューのショートカットに渡さない
+export const OWN_KEYS_ATTRIBUTE = 'data-own-keys'
+
 export function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   const tagName = target.tagName.toLowerCase()
   if (tagName === 'input' || tagName === 'textarea' || tagName === 'select') return true
   if (target.isContentEditable) return true
-  return Boolean(target.closest('.cm-editor'))
+  // キーを自分で扱う UI（デザインパネルなど。MAI-73）の中は、キャンバスのショートカットに渡さない
+  return Boolean(target.closest(`.cm-editor, [${OWN_KEYS_ATTRIBUTE}]`))
 }

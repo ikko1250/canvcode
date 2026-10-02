@@ -1020,3 +1020,212 @@ body,
   color: var(--text);
   pointer-events: none;
 }
+
+/* デザインパネル（MAI-73）。右上に重ね、選んでいるノードの見た目のプロパティを並べる。
+   高さは中身に合わせ、画面より長ければパネルの中でスクロールする（キャンバスのホイールには渡らない） */
+.design-panel {
+  position: absolute;
+  right: 12px;
+  top: 52px;
+  width: 232px;
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  font-size: 12px;
+}
+
+.design-panel-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.design-panel-title {
+  font-weight: 600;
+}
+
+.design-panel-count {
+  flex: 1;
+  color: var(--muted);
+}
+
+.design-panel button,
+.design-panel-toggle {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.design-panel button:hover {
+  background: #eef1f5;
+}
+
+.design-panel button.active {
+  background: #e3ebfd;
+  border-color: #b9ccf8;
+  color: var(--accent);
+}
+
+.design-panel button svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.design-panel-toggle {
+  position: absolute;
+  right: 12px;
+  top: 52px;
+  height: 28px;
+  background: var(--panel-bg);
+  border-color: var(--panel-border);
+  font-size: 12px;
+}
+
+.design-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.design-section:last-child {
+  border-bottom: none;
+}
+
+.design-section h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.design-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 26px;
+  margin-bottom: 4px;
+}
+
+.design-label {
+  flex: 0 0 52px;
+  padding-top: 5px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.design-label.scrub {
+  cursor: ew-resize;
+}
+
+.design-control {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.design-number {
+  display: flex;
+  align-items: center;
+  width: 84px;
+  height: 24px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.design-number:focus-within,
+.design-hex:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.design-number input,
+.design-hex {
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.design-number input {
+  flex: 1;
+  width: 0;
+  text-align: right;
+  outline: none;
+}
+
+.design-unit {
+  padding-right: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.design-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* 値が混在しているときは、つまみの位置に意味がないので薄くする */
+.design-slider.mixed {
+  opacity: 0.4;
+}
+
+.design-swatch {
+  position: relative;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+/* 混在：斜めの縞 */
+.design-swatch.mixed {
+  background: repeating-linear-gradient(45deg, #d9dde3 0 4px, #ffffff 4px 8px);
+}
+
+.design-swatch input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.design-hex {
+  flex: 1;
+  height: 24px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.design-segmented {
+  gap: 2px;
+}
