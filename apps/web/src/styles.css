@@ -1345,16 +1345,47 @@ body,
   opacity: 0.4;
 }
 
+/* 前のセクションと 1 つのまとまりに見せる（形と角丸）。間の区切り線を消す */
+.design-section:has(+ .design-section.joined) {
+  padding-bottom: 6px;
+  border-bottom: none;
+}
+
+.design-section.joined {
+  padding-top: 0;
+}
+
+/* 名前を出さずに 1 行に並べる項目（線の位置と種類） */
+.design-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 6px;
+}
+
+.design-field-row:last-child {
+  margin-bottom: 0;
+}
+
+.design-field-row > .design-field {
+  margin-bottom: 0;
+}
+
+.design-field-row .design-label {
+  display: none;
+}
+
 /* 色の見本（MAI-81）。押すとカラーピッカーを開く。不透明度のある色が分かるよう、市松模様の上に色を重ねる */
 .design-panel button.design-swatch {
   min-width: 0;
   position: relative;
-  flex: 0 0 22px;
-  width: 22px;
-  height: 22px;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: 50%;
   background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
   overflow: hidden;
@@ -1420,14 +1451,29 @@ body,
   margin-top: 2px;
 }
 
-.design-panel button.design-fill-toggle {
+/* −・＋・目・角ごとの切り替えなど、枠のないアイコンのボタン */
+.design-panel button.design-fill-toggle,
+.design-panel button.design-icon-button {
   min-width: 0;
-  flex: 0 0 22px;
-  width: 22px;
-  height: 22px;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  font-size: 15px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--dp-secondary);
   line-height: 1;
+}
+
+.design-panel button.design-fill-toggle:hover,
+.design-panel button.design-icon-button:hover {
+  background: var(--dp-hover);
+  color: var(--dp-text);
+}
+
+.design-panel button.design-icon-button.active {
+  background: var(--dp-selected);
+  color: var(--dp-accent);
 }
 
 /* 塗りの種類（グラデーション。MAI-82）。押すとピッカーを開く */
@@ -1694,17 +1740,26 @@ body,
 }
 
 .design-segmented {
-  gap: 2px;
+  gap: 6px;
+}
+
+/* 切り替えのボタン（線の位置・種類、揃えなど）：枠のある四角、選んでいるものは淡い青の地 */
+.design-panel .design-segmented > button {
+  min-width: 36px;
+  height: var(--dp-control-height);
+  padding: 0 8px;
 }
 
 /* 一覧から選ぶ（リストの記号・番号の形。MAI-78） */
 .design-select {
   width: 100%;
   height: var(--dp-control-height);
-  padding: 0 8px;
+  padding: 0 30px 0 10px;
   border: 1px solid transparent;
   border-radius: var(--dp-radius);
-  background: var(--dp-field);
+  /* 下向きの山（lucide の chevron-down） */
+  background: var(--dp-field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23747e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+  appearance: none;
   color: var(--dp-text);
   font: inherit;
 }
@@ -1927,7 +1982,13 @@ body,
 }
 
 .design-corner-cell .design-label {
-  flex-basis: 28px;
+  flex-basis: 24px;
+}
+
+/* 影の X・Y・ぼかし・広がり（文字の名前） */
+.design-shadow-cell .design-label {
+  flex-basis: 40px;
+  white-space: nowrap;
 }
 
 .design-corner-cell .design-number {

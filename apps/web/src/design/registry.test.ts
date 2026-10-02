@@ -30,8 +30,8 @@ const fieldIds = (nodes: NodeRecord[]) => mainSections(nodes).flatMap((s) => s.f
 describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
     const { geo, text, arrow } = setup()
-    expect(sectionIds([geo])).toEqual(['shape', 'fill', 'corner', 'stroke', 'effects', 'layer'])
-    expect(fieldIds([geo])).toEqual(['shape.shape', 'fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
+    expect(sectionIds([geo])).toEqual(['shape', 'corner', 'fill', 'stroke', 'effects', 'layer'])
+    expect(fieldIds([geo])).toEqual(['shape.shape', 'corner.radius', 'fill.paint', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
@@ -130,7 +130,7 @@ describe('design sections', () => {
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'fill', 'corner', 'test-border', 'stroke', 'effects', 'text', 'layer'])
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'corner', 'fill', 'test-border', 'stroke', 'effects', 'text', 'layer'])
     expect(visibleSections([geo], all)[3].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
@@ -148,7 +148,7 @@ describe('border fields (MAI-85)', () => {
     editNodes(editor, [geo.id], (n) => strokeColorField.write(n, null), 'design')
     const noStroke = editor.getNode(geo.id)!
     expect((noStroke.props as { stroke: unknown }).stroke).toBeNull()
-    expect(fieldIds([noStroke])).toEqual(['shape.shape', 'fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'effects.shadows', 'layer.opacity'])
+    expect(fieldIds([noStroke])).toEqual(['shape.shape', 'corner.radius', 'fill.paint', 'stroke.color', 'stroke.width', 'effects.shadows', 'layer.opacity'])
     // 破線は長さと間隔、点線は間隔だけ
     const dashed = strokeDashField.write(geo2, 'dashed')
     expect(fieldIds([dashed]).filter((id) => id.startsWith('stroke.'))).toEqual(['stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'stroke.dashLength', 'stroke.dashGap'])

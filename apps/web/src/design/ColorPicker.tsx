@@ -1,3 +1,4 @@
+import { Minus, Plus } from 'lucide-react'
 import {
   useContext,
   useEffect,
@@ -500,14 +501,14 @@ export function PaintField(props: {
         {canNone &&
           (summary.allNone ? (
             <button className="design-fill-toggle" title={noneTitles.add} aria-label={noneTitles.add} onPointerDown={(e) => e.preventDefault()} onClick={() => editor.set(lastRemoved[role] ?? DEFAULT_PAINT[role]())}>
-              +
+              <Plus size={16} strokeWidth={1.75} aria-hidden />
             </button>
           ) : (
             <button className="design-fill-toggle" title={noneTitles.remove} aria-label={noneTitles.remove} onPointerDown={(e) => e.preventDefault()} onClick={() => {
                 if (value.kind === 'same' && value.value) lastRemoved[role] = value.value
                 editor.set(null)
               }}>
-              −
+              <Minus size={16} strokeWidth={1.75} aria-hidden />
             </button>
           ))}
         {open && showImage && (

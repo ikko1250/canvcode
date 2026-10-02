@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type ComponentType, type CSSProperties, type HTMLAttributes, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
+import { CornerDownLeft, CornerDownRight, CornerUpLeft, CornerUpRight, Scan } from 'lucide-react'
 import { CORNER_RADIUS_MAX, cornerRadii, type CornerRadius, type LineHeight, type LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, parseLineHeight, parseNumber } from './parse.ts'
 import { useDraft } from './useDraft.ts'
@@ -130,7 +131,7 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
           <Slider
             label={label}
             min={control.min!}
-            max={control.max!}
+            max={control.sliderMax ?? control.max!}
             step={step}
             value={sliderValue}
             mixed={value.kind === 'mixed'}
@@ -160,8 +161,11 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
 
 // ---- 角丸（MAI-84） ----
 
-const CORNER_RADIUS_CONTROL: NumberControl = { kind: 'number', min: 0, max: CORNER_RADIUS_MAX, step: 1, unit: 'px' }
+// スライダーは 0〜100 px（入力は CORNER_RADIUS_MAX まで）
+const CORNER_RADIUS_CONTROL: NumberControl = { kind: 'number', min: 0, max: CORNER_RADIUS_MAX, step: 1, unit: 'px', slider: true, sliderMax: 100 }
+const CORNER_CELL_CONTROL: NumberControl = { kind: 'number', min: 0, max: CORNER_RADIUS_MAX, step: 1, unit: 'px' }
 const CORNER_LABELS = ['左上', '右上', '右下', '左下'] as const
+const CORNER_ICONS = [CornerUpLeft, CornerUpRight, CornerDownRight, CornerDownLeft] as const
 
 // 角丸の半径。4 つの角を一緒に変える入力と、角ごとの 4 つの入力に切り替えるボタン（Figma と同じ）。
 // 一緒の入力は、角や選んだノードで値が違えば「混在」。角ごとの入力も、選んだノードでその角の値が違えば「混在」。
@@ -182,13 +186,11 @@ export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'
       title="角ごとに変える"
       aria-label="角ごとに変える"
       aria-pressed={separate}
-      className={separate ? 'active' : ''}
+      className={separate ? 'design-icon-button active' : 'design-icon-button'}
       onPointerDown={(e) => e.preventDefault()}
       onClick={() => setSeparate(!separate)}
     >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-        <path d="M2 6V4.5A2.5 2.5 0 0 1 4.5 2H6M10 2h1.5A2.5 2.5 0 0 1 14 4.5V6M14 10v1.5a2.5 2.5 0 0 1-2.5 2.5H10M6 14H4.5A2.5 2.5 0 0 1 2 11.5V10" />
-      </svg>
+      <Scan size={16} strokeWidth={1.75} aria-hidden />
     </button>
   )
   return (
@@ -210,9 +212,10 @@ export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'
               key={corner}
               className="design-corner-cell"
               label={CORNER_LABELS[corner]}
+              icon={CORNER_ICONS[corner]}
               value={shared(all.map((radii) => radii[corner]))}
               editor={editorFor(corner)}
-              control={CORNER_RADIUS_CONTROL}
+              control={CORNER_CELL_CONTROL}
               onDone={onDone}
             />
           ))}

@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { Blend } from 'lucide-react'
+import { Blend, Layers2, PaintBucket, PenLine, Radius, Ruler, Shapes } from 'lucide-react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
   chartRowsOf,
@@ -225,6 +225,7 @@ const SHAPE_OPTIONS: readonly SelectOption[] = [
 export const geoShapeField: DesignField<GeoShape> = {
   id: 'shape.shape',
   label: '形',
+  icon: Shapes,
   control: { kind: 'select', options: SHAPE_OPTIONS },
   appliesTo: (node) => node.type === 'geo',
   read: (node) => {
@@ -351,6 +352,7 @@ export function applyFillChange(current: Fill, change: FillChange, size: { w: nu
 export const fillField: DesignField<FillChange> = {
   id: 'fill.paint',
   label: '色',
+  icon: PaintBucket,
   control: {
     kind: 'paint',
     opacity: (node) => node.type === 'geo',
@@ -384,6 +386,7 @@ export type CornerRadiusChange = CornerRadius | { corner: number | null; radius:
 export const cornerRadiusField: DesignField<CornerRadiusChange> = {
   id: 'corner.radius',
   label: '半径',
+  icon: Radius,
   control: { kind: 'cornerRadius' },
   appliesTo: canRoundCorners,
   read: (node) => (node.props as GeoProps).cornerRadius ?? 0,
@@ -424,6 +427,7 @@ function readStroke(node: NodeRecord): Fill {
 export const strokeColorField: DesignField<FillChange> = {
   id: 'stroke.color',
   label: '色',
+  icon: PenLine,
   control: { kind: 'paint', role: 'stroke', opacity: hasBorder, none: hasBorder, gradient: () => false, image: () => false },
   appliesTo: (node) => hasBorder(node) || STROKE_COLOR_KEYS[node.type] !== undefined,
   read: readStroke,
@@ -444,12 +448,15 @@ export const strokeColorField: DesignField<FillChange> = {
   },
 }
 
-export const strokeWidthField = propField<number>({
-  id: 'stroke.width',
-  label: '太さ',
-  keys: { geo: 'strokeWidth', arrow: 'size', draw: 'size' },
-  control: { kind: 'number', min: 0, max: 40, step: 0.5, unit: 'px', slider: true },
-})
+export const strokeWidthField: DesignField<number> = {
+  ...propField<number>({
+    id: 'stroke.width',
+    label: '太さ',
+    keys: { geo: 'strokeWidth', arrow: 'size', draw: 'size' },
+    control: { kind: 'number', min: 0, max: 40, step: 0.5, unit: 'px', slider: true },
+  }),
+  icon: Ruler,
+}
 
 // 図形の線があるか（位置・種類の項目を出すか）
 function hasBorderStroke(node: NodeRecord): boolean {
@@ -476,9 +483,13 @@ const STROKE_ALIGN_OPTIONS: SegmentOption[] = [
   { value: 'outside', title: '外側', icon: borderAlignIcon(-1.5) },
 ]
 
+// 位置と種類は、名前を出さずに 1 行に並べる（row）
+const STROKE_STYLE_ROW = 'stroke.style'
+
 export const strokeAlignField: DesignField<StrokeAlign> = {
   id: 'stroke.align',
   label: '位置',
+  row: STROKE_STYLE_ROW,
   control: { kind: 'segmented', options: STROKE_ALIGN_OPTIONS },
   appliesTo: hasBorderStroke,
   read: (node) => strokeStyleOf(node.props as object).align,
@@ -502,6 +513,7 @@ const STROKE_DASH_OPTIONS: SegmentOption[] = [
 export const strokeDashField: DesignField<StrokeDash> = {
   id: 'stroke.dash',
   label: '種類',
+  row: STROKE_STYLE_ROW,
   control: { kind: 'segmented', options: STROKE_DASH_OPTIONS },
   appliesTo: hasBorderStroke,
   read: (node) => strokeStyleOf(node.props as object).dash,
@@ -581,6 +593,7 @@ export function shadowRows(value: SharedValue<Shadow[]>): Shadow[][] | null {
 export const shadowsField: DesignField<ShadowsChange> = {
   id: 'effects.shadows',
   label: '影',
+  icon: Layers2,
   control: { kind: 'shadows' },
   appliesTo: hasShadows,
   read: (node) => shadowsOf(node.props as GeoProps),
@@ -919,11 +932,12 @@ export const opacityField: DesignField<number> = {
 
 export const builtinDesignSections: DesignSection[] = [
   { id: 'chart', title: 'グラフ', order: 40, fields: [chartDataField, chartInnerRadiusField, chartStartAngleField, chartLabelsField] },
-  { id: 'shape', title: '形', order: 50, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
-  { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
-  { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },
-  { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
-  { id: 'effects', title: '効果', order: 250, fields: [shadowsField] },
+  { id: 'shape', title: '形', order: 50, hideTitle: true, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
+  // 角丸は形のすぐ下に、区切り線なしで続ける
+  { id: 'corner', title: '角丸', order: 60, hideTitle: true, joinPrevious: true, fields: [cornerRadiusField] },
+  { id: 'fill', title: '塗り', order: 100, hideTitle: true, fields: [fillField] },
+  { id: 'stroke', title: '線', order: 200, hideTitle: true, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
+  { id: 'effects', title: '効果', order: 250, hideTitle: true, fields: [shadowsField] },
   { id: 'text', title: '文字', order: 300, tab: textSectionTab, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, hideTitle: true, footer: true, fields: [opacityField] },
 

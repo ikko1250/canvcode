@@ -33,8 +33,10 @@ export type FieldControl =
       step?: number
       // 数字の右に出す単位（「px」「%」）
       unit?: string
-      // 数字の入力の下にスライダーも出す（min と max が要る）。ドラッグ中の変更は Undo 1 回にまとまる
+      // 数字の入力の左にスライダーも出す（min と max が要る）。ドラッグ中の変更は Undo 1 回にまとまる
       slider?: boolean
+      // スライダーの右端（入力は max まで入る。角丸の半径など、max がスライダーには大きすぎるとき）
+      sliderMax?: number
       // 表示する値と、ノードに入れる値の換算（不透明度を 0〜100 % で見せるなど）。既定はそのまま
       toDisplay?: (value: number) => number
       fromDisplay?: (value: number) => number
@@ -78,6 +80,8 @@ export interface DesignField<T = unknown> {
   label: string
   // 行の左に、名前の文字の代わりに出すアイコン。ないときは名前の文字を出す
   icon?: DesignIcon
+  // 同じ row の項目が続けば、名前を出さずに 1 行に並べる（線の位置と種類など）。名前は読み上げとツールチップに使う
+  row?: string
   // この項目を持つノードか
   appliesTo(node: NodeRecord): boolean
   read(node: NodeRecord): T
@@ -101,6 +105,8 @@ export interface DesignSection {
   order: number
   // 見出し（title）を出さない。項目の行のアイコンで分かるセクション。セクションの間の区切り線だけを残す
   hideTitle?: boolean
+  // 前のセクションとの間に区切り線を引かない（形と角丸のように、1 つのまとまりに見せる）
+  joinPrevious?: boolean
   // タブによらず、パネルの一番下にいつも出す（不透明度など、どのタブにも共通の項目）。tab より先に見る
   footer?: boolean
   // パネルのタブ（ない・undefined は最初のタブ。ノードの見た目）。選んでいるノードで決めるときは関数。

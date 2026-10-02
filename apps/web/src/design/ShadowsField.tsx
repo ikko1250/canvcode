@@ -1,3 +1,4 @@
+import { Eye, EyeOff, Minus, Plus } from 'lucide-react'
 import { sharedOf, type SharedValue } from '@canvcode/canvas'
 import { defaultShadow, SHADOW_BLUR_MAX, SHADOW_OFFSET_LIMIT, SHADOW_SPREAD_LIMIT, solidPaint, type Fill, type Shadow, type ShadowType } from '@canvcode/nodes'
 import { FieldLabel, MIXED_LABEL, NumberField, type ValueEditor } from './controls.tsx'
@@ -40,7 +41,7 @@ export function ShadowsField(props: { label: string; icon?: DesignIcon; value: S
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => editor.set(rows === null ? [defaultShadow()] : { op: 'add' })}
           >
-            +
+            <Plus size={16} strokeWidth={1.75} aria-hidden />
           </button>
         </div>
       </div>
@@ -114,7 +115,7 @@ function ShadowRow(props: { index: number; shadows: Shadow[]; editor: ValueEdito
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => editor.set(update({ visible: !visible }))}
           >
-            <EyeIcon open={visible} />
+            {visible ? <Eye size={16} strokeWidth={1.75} aria-hidden /> : <EyeOff size={16} strokeWidth={1.75} aria-hidden />}
           </button>
           <button
             className="design-fill-toggle"
@@ -123,7 +124,7 @@ function ShadowRow(props: { index: number; shadows: Shadow[]; editor: ValueEdito
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => editor.set({ op: 'remove', index })}
           >
-            −
+            <Minus size={16} strokeWidth={1.75} aria-hidden />
           </button>
         </div>
       </div>
@@ -142,14 +143,5 @@ function ShadowRow(props: { index: number; shadows: Shadow[]; editor: ValueEdito
       </div>
       <PaintField label="色" value={paint} editor={paintEditor} canOpacity canNone={false} onDone={onDone} />
     </div>
-  )
-}
-
-function EyeIcon(props: { open: boolean }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z" />
-      {props.open ? <circle cx="8" cy="8" r="2" /> : <path d="M2.5 13.5l11-11" />}
-    </svg>
   )
 }

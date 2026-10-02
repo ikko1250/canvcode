@@ -155,11 +155,27 @@ export function DesignPanel(props: {
     )
   }
 
+  const fieldView = ({ field, value }: VisibleSection['fields'][number]) => (
+    <FieldView
+      key={field.id}
+      field={field}
+      value={value}
+      editor={valueEditor(field)}
+      nodes={nodes}
+      paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null, images: paintImages }}
+      onDone={backToCanvas}
+    />
+  )
+
   const sectionView = ({ section, fields, showComponent }: VisibleSection) => (
-    <section key={section.id} className="design-section" data-section={section.id}>
+    <section key={section.id} className={section.joinPrevious ? 'design-section joined' : 'design-section'} data-section={section.id}>
       {!section.hideTitle && <h3>{section.title}</h3>}
       {fieldRows(fields).map((row) =>
-        row.kind === 'toggles' ? (
+        row.kind === 'row' ? (
+          <div key={row.row} className="design-field-row" data-row={row.row}>
+            {row.fields.map((item) => fieldView(item))}
+          </div>
+        ) : row.kind === 'toggles' ? (
           <ToggleGroup
             key={row.group}
             label={row.group}
@@ -181,15 +197,7 @@ export function DesignPanel(props: {
             })}
           />
         ) : (
-          <FieldView
-            key={row.field.field.id}
-            field={row.field.field}
-            value={row.field.value}
-            editor={valueEditor(row.field.field)}
-            nodes={nodes}
-            paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null, images: paintImages }}
-            onDone={backToCanvas}
-          />
+          fieldView(row.field)
         ),
       )}
       {showComponent && section.Component && <section.Component nodes={nodes} />}
@@ -310,15 +318,23 @@ function FieldView(props: {
   }
 }
 
-// オン・オフのボタン（group の同じ項目が続くもの）を 1 行にまとめる
+// オン・オフのボタン（group の同じ項目が続くもの）と、row の同じ項目が続くものを 1 行にまとめる
 type FieldRow =
   | { kind: 'field'; field: VisibleSection['fields'][number] }
   | { kind: 'toggles'; group: string; fields: VisibleSection['fields'] }
+  | { kind: 'row'; row: string; fields: VisibleSection['fields'] }
 
 function fieldRows(fields: VisibleSection['fields']): FieldRow[] {
   const rows: FieldRow[] = []
   for (const item of fields) {
     const control = item.field.control
+    const row = item.field.row
+    if (row !== undefined && control.kind !== 'toggle') {
+      const last = rows.at(-1)
+      if (last?.kind === 'row' && last.row === row) last.fields.push(item)
+      else rows.push({ kind: 'row', row, fields: [item] })
+      continue
+    }
     if (control.kind !== 'toggle') {
       rows.push({ kind: 'field', field: item })
       continue
