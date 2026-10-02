@@ -1354,3 +1354,53 @@ body,
 ::highlight(canvcode-text-selection) {
   background-color: rgba(59, 91, 219, 0.28);
 }
+
+/* 文字を編集している間の書式のツールバー（MAI-79）。編集中のテキストの上に、ズームによらない大きさで出す。
+   z-index は付けず、後に置くデザインパネル・パレットの下にする */
+.text-format-toolbar {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 3px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  user-select: none;
+}
+
+.text-format-toolbar button {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.text-format-toolbar button:hover {
+  background: #eef1f5;
+}
+
+.text-format-toolbar button.active {
+  background: #e3ebfd;
+  border-color: #b9ccf8;
+  color: var(--accent);
+}
+
+.text-format-toolbar button svg {
+  display: block;
+  margin: 0 auto;
+}
+
+/* 太字などが混在している（一部の文字だけオン） */
+.text-format-toolbar button.mixed,
+.design-panel button.mixed {
+  background: #f1f4f9;
+  border-color: #d5dbe5;
+  border-style: dashed;
+}

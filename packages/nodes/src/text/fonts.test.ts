@@ -46,7 +46,7 @@ describe('font family', () => {
   it('applies the font of a run over the default of the node', () => {
     expect(runStyle({ ...style, fontFamily: 'serif' }, { color: '#f00' }).fontFamily).toBe('serif')
     expect(runStyle(style, { fontFamily: 'M PLUS 1p' }).fontFamily).toBe('M PLUS 1p')
-    expect(baseFormatOf(style)).toEqual({ color: '#000', fontSize: 10, fontFamily: DEFAULT_FONT_FAMILY })
+    expect(baseFormatOf(style)).toEqual({ color: '#000', fontSize: 10, fontFamily: DEFAULT_FONT_FAMILY, bold: false, italic: false, underline: false, strikethrough: false })
   })
 
   it('splits segments where the font changes', () => {

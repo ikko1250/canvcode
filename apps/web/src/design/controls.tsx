@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useEffect, useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import type { LineHeight, LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, normalizeHexColor, parseLineHeight, parseNumber } from './parse.ts'
@@ -408,6 +408,57 @@ export function SegmentedField(props: FieldProps<string> & { options: readonly S
       </div>
     </div>
   )
+}
+
+// ---- オン・オフのボタン（MAI-79） ----
+
+export interface ToggleItem {
+  id: string
+  title: string
+  icon: ComponentType
+  // null は値がない（ボタンはオフに見せる）
+  value: SharedValue<boolean> | null
+  onToggle(): void
+}
+
+// 太字・斜体などのボタンを 1 行に並べる。オンなら押した見た目、混在なら薄く押した見た目（aria-pressed="mixed"）。
+// 押してもフォーカスを奪わない（編集中の文字の選択がそのまま残る）
+export function ToggleGroup(props: { label: string; items: readonly ToggleItem[] }) {
+  const { label, items } = props
+  return (
+    <div className="design-field">
+      <span className="design-label">{label}</span>
+      <div className="design-control design-segmented" role="group" aria-label={label}>
+        {items.map((item) => (
+          <ToggleButton key={item.id} item={item} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function ToggleButton(props: { item: ToggleItem }) {
+  const { item } = props
+  const state = toggleState(item.value)
+  const Icon = item.icon
+  return (
+    <button
+      title={item.title}
+      aria-label={item.title}
+      aria-pressed={state}
+      className={state === true ? 'active' : state === 'mixed' ? 'mixed' : ''}
+      data-toggle={item.id}
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={() => item.onToggle()}
+    >
+      <Icon />
+    </button>
+  )
+}
+
+function toggleState(value: SharedValue<boolean> | null): boolean | 'mixed' {
+  if (!value) return false
+  return value.kind === 'mixed' ? 'mixed' : value.value
 }
 
 // ---- 一覧から選ぶ（MAI-78） ----

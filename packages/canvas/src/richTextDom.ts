@@ -22,6 +22,8 @@ import {
 //   （フォントは Canvas と同じ CSS の font-family。MAI-75）。
 //   文字間（MAI-77）は em で、CSS では指定した要素の文字の大きさで換算されて子に継がれるので、文字の大きさを持つ div・span ごとに指定する
 //   （Canvas と同じく run の大きさで換算する）。
+//   太字・斜体（MAI-79）は span の font-weight・font-style。下線・取り消し線は CSS の text-decoration を使わず、
+//   textEditor.ts が Canvas と同じ線（layout.ts の textDecorations）を重ねて描く。
 //   空の段落は <br> だけを持ち、div にその段落の書式を持たせる（そこで打った文字の書式になる）。
 //   リストの段落（MAI-78）は、div の左の余白を段差にし（折り返した行もそろう）、記号・番号を CSS の ::before で描く
 //   （data-list-marker の文字。DOM の文字ではないので、選択・カーソル・コピー・読み取りに入らない）。
@@ -104,6 +106,7 @@ function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextSty
     if (runs[0].format) div.setAttribute(RUN_FORMAT_ATTRIBUTE, JSON.stringify(runs[0].format))
     div.style.color = styles[0].color
     div.style.fontFamily = fontFamilyCss(styles[0].fontFamily)
+    applyFontFace(div, styles[0])
     div.append(doc.createElement('br'))
     return div
   }
@@ -114,11 +117,18 @@ function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextSty
     span.style.fontSize = `${styles[i].fontSize}px`
     span.style.color = styles[i].color
     span.style.fontFamily = fontFamilyCss(styles[i].fontFamily)
+    applyFontFace(span, styles[i])
     if (letterSpacing !== 'normal') span.style.letterSpacing = letterSpacing
     span.textContent = run.text
     div.append(span)
   }
   return div
+}
+
+// 太字・斜体（MAI-79）。編集用の要素の既定（cssFont）と同じなら付けない（書き出した形の HTML を短く保つ）
+function applyFontFace(element: HTMLElement, style: TextStyle): void {
+  if (style.fontWeight !== 400) element.style.fontWeight = String(style.fontWeight)
+  if (style.fontStyle === 'italic') element.style.fontStyle = 'italic'
 }
 
 // 書き出した形の HTML（DOM が書き出した形のままかを比べるのに使う）
@@ -272,9 +282,42 @@ function formatOf(node: Node, root: HTMLElement): { found: boolean; format: Text
     const size = style?.fontSize ? Number.parseFloat(style.fontSize) : NaN
     if (Number.isFinite(size) && style.fontSize.endsWith('px') && styled.fontSize === undefined) styled.fontSize = size
     if (style?.fontFamily && styled.fontFamily === undefined) styled.fontFamily = fontFamilyFromCss(style.fontFamily)
+    // 太字・斜体・下線・取り消し線（MAI-79）。ブラウザが作った b・i・u・s などの要素や style も読む
+    readToggleFormats(element, styled)
   }
   const format = cleanFormat(styled)
   return format ? { found: true, format } : { found: false, format: undefined }
+}
+
+const TAG_FORMATS: Record<string, keyof TextRunFormat> = {
+  B: 'bold',
+  STRONG: 'bold',
+  I: 'italic',
+  EM: 'italic',
+  U: 'underline',
+  S: 'strikethrough',
+  STRIKE: 'strikethrough',
+  DEL: 'strikethrough',
+}
+
+function readToggleFormats(element: HTMLElement, styled: TextRunFormat): void {
+  const style = element.style
+  const set = (key: 'bold' | 'italic' | 'underline' | 'strikethrough', value: boolean) => {
+    if (styled[key] === undefined) styled[key] = value
+  }
+  if (style?.fontWeight) {
+    const weight = style.fontWeight === 'bold' || style.fontWeight === 'bolder' ? 700 : Number.parseFloat(style.fontWeight)
+    if (Number.isFinite(weight)) set('bold', weight >= 600)
+    else if (style.fontWeight === 'normal') set('bold', false)
+  }
+  if (style?.fontStyle) set('italic', style.fontStyle === 'italic' || style.fontStyle.startsWith('oblique'))
+  const decoration = style?.textDecorationLine || style?.textDecoration
+  if (decoration) {
+    if (decoration.includes('underline')) set('underline', true)
+    if (decoration.includes('line-through')) set('strikethrough', true)
+  }
+  const tag = TAG_FORMATS[element.tagName]
+  if (tag) set(tag as 'bold', true)
 }
 
 // rgb(r, g, b) を #rrggbb にする（それ以外の書き方はそのまま）

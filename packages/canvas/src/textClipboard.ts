@@ -14,7 +14,7 @@ import { decodeBase64, encodeBase64 } from './clipboard.ts'
 
 // 文字の編集中のコピー・貼り付け（MAI-74）。範囲ごとの書式を残すため、アプリ内の形式（段落と run の JSON）も載せる。
 // 書式は既定に重ねた実際の値（resolveRichText）で載せ、貼り付け先で、その既定と同じ値を落とす。
-// text/html には、ほかのアプリでも色・大きさ・フォントが残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく。
+// text/html には、ほかのアプリでも色・大きさ・フォント・太字などの装飾（MAI-79）が残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく。
 // リストの段落（MAI-78）は、ほかのアプリでもリストになるよう ul / ol と li にする（階層は入れ子。記号の形は list-style-type で、
 // CSS で表せない形（1) (1) ①）は 1. にする）。text/plain には記号・番号と、階層ごとに 2 つの空白を付ける
 
@@ -120,6 +120,11 @@ function styleOf(format: TextRunFormat | undefined): string {
   if (format?.color) parts.push(`color: ${format.color}`)
   if (format?.fontSize) parts.push(`font-size: ${format.fontSize}px`)
   if (format?.fontFamily) parts.push(`font-family: ${fontFamilyCss(format.fontFamily)}`)
+  // 太字・斜体・下線・取り消し線（MAI-79）。載せる書式は既定に重ねた実際の値なので、false も書く（貼り付け先の既定に左右されないように）
+  if (format?.bold !== undefined) parts.push(`font-weight: ${format.bold ? 700 : 400}`)
+  if (format?.italic !== undefined) parts.push(`font-style: ${format.italic ? 'italic' : 'normal'}`)
+  const lines = [format?.underline ? 'underline' : '', format?.strikethrough ? 'line-through' : ''].filter(Boolean)
+  if (lines.length > 0) parts.push(`text-decoration: ${lines.join(' ')}`)
   return escapeHtml(parts.join('; '))
 }
 

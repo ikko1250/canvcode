@@ -10,10 +10,12 @@ import {
   type SharedValue,
   type TextSelection,
 } from '@canvcode/canvas'
-import { ColorField, LineHeightField, NumberField, SegmentedField, SelectField, type ValueEditor } from './controls.tsx'
+import { TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
+import { ColorField, LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
 import { FontField } from './FontField.tsx'
-import { textRangeOf, visibleSections, type DesignField } from './registry.ts'
-import './sections.ts'
+import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
+import { TEXT_TOGGLE_FIELDS } from './sections.ts'
+import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggles.ts'
 
 // デザインパネル（MAI-73）。Figma の右のパネルのように、選んでいるノードの見た目のプロパティを並べて変える。
 // - 出すセクション・項目は registry.ts の登録から、選んでいるノードの型に合わせて決める（複数なら共通の項目だけ）
@@ -22,6 +24,7 @@ import './sections.ts'
 // - 閉じると右上の小さなボタンだけになる。開け閉めはブラウザに覚える（storage.ts）
 // - 文字を編集中に範囲を選んでいれば、文字の色・大きさ・フォントはその範囲の値を見せ（行間はノード単位。MAI-76）、その範囲に当てる（MAI-74、MAI-75）。
 //   パネルにフォーカスが移っても文字の編集は終わらない（data-keep-text-editing）。値を入れ終えたら、編集中の文字にフォーカスを戻す
+// - 太字・斜体・下線・取り消し線（MAI-79）は 1 行にボタンを並べる（control の group）。編集中は Ctrl+B などと同じに切り替える（textToggles.ts）
 
 export function DesignPanel(props: {
   editor: Editor
@@ -129,9 +132,32 @@ export function DesignPanel(props: {
         {sections.map(({ section, fields, showComponent }) => (
           <section key={section.id} className="design-section" data-section={section.id}>
             <h3>{section.title}</h3>
-            {fields.map(({ field, value }) => (
-              <FieldView key={field.id} field={field} value={value} editor={valueEditor(field)} onDone={backToCanvas} />
-            ))}
+            {fieldRows(fields).map((row) =>
+              row.kind === 'toggles' ? (
+                <ToggleGroup
+                  key={row.group}
+                  label={row.group}
+                  items={row.fields.map(({ field, value }) => {
+                    const control = field.control as Extract<DesignField['control'], { kind: 'toggle' }>
+                    const key = TEXT_TOGGLE_FORMATS.find((k) => TEXT_TOGGLE_FIELDS[k] === field)!
+                    const editing = editingTextOf(textEditor, nodes)
+                    const shown = editing ? editingToggleValue(editing, key) : (value as SharedValue<boolean>)
+                    return {
+                      id: field.id,
+                      title: control.title,
+                      icon: control.icon,
+                      value: shown,
+                      onToggle: () => {
+                        endRunning(true)
+                        applyTextToggle(editor, textEditor, nodes, key, shown)
+                      },
+                    }
+                  })}
+                />
+              ) : (
+                <FieldView key={row.field.field.id} field={row.field.field} value={row.field.value} editor={valueEditor(row.field.field)} onDone={backToCanvas} />
+              ),
+            )}
             {showComponent && section.Component && <section.Component nodes={nodes} />}
           </section>
         ))}
@@ -156,7 +182,30 @@ function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; ed
       return <LineHeightField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'select':
       return <SelectField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
+    case 'toggle':
+      // fieldRows で ToggleGroup にまとめる
+      return null
   }
+}
+
+// オン・オフのボタン（group の同じ項目が続くもの）を 1 行にまとめる
+type FieldRow =
+  | { kind: 'field'; field: VisibleSection['fields'][number] }
+  | { kind: 'toggles'; group: string; fields: VisibleSection['fields'] }
+
+function fieldRows(fields: VisibleSection['fields']): FieldRow[] {
+  const rows: FieldRow[] = []
+  for (const item of fields) {
+    const control = item.field.control
+    if (control.kind !== 'toggle') {
+      rows.push({ kind: 'field', field: item })
+      continue
+    }
+    const last = rows.at(-1)
+    if (last?.kind === 'toggles' && last.group === control.group) last.fields.push(item)
+    else rows.push({ kind: 'toggles', group: control.group, fields: [item] })
+  }
+  return rows
 }
 
 const noSubscription = () => () => {}

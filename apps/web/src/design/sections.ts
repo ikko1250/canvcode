@@ -31,6 +31,7 @@ import {
   type TextProps,
   type TextRunFormat,
   type TextStyle,
+  type TextToggleFormat,
 } from '@canvcode/nodes'
 import { sameValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
@@ -148,6 +149,38 @@ export const textColorField = textFormatField({
   key: 'color',
   control: { kind: 'color' },
 })
+
+// 太字・斜体・下線・取り消し線（MAI-79）。run の書式の true / false で、範囲ごとに持てる。
+// ノード全体に当てるとき（文字を編集していない・範囲を選んでいない）は、props に既定を持たせず、すべての文字（run）に当てる
+// （textFormatField の「既定を props に持たない型」と同じ）。押したときの値は、すべてオンならオフ、そうでなければオン（toggledValue）。
+// 文字を編集中は、パネル・ツールバーのボタンも Ctrl+B などと同じ TextEditor.toggleFormat で切り替える（textToggles.ts）
+export const TEXT_STYLE_GROUP = 'スタイル'
+
+function letterIcon(letter: string, style: Record<string, string | number>) {
+  return function LetterIcon() {
+    return createElement(
+      'svg',
+      { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true },
+      createElement('text', { x: 8, y: 12.5, textAnchor: 'middle', fontSize: 13, fontFamily: 'Georgia, serif', fill: 'currentColor', style }, letter),
+    )
+  }
+}
+
+function toggleField(key: TextToggleFormat, title: string, icon: ReturnType<typeof letterIcon>) {
+  return textFormatField({ id: `text.${key}`, label: title, key, control: { kind: 'toggle', title, icon, group: TEXT_STYLE_GROUP } })
+}
+
+export const boldField = toggleField('bold', '太字', letterIcon('B', { fontWeight: 700 }))
+export const italicField = toggleField('italic', '斜体', letterIcon('I', { fontStyle: 'italic' }))
+export const underlineField = toggleField('underline', '下線', letterIcon('U', { textDecoration: 'underline' }))
+export const strikethroughField = toggleField('strikethrough', '取り消し線', letterIcon('S', { textDecoration: 'line-through' }))
+
+export const TEXT_TOGGLE_FIELDS: Record<TextToggleFormat, DesignField<boolean>> = {
+  bold: boldField,
+  italic: italicField,
+  underline: underlineField,
+  strikethrough: strikethroughField,
+}
 
 // アイコンは 3 本の横線で、揃えの側をそろえる（左端のパレットと同じ形。MAI-50）
 function alignIcon(lines: [number, number][]) {
@@ -326,7 +359,7 @@ export const opacityField: DesignField<number> = {
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillColorField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
-  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
+  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]
 

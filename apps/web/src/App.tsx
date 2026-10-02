@@ -51,6 +51,7 @@ import { PieMenus } from './pie/PieMenu.tsx'
 import { ArrangePalette } from './palette/ArrangePalette.tsx'
 import { DrawPalette } from './palette/DrawPalette.tsx'
 import { DesignPanel } from './design/DesignPanel.tsx'
+import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
@@ -1396,6 +1397,9 @@ export function App(props: { initial: InitialRecords }) {
             />
           )}
         </div>
+
+        {/* 文字を編集している間、そのテキスト・付箋の上に出す書式のツールバー（MAI-79） */}
+        {session.editingId && <TextFormatToolbar key={`text-format:${editor.canvasId}`} editor={editor} view={view} camera={session.camera} />}
 
         {/* 右のデザインパネル（MAI-73）。選んでいるノードの見た目のプロパティを変える */}
         <DesignPanel

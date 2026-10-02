@@ -2,11 +2,13 @@ import { multiply, transformOf, type NodeRecord, type WorkspaceRecord, type Tran
 import {
   applyRunFormat,
   baseFormatOf,
+  cleanFormat,
   cssFont,
   cssLetterSpacing,
   cssLineHeight,
   formatAt,
   formatOfCharAt,
+  formatsInRange,
   indentList,
   layoutRichText,
   listOf,
@@ -16,16 +18,20 @@ import {
   paragraphText,
   plainTextOf,
   replaceRange,
+  resolveFormat,
   resolveRichText,
   richTextFromPlain,
   richTextLength,
   sliceRichText,
+  textDecorations,
+  toggledValue,
   type TextEditSpec,
   type TextParagraph,
   type TextRange,
   type TextRunFormat,
   type TextRunFormatPatch,
   type TextStyle,
+  type TextToggleFormat,
   withList,
 } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
@@ -51,6 +57,14 @@ import { TEXT_CLIPBOARD_MIME, parseTextClipboard, textClipboardData } from './te
 // - Enter：分けた段落はリストの属性を引き継ぐ（次の項目）。空の項目で Enter すると、階層を 1 つ上げ、一番外ならリストを抜ける
 // - 段落の頭で Backspace：リストを外す（段落はつながない）
 // - 段落の頭に「- 」「* 」「1. 」「1) 」と打つと、その文字を消してリストにする（Undo 1 回で打った文字に戻る）。IME の変換中は変えない
+// 太字・斜体・下線・取り消し線（MAI-79）：
+// - Ctrl（⌘）+B / I / U と Ctrl（⌘）+Shift+X で切り替える（toggleFormat。デザインパネル・編集中のツールバーのボタンも同じ）。
+//   ブラウザの execCommand（<b> などを作る）には任せず、formatRange で文字のデータを変えて DOM を書き直す。
+//   キーはこの要素の中でだけ扱う（キャンバス・ほかの画面のショートカットには渡さない）
+// - 範囲を選んでいれば、範囲の文字がすべてオンならオフ、そうでなければオンにする。
+//   カーソルだけなら、次に打つ文字の書式として覚えておき（pending）、カーソルが動いたら捨てる（一般的なエディタと同じ）
+// - 下線・取り消し線は CSS の text-decoration を使わず、Canvas と同じ線（layout.ts の textDecorations）を、
+//   編集用の要素に重ねた要素（decorations）に描く
 // 範囲ごとの書式を持たない型（図形のラベルなど）も同じ要素で編集し、プレーンテキストとしてノードに入れる
 
 export interface TextEditorOptions {
@@ -74,6 +88,10 @@ export interface TextSelection {
   nodeId: string
   start: number
   end: number
+  // カーソルだけのときに、次に打つ文字に当てる書式（MAI-79。Ctrl+B などで切り替えたもの）
+  pending?: TextRunFormatPatch | null
+  // 文字のデータが変わるたびに増える（書式だけを変えたときも、パネル・ツールバーの表示を描き直すため）
+  revision?: number
 }
 
 interface Snapshot {
@@ -85,6 +103,8 @@ interface Session {
   nodeId: string
   tx: Transaction<WorkspaceRecord>
   element: HTMLDivElement
+  // 下線・取り消し線を描く要素（編集用の要素に重ねる。MAI-79）
+  decorations: HTMLDivElement
   // 今の文字（DOM から読んだもの。ノードに入れたものと同じ）
   paragraphs: TextParagraph[]
   // 最後に分かった選択範囲（フォーカスを失っても覚えておく）
@@ -93,6 +113,11 @@ interface Session {
   pendingSelection: TextRange | null
   // デザインパネルにフォーカスが移っている（編集は続いている）
   parked: boolean
+  // カーソルの位置（at）で次に打つ文字に当てる書式（MAI-79）。カーソルが動いたら捨てる
+  pending: { at: number; patch: TextRunFormatPatch } | null
+  // IME の変換を始めたときの pending。確定した文字に当てる
+  composePending: { at: number; patch: TextRunFormatPatch } | null
+  revision: number
   composing: boolean
   undo: Snapshot[]
   redo: Snapshot[]
@@ -176,16 +201,24 @@ export class TextEditor {
     // ピンチと Ctrl（⌘）+ホイールはキャンバスのズームに渡す（止めると、ブラウザがページごと拡大してしまう）
     element.addEventListener('wheel', stopUnlessZoom, { passive: true })
     this.options.layer.appendChild(element)
+    const decorations = document.createElement('div')
+    decorations.className = 'canvcode-text-decorations'
+    Object.assign(decorations.style, { position: 'absolute', left: '0', top: '0', transformOrigin: '0 0', pointerEvents: 'none' })
+    this.options.layer.appendChild(decorations)
     const paragraphs = editParagraphs(spec)
     const length = richTextLength(paragraphs)
     this.session = {
       nodeId,
       tx,
       element,
+      decorations,
       paragraphs,
       selection: { start: length, end: length, backward: false },
       pendingSelection: null,
       parked: false,
+      pending: null,
+      composePending: null,
+      revision: 0,
       composing: false,
       undo: [],
       redo: [],
@@ -214,6 +247,7 @@ export class TextEditor {
       if (node && spec?.deleteIfEmpty && spec.text.trim() === '') session.tx.remove(node.id)
       if (!session.tx.isDone) editor.finish(session.tx)
       session.element.remove()
+      session.decorations.remove()
       document.removeEventListener('selectionchange', this.onSelectionChange)
       document.removeEventListener('focusin', this.onFocusIn)
       if (session.pendingSelection) window.removeEventListener('focus', this.onWindowFocus)
@@ -250,17 +284,37 @@ export class TextEditor {
     // ノードのローカル座標（文字の箱の左上）→ 画面の CSS ピクセル
     const local = multiply(entry.worldMatrix, transformOf(spec.box.x + offsetX, spec.box.y, 0))
     const z = camera.zoom
-    element.style.transform = `matrix(${local.a * z}, ${local.b * z}, ${local.c * z}, ${local.d * z}, ${(local.e - camera.x) * z}, ${(local.f - camera.y) * z})`
+    const transform = `matrix(${local.a * z}, ${local.b * z}, ${local.c * z}, ${local.d * z}, ${(local.e - camera.x) * z}, ${(local.f - camera.y) * z})`
+    element.style.transform = transform
     element.style.width = `${width}px`
+    let padding = 0
     if (spec.verticalAlign === 'middle') {
       // 上下の中央に置く：上の余白で文字の高さの分だけずらす
-      const padding = Math.max(0, (spec.box.h - layout.height) / 2)
+      padding = Math.max(0, (spec.box.h - layout.height) / 2)
       element.style.paddingTop = `${padding}px`
       element.style.height = `${Math.max(layout.height, spec.box.h - padding)}px`
     } else {
       element.style.paddingTop = '0'
       element.style.height = `${Math.max(layout.height, spec.autoWidth ? 0 : spec.box.h)}px`
     }
+    // 下線・取り消し線（MAI-79）。文字は要素の幅の中でそろうので、その幅で Canvas と同じ線を出す
+    session.decorations.style.transform = transform
+    const lines = textDecorations(layout, spec.style, { x: 0, y: padding, w: width, h: layout.height }, 'top')
+    session.decorations.replaceChildren(
+      ...lines.map((line) => {
+        const bar = document.createElement('div')
+        bar.dataset.decoration = line.kind
+        Object.assign(bar.style, {
+          position: 'absolute',
+          left: `${line.x}px`,
+          top: `${line.y}px`,
+          width: `${line.width}px`,
+          height: `${line.thickness}px`,
+          background: line.color,
+        })
+        return bar
+      }),
+    )
   }
 
   // 編集中のノードを、文字以外（文字の大きさ・揃えなど）や文字の書式で変える（パレット・デザインパネルから。MAI-52、MAI-74）。
@@ -280,6 +334,7 @@ export class TextEditor {
       if (JSON.stringify(paragraphs) !== JSON.stringify(session.paragraphs)) {
         this.pushUndo('format')
         session.paragraphs = paragraphs
+        session.revision++
       }
     }
     session.tx.put(next)
@@ -287,6 +342,7 @@ export class TextEditor {
     // 書式（span の style）はノードの既定にもよるので、いつも書き直す
     this.rerender()
     this.layout()
+    this.notifySelection()
     return true
   }
 
@@ -307,6 +363,50 @@ export class TextEditor {
     const target = range ?? { start: 0, end: richTextLength(session.paragraphs) }
     this.edit('format', (paragraphs) => applyRunFormat(paragraphs, target.start, target.end, patch, baseFormat(spec.style)), this.currentSelection())
     return true
+  }
+
+  // 太字・斜体・下線・取り消し線を切り替える（MAI-79。Ctrl+B などと、デザインパネル・ツールバーのボタン）。
+  // 範囲を選んでいれば、範囲の文字がすべてオンならオフに、そうでなければオンにする。
+  // カーソルだけなら、次に打つ文字の書式として覚える（もう一度押せば戻す）。範囲ごとの書式を持たない型では何もしない（false）
+  toggleFormat(key: TextToggleFormat): boolean {
+    const session = this.session
+    if (!session || !this.currentSpec()?.rich) return false
+    const range = this.currentSelection()
+    const value = toggledValue(this.formatsOf(range).map((format) => format[key]))
+    if (range.start !== range.end) {
+      // 続けて押しても、Undo は 1 回ずつ（toggle はまとめない）
+      const base = baseFormat(this.currentSpec()!.style)
+      this.edit('toggle', (paragraphs) => applyRunFormat(paragraphs, range.start, range.end, { [key]: value }, base), range)
+      return true
+    }
+    session.pending = { at: range.start, patch: { ...session.pending?.patch, [key]: value } }
+    this.notifySelection()
+    return true
+  }
+
+  // 選んでいる範囲の文字の書式（既定に重ねた実際の値。同じ書式の続きは 1 つ）。
+  // カーソルだけなら、そこで次に打つ文字の書式（pending を含む）。デザインパネル・ツールバーのオン・オフの表示に使う
+  // （描画の中で呼ばれるので、DOM の選択は読み直さず、覚えている範囲を使う。範囲は selectionchange で追っている）
+  selectionFormats(): Required<TextRunFormat>[] {
+    const session = this.session
+    return session ? this.formatsOf(session.selection) : []
+  }
+
+  private formatsOf({ start, end }: TextRange): Required<TextRunFormat>[] {
+    const session = this.session
+    const spec = this.currentSpec()
+    if (!session || !spec) return []
+    const base = baseFormat(spec.style)
+    if (start !== end) return formatsInRange(session.paragraphs, start, end).map((format) => resolveFormat(base, format))
+    return [resolveFormat(base, this.typingFormat(start))]
+  }
+
+  // offset で次に打つ文字の書式（pending を重ねる）
+  private typingFormat(offset: number): TextRunFormat | undefined {
+    const session = this.session!
+    const format = formatAt(session.paragraphs, offset)
+    const pending = session.pending
+    return pending && pending.at === offset ? cleanFormat({ ...format, ...pending.patch }) : format
   }
 
   // 編集用の要素にフォーカスを戻す（デザインパネルで値を入れ終えたときなど）。選んでいた範囲も戻す
@@ -348,10 +448,12 @@ export class TextEditor {
     const spec = node ? editor.getType(node).editText?.(node) : undefined
     if (!node || !spec) return
     session.paragraphs = paragraphs
+    session.revision++
     const props = spec.rich ? spec.rich.update(paragraphs) : spec.update(plainTextOf(paragraphs))
     session.tx.put({ ...node, props })
     session.tx.flush()
     this.layout()
+    this.notifySelection()
   }
 
   // 文字のデータを変え、DOM を書き直して、範囲を selection にする
@@ -437,6 +539,8 @@ export class TextEditor {
     const a = Math.max(0, Math.min(length, anchor))
     const f = Math.max(0, Math.min(length, focus))
     session.selection = { start: Math.min(a, f), end: Math.max(a, f), backward: f < a }
+    // カーソルが動いたら、次に打つ文字の書式（MAI-79）を捨てる
+    if (session.pending && (a !== session.pending.at || f !== session.pending.at)) session.pending = null
     this.notifySelection()
   }
 
@@ -467,9 +571,21 @@ export class TextEditor {
 
   private notifySelection(): void {
     const session = this.session
-    const next = session ? { nodeId: session.nodeId, start: session.selection.start, end: session.selection.end } : null
+    const next: TextSelection | null = session
+      ? { nodeId: session.nodeId, start: session.selection.start, end: session.selection.end, pending: session.pending?.patch ?? null, revision: session.revision }
+      : null
     const prev = this.selectionSnapshot
-    if (prev === next || (prev && next && prev.nodeId === next.nodeId && prev.start === next.start && prev.end === next.end)) return
+    if (
+      prev === next ||
+      (prev &&
+        next &&
+        prev.nodeId === next.nodeId &&
+        prev.start === next.start &&
+        prev.end === next.end &&
+        prev.revision === next.revision &&
+        JSON.stringify(prev.pending) === JSON.stringify(next.pending))
+    )
+      return
     this.selectionSnapshot = next
     for (const listener of this.selectionListeners) listener()
   }
@@ -499,7 +615,7 @@ export class TextEditor {
     const now = Date.now()
     const last = session.lastEdit
     session.lastEdit = { kind, time: now }
-    if (last && last.kind === kind && kind !== 'paragraph' && kind !== 'list' && now - last.time < UNDO_GROUP_MS) return
+    if (last && last.kind === kind && kind !== 'paragraph' && kind !== 'list' && kind !== 'toggle' && now - last.time < UNDO_GROUP_MS) return
     session.undo.push({ paragraphs: session.paragraphs, selection: { start: session.selection.start, end: session.selection.end } })
     if (session.undo.length > UNDO_LIMIT) session.undo.shift()
     session.redo = []
@@ -552,6 +668,14 @@ export class TextEditor {
     if (type === 'insertText' || type === 'insertReplacementText') {
       if (collapsed && type === 'insertText' && e.data === ' ' && spec.rich && this.convertToList(range.start)) {
         e.preventDefault()
+        return
+      }
+      // カーソルの位置で書式を切り替えていれば（MAI-79）、その書式で入れる
+      const pending = session.pending
+      if (collapsed && pending && pending.at === range.start && type === 'insertText' && e.data) {
+        e.preventDefault()
+        const text = e.data
+        this.replaceSelection('typing', (paragraphs, r) => richTextFromPlain(text, cleanFormat({ ...formatAt(paragraphs, r.start), ...pending.patch })))
         return
       }
       if (collapsed) {
@@ -670,6 +794,9 @@ export class TextEditor {
     if (!session) return
     this.readDomSelection()
     this.pushUndo('compose')
+    // カーソルの位置で書式を切り替えていれば（MAI-79）、確定した文字に当てる
+    const { start, end } = session.selection
+    session.composePending = session.pending && start === end && session.pending.at === start ? session.pending : null
     session.composing = true
   }
 
@@ -679,6 +806,16 @@ export class TextEditor {
     session.composing = false
     // 確定した文字を読み、DOM を整える（変換の途中の input では書き直していない）
     this.syncFromDom(true)
+    const pending = session.composePending
+    session.composePending = null
+    const spec = this.currentSpec()
+    const caret = session.selection.end
+    if (pending && spec?.rich && caret > pending.at) {
+      // Undo は変換を始めたときに積んである（変換の前の文字に戻る）
+      this.commit(applyRunFormat(session.paragraphs, pending.at, caret, pending.patch, baseFormat(spec.style)))
+      this.rerender()
+      this.select(caret, caret)
+    }
   }
 
   // ---- クリップボード ----
@@ -794,6 +931,14 @@ export class TextEditor {
       this.indentSelection(e.shiftKey ? -1 : 1)
       return
     }
+    // 太字・斜体・下線・取り消し線（MAI-79）。ブラウザの書式（execCommand）にもキャンバスのショートカットにも渡さない
+    const toggle = mod && !e.altKey ? toggleFormatOfKey(e) : null
+    if (toggle) {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!e.repeat) this.toggleFormat(toggle)
+      return
+    }
     const key = e.key.toLowerCase()
     if (mod && !e.altKey && (key === 'z' || key === 'y')) {
       e.preventDefault()
@@ -801,6 +946,14 @@ export class TextEditor {
       this.undoRedo(key === 'y' || e.shiftKey ? 'redo' : 'undo')
     }
   }
+}
+
+// 書式を切り替えるキー（Ctrl（⌘）を押しているとき）：B・I・U、Shift+X。
+// 英字の配列でない（key が英字でない）ときは、キーの場所（code）で見る
+export function toggleFormatOfKey(e: Pick<KeyboardEvent, 'key' | 'code' | 'shiftKey'>): TextToggleFormat | null {
+  const letter = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : ''
+  if (e.shiftKey) return letter === 'x' ? 'strikethrough' : null
+  return letter === 'b' ? 'bold' : letter === 'i' ? 'italic' : letter === 'u' ? 'underline' : null
 }
 
 // 編集する文字。範囲ごとの書式を持たない型は、プレーンテキストを 1 つの書式の段落にする

@@ -21,6 +21,10 @@ import { listMarkers, listOf, richTextFromPlain, type TextParagraph, type TextRu
 // - 記号・番号の大きさ・色・フォントは段落の最初の run の書式（文字間は付けない）。1 行目の行の高さには、その文字としても数える
 // - 段差と空きはノードの既定の文字の大きさ（base.fontSize）に対する割合で、段落の文字の大きさによらない（階層ごとにそろう）
 // - 揃え（中央・右）は、段差を除いた幅の中でそろえる。記号は 1 行目の文字の左に付いて動く
+// 太字・斜体（MAI-79）は CSS の font（cssFont）の太さ・斜体で測り・描く。下線・取り消し線（MAI-79）は textDecorations で、
+// 折り返した行ごと・run ごとに、その文字の色・大きさに合わせた太さと位置で引く。行末の文字間の空きと、リストの記号には引かない。
+// 編集中の DOM は CSS の text-decoration を使わず、同じ textDecorations の線を重ねて描く（textEditor.ts。ブラウザごとの線の位置の違いや、
+// CSS が行末の文字間・空白の下にも線を引くのを避け、Canvas と同じ見た目にする）
 
 export type TextAlign = 'left' | 'center' | 'right'
 
@@ -31,6 +35,11 @@ export interface TextStyle {
   // 行の高さを px で決めるとき（CSS の line-height: 24px と同じく、文字の大きさによらない）。あれば lineHeight より優先する（MAI-76）
   fixedLineHeight?: number
   fontWeight: 400 | 700
+  // 斜体（MAI-79）。なければ normal
+  fontStyle?: 'normal' | 'italic'
+  // 下線・取り消し線（MAI-79）。行ごと・run ごとに、文字の色・大きさに合わせて引く（textDecorations）
+  underline?: boolean
+  strikethrough?: boolean
   color: string
   align: TextAlign
   // フォントの名前（fonts.ts）。なければ既定のフォント（MAI-75）
@@ -165,13 +174,23 @@ export interface TextLayout {
   maxFontSize: number
 }
 
-export function cssFont(style: Pick<TextStyle, 'fontSize' | 'fontWeight' | 'fontFamily'>): string {
-  return `${style.fontWeight} ${style.fontSize}px ${fontFamilyCss(style.fontFamily)}`
+// 測り・描画（Canvas）と編集用の DOM で同じ文字になるよう、太さ・斜体（MAI-79）も含めた CSS の font にする。
+// 太字・斜体の書体を持たないフォントは、Canvas も DOM もブラウザが合成する（幅も同じになる）
+export function cssFont(style: Pick<TextStyle, 'fontSize' | 'fontWeight' | 'fontFamily' | 'fontStyle'>): string {
+  return `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${fontFamilyCss(style.fontFamily)}`
 }
 
-// ノードの既定のスタイルから、run の書式の既定（run が持たない値）を作る（MAI-74、MAI-75）
+// ノードの既定のスタイルから、run の書式の既定（run が持たない値）を作る（MAI-74、MAI-75、MAI-79）
 export function baseFormatOf(style: TextStyle): Required<TextRunFormat> {
-  return { color: style.color, fontSize: style.fontSize, fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY }
+  return {
+    color: style.color,
+    fontSize: style.fontSize,
+    fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY,
+    bold: style.fontWeight === 700,
+    italic: style.fontStyle === 'italic',
+    underline: style.underline ?? false,
+    strikethrough: style.strikethrough ?? false,
+  }
 }
 
 // リストの階層 1 つ分の段差と、記号と文字の間の空き（ノードの既定の文字の大きさに対する割合。MAI-78）
@@ -386,6 +405,10 @@ export function runStyle(base: TextStyle, format: TextRunFormat | undefined): Te
     fontSize: format.fontSize ?? base.fontSize,
     color: format.color ?? base.color,
     fontFamily: format.fontFamily ?? base.fontFamily,
+    fontWeight: format.bold === undefined ? base.fontWeight : format.bold ? 700 : 400,
+    fontStyle: format.italic === undefined ? base.fontStyle : format.italic ? 'italic' : 'normal',
+    underline: format.underline ?? base.underline,
+    strikethrough: format.strikethrough ?? base.strikethrough,
   }
 }
 
@@ -513,6 +536,53 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
 
 // ---- 描画 ----
 
+// 下線・取り消し線（MAI-79）の太さと位置（文字の大きさに対する割合）。
+// 下線は線の上端をベースラインの少し下に、取り消し線は線の中ほどを、欧文の小文字と和文の字面の間あたりに置く
+export const TEXT_DECORATION_THICKNESS_EM = 1 / 15
+export const UNDERLINE_OFFSET_EM = 0.12
+export const STRIKETHROUGH_OFFSET_EM = 0.3
+
+// 下線・取り消し線の 1 本（box と同じ座標。x・y は線の左上）
+export interface TextDecorationLine {
+  kind: 'underline' | 'strikethrough'
+  x: number
+  y: number
+  width: number
+  thickness: number
+  color: string
+}
+
+export function decorationThickness(fontSize: number): number {
+  return Math.max(1, fontSize * TEXT_DECORATION_THICKNESS_EM)
+}
+
+// 行ごと・run（segment）ごとの下線・取り消し線。行の最後の segment は、後ろの文字間の空き（MAI-77）を除く。
+// 行末の空白は、折り返す行ではレイアウトが行に入れていない。リストの記号（marker）には引かない
+export function textDecorations(
+  layout: TextLayout,
+  style: Pick<TextStyle, 'align'>,
+  box: { x: number; y: number; w: number; h: number },
+  verticalAlign: 'top' | 'middle',
+): TextDecorationLine[] {
+  const out: TextDecorationLine[] = []
+  const top = verticalAlign === 'middle' ? box.y + (box.h - layout.height) / 2 : box.y
+  for (const line of layout.lines) {
+    const left = lineLeft(line, style.align, box)
+    const baseline = top + line.top + line.baseline
+    for (const [i, segment] of line.segments.entries()) {
+      const s = segment.style
+      if (!s.underline && !s.strikethrough) continue
+      const width = segment.width - (i === line.segments.length - 1 ? letterSpacingPx(s) : 0)
+      if (width <= 0) continue
+      const thickness = decorationThickness(s.fontSize)
+      const x = left + segment.x
+      if (s.underline) out.push({ kind: 'underline', x, y: baseline + s.fontSize * UNDERLINE_OFFSET_EM, width, thickness, color: s.color })
+      if (s.strikethrough) out.push({ kind: 'strikethrough', x, y: baseline - s.fontSize * STRIKETHROUGH_OFFSET_EM - thickness / 2, width, thickness, color: s.color })
+    }
+  }
+  return out
+}
+
 // 行の文字の左端。リストの段落は段差を除いた幅の中でそろえる
 export function lineLeft(line: Pick<TextLine, 'width' | 'indent'>, align: TextAlign, box: { x: number; w: number }): number {
   const x = box.x + line.indent
@@ -572,6 +642,26 @@ export function drawTextLayout(
     }
   }
   if (native && spacingCss !== previousSpacing) ctx.letterSpacing = previousSpacing!
+  // 下線・取り消し線（MAI-79）は文字の上に描く。回していなければ、画素の境目にそろえる（編集中の DOM の線と同じくぼやけないように）
+  const m = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null
+  const snap = m && m.b === 0 && m.c === 0 && m.a > 0 && m.d > 0 ? m : null
+  for (const decoration of textDecorations(layout, style, box, verticalAlign)) {
+    ctx.fillStyle = decoration.color
+    if (!snap) {
+      ctx.fillRect(decoration.x, decoration.y, decoration.width, decoration.thickness)
+      continue
+    }
+    const [x0, x1] = snapEdges(decoration.x, decoration.width, snap.a, snap.e)
+    const [y0, y1] = snapEdges(decoration.y, decoration.thickness, snap.d, snap.f)
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0)
+  }
+}
+
+// 位置 start・長さ size（scale・offset で画素に写す）の両端を、画素の境目にそろえる（1 画素は残す）
+function snapEdges(start: number, size: number, scale: number, offset: number): [number, number] {
+  const a = Math.round(start * scale + offset)
+  const b = Math.max(a + 1, Math.round((start + size) * scale + offset))
+  return [(a - offset) / scale, (b - offset) / scale]
 }
 
 // ズームアウト時の簡略表示：行ごとに灰色の帯を描く（MAI-14）

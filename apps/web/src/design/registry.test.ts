@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_TEXT_COLOR, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { fillColorField, fontFamilyField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { boldField, fillColorField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -29,15 +29,15 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['fill', 'stroke', 'layer'])
     expect(fieldIds([geo])).toEqual(['fill.color', 'stroke.color', 'stroke.width', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
   })
 
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -299,5 +299,35 @@ describe('list fields (MAI-78)', () => {
     expect(lists(listStyleField.write(text, 'none', { start: 0, end: 1 }))).toEqual([undefined, bullet(1), undefined])
     const same = listTypeField.write(text, 'bullet', { start: 0, end: 3 })
     expect(same).toBe(text)
+  })
+})
+
+describe('bold, italic, underline and strikethrough (MAI-79)', () => {
+  it('shows mixed per format, and toggles all the characters of the whole node (no default in the props)', () => {
+    const editor = new Editor()
+    const made = editor.makeNode('text', {
+      x: 0,
+      y: 0,
+      props: { paragraphs: [{ runs: [{ text: 'ab', format: { bold: true } }, { text: 'cd', format: { bold: true, italic: true } }] }] },
+    })
+    editor.createNodes([made])
+    const text = editor.getNode(made.id)!
+    const valueOf = (node: NodeRecord, id: string, selection: TextSelection | null = null) =>
+      visibleSections([node], undefined, selection)
+        .flatMap((s) => s.fields)
+        .find((f) => f.field.id === id)!.value
+    expect(valueOf(text, 'text.bold')).toEqual({ kind: 'same', value: true })
+    expect(valueOf(text, 'text.italic')).toEqual({ kind: 'mixed', values: [false, true] })
+    expect(valueOf(text, 'text.italic', { nodeId: text.id, start: 2, end: 4 })).toEqual({ kind: 'same', value: true })
+    expect(valueOf(text, 'text.underline')).toEqual({ kind: 'same', value: false })
+    // ノード全体：すべての文字に当てる。props には既定を持たせない
+    const italic = italicField.write(text, true, null)
+    expect((italic.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'abcd', format: { bold: true, italic: true } }] }])
+    expect('italic' in (italic.props as object)).toBe(false)
+    const plain = boldField.write(italicField.write(italic, false, null), false, null)
+    expect((plain.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'abcd' }] }])
+    // 範囲
+    const ranged = strikethroughField.write(text, true, { start: 0, end: 1 })
+    expect((ranged.props as TextProps).paragraphs[0].runs[0]).toEqual({ text: 'a', format: { bold: true, strikethrough: true } })
   })
 })

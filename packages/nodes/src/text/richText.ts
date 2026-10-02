@@ -1,7 +1,8 @@
 // 範囲ごとに書式を持てるテキスト（MAI-74）。テキスト・付箋の文字は、段落の並びで、段落は書式付きの文字列（run）の並び。
 // - run の書式（TextRunFormat）：色・大きさなど、文字の範囲ごとに変えられるもの。持たない項目はノードの既定
 //   （props の fontSize・color など）に従う。既定と同じ値は持たない（normalizeRichText が落とす）。
-//   フォント（fontFamily。fonts.ts の名前）は MAI-75。後の課題で、太字・斜体・下線・取り消し線（MAI-79）をここに足す
+//   フォント（fontFamily。fonts.ts の名前）は MAI-75。太字・斜体・下線・取り消し線（bold など。MAI-79）は true / false で持ち、
+//   既定（ノードの既定はどれも false。layout.ts の baseFormatOf）と違うときだけ持つ（ふつうは true だけが残る）
 // - 段落の属性：揃え・箇条書き（MAI-78）など、段落ごとに 1 つのもの。TextParagraph に runs と並べて足す。
 //   ここの操作は段落を { ...paragraph, runs } で作り直すので、足した属性は分けたり、つないだりしても残る
 // 文字の位置（offset）は、段落を '\n' でつないだプレーンテキストでの位置（UTF-16。DOM の選択範囲と同じ数え方）。
@@ -13,7 +14,17 @@ export interface TextRunFormat {
   fontSize?: number
   // フォントの名前（fonts.ts。MAI-75）
   fontFamily?: string
+  // 太字・斜体・下線・取り消し線（MAI-79）
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strikethrough?: boolean
 }
+
+// オン・オフで切り替える書式（MAI-79。Ctrl+B / I / U、Ctrl+Shift+X とパネル・ツールバーのボタン）
+export type TextToggleFormat = 'bold' | 'italic' | 'underline' | 'strikethrough'
+
+export const TEXT_TOGGLE_FORMATS: readonly TextToggleFormat[] = ['bold', 'italic', 'underline', 'strikethrough']
 
 export interface TextRun {
   text: string
@@ -334,6 +345,12 @@ function relativeTo(format: TextRunFormat | undefined, base: TextRunFormat | und
 // 既定に重ねた、実際の書式（すべての項目を持つ）
 export function resolveFormat(base: Required<TextRunFormat>, format: TextRunFormat | undefined): Required<TextRunFormat> {
   return { ...base, ...cleanFormat(format) }
+}
+
+// オン・オフの書式を切り替えるときの、当てる値（MAI-79）。範囲の文字がすべてオンならオフ、そうでなければ（混在も）オン。
+// values は範囲の文字の実際の値（既定に重ねたもの）
+export function toggledValue(values: readonly boolean[]): boolean {
+  return !(values.length > 0 && values.every(Boolean))
 }
 
 // ---- 正しい形にする ----

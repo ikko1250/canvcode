@@ -4,6 +4,7 @@ import { plainTextOf, richTextFromPlain, type NoteProps, type TextParagraph, typ
 import { Editor } from './editor.ts'
 import { KEEP_TEXT_EDITING_ATTRIBUTE, TextEditor } from './textEditor.ts'
 import { TEXT_CLIPBOARD_MIME } from './textClipboard.ts'
+import { readRichTextDom } from './richTextDom.ts'
 
 // 文字の編集モード。jsdom の DOM で、編集用の要素（contenteditable）を動かす。
 // jsdom には Canvas がないので、文字幅は概算で測る（layout.ts）
@@ -422,7 +423,7 @@ describe('rich text editing (MAI-74)', () => {
     input.focus()
     expect(textEditor.editingId).toBe(text.id)
     expect(textEditor.selectedRange()).toEqual({ start: 0, end: 5 })
-    expect(textEditor.getSelectionSnapshot()).toEqual({ nodeId: text.id, start: 0, end: 5 })
+    expect(textEditor.getSelectionSnapshot()).toMatchObject({ nodeId: text.id, start: 0, end: 5, pending: null })
     // パネルからの変更（updateNode）は、覚えている範囲に当てられる
     textEditor.formatRange({ color: '#ff0000' })
     expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'hello', format: { color: '#ff0000' } }, { text: ' world' }] }])
@@ -616,6 +617,153 @@ describe('lists (MAI-78)', () => {
     element.dispatchEvent(clipboardEvent('paste', { 'text/plain': 'x\ny' }).event)
     expect(plainTextOf(propsOf(editor, text.id).paragraphs).split('\n').slice(0, 2)).toEqual(['onex', 'y'])
     expect(listsOf(editor, text.id).slice(0, 2)).toEqual([ordered(), ordered()])
+    textEditor.finish()
+  })
+})
+
+// 太字・斜体・下線・取り消し線（MAI-79）
+describe('bold, italic, underline and strikethrough (MAI-79)', () => {
+  const key = (element: HTMLElement, init: KeyboardEventInit) => {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })
+    element.dispatchEvent(event)
+    return event
+  }
+  const runsOf = (editor: Editor, id: string) => propsOf(editor, id).paragraphs.map((p) => p.runs)
+
+  it('toggles the selected range with Ctrl+B / I / U and Ctrl+Shift+X without passing the key on', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'hello world')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const outside = vi.fn()
+    layer.addEventListener('keydown', outside)
+    const [node] = textNodes(element)
+    setCaret(node, 0, node, 5)
+    expect(key(element, { key: 'b', ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(outside).not.toHaveBeenCalled()
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'hello', format: { bold: true } }, { text: ' world' }]])
+    // DOM は書き直した形（span の font-weight。<b> は作らない）で、範囲もそのまま
+    expect(element.querySelector('b')).toBeNull()
+    expect((element.querySelector('span') as HTMLElement).style.fontWeight).toBe('700')
+    expect(textEditor.selectedRange()).toEqual({ start: 0, end: 5 })
+    key(element, { key: 'i', metaKey: true })
+    key(element, { key: 'u', ctrlKey: true })
+    key(element, { key: 'X', ctrlKey: true, shiftKey: true })
+    expect(runsOf(editor, text.id)[0][0]).toEqual({ text: 'hello', format: { bold: true, italic: true, underline: true, strikethrough: true } })
+    // もう一度押すとオフ（既定と同じ値は持たない）
+    key(element, { key: 'b', ctrlKey: true })
+    expect(runsOf(editor, text.id)[0][0].format).toEqual({ italic: true, underline: true, strikethrough: true })
+    // 下線・取り消し線は重ねた要素に描く（行ごと・run ごと）
+    expect([...layer.querySelectorAll('[data-decoration]')].map((e) => (e as HTMLElement).dataset.decoration)).toEqual(['underline', 'strikethrough'])
+    textEditor.finish()
+    expect(layer.querySelector('.canvcode-text-decorations')).toBeNull()
+  })
+
+  it('turns a mixed range on, and an all-on range off', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'ab', format: { bold: true } }, { text: 'cd' }] }])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const nodes = textNodes(element)
+    setCaret(nodes[0], 0, nodes[1], 2)
+    document.dispatchEvent(new Event('selectionchange'))
+    expect(textEditor.selectionFormats().map((f) => f.bold)).toEqual([true, false])
+    key(element, { key: 'b', ctrlKey: true })
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd', format: { bold: true } }]])
+    key(element, { key: 'b', ctrlKey: true })
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd' }]])
+    // Undo で 1 回ずつ戻る
+    key(element, { key: 'z', ctrlKey: true })
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd', format: { bold: true } }]])
+    textEditor.finish()
+  })
+
+  it('keeps the format for the next typed text when only the caret is placed, until the caret moves', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'ab')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 1)
+    key(element, { key: 'b', ctrlKey: true })
+    // 文字は変わらず、次に打つ文字の書式として覚える
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'ab' }]])
+    expect(textEditor.getSelectionSnapshot()?.pending).toEqual({ bold: true })
+    expect(textEditor.selectionFormats()[0].bold).toBe(true)
+    typeInto(element, textNodes(element)[0], 1, 'X')
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'a' }, { text: 'X', format: { bold: true } }, { text: 'b' }]])
+    // 続けて打つ文字は、直前の文字（太字）の書式
+    const after = textNodes(element)[1]
+    typeInto(element, after, 1, 'Y')
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'a' }, { text: 'XY', format: { bold: true } }, { text: 'b' }]])
+    // カーソルを動かすと捨てる
+    key(element, { key: 'i', ctrlKey: true })
+    expect(textEditor.getSelectionSnapshot()?.pending).toEqual({ italic: true })
+    setCaret(textNodes(element)[0], 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    expect(textEditor.getSelectionSnapshot()?.pending).toBeNull()
+    textEditor.finish()
+  })
+
+  it('applies the caret format to the text composed with an IME', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, '')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    key(element, { key: 'u', ctrlKey: true })
+    element.dispatchEvent(new CompositionEvent('compositionstart'))
+    const paragraph = element.children[0] as HTMLElement
+    const composing = document.createTextNode('日本')
+    paragraph.replaceChildren(composing)
+    setCaret(composing, 2)
+    element.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: '日本', isComposing: true }))
+    element.dispatchEvent(new CompositionEvent('compositionend', { data: '日本' }))
+    expect(runsOf(editor, text.id)).toEqual([[{ text: '日本', format: { underline: true } }]])
+    textEditor.finish()
+  })
+
+  it('does not handle the keys with Alt, and ignores types without rich text', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'ab')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 0, textNodes(element)[0], 2)
+    expect(key(element, { key: 'b', ctrlKey: true, altKey: true }).defaultPrevented).toBe(false)
+    expect(key(element, { key: 'b' }).defaultPrevented).toBe(false)
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'ab' }]])
+    // 英字でない配列でも、キーの場所で見る
+    key(element, { key: 'и', code: 'KeyB', ctrlKey: true })
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'ab', format: { bold: true } }]])
+    textEditor.finish()
+  })
+
+  it('reads b / i / u / s elements and styles that the browser put in', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<div><b>a</b><i>b</i><u>c</u><s>d</s><span style="font-weight: bold; font-style: italic; text-decoration: underline line-through">e</span><span data-format="{}"><strong>f</strong></span></div>'
+    expect(readRichTextDom(root).paragraphs[0].runs).toEqual([
+      { text: 'a', format: { bold: true } },
+      { text: 'b', format: { italic: true } },
+      { text: 'c', format: { underline: true } },
+      { text: 'd', format: { strikethrough: true } },
+      { text: 'e', format: { bold: true, italic: true, underline: true, strikethrough: true } },
+      { text: 'f', format: { bold: true } },
+    ])
+  })
+
+  it('copies the formats as HTML styles', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'ab', format: { bold: true, underline: true } }] }])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 0, textNodes(element)[0], 2)
+    const { event, store } = clipboardEvent('copy')
+    element.dispatchEvent(event)
+    expect(store['text/html']).toContain('font-weight: 700')
+    expect(store['text/html']).toContain('text-decoration: underline')
+    expect(store['text/html']).toContain('font-style: normal')
+    // 貼り付けると書式が残る（既定と同じ値は落ちる）
+    setCaret(textNodes(element)[0], 2)
+    element.dispatchEvent(clipboardEvent('paste', store).event)
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abab', format: { bold: true, underline: true } }]])
     textEditor.finish()
   })
 })

@@ -34,6 +34,9 @@ export type FieldControl =
   | { kind: 'lineHeight' }
   // 一覧から 1 つ選ぶ（MAI-78。リストの記号・番号の形）。group の同じ選択肢は見出しの下にまとめる
   | { kind: 'select'; options: readonly SelectOption[] }
+  // オン・オフのボタン（MAI-79。太字・斜体・下線・取り消し線。値は boolean）。
+  // group の同じ項目が続けば、パネルでは 1 行（group の名前の見出し）にボタンを並べる
+  | { kind: 'toggle'; title: string; icon: ComponentType; group: string }
 
 export interface SelectOption {
   value: string

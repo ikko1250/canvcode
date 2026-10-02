@@ -3,8 +3,11 @@ import {
   TEXT_FONT_SIZES,
   breakUnits,
   convertLineHeight,
+  baseFormatOf,
+  cssFont,
   cssLetterSpacing,
   cssLineHeight,
+  decorationThickness,
   drawTextLayout,
   layoutRichText,
   layoutText,
@@ -14,8 +17,13 @@ import {
   lineHeightStyle,
   setNativeLetterSpacingForTest,
   stepFontSize,
+  textDecorations,
+  STRIKETHROUGH_OFFSET_EM,
+  UNDERLINE_OFFSET_EM,
+  runStyle,
   type TextStyle,
 } from './layout.ts'
+import { applyRunFormat, toggledValue } from './richText.ts'
 
 // Node には Canvas がないので、概算の文字幅（全角 = fontSize、半角 = 0.55 × fontSize、空白 = 0.3 × fontSize）で測る
 const style: TextStyle = { fontSize: 10, lineHeight: 1.5, fontWeight: 400, color: '#000', align: 'left' }
@@ -345,6 +353,90 @@ describe('lists (MAI-78)', () => {
       ['b', 20 + 11 + 2],
     ])
     expect(ctx.letterSpacing).toBe('0px')
+    setNativeLetterSpacingForTest(undefined)
+  })
+})
+
+// 太字・斜体・下線・取り消し線（MAI-79）
+describe('bold, italic, underline and strikethrough', () => {
+  const box = { x: 0, y: 0, w: 100, h: 100 }
+
+  it('puts the weight and the style into the CSS font', () => {
+    const bold = runStyle(style, { bold: true, italic: true })
+    expect(bold).toMatchObject({ fontWeight: 700, fontStyle: 'italic' })
+    expect(cssFont(bold)).toMatch(/^italic 700 10px /)
+    expect(cssFont(style)).toMatch(/^400 10px /)
+    // 既定（ノード）はどれもオフ。run が false を持てば既定の値を打ち消す
+    expect(baseFormatOf(style)).toMatchObject({ bold: false, italic: false, underline: false, strikethrough: false })
+    expect(runStyle({ ...style, fontWeight: 700 }, { bold: false }).fontWeight).toBe(400)
+  })
+
+  it('keeps only the formats that differ from the default, and toggles a mixed range on', () => {
+    const base = baseFormatOf(style)
+    const on = applyRunFormat([{ runs: [{ text: 'abc' }] }], 0, 2, { bold: true }, base)
+    expect(on).toEqual([{ runs: [{ text: 'ab', format: { bold: true } }, { text: 'c' }] }])
+    expect(applyRunFormat(on, 0, 3, { bold: false }, base)).toEqual([{ runs: [{ text: 'abc' }] }])
+    expect(toggledValue([true, false])).toBe(true)
+    expect(toggledValue([true, true])).toBe(false)
+    expect(toggledValue([])).toBe(true)
+  })
+
+  it('draws the lines per wrapped line and per run, in the size and color of the run', () => {
+    // 'aa' + 'aa bbbb'（18px）は 40px で 'bbbb' の前で折り返す（半角 0.55em、空白 0.3em）
+    const layout = layoutRichText(
+      [{ runs: [{ text: 'aa', format: { underline: true, color: '#f00' } }, { text: 'aa bbbb', format: { underline: true, fontSize: 18 } }] }],
+      style,
+      40,
+    )
+    expect(layout.lines.length).toBe(2)
+    const lines = textDecorations(layout, style, box, 'top')
+    expect(lines.map((l) => [l.kind, l.color])).toEqual([
+      ['underline', '#f00'],
+      ['underline', '#000'],
+      ['underline', '#000'],
+    ])
+    const [first, second, third] = lines
+    // 1 行目：2 つの run が続けて並ぶ。行末の空白には引かない
+    expect(first.x).toBe(0)
+    expect(first.width).toBeCloseTo(11)
+    expect(second.x).toBeCloseTo(11)
+    expect(second.width).toBeCloseTo(19.8)
+    expect(first.thickness).toBe(decorationThickness(10))
+    expect(second.thickness).toBeCloseTo(18 / 15)
+    expect(second.y).toBeCloseTo(layout.lines[0].baseline + 18 * UNDERLINE_OFFSET_EM)
+    // 2 行目
+    expect(third.y).toBeCloseTo(layout.lines[1].top + layout.lines[1].baseline + 18 * UNDERLINE_OFFSET_EM)
+    expect(third.width).toBeCloseTo(39.6)
+  })
+
+  it('places the strikethrough through the middle of the letters, and skips the trailing letter spacing and list markers', () => {
+    const spaced = { ...style, letterSpacing: 0.1, align: 'center' as const }
+    const layout = layoutRichText([{ runs: [{ text: 'ab', format: { strikethrough: true } }], list: { type: 'bullet', level: 0 } }], spaced, null)
+    const [line] = textDecorations(layout, spaced, box, 'top')
+    const thickness = decorationThickness(10)
+    expect(line.kind).toBe('strikethrough')
+    expect(line.y + thickness / 2).toBeCloseTo(layout.lines[0].baseline - 10 * STRIKETHROUGH_OFFSET_EM)
+    // 文字の幅 11 + 文字間 2 のうち、最後の文字の後ろの空き（1）を除く。記号の溝（20px）の右から
+    expect(line.width).toBeCloseTo(12)
+    expect(line.x).toBeCloseTo(lineLeft(layout.lines[0], 'center', box))
+    expect(line.x).toBeGreaterThan(20)
+  })
+
+  it('draws the lines over the text in drawTextLayout', () => {
+    const rects: [number, number, number, number, string][] = []
+    const ctx = {
+      font: '',
+      fillStyle: '',
+      fillText() {},
+      fillRect(x: number, y: number, w: number, h: number) {
+        rects.push([x, y, w, h, ctx.fillStyle])
+      },
+    }
+    setNativeLetterSpacingForTest(false)
+    const layout = layoutRichText([{ runs: [{ text: 'ab', format: { underline: true, strikethrough: true, color: '#00f' } }] }], style, null)
+    drawTextLayout(ctx as unknown as CanvasRenderingContext2D, layout, style, box, 'top')
+    expect(rects.length).toBe(2)
+    expect(rects.every((r) => r[4] === '#00f' && r[2] > 10)).toBe(true)
     setNativeLetterSpacingForTest(undefined)
   })
 })
