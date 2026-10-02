@@ -33,7 +33,7 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['shape', 'corner', 'fill', 'stroke', 'effects', 'layer'])
     expect(fieldIds([geo])).toEqual(['shape.shape', 'corner.radius', 'fill.paint', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
   })
 
@@ -66,8 +66,8 @@ describe('design sections', () => {
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])

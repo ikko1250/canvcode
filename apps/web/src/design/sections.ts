@@ -1,5 +1,29 @@
 import { createElement } from 'react'
-import { Blend, Layers2, PaintBucket, PenLine, Radius, Ruler, Shapes } from 'lucide-react'
+import {
+  ALargeSmall,
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Asterisk,
+  Blend,
+  Bold,
+  Italic,
+  Layers2,
+  List,
+  ListOrdered,
+  ListX,
+  MoveHorizontal,
+  MoveVertical,
+  PaintBucket,
+  PenLine,
+  Radius,
+  Ruler,
+  Shapes,
+  Strikethrough,
+  Type,
+  Underline,
+  type LucideIcon,
+} from 'lucide-react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
   chartRowsOf,
@@ -615,6 +639,19 @@ export const shadowsField: DesignField<ShadowsChange> = {
 // 図形の中の文字の項目は、デザインパネルの「文字」のタブに出す（図形の見た目と分ける。TEXT_SECTION_TAB）
 const hasText = (node: NodeRecord) => richTextTargetOf(node) !== undefined
 
+// 文字の項目は、名前を出さずに何行かにまとめる（row）。太さと大きさ、スタイルと色、行間と文字間、揃えとリスト
+const TEXT_METRICS_ROW = 'text.metrics'
+const TEXT_STYLE_ROW = 'text.style'
+const TEXT_SPACING_ROW = 'text.spacing'
+const TEXT_PARAGRAPH_ROW = 'text.paragraph'
+
+// 切り替えのボタンのアイコン（lucide を 16px で。ボタンは大きさを渡さずに描く）
+function buttonIcon(Icon: LucideIcon) {
+  return function ButtonIcon() {
+    return createElement(Icon, { size: 16, strokeWidth: 1.75, 'aria-hidden': true })
+  }
+}
+
 // 文字の範囲ごとに持てる書式の項目（MAI-74）。
 // - 文字を編集中で範囲を選んでいれば、その範囲の文字の値を見せ（違えば「混在」）、その範囲に当てる
 // - そうでなければノード全体：すべての文字の値を見せ、変えるとノードの既定（props）を変えて範囲ごとの値を外す。
@@ -624,6 +661,8 @@ export function textFormatField<K extends keyof TextRunFormat>(options: {
   label: string
   key: K
   control: FieldControl
+  icon?: DesignField['icon']
+  row?: string
 }): DesignField<Required<TextRunFormat>[K]> {
   const { key } = options
   type V = Required<TextRunFormat>[K]
@@ -639,6 +678,8 @@ export function textFormatField<K extends keyof TextRunFormat>(options: {
   return {
     id: options.id,
     label: options.label,
+    icon: options.icon,
+    row: options.row,
     control: options.control,
     appliesTo: hasText,
     read: (node) => values(node, null)[0],
@@ -669,6 +710,7 @@ export const fontFamilyField = textFormatField({
   id: 'text.fontFamily',
   label: 'フォント',
   key: 'fontFamily',
+  icon: Type,
   control: { kind: 'font' },
 })
 
@@ -691,6 +733,7 @@ const fontWeightNumberField = textFormatField({ id: 'text.fontWeight', label: '�
 export const fontWeightField: DesignField<string> = {
   id: 'text.fontWeight',
   label: '太さ',
+  row: TEXT_METRICS_ROW,
   control: { kind: 'select', options: FONT_WEIGHTS.map((weight) => ({ value: String(weight), label: `${FONT_WEIGHT_NAMES[weight]} ${weight}` })) },
   appliesTo: fontWeightNumberField.appliesTo,
   read: (node) => String(fontWeightNumberField.read(node)),
@@ -702,6 +745,8 @@ export const fontSizeField = textFormatField({
   id: 'text.fontSize',
   label: '大きさ',
   key: 'fontSize',
+  icon: ALargeSmall,
+  row: TEXT_METRICS_ROW,
   control: { kind: 'number', min: 1, max: 400, step: 1, unit: 'px' },
 })
 
@@ -710,6 +755,7 @@ export const textColorField = textFormatField({
   id: 'text.color',
   label: '色',
   key: 'color',
+  row: TEXT_STYLE_ROW,
   control: { kind: 'color' },
 })
 
@@ -719,24 +765,14 @@ export const textColorField = textFormatField({
 // 文字を編集中は、パネル・ツールバーのボタンも Ctrl+B などと同じ TextEditor.toggleFormat で切り替える（textToggles.ts）
 export const TEXT_STYLE_GROUP = 'スタイル'
 
-function letterIcon(letter: string, style: Record<string, string | number>) {
-  return function LetterIcon() {
-    return createElement(
-      'svg',
-      { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true },
-      createElement('text', { x: 8, y: 12.5, textAnchor: 'middle', fontSize: 13, fontFamily: 'Georgia, serif', fill: 'currentColor', style }, letter),
-    )
-  }
+function toggleField(key: TextToggleFormat, title: string, icon: LucideIcon) {
+  return textFormatField({ id: `text.${key}`, label: title, key, row: TEXT_STYLE_ROW, control: { kind: 'toggle', title, icon: buttonIcon(icon), group: TEXT_STYLE_GROUP } })
 }
 
-function toggleField(key: TextToggleFormat, title: string, icon: ReturnType<typeof letterIcon>) {
-  return textFormatField({ id: `text.${key}`, label: title, key, control: { kind: 'toggle', title, icon, group: TEXT_STYLE_GROUP } })
-}
-
-export const boldField = toggleField('bold', '太字', letterIcon('B', { fontWeight: 700 }))
-export const italicField = toggleField('italic', '斜体', letterIcon('I', { fontStyle: 'italic' }))
-export const underlineField = toggleField('underline', '下線', letterIcon('U', { textDecoration: 'underline' }))
-export const strikethroughField = toggleField('strikethrough', '取り消し線', letterIcon('S', { textDecoration: 'line-through' }))
+export const boldField = toggleField('bold', '太字', Bold)
+export const italicField = toggleField('italic', '斜体', Italic)
+export const underlineField = toggleField('underline', '下線', Underline)
+export const strikethroughField = toggleField('strikethrough', '取り消し線', Strikethrough)
 
 export const TEXT_TOGGLE_FIELDS: Record<TextToggleFormat, DesignField<boolean>> = {
   bold: boldField,
@@ -745,29 +781,17 @@ export const TEXT_TOGGLE_FIELDS: Record<TextToggleFormat, DesignField<boolean>> 
   strikethrough: strikethroughField,
 }
 
-// アイコンは 3 本の横線で、揃えの側をそろえる（MAI-50）
-function alignIcon(lines: [number, number][]) {
-  return function AlignIcon() {
-    return createElement(
-      'svg',
-      { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true },
-      lines.map(([x1, x2], i) =>
-        createElement('line', { key: i, x1, x2, y1: 4 + i * 4, y2: 4 + i * 4, stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
-      ),
-    )
-  }
-}
-
 const ALIGN_OPTIONS: SegmentOption[] = [
-  { value: 'left', title: '左揃え', icon: alignIcon([[2, 14], [2, 10], [2, 14]]) },
-  { value: 'center', title: '中央揃え', icon: alignIcon([[2, 14], [4, 12], [2, 14]]) },
-  { value: 'right', title: '右揃え', icon: alignIcon([[2, 14], [6, 14], [2, 14]]) },
+  { value: 'left', title: '左揃え', icon: buttonIcon(AlignLeft) },
+  { value: 'center', title: '中央揃え', icon: buttonIcon(AlignCenter) },
+  { value: 'right', title: '右揃え', icon: buttonIcon(AlignRight) },
 ]
 
 // 古い付箋には align がないので、左揃えとして読む（MAI-50）。align のない図形は中央揃え（geoLabelStyle）
 export const textAlignField: DesignField<TextAlign> = {
   id: 'text.align',
   label: '揃え',
+  row: TEXT_PARAGRAPH_ROW,
   control: { kind: 'segmented', options: ALIGN_OPTIONS },
   appliesTo: hasText,
   read: (node) => richTextTargetOf(node)!.style(node.props).align,
@@ -786,6 +810,8 @@ export type LineHeightChange = LineHeight | { convertTo: LineHeightUnit }
 export const lineHeightField: DesignField<LineHeightChange> = {
   id: 'text.lineHeight',
   label: '行間',
+  icon: MoveVertical,
+  row: TEXT_SPACING_ROW,
   control: { kind: 'lineHeight' },
   appliesTo: hasText,
   // 行の高さを持たない古いノードは、型の既定の倍率（テキスト・図形 1.35、付箋 1.4）を見せる
@@ -806,6 +832,8 @@ export const lineHeightField: DesignField<LineHeightChange> = {
 export const letterSpacingField: DesignField<number> = {
   id: 'text.letterSpacing',
   label: '文字間',
+  icon: MoveHorizontal,
+  row: TEXT_SPACING_ROW,
   appliesTo: hasText,
   control: {
       kind: 'number',
@@ -839,14 +867,15 @@ function withParagraphs(node: NodeRecord, paragraphs: TextParagraph[]): NodeReco
 }
 
 const LIST_TYPE_OPTIONS: SegmentOption[] = [
-  { value: 'none', title: 'リストにしない', label: 'なし' },
-  { value: 'bullet', title: '箇条書き', label: '箇条書き' },
-  { value: 'ordered', title: '番号付きリスト', label: '番号' },
+  { value: 'none', title: 'リストにしない', icon: buttonIcon(ListX) },
+  { value: 'bullet', title: '箇条書き', icon: buttonIcon(List) },
+  { value: 'ordered', title: '番号付きリスト', icon: buttonIcon(ListOrdered) },
 ]
 
 export const listTypeField: DesignField<ListKind> = {
   id: 'text.list',
   label: 'リスト',
+  row: TEXT_PARAGRAPH_ROW,
   control: { kind: 'segmented', options: LIST_TYPE_OPTIONS },
   appliesTo: hasText,
   read: (node) => listTypeField.values!(node, null)[0],
@@ -881,6 +910,7 @@ const LIST_STYLE_OPTIONS: SelectOption[] = [
 export const listStyleField: DesignField<TextListStyle | 'none'> = {
   id: 'text.listStyle',
   label: '記号',
+  icon: Asterisk,
   control: { kind: 'select', options: LIST_STYLE_OPTIONS },
   appliesTo: hasText,
   read: (node) => listStyleField.values!(node, null)[0],
@@ -938,7 +968,7 @@ export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, hideTitle: true, fields: [fillField] },
   { id: 'stroke', title: '線', order: 200, hideTitle: true, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
   { id: 'effects', title: '効果', order: 250, hideTitle: true, fields: [shadowsField] },
-  { id: 'text', title: '文字', order: 300, tab: textSectionTab, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
+  { id: 'text', title: '文字', order: 300, tab: textSectionTab, hideTitle: true, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, textColorField, lineHeightField, letterSpacingField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, hideTitle: true, footer: true, fields: [opacityField] },
 
 ]

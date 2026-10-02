@@ -233,7 +233,7 @@ const LINE_HEIGHT_UNITS: { unit: LineHeightUnit; label: string; title: string }[
   { unit: 'px', label: 'px', title: 'ピクセル（文字の大きさによらない）' },
 ]
 
-// 行の高さ。数字の入力と、単位（倍率・px）の切り替え。
+// 行の高さ。数字の入力と、その右の単位（倍率・px）の選択。
 // 「24px」と打てば px、「150%」なら倍率 1.5、単位のない数字は今の単位で読む。単位のボタンは、見た目を変えずに単位だけを変える。
 // ↑↓ で倍率は 0.05・px は 1 刻み（Shift で 10 倍）
 export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & { editor: ValueEditor<LineHeightChange> }) {
@@ -285,21 +285,29 @@ export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & 
             onBlur={commitDraft}
             onKeyDown={onKeyDown}
           />
+          <select
+            className="design-unit-select"
+            aria-label={`${label}の単位`}
+            title={LINE_HEIGHT_UNITS.find((option) => option.unit === unit)?.title ?? `${label}の単位`}
+            value={unit ?? ''}
+            onChange={(e) => {
+              if (e.target.value === '') return
+              editor.set({ convertTo: e.target.value as LineHeightUnit })
+              onDone?.()
+            }}
+          >
+            {unit === null && (
+              <option value="" disabled>
+                {MIXED_LABEL}
+              </option>
+            )}
+            {LINE_HEIGHT_UNITS.map((option) => (
+              <option key={option.unit} value={option.unit}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </span>
-        <div className="design-segmented" role="group" aria-label={`${label}の単位`}>
-          {LINE_HEIGHT_UNITS.map((option) => (
-            <button
-              key={option.unit}
-              title={option.title}
-              aria-pressed={unit === option.unit}
-              className={unit === option.unit ? 'active' : ''}
-              onPointerDown={(e) => e.preventDefault()}
-              onClick={() => editor.set({ convertTo: option.unit })}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   )

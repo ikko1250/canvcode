@@ -1043,7 +1043,7 @@ body,
   position: absolute;
   right: 12px;
   top: 52px;
-  width: 300px;
+  width: 320px;
   max-width: calc(100% - 24px);
   max-height: calc(100% - 64px);
   overflow-y: auto;
@@ -1369,11 +1369,71 @@ body,
 }
 
 .design-field-row > .design-field {
+  flex: 0 0 auto;
+  min-width: 0;
   margin-bottom: 0;
 }
 
-.design-field-row .design-label {
+/* 行の中では、アイコンのない名前は出さない（読み上げは各入力の名前） */
+.design-field-row .design-label:not(.icon) {
   display: none;
+}
+
+/* セレクト・カラーコードを持つ項目は残りの幅に伸ばす（文字の太さ、文字の色） */
+.design-field-row > .design-field:has(.design-select),
+.design-field-row > .design-field:has(.design-hex) {
+  flex: 1 1 0;
+}
+
+/* 文字の太さと大きさ、スタイルと色：フォントの欄にそろえて、アイコンの列の分だけ下げる */
+.design-field-row[data-row='text.metrics'],
+.design-field-row[data-row='text.style'] {
+  padding-left: 32px;
+}
+
+.design-field-row[data-row='text.style'] {
+  gap: 6px 8px;
+}
+
+.design-field-row[data-row='text.style'] .design-segmented > button {
+  min-width: 32px;
+  padding: 0;
+}
+
+.design-field-row[data-row='text.style'] .design-control {
+  gap: 4px;
+}
+
+.design-field-row[data-row='text.style'] .design-hex {
+  padding: 0 6px;
+}
+
+/* 行間と文字間は半分ずつ */
+.design-field-row[data-row='text.spacing'] > .design-field {
+  flex: 1 1 0;
+}
+
+.design-field-row[data-row='text.spacing'] .design-number {
+  width: 100%;
+}
+
+/* 行間の単位（× / px）。数字の欄の中の小さなセレクト */
+.design-unit-select {
+  flex: 0 0 auto;
+  height: 100%;
+  padding: 0 20px 0 2px;
+  border: none;
+  border-radius: var(--dp-radius);
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23747e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
+  color: var(--dp-secondary);
+  font: inherit;
+  font-size: 12px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.design-unit-select:focus-visible {
+  outline: 2px solid var(--dp-selected);
 }
 
 /* 色の見本（MAI-81）。押すとカラーピッカーを開く。不透明度のある色が分かるよう、市松模様の上に色を重ねる */
@@ -1816,9 +1876,14 @@ body,
   color: #b35c00;
 }
 
-.design-font-name.mixed,
-.design-font-caret {
-  color: var(--muted);
+.design-font-name.mixed {
+  color: var(--dp-secondary);
+}
+
+.design-panel button svg.design-font-caret {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--dp-secondary);
 }
 
 .design-font-popup {

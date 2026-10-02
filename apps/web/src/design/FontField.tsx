@@ -1,3 +1,4 @@
+import { ChevronDown } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { fontFamilyCss, fontLabel, type FontCategory, type FontOption } from '@canvcode/nodes'
@@ -135,9 +136,7 @@ export function FontField(props: { label: string; icon?: DesignIcon; value: Shar
               !
             </span>
           )}
-          <span className="design-font-caret" aria-hidden>
-            ▾
-          </span>
+          <ChevronDown className="design-font-caret" size={16} strokeWidth={2} aria-hidden />
         </button>
         {missing && <div className="design-font-missing">{missingNote()}</div>}
         {open && (

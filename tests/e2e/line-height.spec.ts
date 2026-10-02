@@ -128,10 +128,9 @@ test('changes the line height from the design panel as a multiplier and in pixel
   await page.mouse.click(at.x, at.y)
   const text = page.getByTestId('design-panel').locator('[data-section="text"]')
   const input = text.getByRole('textbox', { name: '行間' })
-  const multiplier = text.getByRole('button', { name: '×' })
-  const px = text.getByRole('button', { name: 'px' })
+  const unit = text.getByRole('combobox', { name: '行間の単位' })
   await expect(input).toHaveValue('1.35')
-  await expect(multiplier).toHaveAttribute('aria-pressed', 'true')
+  await expect(unit).toHaveValue('multiplier')
 
   const propsOf = () => (saved.get('node:text') as { props: { lineHeight?: unknown } } | undefined)?.props
   await input.fill('2')
@@ -139,14 +138,14 @@ test('changes the line height from the design panel as a multiplier and in pixel
   await expect.poll(() => propsOf()?.lineHeight).toEqual({ unit: 'multiplier', value: 2 })
 
   // 単位を px にすると、見た目を変えずに換算する（16px × 2）
-  await px.click()
+  await unit.selectOption('px')
   await expect(input).toHaveValue('32')
   await expect.poll(() => propsOf()?.lineHeight).toEqual({ unit: 'px', value: 32 })
   // 「150%」は倍率
   await input.fill('150%')
   await input.press('Enter')
   await expect(input).toHaveValue('1.5')
-  await expect(multiplier).toHaveAttribute('aria-pressed', 'true')
+  await expect(unit).toHaveValue('multiplier')
   await input.fill('40px')
   await input.press('Enter')
   await expect.poll(() => propsOf()?.lineHeight).toEqual({ unit: 'px', value: 40 })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ArrowUpRight, Boxes, ChartPie, Frame, Group, Image, PenLine, Shapes, StickyNote, Type, X } from 'lucide-react'
 import type { NodeRecord } from '@canvcode/core'
 import {
@@ -167,15 +167,16 @@ export function DesignPanel(props: {
     />
   )
 
-  const sectionView = ({ section, fields, showComponent }: VisibleSection) => (
-    <section key={section.id} className={section.joinPrevious ? 'design-section joined' : 'design-section'} data-section={section.id}>
-      {!section.hideTitle && <h3>{section.title}</h3>}
-      {fieldRows(fields).map((row) =>
-        row.kind === 'row' ? (
+  const rowView = (row: FieldRow): ReactNode => {
+    switch (row.kind) {
+      case 'row':
+        return (
           <div key={row.row} className="design-field-row" data-row={row.row}>
-            {row.fields.map((item) => fieldView(item))}
+            {row.items.map(rowView)}
           </div>
-        ) : row.kind === 'toggles' ? (
+        )
+      case 'toggles':
+        return (
           <ToggleGroup
             key={row.group}
             label={row.group}
@@ -196,10 +197,16 @@ export function DesignPanel(props: {
               }
             })}
           />
-        ) : (
-          fieldView(row.field)
-        ),
-      )}
+        )
+      case 'field':
+        return fieldView(row.field)
+    }
+  }
+
+  const sectionView = ({ section, fields, showComponent }: VisibleSection) => (
+    <section key={section.id} className={section.joinPrevious ? 'design-section joined' : 'design-section'} data-section={section.id}>
+      {!section.hideTitle && <h3>{section.title}</h3>}
+      {fieldRows(fields).map(rowView)}
       {showComponent && section.Component && <section.Component nodes={nodes} />}
     </section>
   )
@@ -318,23 +325,34 @@ function FieldView(props: {
   }
 }
 
-// オン・オフのボタン（group の同じ項目が続くもの）と、row の同じ項目が続くものを 1 行にまとめる
+// row の同じ項目が続くものを 1 行にまとめ、その中（と行の外）で、オン・オフのボタン（group の同じ項目が続くもの）を 1 つの組にまとめる
 type FieldRow =
   | { kind: 'field'; field: VisibleSection['fields'][number] }
   | { kind: 'toggles'; group: string; fields: VisibleSection['fields'] }
-  | { kind: 'row'; row: string; fields: VisibleSection['fields'] }
+  | { kind: 'row'; row: string; items: FieldRow[] }
 
 function fieldRows(fields: VisibleSection['fields']): FieldRow[] {
   const rows: FieldRow[] = []
+  let i = 0
+  while (i < fields.length) {
+    const row = fields[i].field.row
+    if (row === undefined) {
+      const start = i
+      while (i < fields.length && fields[i].field.row === undefined) i++
+      rows.push(...toggleRows(fields.slice(start, i)))
+    } else {
+      const start = i
+      while (i < fields.length && fields[i].field.row === row) i++
+      rows.push({ kind: 'row', row, items: toggleRows(fields.slice(start, i)) })
+    }
+  }
+  return rows
+}
+
+function toggleRows(fields: VisibleSection['fields']): FieldRow[] {
+  const rows: FieldRow[] = []
   for (const item of fields) {
     const control = item.field.control
-    const row = item.field.row
-    if (row !== undefined && control.kind !== 'toggle') {
-      const last = rows.at(-1)
-      if (last?.kind === 'row' && last.row === row) last.fields.push(item)
-      else rows.push({ kind: 'row', row, fields: [item] })
-      continue
-    }
     if (control.kind !== 'toggle') {
       rows.push({ kind: 'field', field: item })
       continue
