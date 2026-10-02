@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, letterSpacingOf, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
 import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
 
@@ -12,6 +12,7 @@ import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, ty
 // 版 1 は文字をプレーンテキスト（text）で持っていた。
 // fontFamily（文字の既定のフォント。MAI-75）は版を上げずに足した。持たない古い付箋は既定のフォントで描く。
 // 行の高さ（lineHeight。倍率か px。MAI-76）も版を上げずに足した。高さは文字のレイアウトから出すので、行の高さを変えると付箋も伸び縮みする
+// 文字間（letterSpacing。em。MAI-77）も版を上げずに足した。持たない古い付箋は 0
 export interface NoteProps {
   paragraphs: TextParagraph[]
   w: number
@@ -23,6 +24,8 @@ export interface NoteProps {
   align: TextAlign
   // 行の高さ（倍率か px。MAI-76）。版を上げずに足した。持たない（古い・既定のままの）ものは NOTE_DEFAULT_LINE_HEIGHT の倍率
   lineHeight?: LineHeight
+  // 文字間（em。MAI-77）。版を上げずに足した。持たない（古い・既定のままの）ものは 0
+  letterSpacing?: number
 }
 
 export type NoteNode = NodeRecord<NoteProps>
@@ -39,6 +42,7 @@ export function noteStyle(props: NoteProps): TextStyle {
   return {
     fontSize: props.fontSize,
     ...lineHeightStyle(props.lineHeight, NOTE_DEFAULT_LINE_HEIGHT),
+    letterSpacing: letterSpacingOf(props.letterSpacing),
     fontWeight: 400,
     color: NOTE_TEXT_COLOR,
     align: textAlignOf(props.align),

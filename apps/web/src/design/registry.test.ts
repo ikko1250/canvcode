@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_TEXT_COLOR, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { fillColorField, fontFamilyField, fontSizeField, lineHeightField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { fillColorField, fontFamilyField, fontSizeField, letterSpacingField, lineHeightField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -29,15 +29,15 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['fill', 'stroke', 'layer'])
     expect(fieldIds([geo])).toEqual(['fill.color', 'stroke.color', 'stroke.width', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
   })
 
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
-    // テキストと付箋：フォント・文字の大きさ・行間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.color', 'text.align', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.color', 'text.align', 'layer.opacity'])
+    // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
+    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -235,5 +235,31 @@ describe('line height field (MAI-76)', () => {
     expect(lineHeightField.write(text, { convertTo: 'px' }).props).toMatchObject({ lineHeight: { unit: 'px', value: 16.2 } })
     expect(lineHeightField.write(big, { convertTo: 'px' }).props).toMatchObject({ lineHeight: { unit: 'px', value: 28 } })
     expect(lineHeightField.write(text, { convertTo: 'multiplier' })).toBe(text)
+  })
+})
+
+describe('letter spacing field (MAI-77)', () => {
+  const valueOf = (nodes: NodeRecord[]) =>
+    visibleSections(nodes)
+      .flatMap((s) => s.fields)
+      .find((f) => f.field.id === 'text.letterSpacing')!.value
+
+  it('reads 0 for records without letterSpacing, and shows it as % of the font size', () => {
+    const { text, note } = setup()
+    expect((text.props as TextProps).letterSpacing).toBeUndefined()
+    expect(valueOf([text, note])).toEqual({ kind: 'same', value: 0 })
+    const control = letterSpacingField.control as Extract<typeof letterSpacingField.control, { kind: 'number' }>
+    expect(control.toDisplay!(0.05)).toBe(5)
+    expect(control.fromDisplay!(-2.5)).toBe(-0.025)
+  })
+
+  it('writes em to the node, and is undoable', () => {
+    const { editor, text, note } = setup()
+    expect(letterSpacingField.write(text, 0)).toBe(text)
+    editNodes(editor, [text.id, note.id], (node) => letterSpacingField.write(node, 0.1), 'test')
+    expect((editor.getNode(text.id)!.props as TextProps).letterSpacing).toBe(0.1)
+    expect((editor.getNode(note.id)!.props as NoteProps).letterSpacing).toBe(0.1)
+    editor.undo()
+    expect((editor.getNode(text.id)!.props as TextProps).letterSpacing).toBeUndefined()
   })
 })

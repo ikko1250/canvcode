@@ -1,5 +1,6 @@
 import {
   cleanFormat,
+  cssLetterSpacing,
   fontFamilyCss,
   fontFamilyFromCss,
   normalizeRichText,
@@ -15,6 +16,8 @@ import {
 // 文字の編集用の DOM（contenteditable）と、範囲ごとに書式を持つテキスト（MAI-74）の行き来。
 // - 書き出し：段落ごとに div、run ごとに span。span には書式（既定から変えた値）を属性で持たせ、見た目は style で付ける
 //   （フォントは Canvas と同じ CSS の font-family。MAI-75）。
+//   文字間（MAI-77）は em で、CSS では指定した要素の文字の大きさで換算されて子に継がれるので、文字の大きさを持つ div・span ごとに指定する
+//   （Canvas と同じく run の大きさで換算する）。
 //   空の段落は <br> だけを持ち、div にその段落の書式を持たせる（そこで打った文字の書式になる）
 // - 読み取り：ブラウザがその場で変えた DOM（文字を打つ・IME・段落の中での削除）も読めるようにする。
 //   段落は div などのブロックと、途中の <br> で分ける。文字の書式は、いちばん近い祖先の書式の属性から読み、
@@ -46,6 +49,8 @@ function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextSty
   const styles = runs.map((run) => runStyle(base, run.format))
   // 段落の要素自身の文字（行の高さの strut）は、段落の中で最も小さい文字にする（Canvas のレイアウトと同じ。layout.ts）
   div.style.fontSize = `${Math.min(...styles.map((style) => style.fontSize))}px`
+  const letterSpacing = cssLetterSpacing(base)
+  if (letterSpacing !== 'normal') div.style.letterSpacing = letterSpacing
   if (paragraphText(paragraph) === '') {
     if (runs[0].format) div.setAttribute(RUN_FORMAT_ATTRIBUTE, JSON.stringify(runs[0].format))
     div.style.color = styles[0].color
@@ -60,6 +65,7 @@ function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextSty
     span.style.fontSize = `${styles[i].fontSize}px`
     span.style.color = styles[i].color
     span.style.fontFamily = fontFamilyCss(styles[i].fontFamily)
+    if (letterSpacing !== 'normal') span.style.letterSpacing = letterSpacing
     span.textContent = run.text
     div.append(span)
   }

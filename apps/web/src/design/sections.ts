@@ -7,6 +7,8 @@ import {
   convertLineHeight,
   formatAt,
   formatsInRange,
+  letterSpacingOf,
+  LETTER_SPACING_LIMITS,
   lineHeightOf,
   noteStyle,
   paragraphsOf,
@@ -192,6 +194,30 @@ export const lineHeightField: DesignField<LineHeightChange> = {
   },
 }
 
+// 文字間（MAI-77）。ノード単位で、props には em（文字の大きさに対する割合）で持つ。
+// パネルでは Figma と同じく文字の大きさに対する % で見せる（5% = 0.05em）。持たない古いノードは 0
+export const letterSpacingField: DesignField<number> = {
+  ...propField<number>({
+    id: 'text.letterSpacing',
+    label: '文字間',
+    keys: { text: 'letterSpacing', note: 'letterSpacing' },
+    control: {
+      kind: 'number',
+      min: LETTER_SPACING_LIMITS.min * 100,
+      max: LETTER_SPACING_LIMITS.max * 100,
+      step: 0.5,
+      unit: '%',
+      toDisplay: (value) => Number((value * 100).toFixed(1)),
+      fromDisplay: (value) => Number((value / 100).toFixed(4)),
+    },
+  }),
+  read: (node) => letterSpacingOf((node.props as { letterSpacing?: unknown }).letterSpacing),
+  write(node, value) {
+    if (!letterSpacingField.appliesTo(node) || letterSpacingField.read(node) === value) return node
+    return { ...node, props: { ...(node.props as object), letterSpacing: value } }
+  },
+}
+
 // ---- レイヤー ----
 
 // 不透明度はノードのレコードの opacity（0〜1）。パネルでは 0〜100 % で見せる。
@@ -219,7 +245,7 @@ export const opacityField: DesignField<number> = {
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillColorField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
-  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, lineHeightField, textColorField, textAlignField] },
+  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, lineHeightField, letterSpacingField, textColorField, textAlignField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]
 

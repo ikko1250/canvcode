@@ -11,6 +11,9 @@ import { richTextFromPlain, type TextParagraph, type TextRunFormat } from './ric
 
 // 行間（行の高さ）はノード単位で、倍率か px（MAI-76。LineHeight）。CSS の line-height と同じく、倍率は文字ごとの大きさに掛け、px は文字の大きさによらない。
 // フォントは fonts.ts（MAI-75）。テキストと付箋は範囲ごとにフォントを変えられ、ほかは既定のフォント（TEXT_FONT_FAMILY）
+// 文字間（letter-spacing）はノード単位で、em（文字の大きさに対する割合。MAI-77）。CSS の letter-spacing と同じく、
+// 文字（書記素）ごとに、その文字の大きさで換算した空きを文字の後ろに足す（行末の文字の後ろにも付き、行の幅・折り返しに数える）。
+// Canvas2D の ctx.letterSpacing が使えれば測り・描画ともそれを使い、使えなければ、文字の数 × 空きを足して測り、文字ごとにずらして描く
 
 export type TextAlign = 'left' | 'center' | 'right'
 
@@ -25,6 +28,8 @@ export interface TextStyle {
   align: TextAlign
   // フォントの名前（fonts.ts）。なければ既定のフォント（MAI-75）
   fontFamily?: string
+  // 文字間（em。fontSize に対する割合で、文字ごとにその文字の大きさで換算する）。なければ 0（MAI-77）
+  letterSpacing?: number
 }
 
 // ノードの props に持つ行の高さ（MAI-76）。倍率（multiplier）か px。
@@ -70,6 +75,26 @@ export function lineBoxHeight(style: Pick<TextStyle, 'fontSize' | 'lineHeight' |
 // 編集用の DOM に指定する line-height（子の要素に継ぐ。倍率は文字ごとの大きさに、px はそのまま効く）
 export function cssLineHeight(style: Pick<TextStyle, 'lineHeight' | 'fixedLineHeight'>): string {
   return style.fixedLineHeight !== undefined ? `${style.fixedLineHeight}px` : String(style.lineHeight)
+}
+
+// 文字間の範囲（em。デザインパネルで入れられる値。MAI-77）
+export const LETTER_SPACING_LIMITS = { min: -0.5, max: 2 } as const
+
+// props の文字間（em）を、TextStyle の letterSpacing にする。持たない（古い）ノード・読めない値は 0（今までと同じ見た目）
+export function letterSpacingOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+// 文字 1 つの後ろに足す空き（px）。em をその文字の大きさで換算する（CSS と同じ）
+export function letterSpacingPx(style: Pick<TextStyle, 'fontSize' | 'letterSpacing'>): number {
+  return (style.letterSpacing ?? 0) * style.fontSize
+}
+
+// 編集用の DOM に指定する letter-spacing。em はその要素の文字の大きさで換算されて子に継がれるので、
+// 文字の大きさを持つ要素（段落・run の要素。richTextDom.ts）ごとに指定する
+export function cssLetterSpacing(style: Pick<TextStyle, 'letterSpacing'>): string {
+  const em = style.letterSpacing ?? 0
+  return em === 0 ? 'normal' : `${em}em`
 }
 
 // テキストと付箋の文字の大きさの段階（MAI-50）。パレットの「大きく」「小さく」で、この中を行き来する
@@ -147,15 +172,44 @@ function getMeasureContext() {
 const widthCache = new Map<string, Map<string, number>>()
 registerTextMetricsCache(() => widthCache.clear())
 
-// フォントごとに、語の幅をキャッシュして測る。Canvas がない環境（Node でのテスト）では概算する
+// Canvas2D の ctx.letterSpacing が使えるか（Chrome 99・Firefox 115・Safari 18.4 から。MAI-77）。テストで切り替えられるように変数にする
+let nativeLetterSpacing: boolean | undefined
+
+function hasNativeLetterSpacing(ctx: { letterSpacing?: unknown } | null): boolean {
+  nativeLetterSpacing ??= Boolean(ctx && typeof ctx.letterSpacing === 'string')
+  return nativeLetterSpacing
+}
+
+// テスト用：ctx.letterSpacing が使えないブラウザとして振る舞わせる（undefined で元に戻す）
+export function setNativeLetterSpacingForTest(value: boolean | undefined): void {
+  nativeLetterSpacing = value
+  widthCache.clear()
+}
+
+// 文字間を足す単位（書記素。CSS の typographic character unit に近い）の数。Intl.Segmenter がなければ符号位置で数える
+const graphemeSegmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
+
+export function graphemesOf(text: string): string[] {
+  return graphemeSegmenter ? Array.from(graphemeSegmenter.segment(text), (s) => s.segment) : [...text]
+}
+
+// フォントごとに、語の幅をキャッシュして測る。Canvas がない環境（Node でのテスト）では概算する。
+// 文字間があれば、ctx.letterSpacing で測る（使えなければ、文字間なしの幅に 文字の数 × 空き を足す）
 function measurerFor(style: TextStyle): Measure {
   const font = cssFont(style)
-  let cache = widthCache.get(font)
+  const spacing = letterSpacingPx(style)
+  const ctx = getMeasureContext()
+  const native = spacing !== 0 && ctx !== null && hasNativeLetterSpacing(ctx)
+  if (spacing !== 0 && !native) {
+    const plain = measurerFor({ ...style, letterSpacing: 0 })
+    return (text) => plain(text) + graphemesOf(text).length * spacing
+  }
+  const key = spacing === 0 ? font : `${font}|${spacing}px`
+  let cache = widthCache.get(key)
   if (!cache) {
     cache = new Map()
-    widthCache.set(font, cache)
+    widthCache.set(key, cache)
   }
-  const ctx = getMeasureContext()
   return (text) => {
     let width = cache.get(text)
     if (width === undefined) {
@@ -163,7 +217,9 @@ function measurerFor(style: TextStyle): Measure {
         // Web フォントなら読み込みを頼む（読み込み終えたら、キャッシュを捨てて測り直す。fonts.ts）
         requestFontLoad(style.fontFamily, font, text)
         ctx.font = font
+        if (native) ctx.letterSpacing = `${spacing}px`
         width = ctx.measureText(text).width
+        if (native) ctx.letterSpacing = '0px'
       } else {
         width = approximateWidth(text, style.fontSize)
       }
@@ -421,6 +477,10 @@ export function drawTextLayout(
   ctx.textAlign = 'left'
   const top = verticalAlign === 'middle' ? box.y + (box.h - layout.height) / 2 : box.y
   let font = ''
+  // 文字間（MAI-77）。ctx.letterSpacing が使えれば指定して描き、使えなければ文字ごとにずらして描く。描き終えたら戻す
+  const native = hasNativeLetterSpacing(ctx)
+  const previousSpacing = native ? ctx.letterSpacing : undefined
+  let spacingCss = previousSpacing
   for (const line of layout.lines) {
     const x = lineLeft(line, style.align, box)
     const y = top + line.top + line.baseline
@@ -428,9 +488,25 @@ export function drawTextLayout(
       const segmentFont = cssFont(segment.style)
       if (segmentFont !== font) ctx.font = font = segmentFont
       ctx.fillStyle = segment.style.color
-      ctx.fillText(segment.text, x + segment.x, y)
+      const spacing = letterSpacingPx(segment.style)
+      if (spacing === 0 || native) {
+        if (native) {
+          const css = `${spacing}px`
+          if (css !== spacingCss) ctx.letterSpacing = spacingCss = css
+        }
+        ctx.fillText(segment.text, x + segment.x, y)
+      } else {
+        // 測り（measurerFor）と同じく、文字間なしの幅 + 前の文字の数 × 空き の位置に 1 文字ずつ描く
+        const plain = measurerFor({ ...segment.style, letterSpacing: 0 })
+        let before = ''
+        for (const [i, ch] of graphemesOf(segment.text).entries()) {
+          ctx.fillText(ch, x + segment.x + plain(before) + i * spacing, y)
+          before += ch
+        }
+      }
     }
   }
+  if (native && spacingCss !== previousSpacing) ctx.letterSpacing = previousSpacing!
 }
 
 // ズームアウト時の簡略表示：行ごとに灰色の帯を描く（MAI-14）

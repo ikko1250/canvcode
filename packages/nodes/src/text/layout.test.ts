@@ -1,13 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   TEXT_FONT_SIZES,
   breakUnits,
   convertLineHeight,
+  cssLetterSpacing,
   cssLineHeight,
+  drawTextLayout,
   layoutRichText,
   layoutText,
   lineHeightOf,
+  letterSpacingOf,
   lineHeightStyle,
+  setNativeLetterSpacingForTest,
   stepFontSize,
   type TextStyle,
 } from './layout.ts'
@@ -190,5 +194,91 @@ describe('line height (MAI-76)', () => {
     const tight = layoutRichText([{ runs: [{ text: 'ab', format: { fontSize: 20 } }] }], { ...style, fixedLineHeight: 10 }, null).lines[0]
     expect(tight.height).toBe(10)
     expect(tight.baseline).toBeCloseTo(17.6 - 5)
+  })
+})
+
+describe('letter spacing (MAI-77)', () => {
+  afterEach(() => setNativeLetterSpacingForTest(undefined))
+  const spaced: TextStyle = { ...style, letterSpacing: 0.1 }
+
+  it('reads missing or broken values as 0, and writes em to the editing DOM', () => {
+    expect(letterSpacingOf(undefined)).toBe(0)
+    expect(letterSpacingOf('1em')).toBe(0)
+    expect(letterSpacingOf(Number.NaN)).toBe(0)
+    expect(letterSpacingOf(-0.05)).toBe(-0.05)
+    expect(cssLetterSpacing(style)).toBe('normal')
+    expect(cssLetterSpacing(spaced)).toBe('0.1em')
+  })
+
+  it('adds the spacing after every character, also after the last one (like CSS)', () => {
+    // 'ab'：5.5 + 5.5、空きは 1px × 2
+    expect(layoutText('ab', spaced, null).width).toBeCloseTo(13)
+    expect(layoutText('日本', { ...style, letterSpacing: -0.1 }, null).width).toBeCloseTo(18)
+    // 0 は今までと同じ
+    expect(layoutText('ab', { ...style, letterSpacing: 0 }, null).width).toBeCloseTo(11)
+  })
+
+  it('converts em by the size of each run', () => {
+    // 'ab' 10px（空き 1px）と 'cd' 20px（空き 2px）
+    const line = layoutRichText([{ runs: [{ text: 'ab' }, { text: 'cd', format: { fontSize: 20 } }] }], spaced, null).lines[0]
+    expect(line.segments.map((s) => [s.x, s.width])).toEqual([
+      [0, 13],
+      [13, 26],
+    ])
+    expect(line.width).toBeCloseTo(39)
+  })
+
+  it('wraps with the spacing counted', () => {
+    // 全角 3 文字：空きなしなら 30px に収まるが、1px ずつ足すと 33px で収まらない
+    expect(layoutText('日本語', style, 30).lines.map((l) => l.text)).toEqual(['日本語'])
+    expect(layoutText('日本語', spaced, 30).lines.map((l) => l.text)).toEqual(['日本', '語'])
+    expect(layoutText('日本語', spaced, 33).lines.map((l) => l.text)).toEqual(['日本語'])
+  })
+
+  it('counts a grapheme cluster as one character', () => {
+    // 結合文字（e + U+0301）は 1 文字として、空きを 1 つだけ足す
+    const plain = layoutText('e\u0301', style, null).width
+    expect(layoutText('e\u0301', spaced, null).width).toBeCloseTo(plain + 1)
+  })
+
+  const fakeContext = (native: boolean) => {
+    const calls: { text: string; x: number; spacing?: string }[] = []
+    const ctx: Record<string, unknown> = {
+      font: '',
+      fillStyle: '',
+      textAlign: 'left',
+      textBaseline: 'alphabetic',
+      fillText(text: string, x: number) {
+        calls.push(native ? { text, x, spacing: ctx.letterSpacing as string } : { text, x })
+      },
+    }
+    if (native) ctx.letterSpacing = '0px'
+    return { ctx: ctx as unknown as CanvasRenderingContext2D, calls }
+  }
+
+  it('draws with ctx.letterSpacing when the browser has it, and restores it', () => {
+    setNativeLetterSpacingForTest(true)
+    const { ctx, calls } = fakeContext(true)
+    const layout = layoutRichText([{ runs: [{ text: 'ab' }, { text: 'cd', format: { fontSize: 20 } }] }], spaced, null)
+    drawTextLayout(ctx, layout, spaced, { x: 0, y: 0, w: 100, h: 100 }, 'top')
+    expect(calls.map((c) => [c.text, c.spacing])).toEqual([
+      ['ab', '1px'],
+      ['cd', '2px'],
+    ])
+    expect(ctx.letterSpacing).toBe('0px')
+  })
+
+  it('draws character by character at the measured positions without ctx.letterSpacing', () => {
+    setNativeLetterSpacingForTest(false)
+    const { ctx, calls } = fakeContext(false)
+    const layout = layoutRichText([{ runs: [{ text: 'ab' }, { text: 'cd', format: { fontSize: 20 } }] }], spaced, null)
+    drawTextLayout(ctx, layout, spaced, { x: 0, y: 0, w: 100, h: 100 }, 'top')
+    // a: 0、b: 5.5 + 1、c: 13、d: 13 + 11 + 2
+    expect(calls.map((c) => [c.text, c.x])).toEqual([
+      ['a', 0],
+      ['b', 6.5],
+      ['c', 13],
+      ['d', 26],
+    ])
   })
 })

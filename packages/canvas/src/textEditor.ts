@@ -3,6 +3,7 @@ import {
   applyRunFormat,
   baseFormatOf,
   cssFont,
+  cssLetterSpacing,
   cssLineHeight,
   formatAt,
   formatOfCharAt,
@@ -30,7 +31,7 @@ import { TEXT_CLIPBOARD_MIME, parseTextClipboard, textClipboardData } from './te
 // 文字の編集モード（MAI-9、MAI-24）。
 // 編集中は、ノードの位置・向き・倍率に合わせた編集用の要素（contenteditable）を編集用の DOM レイヤーに重ねる。
 // 文字を打つたびに、同じトランザクションの中でノードを更新する（終えたときに 1 回の Undo になる）。
-// フォント・行の高さ・折り返しの規則は、Canvas での描画（text/layout.ts）と同じにしてある。
+// フォント・行の高さ・文字間・折り返しの規則は、Canvas での描画（text/layout.ts）と同じにしてある。
 //
 // 範囲ごとの書式（MAI-74）：
 // - 要素の中は段落ごとの div と run ごとの span（richTextDom.ts）。文字を打つ・IME・段落の中での削除はブラウザに任せ、
@@ -730,6 +731,8 @@ function applyEditorStyle(element: HTMLElement, spec: TextEditSpec<object>): voi
   const { style } = spec
   element.style.font = cssFont(style)
   element.style.lineHeight = cssLineHeight(style)
+  // 文字間（MAI-77）。em は要素ごとの文字の大きさで換算するので、段落・run の要素にも付ける（richTextDom.ts）
+  element.style.letterSpacing = cssLetterSpacing(style)
   element.style.color = style.color
   element.style.caretColor = style.color
   element.style.textAlign = style.align
