@@ -230,6 +230,7 @@ test('toggles with Ctrl+B / I / U and Ctrl+Shift+X while editing, and from the t
   await expect.poll(runsOf).toEqual([
     { text: 'hello', format: { italic: true, underline: true, strikethrough: true } },
     { text: ' world' },
-    { text: '!!', format: { bold: true } },
+    // 太字は太さ 700 として持つ
+    { text: '!!', format: { fontWeight: 700 } },
   ])
 })

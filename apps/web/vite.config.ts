@@ -38,6 +38,10 @@ function pdfjsData(): Plugin {
 
 // 開発時は Vite の開発サーバーから API へプロキシする（MAI-4）。
 // VPS 上で動かすので、待ち受けは 127.0.0.1 のみ。SSH のポートフォワードで開く。
+// プロキシ先は CANVCODE_API_TARGET で変えられる（既定は手元のサーバー 8787）。
+// e2e テストは誰も待ち受けていない先にし、差し替えていない API（/api/sync の WebSocket など）が本物のサーバーに届かないようにする（playwright.config.ts）
+const API_TARGET = process.env.CANVCODE_API_TARGET ?? 'http://127.0.0.1:8787'
+
 export default defineConfig({
   // スライドエディタは Preact を使うため、React Fast Refresh の変換対象から外す。
   plugins: [react({ exclude: /src\/slides\// }), pdfjsData()],
@@ -56,7 +60,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       // /api/events は WebSocket（MAI-30）
-      '/api': { target: 'http://127.0.0.1:8787', ws: true },
+      '/api': { target: API_TARGET, ws: true },
     },
   },
   preview: {
