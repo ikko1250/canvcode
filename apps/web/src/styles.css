@@ -1244,6 +1244,86 @@ body,
   line-height: 1;
 }
 
+/* 塗りの種類（グラデーション。MAI-82）。押すとピッカーを開く */
+.design-panel button.design-paint-kind {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 56px;
+  height: 22px;
+  text-align: left;
+}
+
+/* 塗りの種類の切り替え（単色・線形・円形）。ピッカーの幅いっぱいに並べる */
+.design-paint-types {
+  display: flex;
+}
+
+.design-panel .design-paint-types button {
+  flex: 1;
+}
+
+/* グラデーションの編集（MAI-82）。止め色の帯は、市松模様の上に今のグラデーション。印はその止め色 */
+.design-gradient {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.design-gradient-bar {
+  position: relative;
+  height: 16px;
+  margin: 6px 8px 10px;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+  cursor: copy;
+  touch-action: none;
+}
+
+.design-gradient-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+}
+
+.design-panel button.design-gradient-stop {
+  position: absolute;
+  top: 50%;
+  min-width: 0;
+  width: 14px;
+  height: 22px;
+  margin: -11px 0 0 -7px;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 6px 6px, #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  cursor: ew-resize;
+}
+
+.design-panel button.design-gradient-stop > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.design-panel button.design-gradient-stop.selected {
+  box-shadow: 0 0 0 2px var(--accent), 0 1px 2px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+}
+
+.design-gradient-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.design-panel button.design-gradient-remove {
+  height: 22px;
+  font-size: 11px;
+}
+
 /* カラーピッカー（MAI-81）。パネルの中、項目の下に開く */
 .design-color-popup {
   box-sizing: border-box;

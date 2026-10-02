@@ -16,8 +16,9 @@ export type FieldControl =
   // 色（文字列）。押すとカラーピッカー（ColorPicker.tsx）を開く
   | { kind: 'color' }
   // 塗り（MAI-81。値は Fill、書くのは FillChange）。カラーピッカーに加えて、塗りの不透明度と塗りなしを選べる。
-  // opacity・none は、そのノードの塗りが不透明度・塗りなしを持てるか（選んでいるノードのすべてが持てるときだけ出す）
-  | { kind: 'paint'; opacity?: (node: NodeRecord) => boolean; none?: (node: NodeRecord) => boolean }
+  // opacity・none・gradient は、そのノードの塗りが不透明度・塗りなし・グラデーション（MAI-82）を持てるか
+  // （選んでいるノードのすべてが持てるときだけ出す）
+  | { kind: 'paint'; opacity?: (node: NodeRecord) => boolean; none?: (node: NodeRecord) => boolean; gradient?: (node: NodeRecord) => boolean }
   | {
       kind: 'number'
       min?: number

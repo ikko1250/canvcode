@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
-import { NOTE_TEXT_COLOR, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
+import { NOTE_TEXT_COLOR, gradientStop, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
 import { applyFillChange, boldField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
@@ -372,5 +372,36 @@ describe('fill field', () => {
     expect(applyFillChange(solidPaint('#ff0000'), { change: 'opacity', opacity: 0.25 })).toEqual(solidPaint('#ff0000', 0.25))
     expect(applyFillChange(solidPaint('#00ff00', 0.4), { change: 'opacity', opacity: 2 })).toEqual(solidPaint('#00ff00', 1))
     expect(applyFillChange(solidPaint('#00ff00'), solidPaint('#123456'))).toEqual(solidPaint('#123456'))
+  })
+
+  // グラデーション（MAI-82）
+  it('switches the paint type from the current color and back', () => {
+    const { geo, note } = setup()
+    const linear = fillField.write(geo, { change: 'type', type: 'linear' })
+    expect((linear.props as { fill: unknown }).fill).toEqual(linearGradient([gradientStop(0, '#e8eefc', 1), gradientStop(1, '#e8eefc', 0)]))
+    const radial = fillField.write(linear, { change: 'type', type: 'radial' })
+    expect((radial.props as { fill: { type: string } }).fill.type).toBe('radial')
+    expect((fillField.write(radial, { change: 'type', type: 'solid' }).props as { fill: unknown }).fill).toEqual(solidPaint('#e8eefc'))
+    // 付箋の地はグラデーションにしない
+    const control = fillField.control as Extract<typeof fillField.control, { kind: 'paint' }>
+    expect(control.gradient?.(note)).toBe(false)
+    expect(control.gradient?.(geo)).toBe(true)
+    expect(fillField.write(note, { change: 'type', type: 'linear' })).toBe(note)
+  })
+
+  it('changes the stops, the angle in the size of each shape, and the radial center and radius', () => {
+    const stops = [gradientStop(0, '#000000'), gradientStop(1, '#ffffff')]
+    const linear = linearGradient(stops)
+    // 横長の箱の 0°（左から右）
+    expect(applyFillChange(linear, { change: 'angle', angle: 0 }, { w: 200, h: 100 })).toMatchObject({ start: { x: 0, y: 0.5 }, end: { x: 1, y: 0.5 } })
+    const three = [...stops, gradientStop(0.5, '#ff0000')]
+    expect((applyFillChange(linear, { change: 'stops', stops: three }) as typeof linear).stops.map((s) => s.position)).toEqual([0, 0.5, 1])
+    // 止め色は 2 つより少なくしない
+    expect(applyFillChange(linear, { change: 'stops', stops: [stops[0]] })).toBe(linear)
+    const radial = radialGradient(stops)
+    expect(applyFillChange(radial, { change: 'radial', center: { x: 0.2, y: 0.3 } })).toMatchObject({ center: { x: 0.2, y: 0.3 }, radius: 0.5 })
+    expect(applyFillChange(radial, { change: 'radial', radius: 0.8 })).toMatchObject({ center: { x: 0.5, y: 0.5 }, radius: 0.8 })
+    // 単色に角度は当たらない
+    expect(applyFillChange(solidPaint('#ff0000'), { change: 'angle', angle: 30 })).toEqual(solidPaint('#ff0000'))
   })
 })

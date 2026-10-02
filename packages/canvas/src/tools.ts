@@ -33,6 +33,7 @@ import {
 } from '@canvcode/nodes'
 import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
+import { GradientHandleDrag, hitGradientHandle, paintEditingTarget } from './gradientHandles.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import {
@@ -111,6 +112,8 @@ export interface ToolContext {
 export function selectionHandles(editor: Editor): { selection: TransformSelection; handles: ScreenHandles } | null {
   // 矢印を 1 つだけ選んでいるときは、枠ではなく端と曲がりのハンドルを出す（arrowHandles）
   if (arrowHandles(editor)) return null
+  // 塗りのグラデーションを編集している間は、そのハンドルだけを出す（MAI-82）
+  if (paintEditingTarget(editor)) return null
   const selection = editor.transformSelection()
   if (!selection) return null
   const camera = editor.session.get().camera
@@ -258,6 +261,8 @@ type SelectState =
     }
   | { name: 'draggingArrowEnd'; tx: Transaction<WorkspaceRecord>; drag: ArrowTerminalDrag }
   | { name: 'bendingArrow'; tx: Transaction<WorkspaceRecord>; arrowId: string }
+  // グラデーションのハンドルをドラッグしている（MAI-82）
+  | { name: 'draggingGradient'; tx: Transaction<WorkspaceRecord>; nodeId: string; drag: GradientHandleDrag }
   | {
       name: 'rotating'
       tx: Transaction<WorkspaceRecord>
@@ -298,6 +303,15 @@ export class SelectTool implements Tool {
         editor.session.set({ quoteArmed: false })
         this.ctx.setCursor(null)
       }
+    }
+    // 塗りのグラデーションのハンドル（MAI-82）。編集している間は、ほかのハンドルより先に調べる
+    const gradientHit = hitGradientHandle(editor, pointer.screen)
+    if (gradientHit) {
+      const nodeId = gradientHit.handles.nodeId
+      const tx = editor.begin(gradientHit.hit.handle === 'line' ? 'add gradient stop' : 'edit gradient')
+      this.ctx.lift([nodeId])
+      this.state = { name: 'draggingGradient', tx, nodeId, drag: new GradientHandleDrag(editor, tx, nodeId, gradientHit.hit) }
+      return
     }
     // 矢印の端と曲がりのハンドル（MAI-28）
     const arrowHit = hitArrowHandle(editor, pointer)
@@ -350,6 +364,13 @@ export class SelectTool implements Tool {
     const state = this.state
     switch (state.name) {
       case 'idle': {
+        const gradientHit = hitGradientHandle(editor, pointer.screen)
+        if (gradientHit) {
+          this.ctx.setCursor(gradientHit.hit.handle === 'line' ? 'copy' : 'pointer')
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          this.setHoveredSpacing(null)
+          return
+        }
         if (hitArrowHandle(editor, pointer)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
@@ -387,6 +408,10 @@ export class SelectTool implements Tool {
       }
       case 'draggingArrowEnd': {
         state.drag.move(pointer)
+        return
+      }
+      case 'draggingGradient': {
+        state.drag.move(pointer.world, pointer.shiftKey)
         return
       }
       case 'selectingQuote': {
@@ -563,6 +588,9 @@ export class SelectTool implements Tool {
       if (state.name === 'draggingArrowEnd') state.drag.end()
       editor.finish(state.tx)
       this.ctx.drop()
+    } else if (state.name === 'draggingGradient') {
+      editor.finish(state.tx)
+      this.ctx.drop()
     }
     this.state = { name: 'idle' }
   }
@@ -583,7 +611,8 @@ export class SelectTool implements Tool {
       state.name === 'rotating' ||
       state.name === 'spacing' ||
       state.name === 'draggingArrowEnd' ||
-      state.name === 'bendingArrow'
+      state.name === 'bendingArrow' ||
+      state.name === 'draggingGradient'
     ) {
       state.tx.cancel()
       this.ctx.drop()

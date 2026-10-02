@@ -1,6 +1,7 @@
 import type { Box, Camera } from '@canvcode/core'
 import type { SnapGuide } from './snapping.ts'
 import type { Axis } from './arrange.ts'
+import type { PaintEditing } from './gradientHandles.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
@@ -33,6 +34,9 @@ export interface SessionState {
   hoveredSpacing: { axis: Axis; gapIndex: number } | null
   // 間隔のハンドルをドラッグしている間の、今の間隔（棒の横に数字で出す）
   spacingDrag: { axis: Axis; gap: number } | null
+  // 塗りを編集している図形と、選んでいる止め色（MAI-82）。デザインパネルでグラデーションの塗りを開いている間だけ。
+  // その図形を 1 つだけ選んでいれば、図形の上にグラデーションのハンドルを出す（gradientHandles.ts）
+  paintEditing: PaintEditing | null
 }
 
 export interface DrawStyle {
@@ -70,6 +74,7 @@ export class Session {
       snapGuides: [],
       hoveredSpacing: null,
       spacingDrag: null,
+      paintEditing: null,
       ...initial,
     }
   }

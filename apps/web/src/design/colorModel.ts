@@ -1,5 +1,5 @@
 import type { SharedValue } from '@canvcode/canvas'
-import { fillPreviewColor, normalizeColor, parseHexColor, rgbToHex, type Fill } from '@canvcode/nodes'
+import { normalizeColor, paintCss, parseHexColor, rgbToHex, type Fill, type PaintType } from '@canvcode/nodes'
 import { normalizeHexColor } from './parse.ts'
 
 // カラーピッカーの色の計算（MAI-81）。ピッカーは HSV（色相・彩度・明度）で動かし、ノードには #rrggbb で入れる
@@ -60,7 +60,8 @@ export function eyeDropperColor(value: string): string | null {
   return rgbToHex({ r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) })
 }
 
-// 選んでいるノードの塗りから、パネルに出す値（色・不透明度は、すべて同じときだけ。違えば null）
+// 選んでいるノードの塗りから、パネルに出す値（色・不透明度・種類は、すべて同じときだけ。違えば null）。
+// preview は見本の CSS の background（グラデーションなら CSS のグラデーション）
 export function paintSummary(value: SharedValue<Fill>) {
   const fills = value.kind === 'same' ? [value.value] : value.values
   const first = fills[0]
@@ -68,5 +69,6 @@ export function paintSummary(value: SharedValue<Fill>) {
   const anyNone = fills.some((fill) => fill === null)
   const color = !anyNone && first?.type === 'solid' && fills.every((fill) => fill?.type === 'solid' && normalizeColor(fill.color) === normalizeColor(first.color)) ? first.color : null
   const opacity = !anyNone && first && fills.every((fill) => fill?.opacity === first.opacity) ? first.opacity : null
-  return { allNone, anyNone, color, opacity, preview: value.kind === 'same' ? fillPreviewColor(value.value) : null }
+  const type: PaintType | null = !anyNone && first && fills.every((fill) => fill?.type === first.type) ? first.type : null
+  return { allNone, anyNone, color, opacity, type, preview: value.kind === 'same' ? paintCss(value.value) : null }
 }

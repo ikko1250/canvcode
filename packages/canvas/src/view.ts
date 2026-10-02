@@ -66,6 +66,7 @@ import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
+import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
 import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
 import { ImageCache } from './imageCache.ts'
@@ -1379,7 +1380,8 @@ export class CanvasView {
       state.focusedGroupId !== prev.focusedGroupId ||
       state.snapGuides !== prev.snapGuides ||
       state.hoveredSpacing !== prev.hoveredSpacing ||
-      state.spacingDrag !== prev.spacingDrag
+      state.spacingDrag !== prev.spacingDrag ||
+      state.paintEditing !== prev.paintEditing
     ) {
       this.invalidate('overlay')
     }
@@ -1515,6 +1517,11 @@ export class CanvasView {
     }
     if (e.key === 'Escape') {
       if (this.tool.cancel()) return
+      // 塗りのグラデーションを編集していれば、編集を終える（選択はそのまま。MAI-82）
+      if (editor.session.get().paintEditing) {
+        editor.session.set({ paintEditing: null })
+        return
+      }
       // group の中に入っていれば、group を選んで外に出る。そうでなければ選択を外す
       const focused = editor.session.get().focusedGroupId
       if (focused) {
@@ -1612,6 +1619,11 @@ export class CanvasView {
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
+      // 塗りのグラデーションを編集している間は、ノードではなく、選んでいる止め色を消す（MAI-82）
+      if (paintEditingTarget(editor)) {
+        removeSelectedStop(editor)
+        return
+      }
       void this.deleteSelection()
       return
     }

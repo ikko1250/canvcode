@@ -14,6 +14,7 @@ import type { SnapGuide } from './snapping.ts'
 import type { Axis } from './arrange.ts'
 import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
+import { gradientHandles, type GradientHandles } from './gradientHandles.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
 // - 画面に見えているノードだけを、重なり順に描く
@@ -35,6 +36,10 @@ const SPACING_COLOR = '#e64980'
 const SPACING_BAR_PX = 2
 const SPACING_BAR_HOVER_PX = 4
 const SPACING_LABEL_FONT_PX = 12
+// グラデーションのハンドル（MAI-82）：始点・終点（中心・半径）は白い丸、止め色はその色の丸（選んでいるものは大きく、青い縁）
+const GRADIENT_END_RADIUS_PX = 5
+const GRADIENT_STOP_RADIUS_PX = 6
+const GRADIENT_SELECTED_STOP_RADIUS_PX = 7.5
 
 export interface Viewport {
   camera: Camera
@@ -245,6 +250,10 @@ export function drawOverlay(
     }
   }
 
+  // 塗りのグラデーションのハンドル（MAI-82）
+  const gradient = gradientHandles(editor)
+  if (gradient) drawGradientHandles(ctx, gradient, view.dpr)
+
   // 範囲選択の枠
   if (state.brush) {
     ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -395,4 +404,60 @@ function drawSpacingHandles(
     }
   }
   ctx.lineCap = 'butt'
+}
+
+// グラデーションのハンドル：始点→終点の線（白に薄い影）、端の白い丸、線の上の止め色。
+// 円形では、中心から半径の点への線と、その半径の楕円の目安（点線）を出す
+function drawGradientHandles(ctx: CanvasRenderingContext2D, handles: GradientHandles, dpr: number): void {
+  const d = (p: { x: number; y: number }) => ({ x: p.x * dpr, y: p.y * dpr })
+  const start = d(handles.start)
+  const end = d(handles.end)
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.save()
+  ctx.lineCap = 'round'
+  // 線（どの地の色でも見えるよう、暗い縁取りの上に白）
+  for (const [color, width] of [
+    ['rgba(0, 0, 0, 0.35)', 3],
+    ['#ffffff', 1.5],
+  ] as const) {
+    ctx.strokeStyle = color
+    ctx.lineWidth = width * dpr
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(end.x, end.y)
+    ctx.stroke()
+  }
+  const circle = (p: { x: number; y: number }, radius: number, fill: string, stroke: string, lineWidth: number) => {
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, radius * dpr, 0, Math.PI * 2)
+    ctx.fillStyle = fill
+    ctx.fill()
+    ctx.lineWidth = lineWidth * dpr
+    ctx.strokeStyle = stroke
+    ctx.stroke()
+  }
+  // 止め色（選んでいるものを最後に、上に描く）
+  const stops = [...handles.stops].sort((a, b) => Number(a.index === handles.selectedStop) - Number(b.index === handles.selectedStop))
+  for (const { index, point, stop } of stops) {
+    const selected = index === handles.selectedStop
+    const p = d(point)
+    // 不透明度のある色が分かるよう、白の上に重ねる
+    circle(p, selected ? GRADIENT_SELECTED_STOP_RADIUS_PX : GRADIENT_STOP_RADIUS_PX, '#ffffff', selected ? SELECTION_COLOR : '#ffffff', selected ? 2.5 : 2)
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, (selected ? GRADIENT_SELECTED_STOP_RADIUS_PX : GRADIENT_STOP_RADIUS_PX) * dpr - 2 * dpr, 0, Math.PI * 2)
+    ctx.globalAlpha = Math.max(0.15, stop.opacity)
+    ctx.fillStyle = stop.color
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+  // 端（位置 0・1 の止め色の上に重なるので、小さな丸で縁だけ見せる）
+  for (const p of [start, end]) {
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, GRADIENT_END_RADIUS_PX * dpr, 0, Math.PI * 2)
+    ctx.lineWidth = 1.5 * dpr
+    ctx.strokeStyle = SELECTION_COLOR
+    ctx.stroke()
+  }
+  circle(start, 2.5, SELECTION_COLOR, '#ffffff', 1)
+  ctx.restore()
 }

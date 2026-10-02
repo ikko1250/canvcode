@@ -1,7 +1,18 @@
-import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import type { SharedValue } from '@canvcode/canvas'
-import { GEO_DEFAULT_FILL, normalizeColor, solidPaint, type Fill } from '@canvcode/nodes'
+import { GEO_DEFAULT_FILL, isGradientPaint, normalizeColor, solidPaint, type Fill, type PaintType } from '@canvcode/nodes'
 import { MIXED_LABEL, Slider, type ValueEditor } from './controls.tsx'
+import { GradientEditor, type PaintEditing, type PaintEditingLink } from './GradientEditor.tsx'
 import { useDraft } from './useDraft.ts'
 import { eyeDropperColor, hsvToHex, paintSummary, syncHsv, type Hsv } from './colorModel.ts'
 import { UsedColorsContext } from './usedColorsContext.ts'
@@ -16,6 +27,9 @@ import type { FillChange } from './sections.ts'
 // - 見本の横の欄に #rrggbb を打てる（#abc・abc も読む）
 // - 塗り（PaintField）は、不透明度（0〜100 %）と塗りなしも選べる。不透明度は塗りだけに付ける（線・文字の色は不透明な色だけ。
 //   ノード全体の不透明度はレイヤーの項目）
+// - 図形の塗りは、ピッカーの上で種類（単色・線形・円形）を切り替えられる（MAI-82）。グラデーションなら、止め色の帯・位置・
+//   角度（中心・半径）を出し（GradientEditor.tsx）、ピッカーは選んでいる止め色の色と不透明度を変える。
+//   ピッカーを開いている間は、図形の上にグラデーションのハンドルを出す（PaintEditingLink）
 // ボタン・見本は pointerdown を止めて、キャンバス（編集中の文字）からフォーカスを奪わない
 
 // EyeDropper API（Chromium 系だけ）。ないブラウザではスポイトのボタンを出さない
@@ -44,8 +58,12 @@ export function ColorPicker(props: {
   onPreview(change: ColorPickerChange): void
   onEnd(commit: boolean): void
   onClose(): void
+  // ピッカーの上に出すもの（塗りの種類の切り替え・グラデーションの編集。MAI-82）
+  header?: ReactNode
+  // 不透明度のスライダーの名前（既定は「〈label〉の不透明度」）
+  opacityLabel?: string
 }) {
-  const { label, color, opacity, onSet, onPreview, onEnd, onClose } = props
+  const { label, color, opacity, onSet, onPreview, onEnd, onClose, header, opacityLabel } = props
   const getUsedColors = useContext(UsedColorsContext)
   // 開いたときに集める（開いている間に色を変えても、一覧の並びは動かさない）
   const used = useMemo(() => getUsedColors(), [getUsedColors])
@@ -119,6 +137,7 @@ export function ColorPicker(props: {
         }
       }}
     >
+      {header}
       <div
         ref={square}
         className="design-color-square"
@@ -157,7 +176,7 @@ export function ColorPicker(props: {
         // 不透明度のスライダーの背景は、透明から今の色へ
         <div className="design-color-row" style={{ '--alpha-color': hsvToHex(hsv) } as CSSProperties}>
           <Slider
-            label={`${label}の不透明度`}
+            label={opacityLabel ?? `${label}の不透明度`}
             className="design-alpha-slider"
             min={0}
             max={100}
@@ -215,18 +234,20 @@ function EyeDropperIcon() {
 
 // ---- 開け閉め ----
 
-// ピッカーを開いているか。項目の外を押したら閉じる（パネルの外を押したときの確定は DesignPanel が行う）
-function usePickerOpen() {
+// ピッカーを開いているか。項目の外を押したら閉じる（パネルの外を押したときの確定は DesignPanel が行う）。
+// keep が true を返す所（キャンバスのグラデーションのハンドル）を押したときは閉じない
+function usePickerOpen(keep?: (e: PointerEvent) => boolean) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     const onPointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+      if (rootRef.current?.contains(e.target as Node) || keep?.(e)) return
+      setOpen(false)
     }
     window.addEventListener('pointerdown', onPointerDown, true)
     return () => window.removeEventListener('pointerdown', onPointerDown, true)
-  }, [open])
+  }, [open, keep])
   return { open, setOpen, rootRef }
 }
 
@@ -326,35 +347,116 @@ export function ColorField(props: { label: string; value: SharedValue<string>; e
 // 選び直すとパネルの項目は作り直されるので、項目の外（このタブの間）で覚えておく
 let lastRemovedFill: Fill = null
 
+const PAINT_TYPE_OPTIONS = [
+  { value: 'solid', title: '単色', label: '単色' },
+  { value: 'linear', title: '線形のグラデーション', label: '線形' },
+  { value: 'radial', title: '円形のグラデーション', label: '円形' },
+] as const
+
+const PAINT_TYPE_LABELS: Record<PaintType, string> = { solid: '単色', linear: '線形', radial: '円形' }
+
 export function PaintField(props: {
   label: string
   value: SharedValue<Fill>
   editor: ValueEditor<FillChange>
-  // 不透明度・塗りなしを選べるか（選んでいるノードのすべてが持てるとき）
+  // 不透明度・塗りなし・グラデーションを選べるか（選んでいるノードのすべてが持てるとき）
   canOpacity: boolean
   canNone: boolean
+  canGradient?: boolean
+  // 選んでいるノードの箱の大きさ（線形の角度を見せる。MAI-82）
+  sizes?: readonly { w: number; h: number }[]
+  // 図形の上のグラデーションのハンドルとのつなぎ（1 つの図形を選んでいるときだけ）と、今の編集の状態（session.paintEditing）
+  link?: PaintEditingLink | null
+  paintEditing?: PaintEditing | null
   onDone?: () => void
 }) {
-  const { label, value, editor, canOpacity, canNone, onDone } = props
-  const { open, setOpen, rootRef } = usePickerOpen()
+  const { label, value, editor, canOpacity, canNone, canGradient = false, sizes = [], link = null, paintEditing = null, onDone } = props
+  const { open, setOpen, rootRef } = usePickerOpen(link?.ownsPointer)
   const summary = paintSummary(value)
-  const toChange = (change: ColorPickerChange): FillChange =>
-    'color' in change ? { change: 'color', color: change.color } : { change: 'opacity', opacity: change.opacity }
+  const gradient = value.kind === 'same' && isGradientPaint(value.value) ? value.value : null
+  // 選んでいる止め色。キャンバスとつながっていれば session の値（キャンバスのハンドルで選んだものも）
+  const [localStop, setLocalStop] = useState(0)
+  const rawStop = link && paintEditing ? paintEditing.stop : localStop
+  const stopIndex = gradient ? Math.min(Math.max(0, rawStop), gradient.stops.length - 1) : 0
+  const selectStop = (index: number) => {
+    setLocalStop(index)
+    link?.selectStop(index)
+  }
+
+  // グラデーションのピッカーを開いている間は、図形の上にハンドルを出す
+  const editingGradient = open && gradient !== null
+  const stopRef = useRef(stopIndex)
+  useEffect(() => {
+    stopRef.current = stopIndex
+  })
+  useEffect(() => {
+    if (!link || !editingGradient) return
+    link.begin(stopRef.current)
+    return () => link.end()
+  }, [link, editingGradient])
+  // キャンバスで編集を終えた（Esc）ら、ピッカーも閉じる（始めたあとに、編集中から null に変わったとき）
+  const seen = useRef(false)
+  useEffect(() => {
+    if (!link || !editingGradient) {
+      seen.current = false
+    } else if (paintEditing) {
+      seen.current = true
+    } else if (seen.current) {
+      seen.current = false
+      setOpen(false)
+    }
+  }, [link, paintEditing, editingGradient, setOpen])
+
+  const toChange = (change: ColorPickerChange): FillChange => {
+    if (gradient) {
+      const stops = gradient.stops.map((stop, i) => (i === stopIndex ? ('color' in change ? { ...stop, color: change.color } : { ...stop, opacity: change.opacity }) : stop))
+      return { change: 'stops', stops }
+    }
+    return 'color' in change ? { change: 'color', color: change.color } : { change: 'opacity', opacity: change.opacity }
+  }
 
   const state = summary.allNone ? 'none' : summary.preview ? 'color' : 'mixed'
   const showOpacity = canOpacity && !summary.anyNone
+  // 塗りの種類（ピッカーの上の 1 行）
+  const typeSwitch =
+    canGradient && !summary.anyNone ? (
+      <div className="design-segmented design-paint-types" role="group" aria-label="種類">
+        {PAINT_TYPE_OPTIONS.map((option) => {
+          const active = summary.type === option.value
+          return (
+            <button
+              key={option.value}
+              title={option.title}
+              aria-pressed={active}
+              className={active ? 'active' : ''}
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => editor.set({ change: 'type', type: option.value })}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+    ) : null
+  const selectedStop = gradient?.stops[stopIndex]
   return (
     <div className="design-field design-color-field design-paint-field" ref={rootRef}>
       <span className="design-label">{label}</span>
       <div className="design-control">
         <SwatchButton label={label} color={summary.preview} state={state} open={open} onToggle={() => setOpen(!open)} />
-        <HexInput
-          label={label}
-          value={summary.color}
-          placeholder={summary.allNone ? 'なし' : value.kind === 'mixed' ? MIXED_LABEL : ''}
-          onCommit={(c) => editor.set({ change: 'color', color: c })}
-          onDone={onDone}
-        />
+        {summary.type === 'linear' || summary.type === 'radial' ? (
+          <button className="design-paint-kind" title={`${label}を編集する`} onPointerDown={(e) => e.preventDefault()} onClick={() => setOpen(!open)}>
+            {PAINT_TYPE_LABELS[summary.type]}
+          </button>
+        ) : (
+          <HexInput
+            label={label}
+            value={summary.color}
+            placeholder={summary.allNone ? 'なし' : value.kind === 'mixed' ? MIXED_LABEL : ''}
+            onCommit={(c) => editor.set({ change: 'color', color: c })}
+            onDone={onDone}
+          />
+        )}
         {showOpacity && <OpacityInput label={`${label}の不透明度`} value={summary.opacity} onCommit={(o) => editor.set({ change: 'opacity', opacity: o })} onDone={onDone} />}
         {canNone &&
           (summary.allNone ? (
@@ -371,9 +473,20 @@ export function PaintField(props: {
           ))}
         {open && (
           <ColorPicker
-            label={label}
-            color={summary.color}
-            opacity={canOpacity ? summary.opacity : undefined}
+            label={gradient ? `止め色 ${stopIndex + 1}` : label}
+            color={gradient ? (selectedStop?.color ?? null) : summary.color}
+            opacity={gradient ? (selectedStop?.opacity ?? 1) : canOpacity ? summary.opacity : undefined}
+            opacityLabel={gradient ? '止め色の不透明度' : undefined}
+            header={
+              typeSwitch || gradient ? (
+                <>
+                  {typeSwitch}
+                  {gradient && (
+                    <GradientEditor label={label} paint={gradient} sizes={sizes} selected={stopIndex} onSelect={selectStop} editor={editor} onDone={onDone} />
+                  )}
+                </>
+              ) : undefined
+            }
             onSet={(change) => editor.set(toChange(change))}
             onPreview={(change) => editor.preview(toChange(change))}
             onEnd={(commit) => editor.end(commit)}

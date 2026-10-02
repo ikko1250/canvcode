@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   KEEP_TEXT_EDITING_ATTRIBUTE,
   OWN_KEYS_ATTRIBUTE,
   PropertyEdit,
   editNodes,
+  hitGradientHandle,
   usedColors,
   type CanvasView,
   type Editor,
+  type PaintEditing,
   type SharedValue,
   type TextSelection,
 } from '@canvcode/canvas'
@@ -17,7 +19,8 @@ import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
 import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
-import { TEXT_TOGGLE_FIELDS } from './sections.ts'
+import { TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
+import type { PaintEditingLink } from './GradientEditor.tsx'
 import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggles.ts'
 
 // デザインパネル（MAI-73）。Figma の右のパネルのように、選んでいるノードの見た目のプロパティを並べて変える。
@@ -29,6 +32,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 //   パネルにフォーカスが移っても文字の編集は終わらない（data-keep-text-editing）。値を入れ終えたら、編集中の文字にフォーカスを戻す
 // - 太字・斜体・下線・取り消し線（MAI-79）は 1 行にボタンを並べる（control の group）。編集中は Ctrl+B などと同じに切り替える（textToggles.ts）
 // - 色の項目はカラーピッカー（ColorPicker.tsx。MAI-81）。「このキャンバスで使った色」は、ピッカーを開いたときに今の Canvas から集める
+// - 塗りのグラデーション（MAI-82）を開いている間は、図形の上にハンドルを出す（session.paintEditing。1 つの図形を選んでいるときだけ）
 
 export function DesignPanel(props: {
   editor: Editor
@@ -102,6 +106,11 @@ export function DesignPanel(props: {
 
   const getUsedColors = useCallback(() => usedColors(editor), [editor])
 
+  // 塗りのグラデーションを、図形の上のハンドルでも編集できるようにする（1 つだけ選んでいるとき）
+  const paintEditing = useSyncExternalStore(editor.session.subscribe, () => editor.session.get().paintEditing)
+  const singleId = nodes.length === 1 ? nodes[0].id : null
+  const paintLink = useMemo(() => paintEditingLink(editor, view, singleId), [editor, view, singleId])
+
   const sections = visibleSections(nodes, undefined, textSelection)
   if (sections.length === 0) return null
 
@@ -162,7 +171,15 @@ export function DesignPanel(props: {
                     })}
                   />
                 ) : (
-                  <FieldView key={row.field.field.id} field={row.field.field} value={row.field.value} editor={valueEditor(row.field.field)} nodes={nodes} onDone={backToCanvas} />
+                  <FieldView
+                    key={row.field.field.id}
+                    field={row.field.field}
+                    value={row.field.value}
+                    editor={valueEditor(row.field.field)}
+                    nodes={nodes}
+                    paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null }}
+                    onDone={backToCanvas}
+                  />
                 ),
               )}
               {showComponent && section.Component && <section.Component nodes={nodes} />}
@@ -174,8 +191,15 @@ export function DesignPanel(props: {
   )
 }
 
-function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; editor: ValueEditor<any>; nodes: readonly NodeRecord[]; onDone: () => void }) {
-  const { field, value, editor, nodes, onDone } = props
+function FieldView(props: {
+  field: DesignField<any>
+  value: SharedValue<any>
+  editor: ValueEditor<any>
+  nodes: readonly NodeRecord[]
+  paint: { link: PaintEditingLink | null; editing: PaintEditing | null }
+  onDone: () => void
+}) {
+  const { field, value, editor, nodes, paint, onDone } = props
   const control = field.control
   switch (control.kind) {
     case 'color':
@@ -188,6 +212,10 @@ function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; ed
           editor={editor}
           canOpacity={nodes.every((node) => control.opacity?.(node) ?? true)}
           canNone={nodes.every((node) => control.none?.(node) ?? true)}
+          canGradient={nodes.every((node) => control.gradient?.(node) ?? false)}
+          sizes={nodes.map(paintBoxSize)}
+          link={paint.link}
+          paintEditing={paint.editing}
           onDone={onDone}
         />
       )
@@ -225,6 +253,27 @@ function fieldRows(fields: VisibleSection['fields']): FieldRow[] {
     else rows.push({ kind: 'toggles', group: control.group, fields: [item] })
   }
   return rows
+}
+
+// 図形の上のグラデーションのハンドルとのつなぎ（MAI-82）。1 つだけ選んでいるときだけ
+function paintEditingLink(editor: Editor, view: CanvasView | null, nodeId: string | null): PaintEditingLink | null {
+  if (!nodeId) return null
+  return {
+    begin: (stop) => editor.session.set({ paintEditing: { nodeId, stop } }),
+    end: () => {
+      if (editor.session.get().paintEditing?.nodeId === nodeId) editor.session.set({ paintEditing: null })
+    },
+    selectStop: (stop) => {
+      const current = editor.session.get().paintEditing
+      if (current?.nodeId === nodeId && current.stop !== stop) editor.session.set({ paintEditing: { ...current, stop } })
+    },
+    ownsPointer: (e) => {
+      const root = view?.root
+      if (!root || !(e.target instanceof Node) || !root.contains(e.target)) return false
+      const rect = root.getBoundingClientRect()
+      return hitGradientHandle(editor, { x: e.clientX - rect.left, y: e.clientY - rect.top }) !== null
+    },
+  }
 }
 
 const noSubscription = () => () => {}

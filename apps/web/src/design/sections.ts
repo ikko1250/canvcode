@@ -1,11 +1,18 @@
 import { createElement } from 'react'
-import type { NodeRecord } from '@canvcode/core'
+import type { NodeRecord, Vec } from '@canvcode/core'
 import {
   applyRunFormat,
   clampOpacity,
+  convertPaint,
+  GEO_DEFAULT_FILL,
+  isGradientPaint,
   solidPaint,
+  sortStops,
   toFill,
+  withGradientAngle,
   type Fill,
+  type GradientStop,
+  type PaintType,
   baseFormatOf,
   clearRunFormat,
   convertLineHeight,
@@ -47,8 +54,17 @@ import { propField, registerDesignSection, type DesignField, type DesignSection,
 
 // 塗り（MAI-81）。図形の塗り（paint.ts の Fill：種類＋中身・不透明度・塗りなし）と、付箋の地の色（付箋の color）。
 // 値は Fill。書くときは、塗りそのもののほか、色だけ・不透明度だけを変えられる（複数を選んで色が違っても、不透明度だけをそろえるなど）。
-// 付箋の地は単色だけ：不透明度と塗りなしは持たない（control の opacity・none が false。パネルはそのボタンを出さない）
-export type FillChange = Fill | { change: 'color'; color: string } | { change: 'opacity'; opacity: number }
+// 付箋の地は単色だけ：不透明度・塗りなし・グラデーションは持たない（control の opacity・none・gradient が false。パネルはそのボタンを出さない）。
+// グラデーション（MAI-82）：種類の切り替え（今の色から始める。paint.ts の convertPaint）、止め色の並び、線形の角度、円形の中心・半径。
+// 角度はノードの箱の大きさで見た向きなので、ノードごとに換算する（withGradientAngle）
+export type FillChange =
+  | Fill
+  | { change: 'color'; color: string }
+  | { change: 'opacity'; opacity: number }
+  | { change: 'type'; type: PaintType }
+  | { change: 'stops'; stops: GradientStop[] }
+  | { change: 'angle'; angle: number }
+  | { change: 'radial'; center?: Vec; radius?: number }
 
 const FILL_TYPES = new Set(['geo', 'note'])
 
@@ -58,24 +74,43 @@ function readFill(node: NodeRecord): Fill {
   return toFill(props.fill)
 }
 
-// 今の塗りに、変更を当てた塗り
-export function applyFillChange(current: Fill, change: FillChange): Fill {
+// グラデーションの角度の換算に使う、ノードの箱の大きさ（図形の w・h）
+export function paintBoxSize(node: NodeRecord): { w: number; h: number } {
+  const props = node.props as { w?: unknown; h?: unknown }
+  return { w: typeof props.w === 'number' && props.w > 0 ? props.w : 1, h: typeof props.h === 'number' && props.h > 0 ? props.h : 1 }
+}
+
+// 今の塗りに、変更を当てた塗り。size はノードの箱の大きさ（線形の角度の換算）
+export function applyFillChange(current: Fill, change: FillChange, size: { w: number; h: number } = { w: 1, h: 1 }): Fill {
   if (change === null || !('change' in change)) return change
-  if (change.change === 'color') return current?.type === 'solid' ? { ...current, color: change.color } : solidPaint(change.color)
-  return current ? { ...current, opacity: clampOpacity(change.opacity) } : current
+  switch (change.change) {
+    case 'color':
+      return current?.type === 'solid' ? { ...current, color: change.color } : solidPaint(change.color, current?.opacity ?? 1)
+    case 'opacity':
+      return current ? { ...current, opacity: clampOpacity(change.opacity) } : current
+    case 'type':
+      return convertPaint(current, change.type, GEO_DEFAULT_FILL)
+    case 'stops':
+      return isGradientPaint(current) && change.stops.length >= 2 ? { ...current, stops: sortStops(change.stops) } : current
+    case 'angle':
+      return current?.type === 'linear' ? withGradientAngle(current, change.angle, size) : current
+    case 'radial':
+      if (current?.type !== 'radial') return current
+      return { ...current, center: change.center ?? current.center, radius: Math.max(0, change.radius ?? current.radius) }
+  }
 }
 
 export const fillField: DesignField<FillChange> = {
   id: 'fill.paint',
   label: '色',
-  control: { kind: 'paint', opacity: (node) => node.type === 'geo', none: (node) => node.type === 'geo' },
+  control: { kind: 'paint', opacity: (node) => node.type === 'geo', none: (node) => node.type === 'geo', gradient: (node) => node.type === 'geo' },
   appliesTo: (node) => FILL_TYPES.has(node.type),
   read: readFill,
   write(node, change) {
     if (!FILL_TYPES.has(node.type)) return node
     const props = node.props as Record<string, unknown>
     const current = readFill(node)
-    const next = applyFillChange(current, change)
+    const next = applyFillChange(current, change, paintBoxSize(node))
     if (sameValue(next, current)) return node
     if (node.type === 'note') {
       // 付箋の地は単色の色だけを変える（塗りなし・不透明度は持たない）

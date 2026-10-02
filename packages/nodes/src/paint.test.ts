@@ -2,7 +2,24 @@ import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
 import { upgradeNode } from './defineNodeType.ts'
 import { GEO_DEFAULT_FILL, geoType, type GeoProps } from './geo.ts'
-import { colorWithAlpha, fillPreviewColor, fillShape, normalizeColor, paintColors, parseHexColor, solidPaint, toFill } from './paint.ts'
+import {
+  colorAtPosition,
+  colorWithAlpha,
+  convertPaint,
+  fillPreviewColor,
+  fillShape,
+  gradientAngle,
+  gradientStop,
+  linearGradient,
+  normalizeColor,
+  paintColors,
+  paintCss,
+  parseHexColor,
+  radialGradient,
+  solidPaint,
+  toFill,
+  withGradientAngle,
+} from './paint.ts'
 
 // 塗り（MAI-81）
 
@@ -148,5 +165,105 @@ describe('geo fill (version 2)', () => {
     expect(geoType.colors!(geo({ fill: null, stroke: '#0000ff', strokeWidth: 0 }))).toEqual([])
     expect(geoType.roughColor!(geo({ fill: solidPaint('#ff0000', 0.5) }))).toBe('rgba(255, 0, 0, 0.5)')
     expect(geoType.roughColor!(geo({ fill: null, stroke: '#0000ff' }))).toBe('rgba(0, 0, 255, 0.35)')
+  })
+})
+
+// グラデーション（MAI-82）
+describe('gradient paint', () => {
+  const stops = [gradientStop(1, '#0000ff', 0.5), gradientStop(0, '#ff0000')]
+
+  // 作ったグラデーションと、塗るときの座標を記録する Canvas
+  function gradientContext() {
+    const made: { kind: string; args: number[]; stops: [number, string][] }[] = []
+    const fills: { style: unknown; transform: number[] }[] = []
+    let transform = [1, 0, 0, 1, 0, 0]
+    const stack: number[][] = []
+    const gradient = (kind: string, args: number[]) => {
+      const entry = { kind, args, stops: [] as [number, string][] }
+      made.push(entry)
+      return { addColorStop: (offset: number, color: string) => entry.stops.push([offset, color]) }
+    }
+    const ctx = {
+      fillStyle: '#000000' as unknown,
+      globalAlpha: 1,
+      save: () => stack.push(transform),
+      restore: () => (transform = stack.pop()!),
+      transform: (...m: number[]) => (transform = m),
+      createLinearGradient: (...args: number[]) => gradient('linear', args),
+      createRadialGradient: (...args: number[]) => gradient('radial', args),
+      fill: () => fills.push({ style: ctx.fillStyle, transform }),
+    }
+    return { ctx: ctx as unknown as CanvasRenderingContext2D, made, fills }
+  }
+
+  it('reads gradients, sorting the stops and clamping the values', () => {
+    const linear = toFill({ type: 'linear', start: { x: 0, y: 0 }, end: { x: 1, y: 1 }, stops: [{ position: 2, color: '#000000' }, { position: -1, color: '#ffffff', opacity: 5 }], opacity: 0.5 })
+    expect(linear).toEqual({ type: 'linear', start: { x: 0, y: 0 }, end: { x: 1, y: 1 }, stops: [gradientStop(0, '#ffffff', 1), gradientStop(1, '#000000', 1)], opacity: 0.5 })
+    expect(toFill({ type: 'radial', center: { x: 0.5, y: 0.5 }, radius: -1, stops })).toEqual({ type: 'radial', center: { x: 0.5, y: 0.5 }, radius: 0, stops: [stops[1], stops[0]], opacity: 1 })
+    // 止め色が 1 つしかない・位置がないものは読めない
+    expect(toFill({ type: 'linear', start: { x: 0, y: 0 }, end: { x: 1, y: 1 }, stops: [stops[0]] }, null)).toBeNull()
+    expect(toFill({ type: 'radial', center: { x: 0.5 }, radius: 1, stops }, null)).toBeNull()
+  })
+
+  it('paints a linear gradient in the box with each stop opacity', () => {
+    const { ctx, made, fills } = gradientContext()
+    fillShape(ctx, linearGradient(stops, { start: { x: 0, y: 0.5 }, end: { x: 1, y: 0.5 } }), { x: 10, y: 20, w: 200, h: 100 })
+    expect(made).toEqual([{ kind: 'linear', args: [10, 70, 210, 70], stops: [[0, '#ff0000'], [1, 'rgba(0, 0, 255, 0.5)']] }])
+    expect(fills[0].transform).toEqual([1, 0, 0, 1, 0, 0])
+  })
+
+  it('paints a radial gradient in the unit box so that it becomes an ellipse in a wide box', () => {
+    const { ctx, made, fills } = gradientContext()
+    fillShape(ctx, radialGradient(stops, { center: { x: 0.25, y: 0.5 }, radius: 0.5 }), { x: 0, y: 0, w: 200, h: 100 })
+    expect(made[0]).toMatchObject({ kind: 'radial', args: [0.25, 0.5, 0, 0.25, 0.5, 0.5] })
+    expect(fills[0].transform).toEqual([200, 0, 0, 100, 0, 0])
+    // 幅のない箱には塗らない
+    fillShape(ctx, radialGradient(stops), { x: 0, y: 0, w: 0, h: 100 })
+    expect(fills).toHaveLength(1)
+  })
+
+  it('converts between paint types starting from the current color', () => {
+    const linear = convertPaint(solidPaint('#336699', 0.8), 'linear', '#ffffff') as ReturnType<typeof linearGradient>
+    expect(linear).toEqual(linearGradient([gradientStop(0, '#336699', 1), gradientStop(1, '#336699', 0)], { opacity: 0.8 }))
+    const radial = convertPaint(linear, 'radial', '#ffffff')
+    expect(radial).toEqual(radialGradient(linear.stops, { opacity: 0.8 }))
+    expect(convertPaint(radial, 'solid', '#ffffff')).toEqual(solidPaint('#336699', 0.8))
+    expect(convertPaint(null, 'linear', '#e8eefc').type).toBe('linear')
+    expect(convertPaint(linear, 'linear', '#ffffff')).toBe(linear)
+  })
+
+  it('measures and sets the angle in the real size of the box', () => {
+    const paint = linearGradient(stops)
+    expect(gradientAngle(paint, { w: 200, h: 100 })).toBe(90)
+    const right = withGradientAngle(paint, 0, { w: 200, h: 100 })
+    expect(right.start).toEqual({ x: 0, y: 0.5 })
+    expect(right.end).toEqual({ x: 1, y: 0.5 })
+    const diagonal = withGradientAngle(paint, 45, { w: 200, h: 100 })
+    expect(gradientAngle(diagonal, { w: 200, h: 100 })).toBeCloseTo(45, 3)
+    // 大きさを変えると、箱と一緒に伸びる（同じ割合のまま、角度は箱の形で変わる）
+    expect(gradientAngle(diagonal, { w: 100, h: 100 })).toBeCloseTo(63.435, 2)
+    expect(gradientAngle(withGradientAngle(paint, -90, { w: 10, h: 10 }), { w: 10, h: 10 })).toBe(270)
+  })
+
+  it('mixes the colors between stops, and lists them', () => {
+    expect(colorAtPosition(stops, 0.5)).toEqual({ color: '#800080', opacity: 0.75 })
+    expect(colorAtPosition(stops, -1)).toEqual({ color: '#ff0000', opacity: 1 })
+    expect(paintColors(linearGradient(stops))).toEqual(['#ff0000', '#0000ff'])
+    // 簡略描画の 1 色は、止め色の平均
+    expect(fillPreviewColor(linearGradient([gradientStop(0, '#ff0000'), gradientStop(1, '#0000ff')]))).toBe('#800080')
+    expect(fillPreviewColor(linearGradient(stops, { opacity: 0.5 }))).toBe('rgba(128, 0, 128, 0.375)')
+  })
+
+  it('makes CSS backgrounds for the swatch', () => {
+    expect(paintCss(linearGradient(stops))).toBe('linear-gradient(180deg, #ff0000 0%, rgba(0, 0, 255, 0.5) 100%)')
+    expect(paintCss(radialGradient(stops))).toBe('radial-gradient(50% 50% at 50% 50%, #ff0000 0%, rgba(0, 0, 255, 0.5) 100%)')
+    expect(paintCss(solidPaint('#ff0000'))).toBe('#ff0000')
+    expect(paintCss(null)).toBeNull()
+  })
+
+  it('renders a gradient geo and keeps its colors', () => {
+    const fill = linearGradient(stops)
+    expect(geoType.colors!(geo({ fill, stroke: '#00ff00' }))).toEqual(['#ff0000', '#0000ff', '#00ff00'])
+    expect(geoType.roughColor!(geo({ fill }))).toBe('rgba(128, 0, 128, 0.75)')
   })
 })
