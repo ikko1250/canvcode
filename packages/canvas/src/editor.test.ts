@@ -102,3 +102,20 @@ describe('a shape with an outside border', () => {
     expect(editor.index.get(group)!.inkBounds).toEqual({ x: -10, y: -10, w: 120, h: 120 })
   })
 })
+
+// ドロップシャドウ（MAI-86）：ずらし・ぼかし・広がりの分だけ、辺ごとに描く範囲を広げる。当たり判定は形のまま（Figma と同じ）
+describe('a shape with a drop shadow', () => {
+  it('indexes the shadow area per side but does not hit it', () => {
+    const editor = new Editor()
+    const shadows = [{ type: 'drop', x: 10, y: 20, blur: 4, spread: 2, color: '#000000', opacity: 0.5 }]
+    const node = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, strokeWidth: 0, shadows } })
+    editor.createNodes([node])
+    const entry = editor.index.get(node.id)!
+    // 届く幅は広がり 2 + ぼかし 4 × 1.5 = 8。左は 8 − 10 < 0 なので 0、右は 18、上は 0、下は 28
+    expect(entry.worldBounds).toEqual({ x: 0, y: 0, w: 100, h: 100 })
+    expect(entry.inkBounds).toEqual({ x: 0, y: 0, w: 118, h: 128 })
+    expect(editor.index.search({ x: 110, y: 120, w: 0, h: 0 })).toEqual([node.id])
+    expect(editor.hitTest({ x: 110, y: 120 }, 0)).toBeNull()
+    expect(editor.thumbnailBounds()).toEqual({ x: 0, y: 0, w: 118, h: 128 })
+  })
+})

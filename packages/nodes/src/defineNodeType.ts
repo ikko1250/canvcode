@@ -14,6 +14,8 @@ export interface RenderInfo {
   detail: 'full' | 'rough'
   // 時間のかかる画像（Markdown を画像にしたものなど）を頼む先（MAI-9 の「3. 時間のかかる素材の扱い」）
   images?: ImageRequester
+  // 影などの効果（MAI-86）を省くか。見えているノードが多いときに基盤が立てる（MAI-14）
+  noEffects?: boolean
   // 文字を編集中のノードか（MAI-24）。編集中は textarea が文字を見せるので、型は文字だけを描かない
   editing?: boolean
   // 画像などの Asset を引く先（MAI-26）
@@ -82,6 +84,29 @@ export interface ImageRequester {
   get(key: string, version: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null
 }
 
+// 箱の外へのはみ出しの幅（辺ごと。ローカル座標。MAI-86）
+export interface Outset {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+// 数値（上下左右が同じ）も辺ごとの形にする。負の値は 0
+export function outsetSides(outset: number | Outset | undefined): Outset {
+  if (outset === undefined) return { left: 0, top: 0, right: 0, bottom: 0 }
+  if (typeof outset === 'number') {
+    const d = Math.max(0, outset)
+    return { left: d, top: d, right: d, bottom: d }
+  }
+  return { left: Math.max(0, outset.left), top: Math.max(0, outset.top), right: Math.max(0, outset.right), bottom: Math.max(0, outset.bottom) }
+}
+
+// 箱を辺ごとに広げる
+export function outsetBox(box: Box, outset: Outset): Box {
+  return { x: box.x - outset.left, y: box.y - outset.top, w: box.w + outset.left + outset.right, h: box.h + outset.top + outset.bottom }
+}
+
 export interface NodeTypeDef<P extends object> {
   type: string
   // props の形の版。形を変えたら上げて、migrate で前の版から移す（MAI-74）
@@ -92,8 +117,9 @@ export interface NodeTypeDef<P extends object> {
   // ノードのローカル座標でのバウンディングボックス
   getBounds(node: NodeRecord<P>): Box
   // 描くものが getBounds の箱の外へはみ出す幅（ローカル座標。図形の外側の線など。MAI-85）。定義しなければ 0。
+  // 数値なら上下左右が同じ、Outset なら辺ごと（ずらした影は片側へ大きくはみ出す。MAI-86）。
   // 選択枠・吸い付き・整列は getBounds の箱のまま使い、カリング・当たり判定の候補探し・サムネイルの範囲は、この分だけ広げた箱を使う
-  renderOutset?(node: NodeRecord<P>): number
+  renderOutset?(node: NodeRecord<P>): number | Outset
   // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）。
   // zoom は、画面上で大きさが決まる部分（フレームの名前など）の判定に使う
   hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number): boolean

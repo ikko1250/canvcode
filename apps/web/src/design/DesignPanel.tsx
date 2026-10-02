@@ -18,6 +18,7 @@ import { CornerRadiusField, LineHeightField, NumberField, SegmentedField, Select
 import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
+import { ShadowsField } from './ShadowsField.tsx'
 import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
 import { TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
 import type { PaintEditingLink } from './GradientEditor.tsx'
@@ -35,6 +36,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 色の項目はカラーピッカー（ColorPicker.tsx。MAI-81）。「このキャンバスで使った色」は、ピッカーを開いたときに今の Canvas から集める
 // - 塗りのグラデーション（MAI-82）を開いている間は、図形の上にハンドルを出す（session.paintEditing。1 つの図形を選んでいるときだけ）
 // - 画像の塗り（MAI-83）の画像は、CanvasView の Asset（ワークスペースの画像・ファイル・クリップボード）から選ぶ（paintImageSource）
+// - 影（MAI-86）は「効果」に一覧で出す（ShadowsField。＋・−・表示の切り替え、影ごとの値）
 // - 角丸（MAI-84）は、4 つの角を一緒に変える入力と、角ごとの 4 つの入力（CornerRadiusField）。図形の上の角丸のハンドルでも変えられる（cornerHandles.ts）
 
 export function DesignPanel(props: {
@@ -236,6 +238,8 @@ function FieldView(props: {
       return <LineHeightField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'cornerRadius':
       return <CornerRadiusField label={field.label} value={value} editor={editor} onDone={onDone} />
+    case 'shadows':
+      return <ShadowsField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'select':
       return <SelectField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
     case 'toggle':

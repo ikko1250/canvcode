@@ -117,8 +117,9 @@ export type StrokeOutline =
   | { kind: 'path'; path: Path2D; bounds: Box }
 
 // 形を d だけ外へ広げた（負なら内へ縮めた）パスを、今のパスに足す（beginPath はしない）。
-// 縮めて形がなくなれば false（何も足さない）。任意のパスはずらせない（d は 0 だけ）
-function addOutlinePath(ctx: CanvasRenderingContext2D, outline: StrokeOutline, d: number): boolean {
+// 縮めて形がなくなれば false（何も足さない）。任意のパスはずらせない（d は 0 だけ）。
+// シャドウ（MAI-86）も広がりの形に使う（Path2D にも足せる）
+export function addOutlinePath(ctx: CanvasRenderingContext2D | Path2D, outline: StrokeOutline, d: number): boolean {
   switch (outline.kind) {
     case 'rect': {
       const { box, radii } = d === 0 ? outline : offsetRoundedRect(outline.box, outline.radii, d)

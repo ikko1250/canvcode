@@ -24,6 +24,8 @@ import { CORNER_HANDLE_RADIUS_PX, cornerHandles, type CornerHandles } from './co
 
 // 画面上の大きさがこれより小さいノードは簡略に描く（CSS ピクセル）
 const ROUGH_THRESHOLD_PX = 4
+// 描くノードがこれより多いときは、影などの効果を省く（MAI-86。影のぼかしは重いので、ノードが多い全体表示を軽くする）
+export const EFFECTS_NODE_LIMIT = 2000
 // 線の太さ分だけ画面より少し広く探す（CSS ピクセル）
 const CULL_MARGIN_PX = 16
 
@@ -105,6 +107,7 @@ export function drawNodes(
     documents: view.documents,
     files: view.files,
     citations: view.citations,
+    noEffects: ids.length > EFFECTS_NODE_LIMIT,
   }
   let drawn = 0
   let lastRoughColor = ''

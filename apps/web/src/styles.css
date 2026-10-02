@@ -1733,3 +1733,33 @@ body,
 .design-corner-cell .design-number {
   width: 100%;
 }
+
+/* 影（MAI-86）：影ごとのまとまり。隠した影は薄く見せる */
+.design-shadow {
+  margin: 2px 0 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--panel-border);
+}
+
+.design-shadow.hidden .design-corner-grid,
+.design-shadow.hidden .design-paint-field {
+  opacity: 0.5;
+}
+
+.design-shadow-controls {
+  flex-wrap: nowrap;
+}
+
+.design-shadow-controls .design-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.design-shadows-head .design-control {
+  justify-content: flex-end;
+}
+
+.design-mixed {
+  flex: 1;
+  color: var(--muted);
+}

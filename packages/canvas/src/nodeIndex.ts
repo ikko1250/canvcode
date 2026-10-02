@@ -10,7 +10,7 @@ import {
   type NodeRecord,
   type Patch,
 } from '@canvcode/core'
-import type { AnyNodeTypeDef } from '@canvcode/nodes'
+import { outsetBox, outsetSides, type AnyNodeTypeDef } from '@canvcode/nodes'
 
 // ノードの索引（MAI-14、MAI-25）。
 // - 入れ子（group / frame）をたどったワールドの行列と、バウンディングボックスのキャッシュ
@@ -36,7 +36,7 @@ export interface IndexEntry {
   // ノードのローカル座標でのバウンディングボックス（group は子から計算したもの）
   localBounds: Box
   worldBounds: Box
-  // 描くものの範囲（ワールド座標）。型の renderOutset（外側の線など。MAI-85）の分だけ worldBounds より広い。
+  // 描くものの範囲（ワールド座標）。型の renderOutset（外側の線・影など。MAI-85、MAI-86）の分だけ worldBounds より広い。
   // 索引（search）はこの箱で引く（カリング・当たり判定の候補）
   inkBounds: Box
   // 属する木の根（Canvas 直下のノード）
@@ -275,13 +275,14 @@ export class NodeIndex {
         localBounds = type.getBounds(node)
       }
       const worldBounds = transformBox(worldMatrix, localBounds)
-      const outset = type.container === 'group' ? 0 : (type.renderOutset?.(node) ?? 0)
+      const outset = outsetSides(type.container === 'group' ? 0 : type.renderOutset?.(node))
+      const outsetAny = outset.left > 0 || outset.top > 0 || outset.right > 0 || outset.bottom > 0
       // group は子の描く範囲を合わせる（フレームは子を枠で切り抜くので、枠のまま）
       const inkBounds =
         type.container === 'group'
           ? (unionBoxes([worldBounds, ...childEntries.map((child) => child.inkBounds)]) ?? worldBounds)
-          : outset > 0
-          ? transformBox(worldMatrix, { x: localBounds.x - outset, y: localBounds.y - outset, w: localBounds.w + outset * 2, h: localBounds.h + outset * 2 })
+          : outsetAny
+          ? transformBox(worldMatrix, outsetBox(localBounds, outset))
           : worldBounds
       const item =
         type.container === 'group'

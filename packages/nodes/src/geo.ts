@@ -1,7 +1,8 @@
 import type { NodeRecord } from '@canvcode/core'
 import { cornerRadii, effectiveCornerRadii, insideRoundedRect, roundedRectPath, roundedRectPolygon, type CornerRadius } from './cornerRadius.ts'
-import { defineNodeType } from './defineNodeType.ts'
+import { defineNodeType, outsetSides } from './defineNodeType.ts'
 import { colorWithAlpha, fillPreviewColor, fillShape, paintColors, solidPaint, toFill, type Fill } from './paint.ts'
+import { drawShadows, shadowColors, shadowOutset, shadowsOf, type ShadowProps } from './shadow.ts'
 import { hasVisibleStroke, strokeInset, strokeOutline, strokeOutset, strokeStyleOf, toStrokePaint, type StrokeOutline, type StrokeProps, type StrokeStyle } from './stroke.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
 
@@ -13,7 +14,8 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // 版 3（MAI-85）：線（stroke）を色の文字列から単色の塗り（stroke.ts の StrokePaint。色と不透明度、線なしは null）にした。
 // 版 2 までの色の文字列は、読み込むときに単色へ移す。線の位置・種類・破線の長さと間隔（strokeAlign など）は省略できる値
 // （ないときは中央・実線）
-export interface GeoProps extends StrokeProps {
+// シャドウ（MAI-86）の shadows も版は上げない（足しただけの省略できる値。ないときは影なし。読めない影は捨てる）
+export interface GeoProps extends StrokeProps, ShadowProps {
   shape: 'rect' | 'ellipse'
   w: number
   h: number
@@ -56,8 +58,19 @@ export const geoType = defineNodeType<GeoProps>({
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: node.props.h }),
 
-  // 線の外側の半分（中央）・全部（外側）は、箱の外へはみ出して描く（MAI-85）
-  renderOutset: (node) => strokeOutset(strokeStyleOf(node.props)),
+  // 線の外側の半分（中央）・全部（外側）は、箱の外へはみ出して描く（MAI-85）。
+  // ドロップシャドウ（MAI-86）は、ずらし・ぼかし・広がりの分だけ辺ごとにはみ出す（当たり判定には含めない。Figma と同じ）
+  renderOutset: (node) => {
+    const stroke = strokeOutset(strokeStyleOf(node.props))
+    const shadow = shadowOutset(shadowsOf(node.props))
+    if (shadow.left <= stroke && shadow.top <= stroke && shadow.right <= stroke && shadow.bottom <= stroke) return stroke
+    return outsetSides({
+      left: Math.max(stroke, shadow.left),
+      top: Math.max(stroke, shadow.top),
+      right: Math.max(stroke, shadow.right),
+      bottom: Math.max(stroke, shadow.bottom),
+    })
+  },
 
   // 塗りなしの図形は、Figma と同じく枠の線（と文字）にだけ当たる（中を押すと、下のノードを選べる）。
   // ただし線も文字もなく何も見えないときは、見失わないよう中にも当てる。選んでいる図形は中でも掴める（Editor.hitTest）
@@ -77,12 +90,18 @@ export const geoType = defineNodeType<GeoProps>({
 
   render(ctx, node, info) {
     const { w, h, shape } = node.props
+    // 影（MAI-86）：ドロップシャドウは塗りの下、内側の影は塗りの上（線の下）。
+    // 画面上で小さいノード・見えているノードが多いとき（info.noEffects）は描かない（MAI-14）
+    const shadows = info.noEffects ? [] : shadowsOf(node.props)
+    const shadowOptions = { zoom: info.zoom, screenSize: Math.max(w, h) * info.zoom }
+    if (shadows.length > 0) drawShadows(ctx, shadows, 'drop', geoOutline(node.props), shadowOptions)
     ctx.beginPath()
     // 矩形は角丸（MAI-84）のパス。半径が 0 なら rect と同じ
     if (shape === 'rect') roundedRectPath(ctx, { x: 0, y: 0, w, h }, geoCornerRadii(node.props))
     else ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
     // 画像の塗り（MAI-83）は、このパス（矩形・楕円・角丸）で切り抜いて描く
     fillShape(ctx, fillOf(node.props), { x: 0, y: 0, w, h }, info)
+    if (shadows.length > 0) drawShadows(ctx, shadows, 'inner', geoOutline(node.props), shadowOptions)
     // 画面上で 0.5 ピクセル未満になる線は、見た目にほぼ影響しないので描かない（MAI-14）
     const stroke = strokeStyleOf(node.props)
     if (stroke.width * info.zoom >= 0.5) strokeOutline(ctx, stroke, geoOutline(node.props))
@@ -99,7 +118,12 @@ export const geoType = defineNodeType<GeoProps>({
 
   colors: (node) => {
     const stroke = strokeStyleOf(node.props)
-    return [...paintColors(fillOf(node.props)), ...(stroke.paint && stroke.width > 0 ? [stroke.paint.color] : [])]
+    return [
+      ...paintColors(fillOf(node.props)),
+      ...(stroke.paint && stroke.width > 0 ? [stroke.paint.color] : []),
+      // 影の色（MAI-86。見える影だけ）
+      ...shadowColors(shadowsOf(node.props)),
+    ]
   },
 
   // 画像の塗りの Asset（MAI-83）
@@ -151,6 +175,11 @@ function roughStrokeColor(stroke: StrokeStyle): string {
 
 // 線を持てる図形か（MAI-85。geo のすべて。のちのブロック矢印もここに足す）
 export function hasBorder(node: NodeRecord): node is GeoNode {
+  return node.type === 'geo'
+}
+
+// 影を持てる図形か（MAI-86。geo のすべて。のちのブロック矢印もここに足す）
+export function hasShadows(node: NodeRecord): node is GeoNode {
   return node.type === 'geo'
 }
 

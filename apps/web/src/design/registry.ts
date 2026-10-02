@@ -51,6 +51,8 @@ export type FieldControl =
   | { kind: 'toggle'; title: string; icon: ComponentType; group: string }
   // 角丸（MAI-84。値は CornerRadius、書くのは CornerRadiusChange）。4 つの角を一緒に変える入力と、角ごとの 4 つの入力（controls.tsx の CornerRadiusField）
   | { kind: 'cornerRadius' }
+  // 影の一覧（MAI-86。値は Shadow[]、書くのは ShadowsChange）。影ごとの種類・表示・ずらし・ぼかし・広がり・色と、＋・−（ShadowsField.tsx）
+  | { kind: 'shadows' }
 
 export interface SelectOption {
   value: string

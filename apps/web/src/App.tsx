@@ -1287,6 +1287,10 @@ export function App(props: { initial: InitialRecords }) {
               generateNodes(editor, BENCH_NODE_COUNT)
               view?.zoomToFit()
             },
+            addBenchShadowNodes: () => {
+              generateNodes(editor, BENCH_NODE_COUNT, { shadows: true })
+              view?.zoomToFit()
+            },
             clearNodes: () => clearNodes(editor),
             runBenchmark: startBenchmark,
             addMarkdownCards: () => {

@@ -20,6 +20,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     benchRunning: false,
     cardBenchRunning: false,
     addBenchNodes: vi.fn(),
+    addBenchShadowNodes: vi.fn(),
     clearNodes: vi.fn(),
     runBenchmark: vi.fn(),
     addMarkdownCards: vi.fn(),

@@ -196,6 +196,7 @@ describe('buildPieMenus', () => {
     benchRunning: false,
     cardBenchRunning: true,
     addBenchNodes: vi.fn(),
+    addBenchShadowNodes: vi.fn(),
     clearNodes: vi.fn(),
     runBenchmark: vi.fn(),
     addMarkdownCards: vi.fn(),

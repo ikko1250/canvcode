@@ -44,6 +44,8 @@ export interface PieMenuContext {
   benchRunning: boolean
   cardBenchRunning: boolean
   addBenchNodes(): void
+  // 影付きの 1 万ノード（MAI-86）
+  addBenchShadowNodes(): void
   clearNodes(): void
   runBenchmark(): void
   addMarkdownCards(): void
@@ -186,6 +188,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
           label: 'テスト用データ',
           items: [
             { label: '1 万ノードを追加', onSelect: ctx.addBenchNodes },
+            { label: '影付きの 1 万ノードを追加', onSelect: ctx.addBenchShadowNodes },
             { label: `Markdown カード ${ctx.markdownCardCount} 枚を追加`, onSelect: ctx.addMarkdownCards },
             { label: 'すべて消す', onSelect: ctx.clearNodes },
           ],

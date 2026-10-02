@@ -1,6 +1,11 @@
 import { createElement } from 'react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
+  defaultShadow,
+  hasShadows,
+  shadowsOf,
+  toShadow,
+  type Shadow,
   canRoundCorners,
   clampDash,
   defaultDashGap,
@@ -63,7 +68,7 @@ import {
   type TextStyle,
   type TextToggleFormat,
 } from '@canvcode/nodes'
-import { sameValue } from '@canvcode/canvas'
+import { sameValue, type SharedValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
 
 // デザインパネルに最初から出すセクション（MAI-73）。
@@ -330,6 +335,61 @@ function dashLengthField(id: string, label: string, key: 'strokeDashLength' | 's
 
 export const strokeDashLengthField = dashLengthField('stroke.dashLength', '長さ', 'strokeDashLength', ['dashed'])
 export const strokeDashGapField = dashLengthField('stroke.dashGap', '間隔', 'strokeDashGap', ['dashed', 'dotted'])
+
+// ---- 効果（影） ----
+
+// 影（MAI-86。Figma の Effects）。図形だけ（geo.ts の hasShadows）。値は影の一覧（shadow.ts の shadowsOf。ないときは空）。
+// 書くときは、一覧そのもの（混在のときの＋は、既定の影 1 つに置き換える）のほか、
+// 足す（末尾に既定の影）・消す（index 番目）・変える（index 番目の値の一部。色・ずらしなど）。
+// 複数を選んだときは、どのノードにも同じ変更を当てる（影の数と種類が同じなら、index 番目どうしを変える）
+export type ShadowsChange =
+  | Shadow[]
+  | { op: 'add' }
+  | { op: 'remove'; index: number }
+  | { op: 'update'; index: number; patch: Partial<Shadow> }
+
+// 今の影の一覧に、変更を当てたもの
+export function applyShadowsChange(current: readonly Shadow[], change: ShadowsChange): Shadow[] {
+  if (Array.isArray(change)) return change.map(toShadow).filter((s): s is Shadow => s !== null)
+  switch (change.op) {
+    case 'add':
+      return [...current, defaultShadow()]
+    case 'remove':
+      return current.filter((_, i) => i !== change.index)
+    case 'update':
+      return current.map((shadow, i) => {
+        if (i !== change.index) return shadow
+        // 範囲に収める。表示（visible が true）は値を持たない（ないときは表示）
+        return toShadow({ ...shadow, ...change.patch }) ?? shadow
+      })
+  }
+}
+
+// 選んでいるノードの影の一覧から、影ごとの値（ノードの間で比べたもの）を作る。数か種類の並びが違えば null（混在）
+export function shadowRows(value: SharedValue<Shadow[]>): Shadow[][] | null {
+  const lists = value.kind === 'same' ? [value.value] : value.values
+  const first = lists[0] ?? []
+  if (!lists.every((list) => list.length === first.length && list.every((shadow, i) => shadow.type === first[i].type))) return null
+  return first.map((_, i) => lists.map((list) => list[i]))
+}
+
+export const shadowsField: DesignField<ShadowsChange> = {
+  id: 'effects.shadows',
+  label: '影',
+  control: { kind: 'shadows' },
+  appliesTo: hasShadows,
+  read: (node) => shadowsOf(node.props as GeoProps),
+  write(node, change) {
+    if (!hasShadows(node)) return node
+    const current = shadowsOf(node.props)
+    const next = applyShadowsChange(current, change)
+    if (sameValue(next, current)) return node
+    const props: GeoProps = { ...node.props, shadows: next }
+    // 影がなくなれば、値も持たない（古いデータと同じ形）
+    if (next.length === 0) delete props.shadows
+    return { ...node, props }
+  },
+}
 
 // ---- 文字 ----
 
@@ -625,6 +685,7 @@ export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
   { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
+  { id: 'effects', title: '効果', order: 250, fields: [shadowsField] },
   { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]

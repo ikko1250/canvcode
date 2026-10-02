@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
-import { NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
+import { defaultShadow, NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { applyFillChange, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -26,8 +26,8 @@ const fieldIds = (nodes: NodeRecord[]) => visibleSections(nodes).flatMap((s) => 
 describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
     const { geo, text, arrow } = setup()
-    expect(sectionIds([geo])).toEqual(['fill', 'corner', 'stroke', 'layer'])
-    expect(fieldIds([geo])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'layer.opacity'])
+    expect(sectionIds([geo])).toEqual(['fill', 'corner', 'stroke', 'effects', 'layer'])
+    expect(fieldIds([geo])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
@@ -100,7 +100,7 @@ describe('design sections', () => {
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['fill', 'corner', 'test-border', 'stroke', 'layer'])
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['fill', 'corner', 'test-border', 'stroke', 'effects', 'layer'])
     expect(visibleSections([geo], all)[2].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
@@ -118,7 +118,7 @@ describe('border fields (MAI-85)', () => {
     editNodes(editor, [geo.id], (n) => strokeColorField.write(n, null), 'design')
     const noStroke = editor.getNode(geo.id)!
     expect((noStroke.props as { stroke: unknown }).stroke).toBeNull()
-    expect(fieldIds([noStroke])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'layer.opacity'])
+    expect(fieldIds([noStroke])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'effects.shadows', 'layer.opacity'])
     // 破線は長さと間隔、点線は間隔だけ
     const dashed = strokeDashField.write(geo2, 'dashed')
     expect(fieldIds([dashed]).filter((id) => id.startsWith('stroke.'))).toEqual(['stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'stroke.dashLength', 'stroke.dashGap'])
@@ -512,5 +512,60 @@ describe('corner radius field (MAI-84)', () => {
     editor.createNodes([other])
     const value = visibleSections([editor.getNode(geo.id)!, editor.getNode(other.id)!]).find((s) => s.section.id === 'corner')!.fields[0].value
     expect(value).toEqual({ kind: 'mixed', values: [0, [4, 0, 0, 0]] })
+  })
+})
+
+describe('shadows field (MAI-86)', () => {
+  it('shows only for shapes, reading no shadows for old records', () => {
+    const { geo, geo2, text, arrow } = setup()
+    expect(fieldIds([geo, geo2])).toContain('effects.shadows')
+    expect(fieldIds([geo, arrow])).not.toContain('effects.shadows')
+    expect(fieldIds([text])).not.toContain('effects.shadows')
+    expect(visibleSections([geo]).find((s) => s.section.id === 'effects')!.fields[0].value).toEqual({ kind: 'same', value: [] })
+  })
+
+  it('adds, updates, hides and removes shadows, and is undoable', () => {
+    const { editor, geo, geo2 } = setup()
+    const shadows = (id: string) => (editor.getNode(id)!.props as { shadows?: unknown }).shadows
+    const ids = [geo.id, geo2.id]
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'add' }), 'design')
+    expect(shadows(geo.id)).toEqual([defaultShadow()])
+    expect(shadows(geo2.id)).toEqual([defaultShadow()])
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'add' }), 'design')
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'update', index: 1, patch: { type: 'inner', x: 3, color: '#ff0000' } }), 'design')
+    expect(shadows(geo.id)).toEqual([defaultShadow(), { ...defaultShadow(), type: 'inner', x: 3, color: '#ff0000' }])
+    // 隠す・表示する（表示は値を持たない）
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'update', index: 0, patch: { visible: false } }), 'design')
+    expect((shadows(geo.id) as { visible?: boolean }[])[0].visible).toBe(false)
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'update', index: 0, patch: { visible: true } }), 'design')
+    expect(shadows(geo.id) as object[]).toEqual([defaultShadow(), expect.objectContaining({ type: 'inner' })])
+    expect('visible' in (shadows(geo.id) as object[])[0]).toBe(false)
+    // 範囲に収める
+    editNodes(editor, [geo.id], (node) => shadowsField.write(node, { op: 'update', index: 0, patch: { blur: -5, opacity: 2 } }), 'design')
+    expect((shadows(geo.id) as { blur: number; opacity: number }[])[0]).toMatchObject({ blur: 0, opacity: 1 })
+    // 消して空になれば、値も持たない
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'remove', index: 0 }), 'design')
+    editNodes(editor, ids, (node) => shadowsField.write(node, { op: 'remove', index: 0 }), 'design')
+    expect(shadows(geo.id)).toBeUndefined()
+    // 同じ値なら変えない
+    const node = editor.getNode(geo.id)!
+    expect(shadowsField.write(node, { op: 'remove', index: 0 })).toBe(node)
+    editor.undo()
+    expect(shadows(geo.id)).toHaveLength(1)
+  })
+
+  it('reports mixed values per shadow, or the whole list when the structure differs', () => {
+    const { editor, geo, geo2 } = setup()
+    editNodes(editor, [geo.id, geo2.id], (node) => shadowsField.write(node, { op: 'add' }), 'design')
+    editNodes(editor, [geo2.id], (node) => shadowsField.write(node, { op: 'update', index: 0, patch: { x: 8 } }), 'design')
+    const value = () => visibleSections([editor.getNode(geo.id)!, editor.getNode(geo2.id)!]).find((s) => s.section.id === 'effects')!.fields[0].value
+    // 数と種類が同じ：影ごとに比べる
+    const rows = shadowRows(value() as never)!
+    expect(rows).toHaveLength(1)
+    expect(rows[0].map((s) => s.x)).toEqual([0, 8])
+    // 種類が違えば、一覧ごと混在。＋は既定の影 1 つに置き換える
+    editNodes(editor, [geo2.id], (node) => shadowsField.write(node, { op: 'update', index: 0, patch: { type: 'inner' } }), 'design')
+    expect(shadowRows(value() as never)).toBeNull()
+    expect(applyShadowsChange([], [defaultShadow(), { bad: true } as never])).toEqual([defaultShadow()])
   })
 })
