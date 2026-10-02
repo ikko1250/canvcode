@@ -369,6 +369,8 @@ export class CanvasView {
     this.listen(this.root, 'pointercancel', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointerleave', () => {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
+      // 角丸のハンドルも、ポインタが外へ出たら消す（MAI-84）
+      if (this.editor.session.get().cornerHandlesId) this.editor.session.set({ cornerHandlesId: null })
     })
     this.listen(this.root, 'wheel', (e) => this.onWheel(e), { passive: false })
     // overflow: clip が効かないブラウザ向けの保険。root がスクロールされたら 0 に戻す（MAI-55）
@@ -437,7 +439,7 @@ export class CanvasView {
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
-    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null })
+    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
     this.editorRef = editor
     // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
     this.images.trim(IMAGE_CACHE_KEEP_ON_SWITCH_BYTES)
@@ -1404,7 +1406,8 @@ export class CanvasView {
       state.snapGuides !== prev.snapGuides ||
       state.hoveredSpacing !== prev.hoveredSpacing ||
       state.spacingDrag !== prev.spacingDrag ||
-      state.paintEditing !== prev.paintEditing
+      state.paintEditing !== prev.paintEditing ||
+      state.cornerHandlesId !== prev.cornerHandlesId
     ) {
       this.invalidate('overlay')
     }

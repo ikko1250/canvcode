@@ -48,6 +48,8 @@ export type FieldControl =
   // オン・オフのボタン（MAI-79。太字・斜体・下線・取り消し線。値は boolean）。
   // group の同じ項目が続けば、パネルでは 1 行（group の名前の見出し）にボタンを並べる
   | { kind: 'toggle'; title: string; icon: ComponentType; group: string }
+  // 角丸（MAI-84。値は CornerRadius、書くのは CornerRadiusChange）。4 つの角を一緒に変える入力と、角ごとの 4 つの入力（controls.tsx の CornerRadiusField）
+  | { kind: 'cornerRadius' }
 
 export interface SelectOption {
   value: string

@@ -1,6 +1,11 @@
 import { createElement } from 'react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
+  canRoundCorners,
+  cornerRadii,
+  toCornerRadius,
+  type CornerRadius,
+  type GeoProps,
   applyRunFormat,
   clampOpacity,
   clampTileScale,
@@ -148,6 +153,37 @@ export const fillField: DesignField<FillChange> = {
       return next?.type === 'solid' && next.color !== props.color ? { ...node, props: { ...props, color: next.color } } : node
     }
     return { ...node, props: { ...props, fill: next } }
+  },
+}
+
+// ---- 角丸 ----
+
+// 角丸（MAI-84）。矩形の図形だけ（geo.ts の canRoundCorners）。値は保存してある cornerRadius（ないときは 0）。
+// 書くときは、半径そのもののほか、corner が null なら 4 つの角を一緒に（数値で持つ）、そうでなければその角だけ（4 つが同じになれば数値にまとめる）。
+// 半径はそのまま持ち、短い辺の半分などに収めるのは描くとき（cornerRadius.ts の effectiveCornerRadii）
+export type CornerRadiusChange = CornerRadius | { corner: number | null; radius: number }
+
+export const cornerRadiusField: DesignField<CornerRadiusChange> = {
+  id: 'corner.radius',
+  label: '半径',
+  control: { kind: 'cornerRadius' },
+  appliesTo: canRoundCorners,
+  read: (node) => (node.props as GeoProps).cornerRadius ?? 0,
+  write(node, change) {
+    if (!canRoundCorners(node)) return node
+    let next: CornerRadius
+    if (typeof change === 'number' || Array.isArray(change)) {
+      next = toCornerRadius(cornerRadii(change))
+    } else if (change.corner === null) {
+      next = Math.max(0, change.radius)
+    } else {
+      const radius = Math.max(0, change.radius)
+      const radii = cornerRadii(node.props.cornerRadius)
+      radii[change.corner] = radius
+      next = toCornerRadius(radii)
+    }
+    if (sameValue(next, node.props.cornerRadius ?? 0)) return node
+    return { ...node, props: { ...node.props, cornerRadius: next } }
   },
 }
 
@@ -460,6 +496,7 @@ export const opacityField: DesignField<number> = {
 
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
+  { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
   { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },

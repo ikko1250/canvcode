@@ -1,4 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
+import { cornerRadii, effectiveCornerRadii, insideRoundedRect, roundedRectPath, roundedRectPolygon, type CornerRadius } from './cornerRadius.ts'
 import { defineNodeType } from './defineNodeType.ts'
 import { colorWithAlpha, fillPreviewColor, fillShape, paintColors, solidPaint, toFill, type Fill } from './paint.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
@@ -7,6 +8,7 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // 版 2（MAI-81）：塗り（fill）を色の文字列から塗り（paint.ts の Fill。種類＋中身、不透明度、塗りなしは null）にした。
 // 版 1 の色の文字列は、読み込むときに単色の塗りへ移す。
 // 塗りの種類（グラデーション（MAI-82）・画像（MAI-83））を足しても版は上げない（fill の形は同じ。読めない種類は toFill が既定にする）
+// 角丸（MAI-84）の cornerRadius も版は上げない（足しただけの省略できる値。ないときは 0。読めない値も 0）
 export interface GeoProps {
   shape: 'rect' | 'ellipse'
   w: number
@@ -16,6 +18,9 @@ export interface GeoProps {
   strokeWidth: number
   // 図形の中央に書く文字（MAI-24）
   label: string
+  // 角の半径（MAI-84。矩形だけ）。ワールド座標の px。数値なら 4 つの角が同じ、配列なら [左上, 右上, 右下, 左下]。
+  // リサイズしても値は保ち、描くときに短い辺の半分まで（4 つ別々なら CSS の border-radius と同じ縮小の規則で）に収める
+  cornerRadius?: CornerRadius
 }
 
 export type GeoNode = NodeRecord<GeoProps>
@@ -45,24 +50,25 @@ export const geoType = defineNodeType<GeoProps>({
   // 塗りなしの図形は、Figma と同じく枠の線（と文字）にだけ当たる（中を押すと、下のノードを選べる）。
   // ただし線も文字もなく何も見えないときは、見失わないよう中にも当てる。選んでいる図形は中でも掴める（Editor.hitTest）
   hitTest(node, point, margin) {
-    const { w, h, shape, strokeWidth, label } = node.props
+    const { strokeWidth, label } = node.props
     const fill = fillOf(node.props)
     const hollow = fill === null && (strokeWidth > 0 || label !== '')
     const outer = hollow ? strokeWidth / 2 + margin : margin
-    if (!insideShape(shape, w, h, point, outer)) return false
+    if (!insideShape(node.props, point, outer)) return false
     if (!hollow) return true
     if (label !== '' && insideBox(labelBox(node.props), point)) return true
     // 枠の線の内側の縁より内側なら当たらない
     const inner = strokeWidth / 2 + margin
-    return strokeWidth > 0 && !insideShape(shape, w, h, point, -inner)
+    return strokeWidth > 0 && !insideShape(node.props, point, -inner)
   },
 
   render(ctx, node, info) {
     const { w, h, shape, stroke, strokeWidth } = node.props
     ctx.beginPath()
-    if (shape === 'rect') ctx.rect(0, 0, w, h)
+    // 矩形は角丸（MAI-84）のパス。半径が 0 なら rect と同じ
+    if (shape === 'rect') roundedRectPath(ctx, { x: 0, y: 0, w, h }, geoCornerRadii(node.props))
     else ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
-    // 画像の塗り（MAI-83）は、このパス（矩形・楕円）で切り抜いて描く
+    // 画像の塗り（MAI-83）は、このパス（矩形・楕円・角丸）で切り抜いて描く
     fillShape(ctx, fillOf(node.props), { x: 0, y: 0, w, h }, info)
     // 画面上で 0.5 ピクセル未満になる線は、見た目にほぼ影響しないので描かない（MAI-14）
     if (strokeWidth * info.zoom >= 0.5) {
@@ -89,10 +95,10 @@ export const geoType = defineNodeType<GeoProps>({
     return fill?.type === 'image' ? [fill.assetId] : []
   },
 
-  // 楕円は、矢印が縁で止まるよう多角形で近似する（MAI-28）
+  // 楕円と角丸（MAI-84）は、矢印が縁で止まるよう多角形で近似する（MAI-28）
   outline(node) {
     const { w, h, shape } = node.props
-    if (shape === 'rect') return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }]
+    if (shape === 'rect') return roundedRectPolygon({ x: 0, y: 0, w, h }, geoCornerRadii(node.props))
     const points = []
     for (let i = 0; i < ELLIPSE_OUTLINE_POINTS; i++) {
       const a = (i / ELLIPSE_OUTLINE_POINTS) * Math.PI * 2
@@ -120,9 +126,25 @@ function fillOf(props: GeoProps): Fill {
   return typeof props.fill === 'string' ? toFill(props.fill) : props.fill
 }
 
+// 角丸を持てる図形か（MAI-84。矩形だけ）
+export function canRoundCorners(node: NodeRecord): node is GeoNode {
+  return node.type === 'geo' && (node.props as Partial<GeoProps>).shape === 'rect'
+}
+
+// 図形の角の半径（保存してある値。楕円は 0）
+export function geoCornerRadius(props: GeoProps): CornerRadius {
+  return props.shape === 'rect' ? (props.cornerRadius ?? 0) : 0
+}
+
+// 描くときの角の半径（箱に収めたもの）
+export function geoCornerRadii(props: GeoProps) {
+  return props.shape === 'rect' ? effectiveCornerRadii(props.cornerRadius, props.w, props.h) : cornerRadii(0)
+}
+
 // 図形の中か。grow だけ外へ広げて（負なら内へ縮めて）判定する
-function insideShape(shape: GeoProps['shape'], w: number, h: number, point: { x: number; y: number }, grow: number): boolean {
-  if (shape === 'rect') return point.x >= -grow && point.y >= -grow && point.x <= w + grow && point.y <= h + grow
+function insideShape(props: GeoProps, point: { x: number; y: number }, grow: number): boolean {
+  const { shape, w, h } = props
+  if (shape === 'rect') return insideRoundedRect({ x: 0, y: 0, w, h }, geoCornerRadii(props), point, grow)
   // 楕円：中心からの正規化距離で判定する
   const rx = w / 2 + grow
   const ry = h / 2 + grow

@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { applyFillChange, boldField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { applyFillChange, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -26,8 +26,8 @@ const fieldIds = (nodes: NodeRecord[]) => visibleSections(nodes).flatMap((s) => 
 describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
     const { geo, text, arrow } = setup()
-    expect(sectionIds([geo])).toEqual(['fill', 'stroke', 'layer'])
-    expect(fieldIds([geo])).toEqual(['fill.paint', 'stroke.color', 'stroke.width', 'layer.opacity'])
+    expect(sectionIds([geo])).toEqual(['fill', 'corner', 'stroke', 'layer'])
+    expect(fieldIds([geo])).toEqual(['fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
@@ -93,19 +93,19 @@ describe('design sections', () => {
 
   it('accepts new sections from later tasks, ordered by order', () => {
     const extra: DesignSection = {
-      id: 'test-corner',
-      title: '角丸',
-      order: 150,
-      fields: [propField<number>({ id: 'corner.radius', label: '半径', keys: { geo: 'radius' }, control: { kind: 'number' }, fallback: 0 })],
+      id: 'test-border',
+      title: 'ボーダー',
+      order: 160,
+      fields: [propField<number>({ id: 'border.offset', label: '位置', keys: { geo: 'borderOffset' }, control: { kind: 'number' }, fallback: 0 })],
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['fill', 'test-corner', 'stroke', 'layer'])
-    expect(visibleSections([geo], all)[1].fields[0].value).toEqual({ kind: 'same', value: 0 })
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['fill', 'corner', 'test-border', 'stroke', 'layer'])
+    expect(visibleSections([geo], all)[2].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
     expect(designSections().filter((s) => s.id === 'fill')).toHaveLength(1)
-    expect(designSections().find((s) => s.id === 'fill')!.title).toBe('角丸')
+    expect(designSections().find((s) => s.id === 'fill')!.title).toBe('ボーダー')
     registerDesignSection({ id: 'fill', title: '塗り', order: 100, fields: [fillField] })
   })
 })
@@ -427,5 +427,44 @@ describe('fill field', () => {
     const control = fillField.control as Extract<typeof fillField.control, { kind: 'paint' }>
     expect(control.image?.(note)).toBe(false)
     expect(control.image?.(geo)).toBe(true)
+  })
+})
+
+describe('corner radius field (MAI-84)', () => {
+  it('shows only for rectangles, reading 0 for records without cornerRadius', () => {
+    const { geo, geo2, text } = setup()
+    expect(fieldIds([geo])).toContain('corner.radius')
+    expect(fieldIds([geo2])).not.toContain('corner.radius')
+    expect(fieldIds([geo, geo2])).not.toContain('corner.radius')
+    expect(fieldIds([geo, text])).not.toContain('corner.radius')
+    expect(visibleSections([geo]).find((s) => s.section.id === 'corner')!.fields[0].value).toEqual({ kind: 'same', value: 0 })
+  })
+
+  it('writes all corners as a number, or one corner as [tl, tr, br, bl], and is undoable', () => {
+    const { editor, geo } = setup()
+    const radius = () => (editor.getNode(geo.id)!.props as { cornerRadius?: unknown }).cornerRadius
+    editNodes(editor, [geo.id], (node) => cornerRadiusField.write(node, { corner: null, radius: 12 }), 'design')
+    expect(radius()).toBe(12)
+    editNodes(editor, [geo.id], (node) => cornerRadiusField.write(node, { corner: 2, radius: 30 }), 'design')
+    expect(radius()).toEqual([12, 12, 30, 12])
+    // 4 つが同じになれば数値にまとめる
+    editNodes(editor, [geo.id], (node) => cornerRadiusField.write(node, { corner: 2, radius: 12 }), 'design')
+    expect(radius()).toBe(12)
+    // 同じ値なら変えない
+    const node = editor.getNode(geo.id)!
+    expect(cornerRadiusField.write(node, { corner: null, radius: 12 })).toBe(node)
+    editor.undo()
+    expect(radius()).toEqual([12, 12, 30, 12])
+    editor.undo()
+    editor.undo()
+    expect(radius()).toBeUndefined()
+  })
+
+  it('reports mixed values when the selected rectangles differ', () => {
+    const { editor, geo } = setup()
+    const other = editor.makeNode('geo', { x: 0, y: 600, props: { shape: 'rect', w: 100, h: 100, cornerRadius: [4, 0, 0, 0] } })
+    editor.createNodes([other])
+    const value = visibleSections([editor.getNode(geo.id)!, editor.getNode(other.id)!]).find((s) => s.section.id === 'corner')!.fields[0].value
+    expect(value).toEqual({ kind: 'mixed', values: [0, [4, 0, 0, 0]] })
   })
 })

@@ -1718,3 +1718,18 @@ body,
   border-color: #d5dbe5;
   border-style: dashed;
 }
+
+/* 角丸（MAI-84）：角ごとの 4 つの入力は、角の位置どおりに 2×2 に並べる */
+.design-corner-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 8px;
+}
+
+.design-corner-cell .design-label {
+  flex-basis: 28px;
+}
+
+.design-corner-cell .design-number {
+  width: 100%;
+}

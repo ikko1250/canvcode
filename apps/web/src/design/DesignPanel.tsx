@@ -14,7 +14,7 @@ import {
   type TextSelection,
 } from '@canvcode/canvas'
 import { IMAGE_VARIANT_SIZES, TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
-import { LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
+import { CornerRadiusField, LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
 import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
@@ -35,6 +35,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 色の項目はカラーピッカー（ColorPicker.tsx。MAI-81）。「このキャンバスで使った色」は、ピッカーを開いたときに今の Canvas から集める
 // - 塗りのグラデーション（MAI-82）を開いている間は、図形の上にハンドルを出す（session.paintEditing。1 つの図形を選んでいるときだけ）
 // - 画像の塗り（MAI-83）の画像は、CanvasView の Asset（ワークスペースの画像・ファイル・クリップボード）から選ぶ（paintImageSource）
+// - 角丸（MAI-84）は、4 つの角を一緒に変える入力と、角ごとの 4 つの入力（CornerRadiusField）。図形の上の角丸のハンドルでも変えられる（cornerHandles.ts）
 
 export function DesignPanel(props: {
   editor: Editor
@@ -232,6 +233,8 @@ function FieldView(props: {
       return <FontField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'lineHeight':
       return <LineHeightField label={field.label} value={value} editor={editor} onDone={onDone} />
+    case 'cornerRadius':
+      return <CornerRadiusField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'select':
       return <SelectField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
     case 'toggle':

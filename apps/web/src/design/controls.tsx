@@ -1,10 +1,10 @@
-import { Fragment, useEffect, useRef, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useEffect, useRef, useState, type ComponentType, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
-import type { LineHeight, LineHeightUnit } from '@canvcode/nodes'
+import { CORNER_RADIUS_MAX, cornerRadii, type CornerRadius, type LineHeight, type LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, parseLineHeight, parseNumber } from './parse.ts'
 import { useDraft } from './useDraft.ts'
 import type { FieldControl, SegmentOption, SelectOption } from './registry.ts'
-import type { LineHeightChange } from './sections.ts'
+import type { CornerRadiusChange, LineHeightChange } from './sections.ts'
 
 // デザインパネルの入力部品（MAI-73）。数字・切り替えボタン・スライダー（色は ColorPicker.tsx）。
 // 部品は値を直接書き換えず、ValueEditor を通して変える：
@@ -33,8 +33,9 @@ interface FieldProps<T> {
 
 type NumberControl = Extract<FieldControl, { kind: 'number' }>
 
-export function NumberField(props: FieldProps<number> & { control: NumberControl }) {
-  const { label, value, editor, control, onDone } = props
+// extra は入力の右に並べるもの（角丸の「角ごと」のボタンなど）。className は行に足すクラス
+export function NumberField(props: FieldProps<number> & { control: NumberControl; extra?: ReactNode; className?: string }) {
+  const { label, value, editor, control, onDone, extra, className } = props
   const toDisplay = control.toDisplay ?? ((v: number) => v)
   const fromDisplay = control.fromDisplay ?? ((v: number) => v)
   const step = control.step ?? 1
@@ -95,7 +96,7 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
 
   const sliderValue = shown ?? control.min ?? 0
   return (
-    <div className="design-field">
+    <div className={className ? `design-field ${className}` : 'design-field'}>
       <span
         className="design-label scrub"
         title={`${label}（左右にドラッグで変える）`}
@@ -133,7 +134,71 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
             onEnd={(commit) => editor.end(commit)}
           />
         )}
+        {extra}
       </div>
+    </div>
+  )
+}
+
+// ---- 角丸（MAI-84） ----
+
+const CORNER_RADIUS_CONTROL: NumberControl = { kind: 'number', min: 0, max: CORNER_RADIUS_MAX, step: 1, unit: 'px' }
+const CORNER_LABELS = ['左上', '右上', '右下', '左下'] as const
+
+// 角丸の半径。4 つの角を一緒に変える入力と、角ごとの 4 つの入力に切り替えるボタン（Figma と同じ）。
+// 一緒の入力は、角や選んだノードで値が違えば「混在」。角ごとの入力も、選んだノードでその角の値が違えば「混在」。
+// 角ごとに出すかはパネルの見た目だけで、値は変えない（角の値が違うノードを選んだときは、はじめから角ごとに出す）
+export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'> & { editor: ValueEditor<CornerRadiusChange> }) {
+  const { label, value, editor, onDone } = props
+  const all = (value.kind === 'same' ? [value.value] : value.values).map(cornerRadii)
+  const [separate, setSeparate] = useState(() => all.some((radii) => radii.some((r) => r !== radii[0])))
+  const shared = (values: number[]): SharedValue<number> =>
+    values.every((v) => v === values[0]) ? { kind: 'same', value: values[0] } : { kind: 'mixed', values }
+  const editorFor = (corner: number | null): ValueEditor<number> => ({
+    set: (radius) => editor.set({ corner, radius }),
+    preview: (radius) => editor.preview({ corner, radius }),
+    end: (commit) => editor.end(commit),
+  })
+  const toggle = (
+    <button
+      title="角ごとに変える"
+      aria-label="角ごとに変える"
+      aria-pressed={separate}
+      className={separate ? 'active' : ''}
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={() => setSeparate(!separate)}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+        <path d="M2 6V4.5A2.5 2.5 0 0 1 4.5 2H6M10 2h1.5A2.5 2.5 0 0 1 14 4.5V6M14 10v1.5a2.5 2.5 0 0 1-2.5 2.5H10M6 14H4.5A2.5 2.5 0 0 1 2 11.5V10" />
+      </svg>
+    </button>
+  )
+  return (
+    <div className="design-corner-radius" data-testid="corner-radius-field">
+      <NumberField
+        label={label}
+        value={shared(all.flat())}
+        editor={editorFor(null)}
+        control={CORNER_RADIUS_CONTROL}
+        onDone={onDone}
+        extra={toggle}
+      />
+      {separate && (
+        <div className="design-corner-grid">
+          {/* 2×2 に、角の位置どおりに並べる（左上・右上 / 左下・右下） */}
+          {[0, 1, 3, 2].map((corner) => (
+            <NumberField
+              key={corner}
+              className="design-corner-cell"
+              label={CORNER_LABELS[corner]}
+              value={shared(all.map((radii) => radii[corner]))}
+              editor={editorFor(corner)}
+              control={CORNER_RADIUS_CONTROL}
+              onDone={onDone}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

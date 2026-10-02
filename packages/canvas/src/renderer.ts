@@ -15,6 +15,7 @@ import type { Axis } from './arrange.ts'
 import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
 import { gradientHandles, type GradientHandles } from './gradientHandles.ts'
+import { CORNER_HANDLE_RADIUS_PX, cornerHandles, type CornerHandles } from './cornerHandles.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
 // - 画面に見えているノードだけを、重なり順に描く
@@ -221,14 +222,18 @@ export function drawOverlay(
     ctx.setLineDash([])
   }
 
+  // ホバー中のノードは、形の縁（角丸・楕円。型の outline）をなぞる。選んでいるノードは箱の枠（Figma と同じ。MAI-84）
   if (state.hoveredId && !state.selectedIds.has(state.hoveredId)) {
-    outlineNode(ctx, editor, state.hoveredId, view)
+    outlineNode(ctx, editor, state.hoveredId, view, true)
   }
   for (const id of state.selectedIds) outlineNode(ctx, editor, id, view)
 
   // 選択枠とハンドル（MAI-23）。1 つならノードの向きに沿った枠、複数なら全体を囲む枠
   const found = editor.session.get().editingId ? null : selectionHandles(editor)
   if (found) drawSelectionHandles(ctx, found.handles, found.selection.targets.length > 1, view.dpr)
+  // 角丸のハンドル（MAI-84）
+  const corners = cornerHandles(editor)
+  if (corners) drawCornerHandles(ctx, corners, view.dpr)
   // 間隔のハンドル（MAI-54）。選択枠のハンドルの上に描く
   const spacing = editor.session.get().editingId ? [] : spacingHandles(editor)
   if (spacing.length > 0) drawSpacingHandles(ctx, spacing, state.hoveredSpacing ?? null, state.spacingDrag ?? null, view.dpr)
@@ -298,7 +303,8 @@ export function drawOverlay(
   return drawn
 }
 
-function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport): void {
+// shape なら、型の outline（角丸・楕円の縁）があればそれをなぞる。なければ箱の枠
+function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport, shape = false): void {
   const entry = editor.index.get(id)
   if (!entry) return
   // group の大きさは索引が子から計算しているので、索引の値を使う
@@ -319,12 +325,15 @@ function outlineNode(ctx: CanvasRenderingContext2D, editor: Editor, id: string, 
     ctx.stroke()
     return
   }
-  const points = [
-    corner(local.x, local.y),
-    corner(local.x + local.w, local.y),
-    corner(local.x + local.w, local.y + local.h),
-    corner(local.x, local.y + local.h),
-  ]
+  const outline = shape ? editor.getType(entry.node).outline?.(entry.node) : undefined
+  const points = outline
+    ? outline.map((p) => corner(p.x, p.y))
+    : [
+        corner(local.x, local.y),
+        corner(local.x + local.w, local.y),
+        corner(local.x + local.w, local.y + local.h),
+        corner(local.x, local.y + local.h),
+      ]
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.beginPath()
   ctx.moveTo(points[0].x, points[0].y)
@@ -363,6 +372,20 @@ function drawSelectionHandles(ctx: CanvasRenderingContext2D, handles: ScreenHand
     const p = d(point)
     ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size)
     ctx.strokeRect(p.x - size / 2, p.y - size / 2, size, size)
+  }
+}
+
+// 角丸のハンドル：角の内側の小さな白い丸（青い縁）
+function drawCornerHandles(ctx: CanvasRenderingContext2D, handles: CornerHandles, dpr: number): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.fillStyle = '#ffffff'
+  ctx.strokeStyle = SELECTION_COLOR
+  ctx.lineWidth = 1.5 * dpr
+  for (const point of handles.points) {
+    ctx.beginPath()
+    ctx.arc(point.x * dpr, point.y * dpr, CORNER_HANDLE_RADIUS_PX * dpr, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
   }
 }
 

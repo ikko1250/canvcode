@@ -37,6 +37,8 @@ export interface SessionState {
   // 塗りを編集している図形と、選んでいる止め色（MAI-82）。デザインパネルでグラデーションの塗りを開いている間だけ。
   // その図形を 1 つだけ選んでいれば、図形の上にグラデーションのハンドルを出す（gradientHandles.ts）
   paintEditing: PaintEditing | null
+  // 角丸のハンドルを出している図形（MAI-84）。角丸を持てる図形を 1 つだけ選び、ポインタがその上にあるとき（cornerHandles.ts）
+  cornerHandlesId: string | null
 }
 
 export interface DrawStyle {
@@ -75,6 +77,7 @@ export class Session {
       hoveredSpacing: null,
       spacingDrag: null,
       paintEditing: null,
+      cornerHandlesId: null,
       ...initial,
     }
   }
