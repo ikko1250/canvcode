@@ -7,6 +7,7 @@ import {
   Asterisk,
   Blend,
   Bold,
+  Donut,
   Italic,
   Layers2,
   List,
@@ -15,11 +16,15 @@ import {
   MoveHorizontal,
   MoveVertical,
   PaintBucket,
+  Percent,
   PenLine,
   Radius,
+  RotateCw,
   Ruler,
   Shapes,
   Strikethrough,
+  Table2,
+  Tag,
   Type,
   Underline,
   type LucideIcon,
@@ -156,6 +161,7 @@ export function applyChartRowsChange(current: readonly ChartRow[], change: Chart
 export const chartDataField: DesignField<ChartRowsChange> = {
   id: 'chart.rows',
   label: 'データ',
+  icon: Table2,
   control: { kind: 'chartData' },
   appliesTo: isChart,
   read: (node) => chartRowsOf((node.props as ChartProps).rows),
@@ -169,9 +175,14 @@ export const chartDataField: DesignField<ChartRowsChange> = {
 }
 
 // ドーナツの穴（外の半径に対する割合。0〜90 %）
+// 穴と開始角度は 2 列に並べる（row）。それぞれ数字の下にスライダー
+const CHART_SHAPE_ROW = 'chart.shape'
+
 export const chartInnerRadiusField: DesignField<number> = {
   id: 'chart.innerRadius',
   label: '穴',
+  icon: Donut,
+  row: CHART_SHAPE_ROW,
   control: {
     kind: 'number',
     min: 0,
@@ -195,7 +206,10 @@ export const chartInnerRadiusField: DesignField<number> = {
 export const chartStartAngleField: DesignField<number> = {
   id: 'chart.startAngle',
   label: '開始角度',
-  control: { kind: 'number', min: -360, max: 360, step: 1, unit: '°' },
+  icon: RotateCw,
+  row: CHART_SHAPE_ROW,
+  // スライダーは 0〜360°（入力は -360〜360°）
+  control: { kind: 'number', min: -360, max: 360, step: 1, unit: '°', slider: true, sliderMin: 0, sliderMax: 360 },
   appliesTo: isChart,
   read: (node) => clampStartAngle((node.props as ChartProps).startAngle),
   write(node, value) {
@@ -205,32 +219,27 @@ export const chartStartAngleField: DesignField<number> = {
   },
 }
 
-// ラベル・％の表示（props の showLabels・showPercent の組み合わせを 1 つの切り替えで見せる）
-export type ChartLabelMode = 'none' | 'label' | 'percent' | 'both'
-const CHART_LABEL_OPTIONS: readonly SegmentOption[] = [
-  { value: 'none', title: 'ラベルを出さない', label: 'なし' },
-  { value: 'label', title: 'ラベルだけ', label: '名前' },
-  { value: 'percent', title: '％だけ', label: '％' },
-  { value: 'both', title: 'ラベルと％', label: '両方' },
-]
+// 名前・割合の表示（props の showLabels・showPercent）。1 行にオン・オフのボタンを 2 つ並べる（row）
+const CHART_LABELS_ROW = 'chart.labels'
 
-export const chartLabelsField: DesignField<ChartLabelMode> = {
-  id: 'chart.labels',
-  label: 'ラベル',
-  control: { kind: 'segmented', options: CHART_LABEL_OPTIONS },
-  appliesTo: isChart,
-  read: (node) => {
-    const { showLabels, showPercent } = node.props as ChartProps
-    return showLabels ? (showPercent ? 'both' : 'label') : showPercent ? 'percent' : 'none'
-  },
-  write(node, mode) {
-    if (!isChart(node)) return node
-    const showLabels = mode === 'label' || mode === 'both'
-    const showPercent = mode === 'percent' || mode === 'both'
-    if (node.props.showLabels === showLabels && node.props.showPercent === showPercent) return node
-    return { ...node, props: { ...node.props, showLabels, showPercent } }
-  },
+function chartFlagField(id: string, label: string, key: 'showLabels' | 'showPercent', title: string, icon: LucideIcon, rowIcon?: DesignField['icon']): DesignField<boolean> {
+  return {
+    id,
+    label,
+    icon: rowIcon,
+    row: CHART_LABELS_ROW,
+    control: { kind: 'switch', title, icon: buttonIcon(icon) },
+    appliesTo: isChart,
+    read: (node) => Boolean((node.props as ChartProps)[key]),
+    write(node, value) {
+      if (!isChart(node) || node.props[key] === value) return node
+      return { ...node, props: { ...node.props, [key]: value } }
+    },
+  }
 }
+
+export const chartShowLabelsField = chartFlagField('chart.showLabels', 'ラベル表示', 'showLabels', '名前を表示', Type, Tag)
+export const chartShowPercentField = chartFlagField('chart.showPercent', '割合', 'showPercent', '割合を表示', Percent)
 
 // ---- 形 ----
 
@@ -961,7 +970,7 @@ export const opacityField: DesignField<number> = {
 }
 
 export const builtinDesignSections: DesignSection[] = [
-  { id: 'chart', title: 'グラフ', order: 40, fields: [chartDataField, chartInnerRadiusField, chartStartAngleField, chartLabelsField] },
+  { id: 'chart', title: 'グラフ', order: 40, hideTitle: true, fields: [chartDataField, chartInnerRadiusField, chartStartAngleField, chartShowLabelsField, chartShowPercentField] },
   { id: 'shape', title: '形', order: 50, hideTitle: true, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
   // 角丸は形のすぐ下に、区切り線なしで続ける
   { id: 'corner', title: '角丸', order: 60, hideTitle: true, joinPrevious: true, fields: [cornerRadiusField] },

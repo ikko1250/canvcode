@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { defaultChartRows, parseChartTable, type ChartProps, defaultShadow, NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartLabelsField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
+import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartShowLabelsField, chartShowPercentField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
 import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
 import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, fontWeightField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
@@ -670,7 +670,7 @@ describe('chart section', () => {
   it('shows the chart fields for charts only', () => {
     const { geo, chart } = chartSetup()
     expect(sectionIds([chart])).toEqual(['chart', 'layer'])
-    expect(fieldIds([chart])).toEqual(['chart.rows', 'chart.innerRadius', 'chart.startAngle', 'chart.labels', 'layer.opacity'])
+    expect(fieldIds([chart])).toEqual(['chart.rows', 'chart.innerRadius', 'chart.startAngle', 'chart.showLabels', 'chart.showPercent', 'layer.opacity'])
     expect(sectionIds([chart, geo])).toEqual(['layer'])
   })
 
@@ -725,9 +725,11 @@ describe('chart section', () => {
     expect(props().innerRadius).toBe(0.9)
     editNodes(editor, [chart.id], (node) => chartStartAngleField.write(node, 45), 'design')
     expect(props().startAngle).toBe(45)
-    expect(chartLabelsField.read(editor.getNode(chart.id)!)).toBe('both')
-    editNodes(editor, [chart.id], (node) => chartLabelsField.write(node, 'percent'), 'design')
+    expect([chartShowLabelsField.read(editor.getNode(chart.id)!), chartShowPercentField.read(editor.getNode(chart.id)!)]).toEqual([true, true])
+    editNodes(editor, [chart.id], (node) => chartShowLabelsField.write(node, false), 'design')
     expect([props().showLabels, props().showPercent]).toEqual([false, true])
+    const node = editor.getNode(chart.id)!
+    expect(chartShowPercentField.write(node, true)).toBe(node)
     expect(applyChartRowsChange([], [{ label: 'a', value: 1 }, null as never])).toEqual([{ label: 'a', value: 1 }])
   })
 })

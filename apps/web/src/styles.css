@@ -2090,58 +2090,151 @@ body,
   justify-content: flex-end;
 }
 
-.design-panel button.design-chart-paste {
-  border-color: var(--panel-border);
-  font-size: 11px;
+.design-chart-head {
+  margin-bottom: 4px;
 }
 
 .design-chart-message {
-  margin: 0 0 4px;
-  color: var(--muted);
+  margin: 0 0 6px;
+  color: var(--dp-secondary);
   font-size: 11px;
+}
+
+/* 表を貼り付ける欄（「貼り付け」のボタンで開く） */
+.design-chart-paste {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.design-chart-paste-text {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius);
+  background: var(--dp-field);
+  color: var(--dp-text);
+  font: inherit;
+  resize: vertical;
+}
+
+.design-chart-paste-text:focus {
+  outline: none;
+  border-color: var(--dp-accent);
+}
+
+.design-panel button.design-chart-apply {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: transparent;
+  background: var(--dp-selected);
+  color: var(--dp-accent);
+}
+
+.design-panel button.design-chart-apply:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.design-panel button.design-chart-apply svg {
+  margin: 0;
 }
 
 .design-chart-table {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-bottom: 6px;
+  gap: 6px;
 }
 
+/* 見本・ラベル・値・− を 1 行に */
 .design-chart-row {
   display: flex;
   align-items: center;
-  gap: 3px;
-}
-
-/* 色を自動で割り当てている行の見本は、角を丸くして見分ける */
-.design-chart-row.auto .design-swatch,
-.design-chart-row.auto .design-swatch > span {
-  border-radius: 50%;
+  gap: 8px;
 }
 
 .design-chart-cell {
+  box-sizing: border-box;
   flex: 1;
   width: 0;
   min-width: 0;
-  height: 24px;
-  padding: 0 4px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
-  color: var(--text);
+  height: var(--dp-control-height);
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius);
+  background: var(--dp-field);
+  color: var(--dp-text);
   font: inherit;
 }
 
 .design-chart-cell.numeric {
-  flex: 0 0 56px;
+  flex: 0 0 76px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 .design-chart-cell:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--dp-accent);
+}
+
+/* 穴と開始角度：2 列。それぞれ、アイコンと数字の下に、列の幅いっぱいのスライダー */
+.design-field-row[data-row='chart.shape'] {
+  flex-wrap: nowrap;
+  gap: 16px;
+}
+
+.design-field-row[data-row='chart.shape'] > .design-field {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: center;
+  row-gap: 6px;
+}
+
+.design-field-row[data-row='chart.shape'] .design-control.with-slider {
+  display: contents;
+}
+
+.design-field-row[data-row='chart.shape'] .design-number {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.design-field-row[data-row='chart.shape'] .design-slider {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+/* 名前・割合の表示：左にアイコン、ボタンは右に寄せる */
+.design-field-row[data-row='chart.labels'] > .design-field:first-child {
+  flex: 1 1 0;
+}
+
+.design-field-row[data-row='chart.labels'] > .design-field:first-child .design-control {
+  justify-content: flex-end;
+}
+
+.design-field-row[data-row='chart.labels'] {
+  gap: 6px;
+}
+
+.design-panel .design-switch-field button {
+  width: 44px;
+  height: var(--dp-control-height);
+  border-color: transparent;
+  background: var(--dp-field);
+  color: var(--dp-secondary);
+}
+
+.design-panel .design-switch-field button.active {
+  background: var(--dp-selected);
+  color: var(--dp-accent);
 }
 
 .design-chart-auto {
@@ -2162,4 +2255,11 @@ body,
 .design-mixed {
   flex: 1;
   color: var(--muted);
+}
+
+/* グラフ：データの表と、形（穴・開始角度・表示）の間に区切り線 */
+.design-section[data-section='chart'] .design-chart {
+  margin: 0 -14px 12px;
+  padding: 0 14px 12px;
+  border-bottom: 1px solid var(--dp-line);
 }

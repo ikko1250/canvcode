@@ -1,3 +1,4 @@
+import { Check, ClipboardPaste, Minus, Plus } from 'lucide-react'
 import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { chartRowColor, parseChartNumber, parseChartTable, type ChartRow } from '@canvcode/nodes'
@@ -12,7 +13,7 @@ import type { ChartRowsChange } from './sections.ts'
 // - ラベル・値は打ち終えて（Enter・フォーカスを外す）から 1 回の変更（Undo 1 回）。Enter で次の行の同じ列へ、Esc で打った文字を捨ててキャンバスへ戻る
 // - Alt+↑ / Alt+↓ で行を並べ替える（入力の中で）
 // - CSV・TSV（表計算からのコピーなど）を表の中に貼り付けると、表をまるごと置き換える（1 列目ラベル・2 列目値、見出しの行は飛ばす。nodes の parseChartTable）。
-//   「貼り付け」のボタンはクリップボードから読む。どちらも Undo 1 回
+//   「貼り付け」のボタンは、表を貼り付ける欄を開く（「適用」で置き換える。クリップボードを読む許可は要らない）。どちらも Undo 1 回
 // - 複数のグラフを選んで、データが違えば「混在」と出す（＋・貼り付けは、どのグラフにも当たる）
 // パネルの中なので、キー入力はキャンバスに渡らない（data-own-keys）
 
@@ -24,6 +25,9 @@ export function ChartDataField(props: { label: string; icon?: DesignIcon; value:
   const [generation, setGeneration] = useState(0)
   const [pickerRow, setPickerRow] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  // 表を貼り付ける欄（「貼り付け」のボタンで開く）
+  const [pasting, setPasting] = useState(false)
+  const [pasteText, setPasteText] = useState('')
 
   // 表の外を押したら、カラーピッカーを閉じる
   useEffect(() => {
@@ -41,24 +45,23 @@ export function ChartDataField(props: { label: string; icon?: DesignIcon; value:
     setGeneration((g) => g + 1)
     setPickerRow(null)
     setMessage(null)
+    setPasting(false)
+    setPasteText('')
     editor.set(parsed)
     return true
   }
 
   // 表の中に貼り付けた文字が表（タブか改行を含む）なら、表をまるごと置き換える。1 つの値の貼り付けは、そのままセルに入れる
+  // （貼り付けの欄の中は、打った文字のまま。「適用」で置き換える）
   const onPaste = (e: ReactClipboardEvent<HTMLDivElement>) => {
+    if (e.target instanceof HTMLTextAreaElement) return
     const text = e.clipboardData.getData('text/plain')
     if (!text.includes('\t') && !text.trim().includes('\n')) return
     if (replaceWith(text)) e.preventDefault()
   }
 
-  const pasteFromClipboard = async () => {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (!replaceWith(text)) setMessage('クリップボードに表がありません（1 列目ラベル・2 列目値の CSV か TSV）')
-    } catch {
-      setMessage('クリップボードを読めませんでした。表の中で Ctrl+V で貼り付けてください')
-    }
+  const applyPaste = () => {
+    if (!replaceWith(pasteText)) setMessage('表として読めませんでした（1 列目に項目名、2 列目に数値。タブかカンマで区切る）')
   }
 
   const focusCell = (row: number, column: 'label' | 'value') => {
@@ -72,17 +75,49 @@ export function ChartDataField(props: { label: string; icon?: DesignIcon; value:
         <div className="design-control">
           {rows === null && <span className="design-mixed">{MIXED_LABEL}</span>}
           <button
-            className="design-chart-paste"
-            title="クリップボードの表（CSV・TSV。1 列目ラベル・2 列目値）でデータを置き換える"
-            onClick={() => void pasteFromClipboard()}
+            className={pasting ? 'design-icon-button active' : 'design-icon-button'}
+            title="データを貼り付け（CSV・TSV。1 列目に項目名、2 列目に数値）"
+            aria-label="データを貼り付け"
+            aria-expanded={pasting}
+            onClick={() => {
+              setPasting(!pasting)
+              setMessage(null)
+            }}
           >
-            貼り付け
+            <ClipboardPaste size={16} strokeWidth={1.75} aria-hidden />
           </button>
-          <button className="design-fill-toggle" title="行を足す" aria-label="行を足す" onClick={() => editor.set({ op: 'add' })}>
-            +
+          <button className="design-fill-toggle" title="項目を追加" aria-label="項目を追加" onClick={() => editor.set({ op: 'add' })}>
+            <Plus size={16} strokeWidth={1.75} aria-hidden />
           </button>
         </div>
       </div>
+      {pasting && (
+        <div className="design-chart-paste">
+          <textarea
+            className="design-chart-paste-text"
+            aria-label="項目名と数値をタブまたはカンマで区切って貼り付け"
+            placeholder={'項目 1, 50\n項目 2, 30'}
+            rows={4}
+            value={pasteText}
+            autoFocus
+            onChange={(e) => setPasteText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault()
+                applyPaste()
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setPasting(false)
+                onDone?.()
+              }
+            }}
+          />
+          <button className="design-chart-apply" title="適用（Ctrl+Enter）" aria-label="貼り付けたデータを適用" disabled={pasteText.trim() === ''} onClick={applyPaste}>
+            <Check size={16} strokeWidth={1.75} aria-hidden />
+            適用
+          </button>
+        </div>
+      )}
       {message && (
         <div className="design-chart-message" role="status">
           {message}
@@ -170,7 +205,7 @@ function ChartRowView(props: {
           onDone={onDone}
         />
         <button className="design-fill-toggle" title={`${name}を消す`} aria-label={`${name}を消す`} onClick={() => editor.set({ op: 'remove', index })}>
-          −
+          <Minus size={16} strokeWidth={1.75} aria-hidden />
         </button>
       </div>
       {pickerOpen && (

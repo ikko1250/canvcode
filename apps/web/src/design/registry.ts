@@ -35,7 +35,8 @@ export type FieldControl =
       unit?: string
       // 数字の入力の左にスライダーも出す（min と max が要る）。ドラッグ中の変更は Undo 1 回にまとまる
       slider?: boolean
-      // スライダーの右端（入力は max まで入る。角丸の半径など、max がスライダーには大きすぎるとき）
+      // スライダーの左端・右端（入力は min〜max まで入る。角丸の半径・開始角度など、スライダーには広すぎるとき）
+      sliderMin?: number
       sliderMax?: number
       // 表示する値と、ノードに入れる値の換算（不透明度を 0〜100 % で見せるなど）。既定はそのまま
       toDisplay?: (value: number) => number
@@ -51,6 +52,8 @@ export type FieldControl =
   // オン・オフのボタン（MAI-79。太字・斜体・下線・取り消し線。値は boolean）。
   // group の同じ項目が続けば、パネルでは 1 行（group の名前の見出し）にボタンを並べる
   | { kind: 'toggle'; title: string; icon: ComponentType; group: string }
+  // 1 つのオン・オフのボタン（値は boolean。グラフの名前・割合の表示）。混在なら押すとオン
+  | { kind: 'switch'; title: string; icon: ComponentType }
   // 角丸（MAI-84。値は CornerRadius、書くのは CornerRadiusChange）。4 つの角を一緒に変える入力と、角ごとの 4 つの入力（controls.tsx の CornerRadiusField）
   | { kind: 'cornerRadius' }
   // 影の一覧（MAI-86。値は Shadow[]、書くのは ShadowsChange）。影ごとの種類・表示・ずらし・ぼかし・広がり・色と、＋・−（ShadowsField.tsx）

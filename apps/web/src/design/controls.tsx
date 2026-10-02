@@ -130,7 +130,7 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
         {hasSlider && (
           <Slider
             label={label}
-            min={control.min!}
+            min={control.sliderMin ?? control.min!}
             max={control.sliderMax ?? control.max!}
             step={step}
             value={sliderValue}
@@ -455,6 +455,19 @@ export function ToggleButton(props: { item: ToggleItem }) {
     >
       <Icon />
     </button>
+  )
+}
+
+// 1 つのオン・オフのボタン（kind: 'switch'）。行の名前（label）は、行の中では出さない
+export function SwitchField(props: FieldProps<boolean> & { title: string; buttonIcon: ComponentType }) {
+  const { label, icon, value, editor, title, buttonIcon } = props
+  return (
+    <div className="design-field design-switch-field">
+      <FieldLabel label={label} icon={icon} />
+      <div className="design-control">
+        <ToggleButton item={{ id: title, title, icon: buttonIcon, value, onToggle: () => editor.set(!(value.kind === 'same' && value.value)) }} />
+      </div>
+    </div>
   )
 }
 

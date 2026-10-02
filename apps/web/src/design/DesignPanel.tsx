@@ -15,7 +15,7 @@ import {
   type TextSelection,
 } from '@canvcode/canvas'
 import { IMAGE_VARIANT_SIZES, TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
-import { CornerRadiusField, LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
+import { CornerRadiusField, LineHeightField, NumberField, SegmentedField, SelectField, SwitchField, ToggleGroup, type ValueEditor } from './controls.tsx'
 import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
@@ -319,6 +319,8 @@ function FieldView(props: {
       return <ChartDataField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'select':
       return <SelectField label={field.label} icon={field.icon} value={value} editor={editor} options={control.options} onDone={onDone} />
+    case 'switch':
+      return <SwitchField label={field.label} icon={field.icon} value={value} editor={editor} title={control.title} buttonIcon={control.icon} />
     case 'toggle':
       // fieldRows で ToggleGroup にまとめる
       return null

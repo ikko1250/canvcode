@@ -153,6 +153,33 @@ test('replaces the data with a pasted table, as one undo step', async ({ page })
   await expect(table.getByRole('row')).toHaveCount(2)
 })
 
+test('replaces the data from the paste area, and switches the name and percent labels', async ({ page }) => {
+  await openApp(page)
+  await clickWorld(page, 300, 200)
+  const section = page.getByTestId('design-panel').locator('[data-section="chart"]')
+  const table = section.getByRole('table', { name: 'データ' })
+  // 「データを貼り付け」で欄を開き、「適用」で表を置き換える（カンマ区切りも読む）
+  await section.getByRole('button', { name: 'データを貼り付け' }).click()
+  const area = section.getByRole('textbox', { name: '項目名と数値をタブまたはカンマで区切って貼り付け' })
+  await expect(area).toBeFocused()
+  await area.fill('X, 1\nY, 1\nZ, 2')
+  await section.getByRole('button', { name: '貼り付けたデータを適用' }).click()
+  await expect(area).toHaveCount(0)
+  await expect(table.getByRole('row')).toHaveCount(3)
+  await expect(table.getByRole('textbox', { name: '行 3の値' })).toHaveValue('2')
+
+  // 名前・割合は別々のボタン。押すたびに切り替わり、Undo 1 回で戻る
+  const names = section.getByRole('button', { name: '名前を表示' })
+  const percent = section.getByRole('button', { name: '割合を表示' })
+  const before = await percent.getAttribute('aria-pressed')
+  await percent.click()
+  await expect(percent).toHaveAttribute('aria-pressed', before === 'true' ? 'false' : 'true')
+  await expect(names).toHaveAttribute('aria-pressed', /true|false/)
+  await page.locator('.canvas-container > div[tabindex]').focus()
+  await page.keyboard.press('Control+z')
+  await expect(percent).toHaveAttribute('aria-pressed', before!)
+})
+
 test('places a pie chart with initial data from the pie menu', async ({ page }) => {
   await openApp(page)
   const at = await screen(page, 700, 520)
