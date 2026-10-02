@@ -9,6 +9,7 @@ import {
   layoutRichText,
   layoutText,
   lineHeightOf,
+  lineLeft,
   letterSpacingOf,
   lineHeightStyle,
   setNativeLetterSpacingForTest,
@@ -280,5 +281,70 @@ describe('letter spacing (MAI-77)', () => {
       ['c', 13],
       ['d', 26],
     ])
+  })
+})
+
+// 箇条書き・番号付きリスト（MAI-78）。段差 2em・空き 0.5em（ノードの既定の 10px で 20px・5px）
+describe('lists (MAI-78)', () => {
+  const bullet = (level: number) => ({ type: 'bullet' as const, level })
+
+  it('indents list paragraphs per level and hangs wrapped lines under the text, not the marker', () => {
+    const layout = layoutRichText(
+      [
+        { runs: [{ text: 'aaaa bbbb' }], list: bullet(0) },
+        { runs: [{ text: 'cc' }], list: bullet(1) },
+        { runs: [{ text: 'plain' }] },
+      ],
+      style,
+      60,
+    )
+    // 1 段落目は 60 - 20 = 40px で折り返す（'aaaa ' 22px + 'bbbb' 22px > 40）
+    expect(layout.lines.map((l) => [l.text, l.indent])).toEqual([
+      ['aaaa', 20],
+      ['bbbb', 20],
+      ['cc', 40],
+      ['plain', 0],
+    ])
+    // 記号は 1 行目だけ。文字の左へ 空き + 記号の幅
+    expect(layout.lines.map((l) => l.marker?.text)).toEqual(['•', undefined, '◦', undefined])
+    expect(layout.lines[0].marker!.x).toBeCloseTo(-5 - 5.5)
+    expect(lineLeft(layout.lines[0], 'left', { x: 0, w: 60 })).toBe(20)
+    // 揃えは段差を除いた幅の中で
+    expect(lineLeft(layout.lines[2], 'right', { x: 0, w: 60 })).toBe(60 - 11)
+    expect(lineLeft(layout.lines[2], 'center', { x: 0, w: 60 })).toBe(40 + (20 - 11) / 2)
+  })
+
+  it('counts the indent in the width of a text that does not wrap, and puts long numbers at the left of the gutter', () => {
+    const paragraphs = Array.from({ length: 10 }, (_, i) => ({ runs: [{ text: String(i) }], list: { type: 'ordered' as const, level: 0, style: 'paren-decimal' as const } }))
+    const layout = layoutRichText(paragraphs, style, null)
+    expect(layout.width).toBeCloseTo(20 + 5.5)
+    // '(1)' は 16.5px で溝（20 - 5 = 15px）に収まらないので、溝の左端から
+    expect(layout.lines[0].marker).toMatchObject({ text: '(1)', x: -20 })
+    expect(layout.lines[9].marker!.text).toBe('(10)')
+  })
+
+  it('draws the marker in the format of the first run, without letter spacing', () => {
+    const calls: { text: string; x: number; font: string; color: string }[] = []
+    const ctx = {
+      font: '',
+      fillStyle: '',
+      letterSpacing: '0px',
+      fillText(text: string, x: number) {
+        calls.push({ text, x, font: ctx.font, color: ctx.fillStyle })
+      },
+    }
+    setNativeLetterSpacingForTest(true)
+    const spacedStyle = { ...style, letterSpacing: 0.1 }
+    const layout = layoutRichText([{ runs: [{ text: 'a', format: { color: '#ff0000', fontSize: 20 } }, { text: 'b' }], list: bullet(0) }], spacedStyle, null)
+    drawTextLayout(ctx as unknown as CanvasRenderingContext2D, layout, spacedStyle, { x: 0, y: 0, w: 100, h: 100 }, 'top')
+    expect(calls[0]).toMatchObject({ text: '•', color: '#ff0000' })
+    expect(calls[0].font).toContain('20px')
+    expect(calls[0].x).toBeCloseTo(20 - 5 - 11)
+    expect(calls.slice(1).map((c) => [c.text, c.x])).toEqual([
+      ['a', 20],
+      ['b', 20 + 11 + 2],
+    ])
+    expect(ctx.letterSpacing).toBe('0px')
+    setNativeLetterSpacingForTest(undefined)
   })
 })

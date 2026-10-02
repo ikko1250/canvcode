@@ -3,7 +3,11 @@ import {
   cssLetterSpacing,
   fontFamilyCss,
   fontFamilyFromCss,
+  listIndentStep,
+  listMarkerGap,
+  listMarkers,
   normalizeRichText,
+  paragraphIndent,
   paragraphAttributes,
   paragraphText,
   runStyle,
@@ -18,7 +22,10 @@ import {
 //   （フォントは Canvas と同じ CSS の font-family。MAI-75）。
 //   文字間（MAI-77）は em で、CSS では指定した要素の文字の大きさで換算されて子に継がれるので、文字の大きさを持つ div・span ごとに指定する
 //   （Canvas と同じく run の大きさで換算する）。
-//   空の段落は <br> だけを持ち、div にその段落の書式を持たせる（そこで打った文字の書式になる）
+//   空の段落は <br> だけを持ち、div にその段落の書式を持たせる（そこで打った文字の書式になる）。
+//   リストの段落（MAI-78）は、div の左の余白を段差にし（折り返した行もそろう）、記号・番号を CSS の ::before で描く
+//   （data-list-marker の文字。DOM の文字ではないので、選択・カーソル・コピー・読み取りに入らない）。
+//   ::before は幅が段差 1 つ分の inline-block を負の余白で左へ出し、右寄せにして文字との間を空ける（Canvas と同じ。layout.ts）
 // - 読み取り：ブラウザがその場で変えた DOM（文字を打つ・IME・段落の中での削除）も読めるようにする。
 //   段落は div などのブロックと、途中の <br> で分ける。文字の書式は、いちばん近い祖先の書式の属性から読み、
 //   なければ同じ段落の直前の文字の書式を使う（ブラウザが span の外に文字を入れたときなど）。
@@ -27,6 +34,36 @@ import {
 
 export const RUN_FORMAT_ATTRIBUTE = 'data-format'
 export const PARAGRAPH_ATTRIBUTE = 'data-paragraph'
+// リストの段落の記号・番号の文字（MAI-78）。::before の content にする
+export const LIST_MARKER_ATTRIBUTE = 'data-list-marker'
+
+const LIST_STYLE_ID = 'canvcode-text-list-style'
+// 記号の大きさ・フォント・色と段差は、段落ごとに CSS の変数で渡す
+const LIST_STYLE = `[${LIST_MARKER_ATTRIBUTE}]::before {
+  content: attr(${LIST_MARKER_ATTRIBUTE});
+  display: inline-block;
+  box-sizing: border-box;
+  width: var(--canvcode-list-gutter);
+  margin-left: calc(-1 * var(--canvcode-list-gutter));
+  padding-right: var(--canvcode-list-gap);
+  text-align: right;
+  white-space: pre;
+  letter-spacing: normal;
+  text-indent: 0;
+  font-size: var(--canvcode-list-size);
+  font-family: var(--canvcode-list-font);
+  color: var(--canvcode-list-color);
+  user-select: none;
+  pointer-events: none;
+}`
+
+function ensureListStyle(doc: Document): void {
+  if (doc.getElementById(LIST_STYLE_ID)) return
+  const style = doc.createElement('style')
+  style.id = LIST_STYLE_ID
+  style.textContent = LIST_STYLE
+  doc.head.append(style)
+}
 
 const BLOCK_TAGS = new Set(['DIV', 'P', 'LI', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'SECTION', 'ARTICLE'])
 
@@ -38,15 +75,27 @@ export interface DomPoint {
 // ---- 書き出し ----
 
 export function renderRichTextDom(root: HTMLElement, paragraphs: readonly TextParagraph[], base: TextStyle): void {
-  root.replaceChildren(...paragraphs.map((paragraph) => paragraphElement(root.ownerDocument, paragraph, base)))
+  const markers = listMarkers(paragraphs)
+  if (markers.some((marker) => marker !== null)) ensureListStyle(root.ownerDocument)
+  root.replaceChildren(...paragraphs.map((paragraph, i) => paragraphElement(root.ownerDocument, paragraph, base, markers[i])))
 }
 
-function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextStyle): HTMLElement {
+function paragraphElement(doc: Document, paragraph: TextParagraph, base: TextStyle, marker: string | null): HTMLElement {
   const div = doc.createElement('div')
   const attributes = paragraphAttributes(paragraph)
   if (Object.keys(attributes).length > 0) div.setAttribute(PARAGRAPH_ATTRIBUTE, JSON.stringify(attributes))
   const runs = paragraph.runs.length > 0 ? paragraph.runs : [{ text: '' }]
   const styles = runs.map((run) => runStyle(base, run.format))
+  if (marker !== null) {
+    // 記号は段落の最初の run の書式で描く（Canvas と同じ）
+    div.setAttribute(LIST_MARKER_ATTRIBUTE, marker)
+    div.style.paddingLeft = `${paragraphIndent(paragraph, base)}px`
+    div.style.setProperty('--canvcode-list-gutter', `${listIndentStep(base)}px`)
+    div.style.setProperty('--canvcode-list-gap', `${listMarkerGap(base)}px`)
+    div.style.setProperty('--canvcode-list-size', `${styles[0].fontSize}px`)
+    div.style.setProperty('--canvcode-list-font', fontFamilyCss(styles[0].fontFamily))
+    div.style.setProperty('--canvcode-list-color', styles[0].color)
+  }
   // 段落の要素自身の文字（行の高さの strut）は、段落の中で最も小さい文字にする（Canvas のレイアウトと同じ。layout.ts）
   div.style.fontSize = `${Math.min(...styles.map((style) => style.fontSize))}px`
   const letterSpacing = cssLetterSpacing(base)

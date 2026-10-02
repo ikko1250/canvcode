@@ -301,14 +301,28 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
 }
 
 // テキスト・付箋の文字（プレーンテキスト）。版 2 は段落と run（paragraphs）で持ち、版 1 は text の文字列（MAI-74）。
-// サーバーはノードの型を読み込まないので、両方の形を構造的に読む
+// サーバーはノードの型を読み込まないので、両方の形を構造的に読む。
+// 箇条書き・番号付きリストの段落（MAI-78）は、AI が構造を読めるよう Markdown の形で記号を付ける（階層ごとに 2 つの空白、
+// 箇条書きは「- 」、番号付きは「1. 」。番号は画面と同じ数え方（richText.ts の listNumbers）で、形（a. や ① など）は 1. にそろえる）
 export function plainTextOfProps(props: Record<string, unknown>): string {
   const paragraphs = props.paragraphs
   if (Array.isArray(paragraphs)) {
+    let counters: ({ type: string; n: number } | undefined)[] = []
     return paragraphs
       .map((paragraph) => {
         const runs = (paragraph as { runs?: unknown })?.runs
-        return Array.isArray(runs) ? runs.map((run) => (typeof run?.text === 'string' ? run.text : '')).join('') : ''
+        const text = Array.isArray(runs) ? runs.map((run) => (typeof run?.text === 'string' ? run.text : '')).join('') : ''
+        const list = (paragraph as { list?: { type?: unknown; level?: unknown } })?.list
+        if (!list || (list.type !== 'bullet' && list.type !== 'ordered')) {
+          counters = []
+          return text
+        }
+        const level = typeof list.level === 'number' && Number.isFinite(list.level) ? Math.max(0, Math.min(8, Math.round(list.level))) : 0
+        counters = counters.slice(0, level + 1)
+        const previous = counters[level]
+        const n = previous && previous.type === list.type ? previous.n + 1 : 1
+        counters[level] = { type: list.type, n }
+        return `${'  '.repeat(level)}${list.type === 'bullet' ? '-' : `${n}.`} ${text}`
       })
       .join('\n')
   }

@@ -23,6 +23,24 @@ export interface TextRun {
 
 export interface TextParagraph {
   runs: TextRun[]
+  // 箇条書き・番号付きリスト（MAI-78）。なければ普通の段落
+  list?: TextList
+}
+
+// 段落のリストの属性（MAI-78）。
+// - type：箇条書き（bullet）か番号付き（ordered）
+// - level：階層（0 が一番外。Tab / Shift+Tab で上げ下げする。0〜MAX_LIST_LEVEL）
+// - style：記号・番号の形。なければ階層ごとの既定（DEFAULT_LIST_STYLES を階層で循環。listStyleOf）
+export type TextListType = 'bullet' | 'ordered'
+
+export type BulletStyle = 'disc' | 'circle' | 'square' | 'dash' | 'check'
+export type OrderedStyle = 'decimal' | 'decimal-paren' | 'paren-decimal' | 'lower-alpha' | 'lower-roman' | 'circled'
+export type TextListStyle = BulletStyle | OrderedStyle
+
+export interface TextList {
+  type: TextListType
+  level: number
+  style?: TextListStyle
 }
 
 // 選んでいる文字の範囲（start ≤ end）
@@ -72,6 +90,218 @@ export function paragraphsOf(props: { paragraphs?: TextParagraph[]; text?: strin
 export function migratePlainTextProps<P extends { paragraphs: TextParagraph[] }>(props: Record<string, unknown>): P {
   const { text, ...rest } = props
   return { ...rest, paragraphs: richTextFromPlain(typeof text === 'string' ? text : '') } as unknown as P
+}
+
+// ---- リスト（MAI-78） ----
+// 番号の数え方（listMarkers）：
+// - 番号付きの段落は、同じ階層で、同じ種類（番号付き）の段落が続く間は 1 つずつ増える
+// - リストでない段落が挟まると、すべての階層で数え直す（空の段落も同じ。続いた段落だけを 1 つのリストとみなす）
+// - 浅い階層の段落が挟まると、それより深い階層は数え直す（入れ子のリストは親の項目ごとに 1 から）
+// - 同じ階層に箇条書きが挟まると、その階層の番号は数え直す。深い階層の段落は、浅い階層の番号を途切れさせない
+// 記号・番号の形は段落ごとに持てる。持たない段落は階層ごとの既定（箇条書きは • ◦ ▪、番号は 1. a. i. を循環）
+
+export const MAX_LIST_LEVEL = 8
+
+export const BULLET_STYLES: readonly BulletStyle[] = ['disc', 'circle', 'square', 'dash', 'check']
+export const ORDERED_STYLES: readonly OrderedStyle[] = ['decimal', 'decimal-paren', 'paren-decimal', 'lower-alpha', 'lower-roman', 'circled']
+
+// 階層ごとの既定の形（階層の数だけ循環する）
+export const DEFAULT_LIST_STYLES: Record<TextListType, readonly TextListStyle[]> = {
+  bullet: ['disc', 'circle', 'square'],
+  ordered: ['decimal', 'lower-alpha', 'lower-roman'],
+}
+
+const BULLET_GLYPHS: Record<BulletStyle, string> = { disc: '•', circle: '◦', square: '▪', dash: '–', check: '✓' }
+
+export function listTypeOfStyle(style: TextListStyle): TextListType {
+  return (BULLET_STYLES as readonly string[]).includes(style) ? 'bullet' : 'ordered'
+}
+
+function isListStyle(value: unknown): value is TextListStyle {
+  return typeof value === 'string' && ((BULLET_STYLES as readonly string[]).includes(value) || (ORDERED_STYLES as readonly string[]).includes(value))
+}
+
+// 段落のリストの属性。読めない値（壊れたデータ）はリストでないとみなし、階層は範囲に収め、種類に合わない形は既定にする
+export function listOf(paragraph: TextParagraph): TextList | undefined {
+  const list = paragraph.list as Partial<TextList> | undefined
+  if (!list || (list.type !== 'bullet' && list.type !== 'ordered')) return undefined
+  const level = typeof list.level === 'number' && Number.isFinite(list.level) ? Math.max(0, Math.min(MAX_LIST_LEVEL, Math.round(list.level))) : 0
+  const style = isListStyle(list.style) && listTypeOfStyle(list.style) === list.type ? list.style : undefined
+  return style ? { type: list.type, level, style } : { type: list.type, level }
+}
+
+// 記号・番号の実際の形（持たなければ階層ごとの既定）
+export function listStyleOf(list: TextList): TextListStyle {
+  if (list.style) return list.style
+  const cycle = DEFAULT_LIST_STYLES[list.type]
+  return cycle[list.level % cycle.length]
+}
+
+// 番号を形に合わせて書く（1 から）
+export function formatListNumber(n: number, style: OrderedStyle): string {
+  switch (style) {
+    case 'decimal':
+      return `${n}.`
+    case 'decimal-paren':
+      return `${n})`
+    case 'paren-decimal':
+      return `(${n})`
+    case 'lower-alpha':
+      return `${alphaNumber(n)}.`
+    case 'lower-roman':
+      return `${romanNumber(n)}.`
+    case 'circled':
+      return circledNumber(n)
+  }
+}
+
+// a, b, …, z, aa, ab, …（CSS の lower-alpha と同じ）
+function alphaNumber(n: number): string {
+  let out = ''
+  for (let k = n; k > 0; k = Math.floor((k - 1) / 26)) out = String.fromCharCode(97 + ((k - 1) % 26)) + out
+  return out
+}
+
+// i, ii, …（3999 を超えたら数字のまま。CSS の lower-roman と同じ）
+function romanNumber(n: number): string {
+  if (n >= 4000) return String(n)
+  const table: [number, string][] = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']]
+  let out = ''
+  let k = n
+  for (const [value, digits] of table) {
+    while (k >= value) {
+      out += digits
+      k -= value
+    }
+  }
+  return out
+}
+
+// ①〜㊿（Unicode にあるのは 50 まで。それより先は (51) のように書く）
+function circledNumber(n: number): string {
+  if (n >= 1 && n <= 20) return String.fromCodePoint(0x2460 + n - 1)
+  if (n >= 21 && n <= 35) return String.fromCodePoint(0x3251 + n - 21)
+  if (n >= 36 && n <= 50) return String.fromCodePoint(0x32b1 + n - 36)
+  return `(${n})`
+}
+
+// 段落ごとの番号（番号付きの段落だけ。ほかは null）。数え方はこの節の頭のとおり
+export function listNumbers(paragraphs: readonly TextParagraph[]): (number | null)[] {
+  // 階層ごとの、今数えている種類と番号
+  let counters: ({ type: TextListType; n: number } | undefined)[] = []
+  return paragraphs.map((paragraph) => {
+    const list = listOf(paragraph)
+    if (!list) {
+      counters = []
+      return null
+    }
+    counters = counters.slice(0, list.level + 1)
+    const previous = counters[list.level]
+    const n = previous && previous.type === list.type ? previous.n + 1 : 1
+    counters[list.level] = { type: list.type, n }
+    return list.type === 'ordered' ? n : null
+  })
+}
+
+// 段落ごとの記号・番号の文字（リストでない段落は null）
+export function listMarkers(paragraphs: readonly TextParagraph[]): (string | null)[] {
+  const numbers = listNumbers(paragraphs)
+  return paragraphs.map((paragraph, i) => {
+    const list = listOf(paragraph)
+    if (!list) return null
+    const style = listStyleOf(list)
+    return list.type === 'bullet' ? BULLET_GLYPHS[style as BulletStyle] : formatListNumber(numbers[i] ?? 1, style as OrderedStyle)
+  })
+}
+
+// 段落のリストの属性を変える（undefined ならリストを外す）。runs と、ほかの属性はそのまま
+export function withList(paragraph: TextParagraph, list: TextList | undefined): TextParagraph {
+  const { list: _list, ...rest } = paragraph
+  return list ? { ...rest, list: list.style ? { type: list.type, level: list.level, style: list.style } : { type: list.type, level: list.level } } : rest
+}
+
+// start〜end にかかる段落の番号（範囲が空なら、その位置の段落）
+export function paragraphIndexesInRange(paragraphs: readonly TextParagraph[], start: number, end: number): number[] {
+  if (end < start) [start, end] = [end, start]
+  const a = locate(paragraphs, start).p
+  const b = locate(paragraphs, end).p
+  return Array.from({ length: b - a + 1 }, (_, i) => a + i)
+}
+
+// 範囲（null ならすべて）の段落を、ほかの段落はそのままに書き換える
+function mapParagraphs(
+  paragraphs: readonly TextParagraph[],
+  range: TextRange | null,
+  map: (paragraph: TextParagraph, index: number, current: readonly TextParagraph[]) => TextParagraph,
+): TextParagraph[] {
+  const indexes = range ? paragraphIndexesInRange(paragraphs, range.start, range.end) : paragraphs.map((_, i) => i)
+  const out = [...paragraphs]
+  for (const i of indexes) out[i] = map(out[i], i, out)
+  return out
+}
+
+// 範囲の段落のリストの種類を変える（none ならリストを外す）。階層はそのまま。
+// 種類が変わる段落は、形を既定（階層ごとの循環）に戻す
+export function setListType(paragraphs: readonly TextParagraph[], range: TextRange | null, type: TextListType | 'none'): TextParagraph[] {
+  return mapParagraphs(paragraphs, range, (paragraph) => {
+    if (type === 'none') return withList(paragraph, undefined)
+    const list = listOf(paragraph)
+    if (list?.type === type) return withList(paragraph, list)
+    return withList(paragraph, { type, level: list?.level ?? 0 })
+  })
+}
+
+// 範囲の段落の記号・番号の形を変える。形は範囲の中で一番浅い階層の段落に当て（リストでない段落は階層 0 とみなし、リストにする）、
+// それより深い段落は階層ごとの既定のまま（種類が変われば、種類だけ合わせて形は既定に戻す）。
+// こうすると、入れ子のリストを丸ごと選んで形を選んでも、階層ごとに記号が変わったままになる
+export function setListStyle(paragraphs: readonly TextParagraph[], range: TextRange | null, style: TextListStyle): TextParagraph[] {
+  const type = listTypeOfStyle(style)
+  const indexes = range ? paragraphIndexesInRange(paragraphs, range.start, range.end) : paragraphs.map((_, i) => i)
+  const top = Math.min(...indexes.map((i) => listOf(paragraphs[i])?.level ?? 0))
+  return mapParagraphs(paragraphs, range, (paragraph) => {
+    const list = listOf(paragraph)
+    const level = list?.level ?? 0
+    if (level === top) return withList(paragraph, { type, level, style })
+    if (list && list.type !== type) return withList(paragraph, { type, level })
+    return paragraph
+  })
+}
+
+// 範囲の段落のうち、形の項目に見せるもの（setListStyle が形を当てる、一番浅い階層の段落）
+export function listStyleTargets(paragraphs: readonly TextParagraph[], range: TextRange | null): TextParagraph[] {
+  const indexes = range ? paragraphIndexesInRange(paragraphs, range.start, range.end) : paragraphs.map((_, i) => i)
+  const top = Math.min(...indexes.map((i) => listOf(paragraphs[i])?.level ?? 0))
+  return indexes.map((i) => paragraphs[i]).filter((paragraph) => (listOf(paragraph)?.level ?? 0) === top)
+}
+
+// 範囲のリストの段落の階層を delta だけ変える（Tab / Shift+Tab）。リストでない段落はそのまま。
+// 形を持つ段落は、移った先の階層の形を引き継ぐ：上へさかのぼって（リストが途切れるか、移った先より浅い段落に当たるまで）
+// 同じ階層・同じ種類の段落があればその形、なければ階層ごとの既定（入れ子にした項目は、親と違う記号になる）
+export function indentList(paragraphs: readonly TextParagraph[], range: TextRange, delta: number): TextParagraph[] {
+  return mapParagraphs(paragraphs, range, (paragraph, index, current) => {
+    const list = listOf(paragraph)
+    if (!list) return paragraph
+    const level = Math.max(0, Math.min(MAX_LIST_LEVEL, list.level + delta))
+    if (level === list.level) return paragraph
+    let style: TextListStyle | undefined
+    for (let i = index - 1; i >= 0; i--) {
+      const before = listOf(current[i])
+      if (!before || before.level < level) break
+      if (before.level === level && before.type === list.type) {
+        style = before.style
+        break
+      }
+    }
+    return withList(paragraph, { type: list.type, level, style })
+  })
+}
+
+// 段落の頭に打つとリストになる文字（「- 」「* 」「1. 」「1) 」。最後の空白を打ったときに変える）
+export function listShortcut(textBeforeSpace: string): TextList | null {
+  if (textBeforeSpace === '-' || textBeforeSpace === '*') return { type: 'bullet', level: 0 }
+  if (textBeforeSpace === '1.') return { type: 'ordered', level: 0 }
+  if (textBeforeSpace === '1)') return { type: 'ordered', level: 0, style: 'decimal-paren' }
+  return null
 }
 
 // ---- 書式 ----

@@ -10,6 +10,12 @@ import {
   letterSpacingOf,
   LETTER_SPACING_LIMITS,
   lineHeightOf,
+  listOf,
+  listStyleOf,
+  listStyleTargets,
+  paragraphIndexesInRange,
+  setListStyle,
+  setListType,
   noteStyle,
   paragraphsOf,
   richTextLength,
@@ -19,13 +25,15 @@ import {
   type LineHeightUnit,
   type NoteProps,
   type TextAlign,
+  type TextListStyle,
+  type TextListType,
   type TextParagraph,
   type TextProps,
   type TextRunFormat,
   type TextStyle,
 } from '@canvcode/nodes'
 import { sameValue } from '@canvcode/canvas'
-import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption } from './registry.ts'
+import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
 
 // デザインパネルに最初から出すセクション（MAI-73）。
 // 塗り・線・文字・レイヤーの 4 つ。後の課題は、ここに項目を足すか、別のファイルで registerDesignSection する
@@ -218,6 +226,79 @@ export const letterSpacingField: DesignField<number> = {
   },
 }
 
+// 箇条書き・番号付きリスト（MAI-78）。段落ごとの属性（richText.ts の TextList）。
+// 文字を編集中で範囲を選んでいれば、その範囲にかかる段落に当て、そうでなければノードのすべての段落に当てる（値が違えば「混在」）
+type ListKind = TextListType | 'none'
+
+function listParagraphs(node: NodeRecord): TextParagraph[] {
+  return paragraphsOf(node.props as { paragraphs?: TextParagraph[] })
+}
+
+function withParagraphs(node: NodeRecord, paragraphs: TextParagraph[]): NodeRecord {
+  const props = node.props as Record<string, unknown>
+  const next = { ...props, paragraphs }
+  return sameValue(next, props) ? node : { ...node, props: next }
+}
+
+const LIST_TYPE_OPTIONS: SegmentOption[] = [
+  { value: 'none', title: 'リストにしない', label: 'なし' },
+  { value: 'bullet', title: '箇条書き', label: '箇条書き' },
+  { value: 'ordered', title: '番号付きリスト', label: '番号' },
+]
+
+export const listTypeField: DesignField<ListKind> = {
+  id: 'text.list',
+  label: 'リスト',
+  control: { kind: 'segmented', options: LIST_TYPE_OPTIONS },
+  appliesTo: (node) => TEXT_FORMAT_TYPES[node.type] !== undefined,
+  read: (node) => listTypeField.values!(node, null)[0],
+  values(node, range) {
+    const paragraphs = listParagraphs(node)
+    const indexes = range ? paragraphIndexesInRange(paragraphs, range.start, range.end) : paragraphs.map((_, i) => i)
+    return indexes.map((i) => listOf(paragraphs[i])?.type ?? 'none')
+  },
+  write(node, value, range) {
+    if (!listTypeField.appliesTo(node)) return node
+    return withParagraphs(node, setListType(listParagraphs(node), range ?? null, value))
+  },
+}
+
+// 記号・番号の形。一番浅い階層の段落に当てる（深い階層は階層ごとの既定のまま。richText.ts の setListStyle）。
+// 「なし」はリストを外す
+const LIST_STYLE_OPTIONS: SelectOption[] = [
+  { value: 'none', label: 'なし' },
+  { value: 'disc', label: '• 黒丸', group: '箇条書き' },
+  { value: 'circle', label: '◦ 白丸', group: '箇条書き' },
+  { value: 'square', label: '▪ 四角', group: '箇条書き' },
+  { value: 'dash', label: '– ダッシュ', group: '箇条書き' },
+  { value: 'check', label: '✓ チェック', group: '箇条書き' },
+  { value: 'decimal', label: '1. 数字', group: '番号' },
+  { value: 'decimal-paren', label: '1) 数字と括弧', group: '番号' },
+  { value: 'paren-decimal', label: '(1) 括弧付きの数字', group: '番号' },
+  { value: 'lower-alpha', label: 'a. 英字', group: '番号' },
+  { value: 'lower-roman', label: 'i. ローマ数字', group: '番号' },
+  { value: 'circled', label: '① 丸数字', group: '番号' },
+]
+
+export const listStyleField: DesignField<TextListStyle | 'none'> = {
+  id: 'text.listStyle',
+  label: '記号',
+  control: { kind: 'select', options: LIST_STYLE_OPTIONS },
+  appliesTo: (node) => TEXT_FORMAT_TYPES[node.type] !== undefined,
+  read: (node) => listStyleField.values!(node, null)[0],
+  values(node, range) {
+    return listStyleTargets(listParagraphs(node), range).map((paragraph) => {
+      const list = listOf(paragraph)
+      return list ? listStyleOf(list) : 'none'
+    })
+  },
+  write(node, value, range) {
+    if (!listStyleField.appliesTo(node)) return node
+    const paragraphs = listParagraphs(node)
+    return withParagraphs(node, value === 'none' ? setListType(paragraphs, range ?? null, 'none') : setListStyle(paragraphs, range ?? null, value))
+  },
+}
+
 // ---- レイヤー ----
 
 // 不透明度はノードのレコードの opacity（0〜1）。パネルでは 0〜100 % で見せる。
@@ -245,7 +326,7 @@ export const opacityField: DesignField<number> = {
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillColorField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
-  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, lineHeightField, letterSpacingField, textColorField, textAlignField] },
+  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]
 

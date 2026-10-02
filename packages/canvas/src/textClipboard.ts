@@ -1,9 +1,22 @@
-import { fontFamilyCss, normalizeRichText, paragraphText, type TextParagraph, type TextRunFormat } from '@canvcode/nodes'
+import {
+  fontFamilyCss,
+  listMarkers,
+  listOf,
+  listStyleOf,
+  normalizeRichText,
+  paragraphText,
+  withList,
+  type TextListStyle,
+  type TextParagraph,
+  type TextRunFormat,
+} from '@canvcode/nodes'
 import { decodeBase64, encodeBase64 } from './clipboard.ts'
 
 // 文字の編集中のコピー・貼り付け（MAI-74）。範囲ごとの書式を残すため、アプリ内の形式（段落と run の JSON）も載せる。
 // 書式は既定に重ねた実際の値（resolveRichText）で載せ、貼り付け先で、その既定と同じ値を落とす。
-// text/html には、ほかのアプリでも色・大きさ・フォントが残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく
+// text/html には、ほかのアプリでも色・大きさ・フォントが残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく。
+// リストの段落（MAI-78）は、ほかのアプリでもリストになるよう ul / ol と li にする（階層は入れ子。記号の形は list-style-type で、
+// CSS で表せない形（1) (1) ①）は 1. にする）。text/plain には記号・番号と、階層ごとに 2 つの空白を付ける
 
 export const TEXT_CLIPBOARD_MIME = 'application/x-canvcode-text+json'
 const HTML_ATTRIBUTE = 'data-canvcode-text'
@@ -17,17 +30,65 @@ interface TextClipboardPayload {
 export function textClipboardData(paragraphs: readonly TextParagraph[]): { json: string; html: string; plain: string } {
   const payload: TextClipboardPayload = { kind: 'canvcode/text', version: 1, paragraphs: [...paragraphs] }
   const json = JSON.stringify(payload)
-  const body = paragraphs
-    .map((paragraph) => {
-      const runs = paragraph.runs.map((run) => `<span style="${styleOf(run.format)}">${escapeHtml(run.text)}</span>`).join('')
-      return `<p>${runs || '<br>'}</p>`
-    })
-    .join('')
+  const markers = listMarkers(paragraphs)
   return {
     json,
-    html: `<div ${HTML_ATTRIBUTE}="${encodeBase64(json)}">${body}</div>`,
-    plain: paragraphs.map(paragraphText).join('\n'),
+    html: `<div ${HTML_ATTRIBUTE}="${encodeBase64(json)}">${htmlBody(paragraphs)}</div>`,
+    plain: paragraphs
+      .map((paragraph, i) => {
+        const list = listOf(paragraph)
+        return list ? `${'  '.repeat(list.level)}${markers[i]} ${paragraphText(paragraph)}` : paragraphText(paragraph)
+      })
+      .join('\n'),
   }
+}
+
+const CSS_LIST_STYLES: Record<TextListStyle, string> = {
+  disc: 'disc',
+  circle: 'circle',
+  square: 'square',
+  dash: "'– '",
+  check: "'✓ '",
+  decimal: 'decimal',
+  'decimal-paren': 'decimal',
+  'paren-decimal': 'decimal',
+  'lower-alpha': 'lower-alpha',
+  'lower-roman': 'lower-roman',
+  circled: 'decimal',
+}
+
+// 段落を p に、続いたリストの段落を入れ子の ul / ol にする
+function htmlBody(paragraphs: readonly TextParagraph[]): string {
+  let html = ''
+  // 開いているリスト（階層ごと）と、その中で li を開いているか
+  const stack: { tag: 'ul' | 'ol'; li: boolean }[] = []
+  const closeTop = () => {
+    const top = stack.pop()!
+    html += `${top.li ? '</li>' : ''}</${top.tag}>`
+  }
+  for (const paragraph of paragraphs) {
+    const runs = paragraph.runs.map((run) => `<span style="${styleOf(run.format)}">${escapeHtml(run.text)}</span>`).join('')
+    const content = paragraphText(paragraph) === '' ? '<br>' : runs
+    const list = listOf(paragraph)
+    if (!list) {
+      while (stack.length > 0) closeTop()
+      html += `<p>${content}</p>`
+      continue
+    }
+    const tag = list.type === 'bullet' ? 'ul' : 'ol'
+    while (stack.length > list.level + 1) closeTop()
+    if (stack.length === list.level + 1 && stack[list.level].tag !== tag) closeTop()
+    while (stack.length < list.level + 1) {
+      html += `<${tag}>`
+      stack.push({ tag, li: false })
+    }
+    const top = stack[list.level]
+    if (top.li) html += '</li>'
+    html += `<li style="${escapeHtml(`list-style-type: ${CSS_LIST_STYLES[listStyleOf(list)]}`)}">${content}`
+    top.li = true
+  }
+  while (stack.length > 0) closeTop()
+  return html
 }
 
 // アプリ内の形式の文字。なければ null（プレーンテキストとして貼る）
@@ -49,7 +110,9 @@ function validPayload(value: unknown): TextParagraph[] | null {
   if (p?.kind !== 'canvcode/text' || p.version !== 1 || !Array.isArray(p.paragraphs)) return null
   const paragraphs = p.paragraphs.filter((paragraph) => Array.isArray(paragraph?.runs))
   for (const paragraph of paragraphs) paragraph.runs = paragraph.runs.filter((run) => typeof run?.text === 'string')
-  return paragraphs.length > 0 ? normalizeRichText(paragraphs) : null
+  // リストの属性は読める値だけを残す（MAI-78）
+  const cleaned = paragraphs.map((paragraph) => withList(paragraph, listOf(paragraph)))
+  return cleaned.length > 0 ? normalizeRichText(cleaned) : null
 }
 
 function styleOf(format: TextRunFormat | undefined): string {

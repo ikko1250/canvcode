@@ -32,6 +32,14 @@ export type FieldControl =
   | { kind: 'font' }
   // 行の高さ（MAI-76。値は LineHeight。倍率と px を切り替えられる。controls.tsx の LineHeightField）
   | { kind: 'lineHeight' }
+  // 一覧から 1 つ選ぶ（MAI-78。リストの記号・番号の形）。group の同じ選択肢は見出しの下にまとめる
+  | { kind: 'select'; options: readonly SelectOption[] }
+
+export interface SelectOption {
+  value: string
+  label: string
+  group?: string
+}
 
 export interface SegmentOption {
   value: string

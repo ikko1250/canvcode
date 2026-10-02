@@ -452,3 +452,170 @@ describe('rich text editing (MAI-74)', () => {
     expect((editor.getNode(geo.id)!.props as { label: string }).label).toBe('ab\n')
   })
 })
+
+// 箇条書き・番号付きリスト（MAI-78）
+describe('lists (MAI-78)', () => {
+  const bullet = (level = 0) => ({ type: 'bullet' as const, level })
+  const ordered = (level = 0) => ({ type: 'ordered' as const, level })
+  const listsOf = (editor: Editor, id: string) => propsOf(editor, id).paragraphs.map((p) => p.list)
+  const key = (element: HTMLElement, init: KeyboardEventInit) => {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })
+    element.dispatchEvent(event)
+    return event
+  }
+
+  it('draws markers with ::before (not in the text) and indents the paragraph', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'one' }], list: ordered() }, { runs: [{ text: 'two' }], list: ordered() }, { runs: [{ text: 'x' }], list: bullet(1) }], { fontSize: 10 })
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const divs = [...element.children] as HTMLElement[]
+    expect(divs.map((d) => d.getAttribute('data-list-marker'))).toEqual(['1.', '2.', '◦'])
+    expect(divs.map((d) => d.style.paddingLeft)).toEqual(['20px', '20px', '40px'])
+    expect(element.textContent).toBe('onetwox')
+    expect(document.getElementById('canvcode-text-list-style')?.textContent).toContain('attr(data-list-marker)')
+    textEditor.finish()
+  })
+
+  it('changes the level with Tab / Shift+Tab without moving the focus, undoable', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'a' }], list: bullet() }, { runs: [{ text: 'b' }], list: bullet() }, { runs: [{ text: 'c' }] }])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const outside = vi.fn()
+    layer.addEventListener('keydown', outside)
+    setCaret(textNodes(element)[1], 1)
+    expect(key(element, { key: 'Tab' }).defaultPrevented).toBe(true)
+    expect(outside).not.toHaveBeenCalled()
+    expect(listsOf(editor, text.id)).toEqual([bullet(0), bullet(1), undefined])
+    expect(element.children[1].getAttribute('data-list-marker')).toBe('◦')
+    key(element, { key: 'Tab' })
+    expect(listsOf(editor, text.id)[1]).toEqual(bullet(2))
+    key(element, { key: 'Tab', shiftKey: true })
+    expect(listsOf(editor, text.id)[1]).toEqual(bullet(1))
+    // リストでない段落では何もしない（でもフォーカスは移さない）
+    setCaret(textNodes(element)[2], 0)
+    expect(key(element, { key: 'Tab' }).defaultPrevented).toBe(true)
+    expect(listsOf(editor, text.id)[2]).toBeUndefined()
+    // Undo は 1 回ずつ（続けた Tab をまとめない）
+    key(element, { key: 'z', ctrlKey: true })
+    expect(listsOf(editor, text.id)[1]).toEqual(bullet(2))
+    key(element, { key: 'z', ctrlKey: true })
+    expect(listsOf(editor, text.id)[1]).toEqual(bullet(1))
+    // IME の変換中の Tab は変換の操作なので触らない
+    expect(key(element, { key: 'Tab', isComposing: true }).defaultPrevented).toBe(false)
+    textEditor.finish()
+  })
+
+  it('continues the list on Enter, and leaves it on Enter in an empty item (one level at a time)', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'a' }], list: bullet(1) }])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    beforeInput(element, 'insertParagraph')
+    expect(listsOf(editor, text.id)).toEqual([bullet(1), bullet(1)])
+    // 空の項目で Enter：階層を上げる → リストを抜ける。段落は増えない
+    beforeInput(element, 'insertParagraph')
+    expect(listsOf(editor, text.id)).toEqual([bullet(1), bullet(0)])
+    beforeInput(element, 'insertParagraph')
+    expect(listsOf(editor, text.id)).toEqual([bullet(1), undefined])
+    expect(plainTextOf(propsOf(editor, text.id).paragraphs)).toBe('a\n')
+    textEditor.finish()
+  })
+
+  it('removes the list with Backspace at the start of an item, before joining paragraphs', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'a' }], list: bullet() }, { runs: [{ text: 'b' }], list: bullet() }])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[1], 0)
+    expect(beforeInput(element, 'deleteContentBackward').defaultPrevented).toBe(true)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'a' }], list: bullet() }, { runs: [{ text: 'b' }] }])
+    // 2 回目はつなぐ
+    setCaret(textNodes(element)[1], 0)
+    beforeInput(element, 'deleteContentBackward')
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'ab' }], list: bullet() }])
+    // 最初の段落の頭でも外す
+    setCaret(textNodes(element)[0], 0)
+    expect(beforeInput(element, 'deleteContentBackward').defaultPrevented).toBe(true)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'ab' }] }])
+    textEditor.finish()
+  })
+
+  it('turns "- " and "1. " at the start of a paragraph into a list, and Undo brings the typed text back', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'x\n-')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    typeInto(element, textNodes(element)[1], 1, ' ')
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'x' }] }, { runs: [{ text: '' }], list: bullet() }])
+    expect(element.children[1].getAttribute('data-list-marker')).toBe('•')
+    // 続けて打った文字は項目に入る
+    const empty = element.children[1] as HTMLElement
+    setCaret(empty, 0)
+    expect(beforeInput(element, 'insertText', 'item').defaultPrevented).toBe(false)
+    empty.replaceChildren(document.createTextNode('item'))
+    setCaret(empty.firstChild!, 4)
+    element.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: 'item' }))
+    expect(propsOf(editor, text.id).paragraphs[1]).toEqual({ runs: [{ text: 'item' }], list: bullet() })
+    key(element, { key: 'z', ctrlKey: true })
+    expect(propsOf(editor, text.id).paragraphs[1]).toEqual({ runs: [{ text: '' }], list: bullet() })
+    key(element, { key: 'z', ctrlKey: true })
+    expect(propsOf(editor, text.id).paragraphs[1]).toEqual({ runs: [{ text: '- ' }] })
+
+    textEditor.finish()
+    // 段落の途中の「1. 」は変えない
+    const other = makeText(editor, 'a1.')
+    textEditor.start(other.id)
+    const element2 = editingElement(layer)
+    typeInto(element2, textNodes(element2)[0], 3, ' ')
+    expect(propsOf(editor, other.id).paragraphs).toEqual([{ runs: [{ text: 'a1. ' }] }])
+    textEditor.finish()
+  })
+
+  it('numbers with "1. ", and does nothing while composing with an IME', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, '1.')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    element.dispatchEvent(new CompositionEvent('compositionstart'))
+    expect(beforeInput(element, 'insertText', ' ').defaultPrevented).toBe(false)
+    expect(listsOf(editor, text.id)).toEqual([undefined])
+    element.dispatchEvent(new CompositionEvent('compositionend', { data: '' }))
+    typeInto(element, textNodes(element)[0], 2, ' ')
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: '' }], list: ordered() }])
+    expect(element.children[0].getAttribute('data-list-marker')).toBe('1.')
+    textEditor.finish()
+  })
+
+  it('copies lists as ul / ol for other apps and keeps them when pasted back', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [
+      { runs: [{ text: 'one' }], list: ordered() },
+      { runs: [{ text: 'sub' }], list: bullet(1) },
+      { runs: [{ text: 'two' }], list: ordered() },
+      { runs: [{ text: 'end' }] },
+    ])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const nodes = textNodes(element)
+    setCaret(nodes[0], 0, nodes[3], 3)
+    const copy = clipboardEvent('copy')
+    element.dispatchEvent(copy.event)
+    expect(copy.store['text/plain']).toBe('1. one\n  ◦ sub\n2. two\nend')
+    const html = copy.store['text/html'].replace(/ style="[^"]*"/g, '')
+    expect(html).toContain('<ol><li><span>one</span><ul><li><span>sub</span></li></ul></li><li><span>two</span></li></ol><p><span>end</span></p>')
+
+    // 貼り付け（アプリ内の形式）でリストが残る
+    setCaret(nodes[3], 3)
+    element.dispatchEvent(clipboardEvent('paste', { [TEXT_CLIPBOARD_MIME]: copy.store[TEXT_CLIPBOARD_MIME] }).event)
+    expect(listsOf(editor, text.id)).toEqual([ordered(), bullet(1), ordered(), undefined, bullet(1), ordered(), undefined])
+
+    // プレーンテキストを項目の中に貼ると、貼った段落も項目になる
+    setCaret(textNodes(element)[0], 3)
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': 'x\ny' }).event)
+    expect(plainTextOf(propsOf(editor, text.id).paragraphs).split('\n').slice(0, 2)).toEqual(['onex', 'y'])
+    expect(listsOf(editor, text.id).slice(0, 2)).toEqual([ordered(), ordered()])
+    textEditor.finish()
+  })
+})

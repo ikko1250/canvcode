@@ -7,8 +7,13 @@ import {
   cssLineHeight,
   formatAt,
   formatOfCharAt,
+  indentList,
   layoutRichText,
+  listOf,
+  listShortcut,
   normalizeRichText,
+  paragraphIndexesInRange,
+  paragraphText,
   plainTextOf,
   replaceRange,
   resolveRichText,
@@ -21,6 +26,7 @@ import {
   type TextRunFormat,
   type TextRunFormatPatch,
   type TextStyle,
+  withList,
 } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import { stopUnlessZoom } from './documentEditor.ts'
@@ -40,6 +46,11 @@ import { TEXT_CLIPBOARD_MIME, parseTextClipboard, textClipboardData } from './te
 // - IME で変換している間は DOM を書き直さない（変換が壊れる）。変換を終えたときに整える
 // - 書式は formatRange で範囲に当てる。デザインパネルからは updateNode で（範囲は selectedRange で読む）
 // - DOM を書き直すとブラウザの Undo が使えなくなるので、編集中の Undo・Redo（Ctrl+Z など）はここで持つ
+// 箇条書き・番号付きリスト（MAI-78。richText.ts の TextList）のキー操作：
+// - Tab / Shift+Tab：選んでいる段落のうちリストの段落の階層を上げ下げする（編集中の Tab はフォーカス移動・キャンバスのショートカットに渡さない）
+// - Enter：分けた段落はリストの属性を引き継ぐ（次の項目）。空の項目で Enter すると、階層を 1 つ上げ、一番外ならリストを抜ける
+// - 段落の頭で Backspace：リストを外す（段落はつながない）
+// - 段落の頭に「- 」「* 」「1. 」「1) 」と打つと、その文字を消してリストにする（Undo 1 回で打った文字に戻る）。IME の変換中は変えない
 // 範囲ごとの書式を持たない型（図形のラベルなど）も同じ要素で編集し、プレーンテキストとしてノードに入れる
 
 export interface TextEditorOptions {
@@ -488,7 +499,7 @@ export class TextEditor {
     const now = Date.now()
     const last = session.lastEdit
     session.lastEdit = { kind, time: now }
-    if (last && last.kind === kind && kind !== 'paragraph' && now - last.time < UNDO_GROUP_MS) return
+    if (last && last.kind === kind && kind !== 'paragraph' && kind !== 'list' && now - last.time < UNDO_GROUP_MS) return
     session.undo.push({ paragraphs: session.paragraphs, selection: { start: session.selection.start, end: session.selection.end } })
     if (session.undo.length > UNDO_LIMIT) session.undo.shift()
     session.redo = []
@@ -521,6 +532,13 @@ export class TextEditor {
     const type = e.inputType
     if (type === 'insertParagraph' || type === 'insertLineBreak') {
       e.preventDefault()
+      // 空のリストの項目で Enter：階層を 1 つ上げる。一番外なら、リストを抜ける（MAI-78）
+      const at = collapsed && spec.rich ? this.paragraphAt(range.start) : null
+      const list = at && listOf(at.paragraph)
+      if (at && list && paragraphText(at.paragraph) === '') {
+        this.edit('list', (paragraphs) => (list.level > 0 ? indentList(paragraphs, range, -1) : paragraphs.map((p, i) => (i === at.index ? withList(p, undefined) : p))), range)
+        return
+      }
       // 新しい段落は、分けた段落の属性を引き継ぐ（箇条書きなど。MAI-78）
       this.replaceSelection('paragraph', (paragraphs, r) => {
         const at = sliceRichText(paragraphs, r.start, r.start)[0]
@@ -532,6 +550,10 @@ export class TextEditor {
       return
     }
     if (type === 'insertText' || type === 'insertReplacementText') {
+      if (collapsed && type === 'insertText' && e.data === ' ' && spec.rich && this.convertToList(range.start)) {
+        e.preventDefault()
+        return
+      }
       if (collapsed) {
         this.pushUndo('typing')
         return
@@ -553,6 +575,15 @@ export class TextEditor {
         this.replaceSelection('delete', () => [])
         return
       }
+      // リストの段落の頭で Backspace：リストを外す（段落はつながない。MAI-78）
+      if (backward && spec.rich && type === 'deleteContentBackward') {
+        const at = this.paragraphAt(range.start)
+        if (at.start === range.start && listOf(at.paragraph)) {
+          e.preventDefault()
+          this.edit('list', (paragraphs) => paragraphs.map((p, i) => (i === at.index ? withList(p, undefined) : p)), range)
+          return
+        }
+      }
       // 段落の境目をまたぐ削除（段落をつなぐ）は、ここで行う
       const boundary = this.atParagraphBoundary(range.start, backward)
       if (boundary) {
@@ -571,6 +602,48 @@ export class TextEditor {
     }
     // 太字などのブラウザの書式（<b> などを作る）と、ドロップ・貼り付け（paste で行う）は使わない
     if (type.startsWith('format') || type.startsWith('insertFrom')) e.preventDefault()
+  }
+
+  // offset のある段落と、その頭の位置
+  private paragraphAt(offset: number): { index: number; paragraph: TextParagraph; start: number } {
+    const { paragraphs } = this.session!
+    const index = paragraphIndexesInRange(paragraphs, offset, offset)[0]
+    let start = 0
+    for (let i = 0; i < index; i++) start += paragraphText(paragraphs[i]).length + 1
+    return { index, paragraph: paragraphs[index], start }
+  }
+
+  // 段落の頭に「- 」などを打った：打った文字を消してリストにする（MAI-78）。変えなければ false。
+  // Undo で、空白まで打った文字に戻れるようにする
+  private convertToList(caret: number): boolean {
+    const session = this.session!
+    const spec = this.currentSpec()
+    if (!spec?.rich) return false
+    const at = this.paragraphAt(caret)
+    if (listOf(at.paragraph)) return false
+    const list = listShortcut(paragraphText(at.paragraph).slice(0, caret - at.start))
+    if (!list) return false
+    const base = baseFormat(spec.style)
+    const typed = replaceRange(session.paragraphs, caret, caret, richTextFromPlain(' ', formatAt(session.paragraphs, caret)), base)
+    this.pushUndo('typing')
+    session.undo.push({ paragraphs: typed, selection: { start: caret + 1, end: caret + 1 } })
+    session.redo = []
+    session.lastEdit = null
+    const removed = replaceRange(session.paragraphs, at.start, caret, [], base)
+    this.commit(removed.map((p, i) => (i === at.index ? withList(p, list) : p)))
+    this.rerender()
+    this.select(at.start, at.start)
+    return true
+  }
+
+  // Tab / Shift+Tab：選んでいる段落のうち、リストの段落の階層を上げ下げする（MAI-78）
+  private indentSelection(delta: number): void {
+    const session = this.session
+    if (!session || !this.currentSpec()?.rich) return
+    const range = this.currentSelection()
+    const indexes = paragraphIndexesInRange(session.paragraphs, range.start, range.end)
+    if (!indexes.some((i) => listOf(session.paragraphs[i]))) return
+    this.edit('list', (paragraphs) => indentList(paragraphs, range, delta), range)
   }
 
   // offset が、削除の向きで段落の境目にあるか（後ろ向きなら段落の頭、前向きなら段落の終わり）
@@ -640,7 +713,13 @@ export class TextEditor {
     }
     const text = data.getData('text/plain')
     if (!text) return
-    this.replaceSelection('paste', (paragraphs, r) => richTextFromPlain(text, spec.rich ? formatAt(paragraphs, r.start) : undefined))
+    // 貼った段落は、貼った位置の段落の属性（リストなど。MAI-78）を引き継ぐ（Enter と同じ）
+    this.replaceSelection('paste', (paragraphs, r) => {
+      const plain = richTextFromPlain(text, spec.rich ? formatAt(paragraphs, r.start) : undefined)
+      if (!spec.rich) return plain
+      const { runs: _runs, ...attributes } = sliceRichText(paragraphs, r.start, r.start)[0]
+      return plain.map((paragraph) => ({ ...attributes, ...paragraph }))
+    })
   }
 
   // ---- フォーカス ----
@@ -708,6 +787,13 @@ export class TextEditor {
       return
     }
     const mod = e.ctrlKey || e.metaKey
+    // Tab はフォーカスを移さず、キャンバスのショートカットにも渡さない。リストの段落なら階層を上げ下げする（MAI-78）
+    if (e.key === 'Tab' && !mod && !e.altKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      this.indentSelection(e.shiftKey ? -1 : 1)
+      return
+    }
     const key = e.key.toLowerCase()
     if (mod && !e.altKey && (key === 'z' || key === 'y')) {
       e.preventDefault()

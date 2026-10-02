@@ -1,5 +1,5 @@
 import { DEFAULT_FONT_FAMILY, fontFamilyCss, registerTextMetricsCache, requestFontLoad } from './fonts.ts'
-import { richTextFromPlain, type TextParagraph, type TextRunFormat } from './richText.ts'
+import { listMarkers, listOf, richTextFromPlain, type TextParagraph, type TextRunFormat } from './richText.ts'
 
 // 文字のレイアウトと描画（MAI-24）。テキスト・付箋・図形のラベルで共通に使う。
 // テキストと付箋は、範囲ごとに書式（色・大きさ）を持てる（MAI-74。richText.ts）。行の高さは、行の中の最も大きい文字に合わせる。
@@ -14,6 +14,13 @@ import { richTextFromPlain, type TextParagraph, type TextRunFormat } from './ric
 // 文字間（letter-spacing）はノード単位で、em（文字の大きさに対する割合。MAI-77）。CSS の letter-spacing と同じく、
 // 文字（書記素）ごとに、その文字の大きさで換算した空きを文字の後ろに足す（行末の文字の後ろにも付き、行の幅・折り返しに数える）。
 // Canvas2D の ctx.letterSpacing が使えれば測り・描画ともそれを使い、使えなければ、文字の数 × 空きを足して測り、文字ごとにずらして描く
+// 箇条書き・番号付きリスト（MAI-78。richText.ts の TextList）の段落は、ぶら下げインデントにする：
+// - 文字は左から（階層 + 1）× listIndentStep の位置から始まり、折り返した行もそこにそろう（幅はその分だけ狭くなる）
+// - 記号・番号は 1 行目の文字の左の、幅 listIndentStep の溝に右寄せで置き、文字との間を listMarkerGap だけ空ける。
+//   溝に収まらない（長い番号）ときは溝の左端から置き、文字の側へはみ出す（編集中の DOM の ::before と同じ。richTextDom.ts）
+// - 記号・番号の大きさ・色・フォントは段落の最初の run の書式（文字間は付けない）。1 行目の行の高さには、その文字としても数える
+// - 段差と空きはノードの既定の文字の大きさ（base.fontSize）に対する割合で、段落の文字の大きさによらない（階層ごとにそろう）
+// - 揃え（中央・右）は、段差を除いた幅の中でそろえる。記号は 1 行目の文字の左に付いて動く
 
 export type TextAlign = 'left' | 'center' | 'right'
 
@@ -123,7 +130,12 @@ export interface TextSegment {
 
 export interface TextLine {
   text: string
+  // 文字の幅（リストの段差は含まない）
   width: number
+  // 文字の箱の左端から、行の文字を置ける左端までの段差（リストの段落。MAI-78）。ほかは 0
+  indent: number
+  // リストの段落の 1 行目の記号・番号。x は行の文字の左端（揃えたあと）からの位置（負）
+  marker?: TextMarker
   // 書式ごとの文字の続き（左から順）
   segments: TextSegment[]
   // レイアウトの上端から、行の上端までの距離と行の高さ
@@ -135,9 +147,16 @@ export interface TextLine {
   fontSize: number
 }
 
+export interface TextMarker {
+  text: string
+  x: number
+  width: number
+  style: TextStyle
+}
+
 export interface TextLayout {
   lines: TextLine[]
-  // いちばん長い行の幅
+  // いちばん長い行の幅（段差を含む）
   width: number
   height: number
   // 1 行目の高さ（クリックした点を 1 行目の中ほどに置くときなどに使う）
@@ -153,6 +172,24 @@ export function cssFont(style: Pick<TextStyle, 'fontSize' | 'fontWeight' | 'font
 // ノードの既定のスタイルから、run の書式の既定（run が持たない値）を作る（MAI-74、MAI-75）
 export function baseFormatOf(style: TextStyle): Required<TextRunFormat> {
   return { color: style.color, fontSize: style.fontSize, fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY }
+}
+
+// リストの階層 1 つ分の段差と、記号と文字の間の空き（ノードの既定の文字の大きさに対する割合。MAI-78）
+export const LIST_INDENT_EM = 2
+export const LIST_MARKER_GAP_EM = 0.5
+
+export function listIndentStep(base: Pick<TextStyle, 'fontSize'>): number {
+  return base.fontSize * LIST_INDENT_EM
+}
+
+export function listMarkerGap(base: Pick<TextStyle, 'fontSize'>): number {
+  return base.fontSize * LIST_MARKER_GAP_EM
+}
+
+// 段落の文字の左端までの段差（リストでなければ 0）
+export function paragraphIndent(paragraph: TextParagraph, base: Pick<TextStyle, 'fontSize'>): number {
+  const list = listOf(paragraph)
+  return list ? (list.level + 1) * listIndentStep(base) : 0
 }
 
 // ---- 文字幅の計測 ----
@@ -362,9 +399,22 @@ export function layoutText(text: string, style: TextStyle, maxWidth: number | nu
 export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextStyle, maxWidth: number | null): TextLayout {
   const lines: TextLine[] = []
   let top = 0
-  for (const paragraph of paragraphs) {
+  const markers = listMarkers(paragraphs)
+  for (const [p, paragraph] of paragraphs.entries()) {
     const runs = paragraph.runs.length > 0 ? paragraph.runs : [{ text: '' }]
     const styles = runs.map((run) => runStyle(base, run.format))
+    // リストの段落（MAI-78）：段差と、1 行目の記号
+    const indent = paragraphIndent(paragraph, base)
+    const markerText = markers[p]
+    let marker: TextMarker | undefined
+    if (markerText) {
+      const style = { ...styles[0], letterSpacing: 0 }
+      const width = measurerFor(style)(markerText)
+      const gutter = listIndentStep(base)
+      const gap = listMarkerGap(base)
+      marker = { text: markerText, width, style, x: width + gap <= gutter ? -gap - width : -gutter }
+    }
+    const wrapWidth = maxWidth === null ? null : Math.max(0, maxWidth - indent)
     const text = runs.map((run) => run.text).join('')
     const starts: number[] = []
     let offset = 0
@@ -399,10 +449,13 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
       if (trim) while (end > from && (text[end - 1] === ' ' || text[end - 1] === '\t')) end--
       const segments = segmentsOf(from, end)
       const lineStyles = segments.length > 0 ? segments.map((s) => s.style) : [styleAt(from)]
-      const box = lineBox(lineStyles, strut)
+      const first = from === 0 && marker !== undefined
+      const box = lineBox(first ? [...lineStyles, marker!.style] : lineStyles, strut)
       lines.push({
         text: text.slice(from, end),
         width: segments.reduce((sum, s) => sum + s.width, 0),
+        indent,
+        ...(first ? { marker } : {}),
         segments,
         top,
         height: box.height,
@@ -411,7 +464,7 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
       })
       top += box.height
     }
-    if (maxWidth === null) {
+    if (wrapWidth === null) {
       pushLine(0, text.length, false)
       continue
     }
@@ -422,17 +475,17 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
     for (const unit of breakUnits(text)) {
       const unitEnd = unitStart + unit.length
       const unitWidth = measureRange(unitStart, unitStart + unit.replace(/[ \t]+$/, '').length)
-      if (lineEnd > lineStart && lineWidth + unitWidth > maxWidth) {
+      if (lineEnd > lineStart && lineWidth + unitWidth > wrapWidth) {
         pushLine(lineStart, lineEnd, true)
         lineStart = lineEnd
         lineWidth = 0
       }
-      if (lineEnd === lineStart && unitWidth > maxWidth) {
+      if (lineEnd === lineStart && unitWidth > wrapWidth) {
         // 1 語が幅に収まらない：文字の途中で折り返す
         let at = unitStart
         for (const ch of unit) {
           const next = at + ch.length
-          if (lineEnd > lineStart && measureRange(lineStart, next) > maxWidth) {
+          if (lineEnd > lineStart && measureRange(lineStart, next) > wrapWidth) {
             pushLine(lineStart, lineEnd, true)
             lineStart = lineEnd
           }
@@ -448,7 +501,7 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
     }
     pushLine(lineStart, lineEnd, true)
   }
-  const width = lines.reduce((max, l) => Math.max(max, l.width), 0)
+  const width = lines.reduce((max, l) => Math.max(max, l.indent + l.width), 0)
   return {
     lines,
     width,
@@ -460,8 +513,11 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
 
 // ---- 描画 ----
 
-function lineLeft(line: TextLine, align: TextAlign, box: { x: number; w: number }): number {
-  return align === 'left' ? box.x : align === 'center' ? box.x + (box.w - line.width) / 2 : box.x + box.w - line.width
+// 行の文字の左端。リストの段落は段差を除いた幅の中でそろえる
+export function lineLeft(line: Pick<TextLine, 'width' | 'indent'>, align: TextAlign, box: { x: number; w: number }): number {
+  const x = box.x + line.indent
+  const w = box.w - line.indent
+  return align === 'left' ? x : align === 'center' ? x + (w - line.width) / 2 : x + w - line.width
 }
 
 // box（ローカル座標）の中に描く。verticalAlign が middle なら、上下の中央に置く。
@@ -484,6 +540,15 @@ export function drawTextLayout(
   for (const line of layout.lines) {
     const x = lineLeft(line, style.align, box)
     const y = top + line.top + line.baseline
+    const marker = line.marker
+    if (marker) {
+      // 記号・番号（MAI-78）。文字間は付けない
+      const markerFont = cssFont(marker.style)
+      if (markerFont !== font) ctx.font = font = markerFont
+      ctx.fillStyle = marker.style.color
+      if (native && spacingCss !== '0px') ctx.letterSpacing = spacingCss = '0px'
+      ctx.fillText(marker.text, x + marker.x, y)
+    }
     for (const segment of line.segments) {
       const segmentFont = cssFont(segment.style)
       if (segmentFont !== font) ctx.font = font = segmentFont

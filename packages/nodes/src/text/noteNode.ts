@@ -13,6 +13,7 @@ import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, ty
 // fontFamily（文字の既定のフォント。MAI-75）は版を上げずに足した。持たない古い付箋は既定のフォントで描く。
 // 行の高さ（lineHeight。倍率か px。MAI-76）も版を上げずに足した。高さは文字のレイアウトから出すので、行の高さを変えると付箋も伸び縮みする
 // 文字間（letterSpacing。em。MAI-77）も版を上げずに足した。持たない古い付箋は 0
+// 箇条書き・番号付きリスト（MAI-78）は段落の属性（TextParagraph.list）で、版を上げずに足した
 export interface NoteProps {
   paragraphs: TextParagraph[]
   w: number

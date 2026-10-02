@@ -10,7 +10,7 @@ import {
   type SharedValue,
   type TextSelection,
 } from '@canvcode/canvas'
-import { ColorField, LineHeightField, NumberField, SegmentedField, type ValueEditor } from './controls.tsx'
+import { ColorField, LineHeightField, NumberField, SegmentedField, SelectField, type ValueEditor } from './controls.tsx'
 import { FontField } from './FontField.tsx'
 import { textRangeOf, visibleSections, type DesignField } from './registry.ts'
 import './sections.ts'
@@ -154,6 +154,8 @@ function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; ed
       return <FontField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'lineHeight':
       return <LineHeightField label={field.label} value={value} editor={editor} onDone={onDone} />
+    case 'select':
+      return <SelectField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
   }
 }
 

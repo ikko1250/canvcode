@@ -3,7 +3,7 @@ import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_TEXT_COLOR, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { fillColorField, fontFamilyField, fontSizeField, letterSpacingField, lineHeightField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { fillColorField, fontFamilyField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -29,15 +29,15 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['fill', 'stroke', 'layer'])
     expect(fieldIds([geo])).toEqual(['fill.color', 'stroke.color', 'stroke.width', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
   })
 
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -261,5 +261,43 @@ describe('letter spacing field (MAI-77)', () => {
     expect((editor.getNode(note.id)!.props as NoteProps).letterSpacing).toBe(0.1)
     editor.undo()
     expect((editor.getNode(text.id)!.props as TextProps).letterSpacing).toBeUndefined()
+  })
+})
+
+describe('list fields (MAI-78)', () => {
+  const bullet = (level = 0) => ({ type: 'bullet' as const, level })
+  function setupList() {
+    const editor = new Editor()
+    const text = editor.makeNode('text', {
+      x: 0,
+      y: 0,
+      props: { paragraphs: [{ runs: [{ text: 'a' }], list: bullet() }, { runs: [{ text: 'b' }], list: bullet(1) }, { runs: [{ text: 'c' }] }] },
+    })
+    editor.createNodes([text])
+    return { editor, text: editor.getNode(text.id)! }
+  }
+  const valueOf = (nodes: NodeRecord[], id: string, selection: TextSelection | null = null) =>
+    visibleSections(nodes, undefined, selection)
+      .flatMap((s) => s.fields)
+      .find((f) => f.field.id === id)!.value
+  const lists = (node: NodeRecord) => (node.props as TextProps).paragraphs.map((p) => p.list)
+
+  it('shows the list type and style of the paragraphs, mixed when they differ', () => {
+    const { text } = setupList()
+    expect(valueOf([text], 'text.list')).toEqual({ kind: 'mixed', values: ['bullet', 'bullet', 'none'] })
+    expect(valueOf([text], 'text.list', { nodeId: text.id, start: 0, end: 3 })).toEqual({ kind: 'same', value: 'bullet' })
+    // 形は一番浅い階層の段落（a と c）の値
+    expect(valueOf([text], 'text.listStyle')).toEqual({ kind: 'mixed', values: ['disc', 'none'] })
+    expect(valueOf([text], 'text.listStyle', { nodeId: text.id, start: 2, end: 3 })).toEqual({ kind: 'same', value: 'circle' })
+  })
+
+  it('writes to the paragraphs of the selected range, or to all paragraphs', () => {
+    const { text } = setupList()
+    expect(lists(listTypeField.write(text, 'ordered', { start: 2, end: 5 }))).toEqual([bullet(), { type: 'ordered', level: 1 }, { type: 'ordered', level: 0 }])
+    expect(lists(listTypeField.write(text, 'none'))).toEqual([undefined, undefined, undefined])
+    expect(lists(listStyleField.write(text, 'check'))).toEqual([{ ...bullet(), style: 'check' }, bullet(1), { ...bullet(), style: 'check' }])
+    expect(lists(listStyleField.write(text, 'none', { start: 0, end: 1 }))).toEqual([undefined, bullet(1), undefined])
+    const same = listTypeField.write(text, 'bullet', { start: 0, end: 3 })
+    expect(same).toBe(text)
   })
 })

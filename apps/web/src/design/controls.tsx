@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import type { LineHeight, LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, normalizeHexColor, parseLineHeight, parseNumber } from './parse.ts'
-import type { FieldControl, SegmentOption } from './registry.ts'
+import type { FieldControl, SegmentOption, SelectOption } from './registry.ts'
 import type { LineHeightChange } from './sections.ts'
 
 // デザインパネルの入力部品（MAI-73）。数字・色・切り替えボタン・スライダー。
@@ -405,6 +405,63 @@ export function SegmentedField(props: FieldProps<string> & { options: readonly S
             </button>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+// ---- 一覧から選ぶ（MAI-78） ----
+
+// 混在しているときは「混在」を選べない見出しとして出す。選んだらキャンバス（編集中の文字）にフォーカスを戻す
+export function SelectField(props: FieldProps<string> & { options: readonly SelectOption[] }) {
+  const { label, value, editor, options, onDone } = props
+  const groups: { name: string | undefined; options: SelectOption[] }[] = []
+  for (const option of options) {
+    const last = groups.at(-1)
+    if (last && last.name === option.group) last.options.push(option)
+    else groups.push({ name: option.group, options: [option] })
+  }
+  const optionElements = (list: readonly SelectOption[]) =>
+    list.map((option) => (
+      <option key={option.value} value={option.value}>
+        {option.label}
+      </option>
+    ))
+  return (
+    <div className="design-field">
+      <span className="design-label">{label}</span>
+      <div className="design-control">
+        <select
+          className="design-select"
+          aria-label={label}
+          value={value.kind === 'same' ? value.value : ''}
+          onChange={(e) => {
+            if (e.target.value === '') return
+            editor.set(e.target.value)
+            onDone?.()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              onDone?.()
+            }
+          }}
+        >
+          {value.kind === 'mixed' && (
+            <option value="" disabled>
+              {MIXED_LABEL}
+            </option>
+          )}
+          {groups.map((group, i) =>
+            group.name ? (
+              <optgroup key={group.name} label={group.name}>
+                {optionElements(group.options)}
+              </optgroup>
+            ) : (
+              <Fragment key={`_${i}`}>{optionElements(group.options)}</Fragment>
+            ),
+          )}
+        </select>
       </div>
     </div>
   )

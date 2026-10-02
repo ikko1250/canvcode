@@ -12,6 +12,7 @@ import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, ty
 // fontFamily（MAI-75）は版を上げずに足した。持たない古いテキストは既定のフォント（今までと同じ）で描く。
 // 行の高さ（lineHeight。MAI-76）はノード単位で、倍率か px（layout.ts の LineHeight）。版を上げずに足した。
 // 文字間（letterSpacing。em。MAI-77）もノード単位で、版を上げずに足した。
+// 箇条書き・番号付きリスト（MAI-78）は段落の属性（TextParagraph.list）で、版を上げずに足した。持たない段落は普通の段落
 // 版 1 は文字をプレーンテキスト（text）で持っていた。読み込むときに版 2（paragraphs）へ移す
 export interface TextProps {
   paragraphs: TextParagraph[]
