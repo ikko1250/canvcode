@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import { fontFamilyCss, fontLabel, type FontCategory, type FontOption } from '@canvcode/nodes'
 import { MIXED_LABEL, type ValueEditor } from './controls.tsx'
-import { canQueryLocalFonts, fontOptions, loadLocalFonts } from './fontList.ts'
+import { FALLBACK_FONT_LABEL, canQueryLocalFonts, fontOptions, isFontMissing, loadLocalFonts } from './fontList.ts'
 
-// フォントを選ぶ部品（MAI-75）。押すと、パネルの中にフォントの一覧を開く（名前はそのフォントで見せる）。
+// フォントを選ぶ部品（MAI-75）。押すと、デザインパネルの左に別のペインを重ねて、フォントの一覧を開く（名前はそのフォントで見せる）。
+// パネルの中に開くと下の項目（大きさなど）が押し下げられるので、パネルの外に浮かせる。ボタンの高さにそろえ、画面からはみ出さないよう収める。
+// ペインの外を押すと閉じる（ペインは DOM ではパネルの中に置き、パネルのキーの扱い・フォーカスの扱いを受け継ぐ）
 // - 上の欄で名前を絞り込める。↑↓ で動かし、Enter で選ぶ。Esc で閉じる
 // - 選んだら 1 回の変更（Undo 1 回）。文字を編集中で範囲を選んでいれば、その範囲に当たる（項目の write が決める）
 // - Local Font Access API が使えるブラウザでは、端末のフォントをすべて一覧に足せる
+// - 選んでいるフォントがこの端末になければ（ほかの端末で選んだフォント）、ボタンと一覧に印を付け、代わりのフォントで描いていると書く
 
 const GROUP_TITLES: Record<FontCategory, string> = {
   generic: '標準',
@@ -24,7 +27,11 @@ export function FontField(props: { label: string; value: SharedValue<string>; ed
   const [, setLocalVersion] = useState(0)
   const filterRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const popupRef = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState<CSSProperties | null>(null)
   const current = value.kind === 'same' ? value.value : null
+  const missing = current !== null && isFontMissing(current)
 
   const all = fontOptions(current ? [current] : [])
   const q = query.trim().toLowerCase()
@@ -32,6 +39,41 @@ export function FontField(props: { label: string; value: SharedValue<string>; ed
 
   useEffect(() => {
     if (open) filterRef.current?.focus({ preventScroll: true })
+  }, [open])
+
+  // ペインの位置：デザインパネルの左に、ボタンの高さにそろえて置く。パネルのスクロール・画面の大きさの変化に付いていく
+  useLayoutEffect(() => {
+    if (!open) return
+    const place = () => {
+      const button = buttonRef.current
+      const popup = popupRef.current
+      if (!button || !popup) return
+      const anchor = (button.closest('.design-panel') ?? button).getBoundingClientRect()
+      const height = popup.offsetHeight
+      const top = Math.max(POPUP_MARGIN, Math.min(button.getBoundingClientRect().top, window.innerHeight - height - POPUP_MARGIN))
+      setPosition({ top, right: window.innerWidth - anchor.left + POPUP_GAP })
+    }
+    place()
+    const scroller = buttonRef.current?.closest('.design-panel')
+    scroller?.addEventListener('scroll', place)
+    window.addEventListener('resize', place)
+    return () => {
+      scroller?.removeEventListener('scroll', place)
+      window.removeEventListener('resize', place)
+    }
+  }, [open])
+
+  // ペインとボタンの外を押したら閉じる
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node
+      if (popupRef.current?.contains(target) || buttonRef.current?.contains(target)) return
+      setOpen(false)
+      setQuery('')
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
   }, [open])
 
   // 選んでいる候補が見えるようにする
@@ -76,22 +118,37 @@ export function FontField(props: { label: string; value: SharedValue<string>; ed
       <span className="design-label">{label}</span>
       <div className="design-control">
         <button
+          ref={buttonRef}
           className="design-font-button"
           aria-label={label}
           aria-haspopup="listbox"
           aria-expanded={open}
-          title={current ? fontLabel(current) : MIXED_LABEL}
+          title={current ? (missing ? `${fontLabel(current)}（${missingNote()}）` : fontLabel(current)) : MIXED_LABEL}
           style={current ? { fontFamily: fontFamilyCss(current) } : undefined}
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => (open ? close(false) : openList())}
         >
           <span className={current ? 'design-font-name' : 'design-font-name mixed'}>{current ? fontLabel(current) : MIXED_LABEL}</span>
+          {missing && (
+            <span className="design-font-missing-mark" aria-label="この端末にありません">
+              !
+            </span>
+          )}
           <span className="design-font-caret" aria-hidden>
             ▾
           </span>
         </button>
+        {missing && <div className="design-font-missing">{missingNote()}</div>}
         {open && (
-          <div className="design-font-popup" onKeyDown={onKeyDown}>
+          <div
+            ref={popupRef}
+            className="design-font-popup"
+            role="dialog"
+            aria-label={`${label}を選ぶ`}
+            style={position ?? { visibility: 'hidden' }}
+            onKeyDown={onKeyDown}
+          >
+            <div className="design-font-popup-header">{label}</div>
             <input
               ref={filterRef}
               type="text"
@@ -136,6 +193,14 @@ export function FontField(props: { label: string; value: SharedValue<string>; ed
   )
 }
 
+function missingNote(): string {
+  return `この端末にないため、${FALLBACK_FONT_LABEL} で表示しています`
+}
+
+// ペインとデザインパネルの間、画面の縁との間（px）
+const POPUP_GAP = 8
+const POPUP_MARGIN = 8
+
 function FontOptionRow(props: {
   option: FontOption
   index: number
@@ -146,6 +211,7 @@ function FontOptionRow(props: {
   onChoose: () => void
 }) {
   const { option, index, selected, active, groupTitle, onHover, onChoose } = props
+  const missing = option.category === 'system' && isFontMissing(option.family)
   return (
     <>
       {groupTitle && <div className="design-font-group">{groupTitle}</div>}
@@ -156,12 +222,13 @@ function FontOptionRow(props: {
         data-font={option.family}
         className={['design-font-option', selected ? 'selected' : '', active ? 'active' : ''].filter(Boolean).join(' ')}
         style={{ fontFamily: fontFamilyCss(option.family) }}
-        title={option.family}
+        title={missing ? `${option.family}（${missingNote()}）` : option.family}
         onPointerDown={(e) => e.preventDefault()}
         onPointerEnter={onHover}
         onClick={onChoose}
       >
-        {option.label}
+        <span className="design-font-option-name">{option.label}</span>
+        {missing && <span className="design-font-option-missing">この端末にない</span>}
       </div>
     </>
   )

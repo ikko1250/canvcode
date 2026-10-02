@@ -2,7 +2,10 @@
 // - run の書式（TextRunFormat）：色・大きさなど、文字の範囲ごとに変えられるもの。持たない項目はノードの既定
 //   （props の fontSize・color など）に従う。既定と同じ値は持たない（normalizeRichText が落とす）。
 //   フォント（fontFamily。fonts.ts の名前）は MAI-75。太字・斜体・下線・取り消し線（bold など。MAI-79）は true / false で持ち、
-//   既定（ノードの既定はどれも false。layout.ts の baseFormatOf）と違うときだけ持つ（ふつうは true だけが残る）
+//   既定（ノードの既定はどれも false。layout.ts の baseFormatOf）と違うときだけ持つ（ふつうは true だけが残る）。
+//   文字の太さ（fontWeight。100〜900）は、太字（bold）を含めて fontWeight で持つ。bold は古いデータと、
+//   太字の切り替え（Ctrl+B など）の patch の書き方として読み、cleanFormat が fontWeight（true は 700、false は 400）に直す。
+//   太字としての表示（ボタンのオン・オフ）は、太さが FONT_WEIGHT_BOLD 以上か（resolveFormat が bold を出す）
 // - 段落の属性：揃え・箇条書き（MAI-78）など、段落ごとに 1 つのもの。TextParagraph に runs と並べて足す。
 //   ここの操作は段落を { ...paragraph, runs } で作り直すので、足した属性は分けたり、つないだりしても残る
 // 文字の位置（offset）は、段落を '\n' でつないだプレーンテキストでの位置（UTF-16。DOM の選択範囲と同じ数え方）。
@@ -14,7 +17,10 @@ export interface TextRunFormat {
   fontSize?: number
   // フォントの名前（fonts.ts。MAI-75）
   fontFamily?: string
-  // 太字・斜体・下線・取り消し線（MAI-79）
+  // 文字の太さ（100〜900）。太字はこれで 700 を持つ
+  fontWeight?: number
+  // 太字・斜体・下線・取り消し線（MAI-79）。bold は持たない（cleanFormat が fontWeight にする）。
+  // patch に書くと、太字なら 700、そうでなければ 400 の太さにする（それまでの太さより優先する）
   bold?: boolean
   italic?: boolean
   underline?: boolean
@@ -326,11 +332,16 @@ export function listShortcut(textBeforeSpace: string): TextList | null {
 
 // ---- 書式 ----
 
-// 中身のない書式は undefined にする（undefined の項目を落とす）
+// 太字として見せる太さ（これ以上なら太字のボタンをオンにする。CSS の bold の目安と同じ）
+export const FONT_WEIGHT_BOLD = 600
+
+// 中身のない書式は undefined にする（undefined の項目を落とす）。bold は fontWeight にする（bold を優先する）
 export function cleanFormat(format: TextRunFormatPatch | undefined): TextRunFormat | undefined {
   if (!format) return undefined
   const out: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(format)) if (value !== undefined) out[key] = value
+  if (typeof out.bold === 'boolean') out.fontWeight = out.bold ? 700 : 400
+  delete out.bold
   return Object.keys(out).length > 0 ? (out as TextRunFormat) : undefined
 }
 
@@ -346,14 +357,15 @@ export function sameFormat(a: TextRunFormat | undefined, b: TextRunFormat | unde
 // 既定と同じ値を落とす
 function relativeTo(format: TextRunFormat | undefined, base: TextRunFormat | undefined): TextRunFormat | undefined {
   if (!format || !base) return cleanFormat(format)
-  const out: TextRunFormatPatch = { ...format }
+  const out: TextRunFormatPatch = { ...cleanFormat(format) }
   for (const key of Object.keys(out) as (keyof TextRunFormat)[]) if (Object.is(out[key], base[key])) delete out[key]
   return cleanFormat(out)
 }
 
 // 既定に重ねた、実際の書式（すべての項目を持つ）
 export function resolveFormat(base: Required<TextRunFormat>, format: TextRunFormat | undefined): Required<TextRunFormat> {
-  return { ...base, ...cleanFormat(format) }
+  const out = { ...base, ...cleanFormat(format) }
+  return { ...out, bold: out.fontWeight >= FONT_WEIGHT_BOLD }
 }
 
 // オン・オフの書式を切り替えるときの、当てる値（MAI-79）。範囲の文字がすべてオンならオフ、そうでなければ（混在も）オン。
@@ -565,8 +577,13 @@ export function mapRunFormats(
 }
 
 // key の書式をすべての run から外す（ノード全体の値を変えたとき、範囲ごとの値をやめてノードの値にそろえる）
+// 太さと太字は同じ値（fontWeight）なので、どちらを外しても太さを外す
 export function clearRunFormat(paragraphs: readonly TextParagraph[], key: keyof TextRunFormat): TextParagraph[] {
-  return mapRunFormats(paragraphs, (format) => (format ? { ...format, [key]: undefined } : undefined))
+  const keys = key === 'bold' || key === 'fontWeight' ? ['bold', 'fontWeight'] : [key]
+  return mapRunFormats(paragraphs, (format) => {
+    const clean = cleanFormat(format)
+    return clean ? { ...clean, ...Object.fromEntries(keys.map((k) => [k, undefined])) } : undefined
+  })
 }
 
 // 書式を、既定に重ねた実際の値にする（クリップボードに載せるとき。貼り付け先の既定が違っても同じに見えるように）

@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, letterSpacingOf, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, letterSpacingOf, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle, fontWeightOf } from './layout.ts'
 import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
 import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParagraph } from './richText.ts'
 
@@ -27,6 +27,8 @@ export interface NoteProps {
   lineHeight?: LineHeight
   // 文字間（em。MAI-77）。版を上げずに足した。持たない（古い・既定のままの）ものは 0
   letterSpacing?: number
+  // 文字の既定の太さ（100〜900）。版を上げずに足した。持たない（古い・既定のままの）ものは 400
+  fontWeight?: number
 }
 
 export type NoteNode = NodeRecord<NoteProps>
@@ -44,7 +46,7 @@ export function noteStyle(props: NoteProps): TextStyle {
     fontSize: props.fontSize,
     ...lineHeightStyle(props.lineHeight, NOTE_DEFAULT_LINE_HEIGHT),
     letterSpacing: letterSpacingOf(props.letterSpacing),
-    fontWeight: 400,
+    fontWeight: fontWeightOf(props.fontWeight),
     color: NOTE_TEXT_COLOR,
     align: textAlignOf(props.align),
     fontFamily: fontFamilyOf(props.fontFamily),

@@ -1,5 +1,5 @@
 import { DEFAULT_FONT_FAMILY, fontFamilyCss, registerTextMetricsCache, requestFontLoad } from './fonts.ts'
-import { listMarkers, listOf, richTextFromPlain, type TextParagraph, type TextRunFormat } from './richText.ts'
+import { FONT_WEIGHT_BOLD, listMarkers, listOf, richTextFromPlain, type TextParagraph, type TextRunFormat } from './richText.ts'
 
 // 文字のレイアウトと描画（MAI-24）。テキスト・付箋・図形のラベルで共通に使う。
 // テキストと付箋は、範囲ごとに書式（色・大きさ）を持てる（MAI-74。richText.ts）。行の高さは、行の中の最も大きい文字に合わせる。
@@ -34,7 +34,8 @@ export interface TextStyle {
   lineHeight: number
   // 行の高さを px で決めるとき（CSS の line-height: 24px と同じく、文字の大きさによらない）。あれば lineHeight より優先する（MAI-76）
   fixedLineHeight?: number
-  fontWeight: 400 | 700
+  // 文字の太さ（100〜900。CSS の font-weight）
+  fontWeight: number
   // 斜体（MAI-79）。なければ normal
   fontStyle?: 'normal' | 'italic'
   // 下線・取り消し線（MAI-79）。行ごと・run ごとに、文字の色・大きさに合わせて引く（textDecorations）
@@ -91,6 +92,13 @@ export function lineBoxHeight(style: Pick<TextStyle, 'fontSize' | 'lineHeight' |
 // 編集用の DOM に指定する line-height（子の要素に継ぐ。倍率は文字ごとの大きさに、px はそのまま効く）
 export function cssLineHeight(style: Pick<TextStyle, 'lineHeight' | 'fixedLineHeight'>): string {
   return style.fixedLineHeight !== undefined ? `${style.fixedLineHeight}px` : String(style.lineHeight)
+}
+
+// 文字の太さ（CSS の font-weight）。props・書式の値を読む。持たない（古い）ノード・読めない値は 400
+export const FONT_WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900] as const
+
+export function fontWeightOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 1000 ? value : 400
 }
 
 // 文字間の範囲（em。デザインパネルで入れられる値。MAI-77）
@@ -186,7 +194,8 @@ export function baseFormatOf(style: TextStyle): Required<TextRunFormat> {
     color: style.color,
     fontSize: style.fontSize,
     fontFamily: style.fontFamily ?? DEFAULT_FONT_FAMILY,
-    bold: style.fontWeight === 700,
+    fontWeight: style.fontWeight,
+    bold: style.fontWeight >= FONT_WEIGHT_BOLD,
     italic: style.fontStyle === 'italic',
     underline: style.underline ?? false,
     strikethrough: style.strikethrough ?? false,
@@ -405,7 +414,8 @@ export function runStyle(base: TextStyle, format: TextRunFormat | undefined): Te
     fontSize: format.fontSize ?? base.fontSize,
     color: format.color ?? base.color,
     fontFamily: format.fontFamily ?? base.fontFamily,
-    fontWeight: format.bold === undefined ? base.fontWeight : format.bold ? 700 : 400,
+    // bold だけを持つ古い書式も読む（cleanFormat を通す前の書式）
+    fontWeight: format.fontWeight ?? (format.bold === undefined ? base.fontWeight : format.bold ? 700 : 400),
     fontStyle: format.italic === undefined ? base.fontStyle : format.italic ? 'italic' : 'normal',
     underline: format.underline ?? base.underline,
     strikethrough: format.strikethrough ?? base.strikethrough,

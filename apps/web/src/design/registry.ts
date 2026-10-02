@@ -94,6 +94,9 @@ export interface DesignSection {
   title: string
   // 小さいほど上に出す
   order: number
+  // パネルのタブ（ない・undefined は最初のタブ。ノードの見た目）。選んでいるノードで決めるときは関数。
+  // 出すセクションのタブが 2 つ以上あれば、パネルの上にタブを並べ、選んだタブのセクションだけを出す（図形の中の文字は「文字」のタブ）
+  tab?: string | ((nodes: readonly NodeRecord[]) => string | undefined)
   fields: readonly DesignField<any>[]
   // 項目のほかに、このセクションを出すノードか（Component だけのセクション用）。項目があれば、項目で決める
   appliesTo?(node: NodeRecord): boolean
@@ -120,6 +123,8 @@ export interface VisibleSection {
   section: DesignSection
   fields: { field: DesignField<any>; value: SharedValue<unknown> }[]
   showComponent: boolean
+  // 出すタブ（undefined は最初のタブ）
+  tab: string | undefined
 }
 
 // textSelection は、文字を編集中に選んでいる範囲（範囲ごとの書式の項目は、その範囲の値を見せる。MAI-74）
@@ -135,7 +140,8 @@ export function visibleSections(
       .filter((field) => nodes.every((node) => field.appliesTo(node)))
       .map((field) => ({ field, value: fieldValue(field, nodes, textSelection) }))
     const showComponent = Boolean(section.Component && (section.appliesTo ? nodes.every((node) => section.appliesTo!(node)) : fields.length > 0))
-    if (fields.length > 0 || showComponent) result.push({ section, fields, showComponent })
+    const tab = typeof section.tab === 'function' ? section.tab(nodes) : section.tab
+    if (fields.length > 0 || showComponent) result.push({ section, fields, showComponent, tab })
   }
   return result
 }

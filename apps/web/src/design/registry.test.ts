@@ -5,7 +5,7 @@ import { defaultChartRows, parseChartTable, type ChartProps, defaultShadow, NOTE
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
 import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartLabelsField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
 import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
-import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, fontWeightField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -22,8 +22,10 @@ function setup() {
   return { editor, geo, geo2, text, note, arrow, group }
 }
 
-const sectionIds = (nodes: NodeRecord[]) => visibleSections(nodes).map((s) => s.section.id)
-const fieldIds = (nodes: NodeRecord[]) => visibleSections(nodes).flatMap((s) => s.fields.map((f) => f.field.id))
+// 最初のタブ（ノードの見た目）のセクションと項目。図形の中の文字（「文字」のタブ）は別に確かめる
+const mainSections = (nodes: NodeRecord[]) => visibleSections(nodes).filter((s) => s.tab === undefined)
+const sectionIds = (nodes: NodeRecord[]) => mainSections(nodes).map((s) => s.section.id)
+const fieldIds = (nodes: NodeRecord[]) => mainSections(nodes).flatMap((s) => s.fields.map((f) => f.field.id))
 
 describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
@@ -31,15 +33,41 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['shape', 'fill', 'corner', 'stroke', 'effects', 'layer'])
     expect(fieldIds([geo])).toEqual(['shape.shape', 'fill.paint', 'corner.radius', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
+  })
+
+  it('puts the text of a shape in the text tab, with the same fields as a text', () => {
+    const { geo, text } = setup()
+    const label = visibleSections([geo]).filter((s) => s.tab === '文字')
+    expect(label.map((s) => s.section.id)).toEqual(['text'])
+    expect(label[0].fields.map((f) => f.field.id)).toEqual(fieldIds([text]).filter((id) => id.startsWith('text.')))
+    // 書式を持たない図形は既定（18px・中央揃え・行間 1.35 倍）
+    const value = (id: string) => label[0].fields.find((f) => f.field.id === id)!.value
+    expect(value('text.fontSize')).toEqual({ kind: 'same', value: 18 })
+    expect(value('text.align')).toEqual({ kind: 'same', value: 'center' })
+    expect(value('text.lineHeight')).toEqual({ kind: 'same', value: { unit: 'multiplier', value: 1.35 } })
+    // テキストだけならタブに分けない
+    expect(visibleSections([text]).some((s) => s.tab !== undefined)).toBe(false)
+  })
+
+  it('writes the text style of a shape to its label props, keeping label as plain text', () => {
+    const { geo } = setup()
+    const withText = { ...geo, props: { ...(geo.props as object), label: 'ab' } }
+    const sized = fontSizeField.write(withText, 30, null)
+    expect((sized.props as { labelFontSize: number }).labelFontSize).toBe(30)
+    // 範囲に当てると run の書式になり、label はプレーンテキストのまま
+    const bold = boldField.write(sized, true, { start: 0, end: 1 })
+    const props = bold.props as { label: string; labelParagraphs: { runs: { text: string; format?: { bold?: boolean } }[] }[] }
+    expect(props.label).toBe('ab')
+    expect(props.labelParagraphs[0].runs[0]).toMatchObject({ text: 'a', format: { fontWeight: 700 } })
   })
 
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -102,7 +130,7 @@ describe('design sections', () => {
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'fill', 'corner', 'test-border', 'stroke', 'effects', 'layer'])
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'fill', 'corner', 'test-border', 'stroke', 'effects', 'text', 'layer'])
     expect(visibleSections([geo], all)[3].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
@@ -350,6 +378,27 @@ describe('list fields (MAI-78)', () => {
   })
 })
 
+describe('font weight', () => {
+  it('sets the weight of the whole node as the default, or of the selected range', () => {
+    const editor = new Editor()
+    const made = editor.makeNode('text', { x: 0, y: 0, props: { paragraphs: [{ runs: [{ text: 'ab', format: { bold: true } }, { text: 'cd' }] }] } })
+    const valueOf = (node: NodeRecord, id: string) => visibleSections([node]).flatMap((s) => s.fields).find((f) => f.field.id === id)!.value
+    expect(valueOf(made, 'text.fontWeight')).toEqual({ kind: 'mixed', values: ['700', '400'] })
+    // ノード全体：props の既定にし、範囲ごとの太さ（古い bold も）を外す
+    const black = fontWeightField.write(made, '900', null)
+    expect((black.props as TextProps).fontWeight).toBe(900)
+    expect((black.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'abcd' }] }])
+    expect(valueOf(black, 'text.fontWeight')).toEqual({ kind: 'same', value: '900' })
+    expect(valueOf(black, 'text.bold')).toEqual({ kind: 'same', value: true })
+    // 範囲
+    const light = fontWeightField.write(black, '300', { start: 0, end: 1 })
+    expect((light.props as TextProps).paragraphs[0].runs[0]).toEqual({ text: 'a', format: { fontWeight: 300 } })
+    // 図形の中の文字は labelFontWeight
+    const geo = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, label: 'x' } })
+    expect((fontWeightField.write(geo, '500', null).props as { labelFontWeight: number }).labelFontWeight).toBe(500)
+  })
+})
+
 describe('bold, italic, underline and strikethrough (MAI-79)', () => {
   it('shows mixed per format, and toggles all the characters of the whole node (no default in the props)', () => {
     const editor = new Editor()
@@ -370,13 +419,13 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     expect(valueOf(text, 'text.underline')).toEqual({ kind: 'same', value: false })
     // ノード全体：すべての文字に当てる。props には既定を持たせない
     const italic = italicField.write(text, true, null)
-    expect((italic.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'abcd', format: { bold: true, italic: true } }] }])
+    expect((italic.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'abcd', format: { fontWeight: 700, italic: true } }] }])
     expect('italic' in (italic.props as object)).toBe(false)
     const plain = boldField.write(italicField.write(italic, false, null), false, null)
     expect((plain.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'abcd' }] }])
     // 範囲
     const ranged = strikethroughField.write(text, true, { start: 0, end: 1 })
-    expect((ranged.props as TextProps).paragraphs[0].runs[0]).toEqual({ text: 'a', format: { bold: true, strikethrough: true } })
+    expect((ranged.props as TextProps).paragraphs[0].runs[0]).toEqual({ text: 'a', format: { fontWeight: 700, strikethrough: true } })
   })
 })
 

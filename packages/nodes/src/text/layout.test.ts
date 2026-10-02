@@ -23,7 +23,7 @@ import {
   runStyle,
   type TextStyle,
 } from './layout.ts'
-import { applyRunFormat, toggledValue } from './richText.ts'
+import { applyRunFormat, clearRunFormat, resolveFormat, toggledValue } from './richText.ts'
 
 // Node には Canvas がないので、概算の文字幅（全角 = fontSize、半角 = 0.55 × fontSize、空白 = 0.3 × fontSize）で測る
 const style: TextStyle = { fontSize: 10, lineHeight: 1.5, fontWeight: 400, color: '#000', align: 'left' }
@@ -374,11 +374,29 @@ describe('bold, italic, underline and strikethrough', () => {
   it('keeps only the formats that differ from the default, and toggles a mixed range on', () => {
     const base = baseFormatOf(style)
     const on = applyRunFormat([{ runs: [{ text: 'abc' }] }], 0, 2, { bold: true }, base)
-    expect(on).toEqual([{ runs: [{ text: 'ab', format: { bold: true } }, { text: 'c' }] }])
+    expect(on).toEqual([{ runs: [{ text: 'ab', format: { fontWeight: 700 } }, { text: 'c' }] }])
     expect(applyRunFormat(on, 0, 3, { bold: false }, base)).toEqual([{ runs: [{ text: 'abc' }] }])
     expect(toggledValue([true, false])).toBe(true)
     expect(toggledValue([true, true])).toBe(false)
     expect(toggledValue([])).toBe(true)
+  })
+
+  it('keeps the weight as fontWeight, and bold follows the weight', () => {
+    const style = { fontSize: 10, lineHeight: 1.2, fontWeight: 400, color: '#000', align: 'left' } as const
+    const base = baseFormatOf(style)
+    // 太さは範囲ごとに持ち、太字の切り替えは 700 / 400 の太さにする（それまでの太さより優先する）
+    const light = applyRunFormat([{ runs: [{ text: 'abc' }] }], 0, 3, { fontWeight: 300 }, base)
+    expect(light).toEqual([{ runs: [{ text: 'abc', format: { fontWeight: 300 } }] }])
+    expect(runStyle(style, light[0].runs[0].format).fontWeight).toBe(300)
+    expect(applyRunFormat(light, 0, 3, { bold: true }, base)).toEqual([{ runs: [{ text: 'abc', format: { fontWeight: 700 } }] }])
+    // 太字としての表示は、太さが 600 以上か
+    expect(resolveFormat(base, { fontWeight: 800 }).bold).toBe(true)
+    expect(resolveFormat(base, { fontWeight: 500 }).bold).toBe(false)
+    // ノードの既定の太さ
+    expect(baseFormatOf({ ...style, fontWeight: 900 })).toMatchObject({ fontWeight: 900, bold: true })
+    expect(cssFont(runStyle(style, { fontWeight: 300 }))).toMatch(/^300 10px /)
+    // 太さを外すと、古い bold も外れる
+    expect(clearRunFormat([{ runs: [{ text: 'a', format: { bold: true, italic: true } }] }], 'fontWeight')).toEqual([{ runs: [{ text: 'a', format: { italic: true } }] }])
   })
 
   it('draws the lines per wrapped line and per run, in the size and color of the run', () => {

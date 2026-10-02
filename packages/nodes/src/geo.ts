@@ -16,7 +16,22 @@ import { defineNodeType, outsetSides } from './defineNodeType.ts'
 import { colorWithAlpha, fillPreviewColor, fillShape, paintColors, solidPaint, toFill, type Fill } from './paint.ts'
 import { drawShadows, shadowColors, shadowOutset, shadowsOf, type ShadowProps } from './shadow.ts'
 import { hasVisibleStroke, strokeInset, strokeOutline, strokeOutset, strokeStyleOf, toStrokePaint, type StrokeOutline, type StrokeProps, type StrokeStyle } from './stroke.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
+import { fontFamilyOf, textMetricsGeneration } from './text/fonts.ts'
+import {
+  TEXT_BAR_THRESHOLD_PX,
+  drawTextBars,
+  drawTextLayout,
+  fontWeightOf,
+  layoutRichText,
+  letterSpacingOf,
+  lineHeightStyle,
+  textAlignOf,
+  type LineHeight,
+  type TextAlign,
+  type TextLayout,
+  type TextStyle,
+} from './text/layout.ts'
+import { paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParagraph } from './text/richText.ts'
 
 // 矩形・楕円などの図形（MAI-7 の `geo`）
 // 版 2（MAI-81）：塗り（fill）を色の文字列から塗り（paint.ts の Fill。種類＋中身、不透明度、塗りなしは null）にした。
@@ -29,16 +44,32 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // シャドウ（MAI-86）の shadows も版は上げない（足しただけの省略できる値。ないときは影なし。読めない影は捨てる）
 // ブロック矢印（MAI-87）は shape の種類を足しただけ（blockArrow.ts）。形のパラメータ（arrowShaft など）は省略できる値なので版は上げない。
 // 新しい種類を知らない古いアプリは、楕円として描く（読めなくはならない）
+// 図形の中の文字は、テキスト・付箋と同じく段落と run（labelParagraphs）で持ち、範囲ごとの書式・リストを持てる。
+// 既定の書式（labelFontFamily など）と一緒に、版は上げずに足した（省略できる値。ないときは今までの見た目。GeoLabelProps）。
+// label にはいつも同じ文字をプレーンテキストで持つ（古いアプリ・文字を見るだけの処理のため）。
+// 古いアプリが label だけを書き換えたら、labelParagraphs と食い違うので、label を正として読む（geoLabelParagraphs）
 export type GeoShape = 'rect' | 'ellipse' | BlockArrowShape
 export const GEO_SHAPES: readonly GeoShape[] = ['rect', 'ellipse', 'blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']
 
-export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps {
+// 図形の中の文字（段落と run）と、その既定の書式（テキストの fontSize などに当たる）。ないときは既定（GEO_LABEL_DEFAULTS）
+export interface GeoLabelProps {
+  label: string
+  labelParagraphs?: TextParagraph[]
+  labelFontFamily?: string
+  labelFontSize?: number
+  labelColor?: string
+  labelAlign?: TextAlign
+  labelLineHeight?: LineHeight
+  // 文字間（em）
+  labelLetterSpacing?: number
+  labelFontWeight?: number
+}
+
+export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps, GeoLabelProps {
   shape: GeoShape
   w: number
   h: number
   fill: Fill
-  // 図形の中央に書く文字（MAI-24）
-  label: string
   // 角の半径（MAI-84。矩形だけ）。ワールド座標の px。数値なら 4 つの角が同じ、配列なら [左上, 右上, 右下, 左下]。
   // リサイズしても値は保ち、描くときに短い辺の半分まで（4 つ別々なら CSS の border-radius と同じ縮小の規則で）に収める
   cornerRadius?: CornerRadius
@@ -127,10 +158,11 @@ export const geoType = defineNodeType<GeoProps>({
     const stroke = strokeStyleOf(node.props)
     if (stroke.width * info.zoom >= 0.5) strokeOutline(ctx, stroke, geoOutline(node.props))
     if (node.props.label && !info.editing) {
+      const style = geoLabelStyle(node.props)
       const layout = labelLayout(node.props)
       const box = labelBox(node.props)
-      if (LABEL_FONT_SIZE * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, LABEL_STYLE, box, 'middle')
-      else drawTextLayout(ctx, layout, LABEL_STYLE, box, 'middle')
+      if (layout.maxFontSize * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, style, box, 'middle')
+      else drawTextLayout(ctx, layout, style, box, 'middle')
     }
   },
 
@@ -144,6 +176,8 @@ export const geoType = defineNodeType<GeoProps>({
       ...(stroke.paint && stroke.width > 0 ? [stroke.paint.color] : []),
       // 影の色（MAI-86。見える影だけ）
       ...shadowColors(shadowsOf(node.props)),
+      // 文字の色（範囲ごとに変えた色）
+      ...runColors(geoLabelParagraphs(node.props)),
     ]
   },
 
@@ -172,11 +206,12 @@ export const geoType = defineNodeType<GeoProps>({
 
   editText: (node) => ({
     text: node.props.label,
-    style: LABEL_STYLE,
+    style: geoLabelStyle(node.props),
     box: labelBox(node.props),
     autoWidth: false,
     verticalAlign: 'middle',
-    update: (label) => ({ ...node.props, label }),
+    update: (label) => withGeoLabel(node.props, richTextFromPlain(label)),
+    rich: { paragraphs: geoLabelParagraphs(node.props), update: (paragraphs) => withGeoLabel(node.props, paragraphs) },
     deleteIfEmpty: false,
   }),
 })
@@ -270,9 +305,42 @@ function insideBox(box: { x: number; y: number; w: number; h: number }, point: {
   return point.x >= box.x && point.y >= box.y && point.x <= box.x + box.w && point.y <= box.y + box.h
 }
 
-const LABEL_FONT_SIZE = 18
 const LABEL_PADDING = 8
-const LABEL_STYLE: TextStyle = { fontSize: LABEL_FONT_SIZE, lineHeight: 1.35, fontWeight: 400, color: '#1f2328', align: 'center' }
+// 行の高さの既定（倍率）。行の高さを持たない図形はこれで描く
+export const GEO_LABEL_DEFAULT_LINE_HEIGHT = 1.35
+
+// 図形の中の文字の既定の書式（書式を持たない図形はこれで描く）
+export const GEO_LABEL_DEFAULTS = { fontSize: 18, color: '#1f2328', align: 'center' } as const satisfies { fontSize: number; color: string; align: TextAlign }
+export const GEO_LABEL_FONT_SIZE_LIMITS = { min: 1, max: 400 } as const
+
+// 図形の中の文字の既定の書式（props の書式。ないもの・壊れたものは既定）。範囲ごとの書式は、これに重ねる
+export function geoLabelStyle(props: Partial<GeoLabelProps>): TextStyle {
+  const size = props.labelFontSize
+  return {
+    fontSize:
+      typeof size === 'number' && Number.isFinite(size)
+        ? Math.min(GEO_LABEL_FONT_SIZE_LIMITS.max, Math.max(GEO_LABEL_FONT_SIZE_LIMITS.min, size))
+        : GEO_LABEL_DEFAULTS.fontSize,
+    ...lineHeightStyle(props.labelLineHeight, GEO_LABEL_DEFAULT_LINE_HEIGHT),
+    letterSpacing: letterSpacingOf(props.labelLetterSpacing),
+    fontWeight: fontWeightOf(props.labelFontWeight),
+    color: typeof props.labelColor === 'string' && props.labelColor !== '' ? props.labelColor : GEO_LABEL_DEFAULTS.color,
+    align: props.labelAlign === undefined ? GEO_LABEL_DEFAULTS.align : textAlignOf(props.labelAlign),
+    fontFamily: fontFamilyOf(props.labelFontFamily),
+  }
+}
+
+// 図形の中の文字の段落。labelParagraphs が label と食い違えば（古いアプリが label だけを変えた）、label から作る
+export function geoLabelParagraphs(props: Partial<GeoLabelProps>): TextParagraph[] {
+  const label = typeof props.label === 'string' ? props.label : ''
+  const paragraphs = Array.isArray(props.labelParagraphs) && props.labelParagraphs.length > 0 ? paragraphsOf({ paragraphs: props.labelParagraphs }) : null
+  return paragraphs && plainTextOf(paragraphs) === label ? paragraphs : richTextFromPlain(label)
+}
+
+// 図形の中の文字を paragraphs にした props（label もそろえる）
+export function withGeoLabel<P extends Partial<GeoLabelProps>>(props: P, paragraphs: TextParagraph[]): P {
+  return { ...props, labelParagraphs: paragraphs, label: plainTextOf(paragraphs) }
+}
 
 // 文字の箱。ブロック矢印（MAI-87）は軸の中（両向きなら矢じりの間、シェブロンは切り込みととがりの間）に収める
 function labelBox(props: GeoProps): Box {
@@ -298,13 +366,15 @@ function paddedBox(box: Box, padding: number): Box {
   }
 }
 
-const labelCache = new WeakMap<GeoProps, TextLayout>()
+// フォントを読み込み終えて測り直すとき（textMetricsGeneration が変わる）は計算し直す（MAI-75）
+const labelCache = new WeakMap<GeoProps, { generation: number; layout: TextLayout }>()
 
 function labelLayout(props: GeoProps): TextLayout {
-  let layout = labelCache.get(props)
-  if (!layout) {
-    layout = layoutText(props.label, LABEL_STYLE, labelBox(props).w)
-    labelCache.set(props, layout)
+  const generation = textMetricsGeneration()
+  let cached = labelCache.get(props)
+  if (!cached || cached.generation !== generation) {
+    cached = { generation, layout: layoutRichText(geoLabelParagraphs(props), geoLabelStyle(props), labelBox(props).w) }
+    labelCache.set(props, cached)
   }
-  return layout
+  return cached.layout
 }

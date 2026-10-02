@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   KEEP_TEXT_EDITING_ATTRIBUTE,
@@ -21,7 +21,7 @@ import { FontField } from './FontField.tsx'
 import { ShadowsField } from './ShadowsField.tsx'
 import { ChartDataField } from './ChartDataField.tsx'
 import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
-import { TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
+import { TEXT_SECTION_TAB, TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
 import type { PaintEditingLink } from './GradientEditor.tsx'
 import type { PaintImageSource } from './ImagePaintEditor.tsx'
 import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggles.ts'
@@ -40,6 +40,8 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 影（MAI-86）は「効果」に一覧で出す（ShadowsField。＋・−・表示の切り替え、影ごとの値）
 // - 角丸（MAI-84）は、4 つの角を一緒に変える入力と、角ごとの 4 つの入力（CornerRadiusField）。図形の上の角丸のハンドルでも変えられる（cornerHandles.ts）
 // - グラフ（MAI-88）は「グラフ」にデータの表（ChartDataField。行の色・ラベル・値、CSV/TSV の貼り付け）、ドーナツの穴・開始角度・ラベルの表示
+// - 図形の中の文字の書式は「文字」のタブに分ける（section.tab）。タブが 2 つ以上あるときだけ、見出しにタブを並べる。
+//   図形の文字を編集している間は、選んでいなければ「文字」のタブを開く
 // - 図形の「形」（MAI-87）で矩形・楕円・ブロック矢印を切り替え、ブロック矢印の軸の太さなどを % で変える。図形の上の形のハンドルでも変えられる（blockArrowHandles.ts）
 
 export function DesignPanel(props: {
@@ -120,8 +122,17 @@ export function DesignPanel(props: {
   const paintLink = useMemo(() => paintEditingLink(editor, view, singleId), [editor, view, singleId])
   const paintImages = useMemo(() => paintImageSource(view), [view])
 
-  const sections = visibleSections(nodes, undefined, textSelection)
-  if (sections.length === 0) return null
+  // 選んだタブ（null は自動。文字を編集中なら文字のタブ、そうでなければ最初のタブ）
+  const [chosenTab, setChosenTab] = useState<string | null>(null)
+  const editingId = useSyncExternalStore(editor.session.subscribe, () => editor.session.get().editingId)
+
+  const allSections = visibleSections(nodes, undefined, textSelection)
+  if (allSections.length === 0) return null
+  const tabs = [...new Set(allSections.map(({ tab }) => tab ?? MAIN_TAB))]
+  const editingLabel = editingId !== null && ids.includes(editingId) && tabs.includes(TEXT_SECTION_TAB) ? TEXT_SECTION_TAB : null
+  const tab = chosenTab !== null && tabs.includes(chosenTab) ? chosenTab : (editingLabel ?? tabs[0])
+  const sections = tabs.length > 1 ? allSections.filter((visible) => (visible.tab ?? MAIN_TAB) === tab) : allSections
+  const mainTitle = nodes.length > 1 ? `${nodes.length} 個` : typeLabel(nodes[0])
 
   if (!open) {
     return (
@@ -146,14 +157,31 @@ export function DesignPanel(props: {
     >
       <header className="design-panel-header">
         <span className="design-panel-title">デザイン</span>
-        <span className="design-panel-count">{nodes.length > 1 ? `${nodes.length} 個` : typeLabel(nodes[0])}</span>
+        {tabs.length > 1 ? (
+          <div className="design-panel-tabs" role="tablist" aria-label="デザインのタブ">
+            {tabs.map((id) => (
+              <button
+                key={id}
+                role="tab"
+                aria-selected={id === tab}
+                className={id === tab ? 'design-panel-tab active' : 'design-panel-tab'}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => setChosenTab(id)}
+              >
+                {id === MAIN_TAB ? mainTitle : id}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="design-panel-count">{mainTitle}</span>
+        )}
         <button className="design-panel-close" title="閉じる" onPointerDown={(e) => e.preventDefault()} onClick={() => onOpenChange(false)}>
           ×
         </button>
       </header>
       {/* 選択が変わったら作り直し、入力中の文字を捨てる */}
       <UsedColorsContext.Provider value={getUsedColors}>
-        <div key={selectionKey} className="design-panel-body">
+        <div key={`${selectionKey}:${tab}`} className="design-panel-body">
           {sections.map(({ section, fields, showComponent }) => (
             <section key={section.id} className="design-section" data-section={section.id}>
               <h3>{section.title}</h3>
@@ -309,6 +337,9 @@ function paintImageSource(view: CanvasView | null): PaintImageSource | null {
     importClipboard: () => view.importClipboardImage(),
   }
 }
+
+// タブの名前。section.tab のないセクションは最初のタブ（見出しにはノードの種類を出す）
+const MAIN_TAB = ''
 
 const noSubscription = () => () => {}
 const noSelection = (): TextSelection | null => null

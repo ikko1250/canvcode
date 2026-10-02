@@ -121,7 +121,8 @@ function styleOf(format: TextRunFormat | undefined): string {
   if (format?.fontSize) parts.push(`font-size: ${format.fontSize}px`)
   if (format?.fontFamily) parts.push(`font-family: ${fontFamilyCss(format.fontFamily)}`)
   // 太字・斜体・下線・取り消し線（MAI-79）。載せる書式は既定に重ねた実際の値なので、false も書く（貼り付け先の既定に左右されないように）
-  if (format?.bold !== undefined) parts.push(`font-weight: ${format.bold ? 700 : 400}`)
+  const weight = format?.fontWeight ?? (format?.bold === undefined ? undefined : format.bold ? 700 : 400)
+  if (weight !== undefined) parts.push(`font-weight: ${weight}`)
   if (format?.italic !== undefined) parts.push(`font-style: ${format.italic ? 'italic' : 'normal'}`)
   const lines = [format?.underline ? 'underline' : '', format?.strikethrough ? 'line-through' : ''].filter(Boolean)
   if (lines.length > 0) parts.push(`text-decoration: ${lines.join(' ')}`)

@@ -440,17 +440,19 @@ describe('rich text editing (MAI-74)', () => {
     expect(listener).toHaveBeenCalled()
   })
 
-  it('edits shape labels as plain text', () => {
+  it('edits shape labels as rich text, keeping label as plain text', () => {
     const { editor, layer, textEditor } = setup()
     const geo = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, label: 'a' } })
     editor.createNodes([geo])
     textEditor.start(geo.id)
     const element = editingElement(layer)
-    expect(textEditor.formatRange({ color: '#ff0000' }, { start: 0, end: 1 })).toBe(false)
     typeInto(element, textNodes(element)[0], 1, 'b')
     beforeInput(element, 'insertParagraph')
+    expect(textEditor.formatRange({ color: '#ff0000' }, { start: 0, end: 1 })).toBe(true)
     textEditor.finish()
-    expect((editor.getNode(geo.id)!.props as { label: string }).label).toBe('ab\n')
+    const props = editor.getNode(geo.id)!.props as { label: string; labelParagraphs: { runs: { text: string; format?: { color?: string } }[] }[] }
+    expect(props.label).toBe('ab\n')
+    expect(props.labelParagraphs[0].runs[0]).toMatchObject({ text: 'a', format: { color: '#ff0000' } })
   })
 })
 
@@ -641,7 +643,7 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     setCaret(node, 0, node, 5)
     expect(key(element, { key: 'b', ctrlKey: true }).defaultPrevented).toBe(true)
     expect(outside).not.toHaveBeenCalled()
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'hello', format: { bold: true } }, { text: ' world' }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'hello', format: { fontWeight: 700 } }, { text: ' world' }]])
     // DOM は書き直した形（span の font-weight。<b> は作らない）で、範囲もそのまま
     expect(element.querySelector('b')).toBeNull()
     expect((element.querySelector('span') as HTMLElement).style.fontWeight).toBe('700')
@@ -649,7 +651,7 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     key(element, { key: 'i', metaKey: true })
     key(element, { key: 'u', ctrlKey: true })
     key(element, { key: 'X', ctrlKey: true, shiftKey: true })
-    expect(runsOf(editor, text.id)[0][0]).toEqual({ text: 'hello', format: { bold: true, italic: true, underline: true, strikethrough: true } })
+    expect(runsOf(editor, text.id)[0][0]).toEqual({ text: 'hello', format: { fontWeight: 700, italic: true, underline: true, strikethrough: true } })
     // もう一度押すとオフ（既定と同じ値は持たない）
     key(element, { key: 'b', ctrlKey: true })
     expect(runsOf(editor, text.id)[0][0].format).toEqual({ italic: true, underline: true, strikethrough: true })
@@ -669,12 +671,12 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     document.dispatchEvent(new Event('selectionchange'))
     expect(textEditor.selectionFormats().map((f) => f.bold)).toEqual([true, false])
     key(element, { key: 'b', ctrlKey: true })
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd', format: { bold: true } }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd', format: { fontWeight: 700 } }]])
     key(element, { key: 'b', ctrlKey: true })
     expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd' }]])
     // Undo で 1 回ずつ戻る
     key(element, { key: 'z', ctrlKey: true })
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd', format: { bold: true } }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abcd', format: { fontWeight: 700 } }]])
     textEditor.finish()
   })
 
@@ -690,11 +692,11 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     expect(textEditor.getSelectionSnapshot()?.pending).toEqual({ bold: true })
     expect(textEditor.selectionFormats()[0].bold).toBe(true)
     typeInto(element, textNodes(element)[0], 1, 'X')
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'a' }, { text: 'X', format: { bold: true } }, { text: 'b' }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'a' }, { text: 'X', format: { fontWeight: 700 } }, { text: 'b' }]])
     // 続けて打つ文字は、直前の文字（太字）の書式
     const after = textNodes(element)[1]
     typeInto(element, after, 1, 'Y')
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'a' }, { text: 'XY', format: { bold: true } }, { text: 'b' }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'a' }, { text: 'XY', format: { fontWeight: 700 } }, { text: 'b' }]])
     // カーソルを動かすと捨てる
     key(element, { key: 'i', ctrlKey: true })
     expect(textEditor.getSelectionSnapshot()?.pending).toEqual({ italic: true })
@@ -732,7 +734,7 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     expect(runsOf(editor, text.id)).toEqual([[{ text: 'ab' }]])
     // 英字でない配列でも、キーの場所で見る
     key(element, { key: 'и', code: 'KeyB', ctrlKey: true })
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'ab', format: { bold: true } }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'ab', format: { fontWeight: 700 } }]])
     textEditor.finish()
   })
 
@@ -740,12 +742,18 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     const root = document.createElement('div')
     root.innerHTML = '<div><b>a</b><i>b</i><u>c</u><s>d</s><span style="font-weight: bold; font-style: italic; text-decoration: underline line-through">e</span><span data-format="{}"><strong>f</strong></span></div>'
     expect(readRichTextDom(root).paragraphs[0].runs).toEqual([
-      { text: 'a', format: { bold: true } },
+      { text: 'a', format: { fontWeight: 700 } },
       { text: 'b', format: { italic: true } },
       { text: 'c', format: { underline: true } },
       { text: 'd', format: { strikethrough: true } },
-      { text: 'e', format: { bold: true, italic: true, underline: true, strikethrough: true } },
-      { text: 'f', format: { bold: true } },
+      { text: 'e', format: { fontWeight: 700, italic: true, underline: true, strikethrough: true } },
+      { text: 'f', format: { fontWeight: 700 } },
+    ])
+    // 数の太さはそのまま読む。内側の要素の太さが優先する
+    root.innerHTML = '<div><span style="font-weight: 300">a</span><b><span style="font-weight: 500">b</span></b></div>'
+    expect(readRichTextDom(root).paragraphs[0].runs).toEqual([
+      { text: 'a', format: { fontWeight: 300 } },
+      { text: 'b', format: { fontWeight: 500 } },
     ])
   })
 
@@ -763,7 +771,7 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     // 貼り付けると書式が残る（既定と同じ値は落ちる）
     setCaret(textNodes(element)[0], 2)
     element.dispatchEvent(clipboardEvent('paste', store).event)
-    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abab', format: { bold: true, underline: true } }]])
+    expect(runsOf(editor, text.id)).toEqual([[{ text: 'abab', format: { fontWeight: 700, underline: true } }]])
     textEditor.finish()
   })
 })

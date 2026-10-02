@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  BUNDLED_FONTS,
   DEFAULT_FONT_FAMILY,
+  FONT_PRESETS,
   TEXT_FONT_FAMILY,
+  isBundledFontFamily,
   fontFamilyCss,
   fontFamilyFromCss,
   fontFamilyOf,
@@ -26,15 +29,27 @@ describe('font family', () => {
     expect(fontFamilyOf('M PLUS 1p')).toBe('M PLUS 1p')
   })
 
-  it('draws the default font with the same CSS as before', () => {
-    expect(fontFamilyCss(undefined)).toBe(TEXT_FONT_FAMILY)
-    expect(fontFamilyCss('sans-serif')).toBe(TEXT_FONT_FAMILY)
-    expect(cssFont(style)).toBe(`400 10px ${TEXT_FONT_FAMILY}`)
+  it('draws the default font with the bundled Noto Sans JP first, then the fonts of the device', () => {
+    const sans = `'Noto Sans JP Variable', ${TEXT_FONT_FAMILY}`
+    expect(fontFamilyCss(undefined)).toBe(sans)
+    expect(fontFamilyCss('sans-serif')).toBe(sans)
+    expect(cssFont(style)).toBe(`400 10px ${sans}`)
+    expect(fontFamilyCss('serif')).toMatch(/^'Noto Serif JP Variable', /)
+  })
+
+  it('draws a bundled font by the name of its @font-face, and lists all the bundled fonts', () => {
+    expect(fontFamilyCss('Noto Sans JP')).toMatch(/^"Noto Sans JP Variable", 'Noto Sans JP Variable', /)
+    expect(fontFamilyFromCss(fontFamilyCss('Noto Serif JP'))).toBe('Noto Serif JP')
+    expect(fontFamilyFromCss(fontFamilyCss('M PLUS 1 Code'))).toBe('M PLUS 1 Code')
+    expect(isBundledFontFamily('Klee One')).toBe(true)
+    expect(isBundledFontFamily('Hiragino Sans')).toBe(false)
+    expect(FONT_PRESETS.filter((font) => font.category === 'bundled').map((font) => font.family)).toEqual(BUNDLED_FONTS.map((font) => font.family))
   })
 
   it('falls back to the default font after a named font, and maps the CSS back to the name', () => {
-    expect(fontFamilyCss('M PLUS 1p')).toBe(`"M PLUS 1p", ${TEXT_FONT_FAMILY}`)
-    expect(fontFamilyCss('bad"name')).toBe(`"badname", ${TEXT_FONT_FAMILY}`)
+    // 端末にないフォントの代わりも、同梱の Noto Sans JP（どの端末でも同じ）
+    expect(fontFamilyCss('M PLUS 1p')).toBe(`"M PLUS 1p", 'Noto Sans JP Variable', ${TEXT_FONT_FAMILY}`)
+    expect(fontFamilyCss('bad"name')).toBe(`"badname", 'Noto Sans JP Variable', ${TEXT_FONT_FAMILY}`)
     for (const family of ['sans-serif', 'serif', 'monospace', 'M PLUS 1p', 'Yu Mincho']) {
       expect(fontFamilyFromCss(fontFamilyCss(family))).toBe(family)
     }
@@ -46,7 +61,7 @@ describe('font family', () => {
   it('applies the font of a run over the default of the node', () => {
     expect(runStyle({ ...style, fontFamily: 'serif' }, { color: '#f00' }).fontFamily).toBe('serif')
     expect(runStyle(style, { fontFamily: 'M PLUS 1p' }).fontFamily).toBe('M PLUS 1p')
-    expect(baseFormatOf(style)).toEqual({ color: '#000', fontSize: 10, fontFamily: DEFAULT_FONT_FAMILY, bold: false, italic: false, underline: false, strikethrough: false })
+    expect(baseFormatOf(style)).toEqual({ color: '#000', fontSize: 10, fontFamily: DEFAULT_FONT_FAMILY, fontWeight: 400, bold: false, italic: false, underline: false, strikethrough: false })
   })
 
   it('splits segments where the font changes', () => {
@@ -87,8 +102,8 @@ describe('font loading', () => {
       load: vi.fn(() => new Promise<unknown[]>((r) => (resolve = r))),
     }
     vi.stubGlobal('document', { fonts })
-    // 既定（generic）のフォントは頼まない
-    requestFontLoad('sans-serif', `400 10px ${TEXT_FONT_FAMILY}`, 'abc')
+    // 等幅（Web フォントを持たない）は頼まない
+    requestFontLoad('monospace', `400 10px ${fontFamilyCss('monospace')}`, 'abc')
     expect(fonts.check).not.toHaveBeenCalled()
     const font = `400 10px ${fontFamilyCss('M PLUS 1p')}`
     requestFontLoad('M PLUS 1p', font, 'あいう')

@@ -28,15 +28,11 @@ import {
   createCodeCardType,
   createSlideDeckCardType,
   createSlidePageType,
-  textAlignOf,
   type ArrowProps,
   type FileContentSource,
   type SlidePageImages,
-  type NoteProps,
   type PortalProps,
   type QuoteCardProps,
-  type TextAlign,
-  type TextProps,
 } from '@canvcode/nodes'
 import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { canvasFigurePath } from '@canvcode/slides'
@@ -77,23 +73,6 @@ const ARROWHEADS: { label: string; title: string; start: ArrowStyle['arrowheadSt
   { label: '→', title: '終点に矢じり', start: 'none', end: 'arrow' },
   { label: '↔', title: '両端に矢じり', start: 'arrow', end: 'arrow' },
 ]
-
-// テキストと付箋の揃え（MAI-50）。アイコンは 3 本の横線で、揃えの側をそろえる
-const TEXT_ALIGNS: { align: TextAlign; title: string; lines: [number, number][] }[] = [
-  { align: 'left', title: '左揃え', lines: [[2, 14], [2, 10], [2, 14]] },
-  { align: 'center', title: '中央揃え', lines: [[2, 14], [4, 12], [2, 14]] },
-  { align: 'right', title: '右揃え', lines: [[2, 14], [6, 14], [2, 14]] },
-]
-
-function AlignIcon(props: { lines: [number, number][] }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      {props.lines.map(([x1, x2], i) => (
-        <line key={i} x1={x1} x2={x2} y1={4 + i * 4} y2={4 + i * 4} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      ))}
-    </svg>
-  )
-}
 
 const BENCH_NODE_COUNT = 10_000
 // 取っておく Editor の数（MAI-66）。Canvas を行き来しても、これより増えない
@@ -1213,11 +1192,8 @@ export function App(props: { initial: InitialRecords }) {
     editor.session.set({ arrowStyle: { ...pick(arrowStyle), ...patch } })
   }
 
-  // テキストと付箋のパレット（MAI-50）。テキストか付箋だけを選んでいるときに出し、文字の大きさと揃えを変える。
-  // 編集中も出しっぱなしにし、押しても編集中の文字からフォーカスを奪わない（編集を続けられる）。
-  // 変える手順は textStyle.ts（パイメニュー「操作」と共通。MAI-57）
+  // テキストと付箋の大きさ・揃えは、パイメニュー「操作」とデザインパネルで変える（左端のパレットはやめた）
   const selectedTextNodes = textNodesOf(editor)
-  const textPalette = selectedTextNodes.length > 0 && selectedTextNodes.length === session.selectedIds.size
   // 整列・間隔のパレット（MAI-54）。2 つ以上（固定していないもの。group は 1 つ）を選んでいるときに出す。
   // 選ぶものが変わったら key で作り直し、入力中の間隔を既定値に戻す
   const arrangeTargets = editor.arrangeTargets()
@@ -1226,7 +1202,6 @@ export function App(props: { initial: InitialRecords }) {
     .map((t) => t.id)
     .sort()
     .join(',')
-  const textStyleProps = selectedTextNodes[0]?.props as TextProps | NoteProps | undefined
 
   // パイメニュー「操作」（MAI-57）に出す項目を決める状態。
   // session（カメラ・選択）を購読しているので、カメラが動くたびに描き直され、次・前のページの有無もそのたびに決め直す。
@@ -1365,31 +1340,6 @@ export function App(props: { initial: InitialRecords }) {
                   onClick={() => setArrowStyle({ arrowheadStart: head.start, arrowheadEnd: head.end })}
                 >
                   {head.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {textPalette && textStyleProps && (
-            <div className="style-palette" onPointerDown={(e) => e.preventDefault()}>
-              <button title="文字を大きく" onClick={() => stepTextFontSize(editor, view, selectedTextNodes, 1)}>
-                A+
-              </button>
-              <span className="value" title="文字の大きさ">
-                {textStyleProps.fontSize}
-              </span>
-              <button title="文字を小さく" onClick={() => stepTextFontSize(editor, view, selectedTextNodes, -1)}>
-                A−
-              </button>
-              <span className="separator" />
-              {TEXT_ALIGNS.map((item) => (
-                <button
-                  key={item.align}
-                  title={item.title}
-                  className={textAlignOf(textStyleProps.align) === item.align ? 'active' : ''}
-                  onClick={() => setTextAlign(editor, view, selectedTextNodes, item.align)}
-                >
-                  <AlignIcon lines={item.lines} />
                 </button>
               ))}
             </div>

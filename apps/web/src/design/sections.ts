@@ -34,6 +34,9 @@ import {
   toCornerRadius,
   type CornerRadius,
   type GeoProps,
+  richTextTargetOf,
+  resolveFormat,
+  FONT_WEIGHTS,
   applyRunFormat,
   clampOpacity,
   clampTileScale,
@@ -66,21 +69,14 @@ import {
   paragraphIndexesInRange,
   setListStyle,
   setListType,
-  noteStyle,
-  paragraphsOf,
   richTextLength,
-  textAlignOf,
-  textStyle,
   type LineHeight,
   type LineHeightUnit,
-  type NoteProps,
   type TextAlign,
   type TextListStyle,
   type TextListType,
   type TextParagraph,
-  type TextProps,
   type TextRunFormat,
-  type TextStyle,
   type TextToggleFormat,
 } from '@canvcode/nodes'
 import { sameValue, type SharedValue } from '@canvcode/canvas'
@@ -601,17 +597,9 @@ export const shadowsField: DesignField<ShadowsChange> = {
 
 // ---- 文字 ----
 
-// 文字の範囲ごとに持てる書式（MAI-74）を持つ型。base はノードの既定の書式、props はその既定を持つ props のキー
-// （ないものは既定を変えられない。付箋の文字の色）
-interface TextFormatType {
-  base(props: object): Required<TextRunFormat>
-  props: Partial<Record<keyof TextRunFormat, string>>
-}
-
-const TEXT_FORMAT_TYPES: Record<string, TextFormatType> = {
-  text: { base: (props) => baseFormatOf(textStyle(props as TextProps)), props: { color: 'color', fontSize: 'fontSize', fontFamily: 'fontFamily' } },
-  note: { base: (props) => baseFormatOf(noteStyle(props as NoteProps)), props: { fontSize: 'fontSize', fontFamily: 'fontFamily' } },
-}
+// 文字の範囲ごとに持てる書式（MAI-74）を持つ型（テキスト・付箋・図形の中の文字）は richTextTargetOf で読み書きする。
+// 図形の中の文字の項目は、デザインパネルの「文字」のタブに出す（図形の見た目と分ける。TEXT_SECTION_TAB）
+const hasText = (node: NodeRecord) => richTextTargetOf(node) !== undefined
 
 // 文字の範囲ごとに持てる書式の項目（MAI-74）。
 // - 文字を編集中で範囲を選んでいれば、その範囲の文字の値を見せ（違えば「混在」）、その範囲に当てる
@@ -625,35 +613,37 @@ export function textFormatField<K extends keyof TextRunFormat>(options: {
 }): DesignField<Required<TextRunFormat>[K]> {
   const { key } = options
   type V = Required<TextRunFormat>[K]
-  const typeOf = (node: NodeRecord) => TEXT_FORMAT_TYPES[node.type]
   const values = (node: NodeRecord, range: { start: number; end: number } | null): V[] => {
-    const base = typeOf(node)!.base(node.props)
-    const paragraphs = paragraphsOf(node.props as { paragraphs?: TextParagraph[] })
+    const target = richTextTargetOf(node)!
+    const base = baseFormatOf(target.style(node.props))
+    const paragraphs = target.paragraphs(node.props)
     const formats = range ? formatsInRange(paragraphs, range.start, range.end) : formatsInRange(paragraphs, 0, richTextLength(paragraphs))
     const list = formats.length > 0 ? formats : [formatAt(paragraphs, range?.start ?? 0)]
-    return list.map((format) => (format?.[key] ?? base[key]) as V)
+    // 既定に重ねた実際の値（太字は太さから出す。resolveFormat）
+    return list.map((format) => resolveFormat(base, format)[key] as V)
   }
   return {
     id: options.id,
     label: options.label,
     control: options.control,
-    appliesTo: (node) => typeOf(node) !== undefined,
+    appliesTo: hasText,
     read: (node) => values(node, null)[0],
     values,
     write(node, value, range) {
-      const type = typeOf(node)
-      if (!type) return node
+      const target = richTextTargetOf(node)
+      if (!target) return node
       const props = node.props as Record<string, unknown>
-      const base = type.base(props)
-      const paragraphs = paragraphsOf(props as { paragraphs?: TextParagraph[] })
+      const base = baseFormatOf(target.style(props))
+      const paragraphs = target.paragraphs(props)
       const patch = { [key]: value } as TextRunFormat
+      const propKey = target.keys[key as keyof typeof target.keys]
       let next: Record<string, unknown>
       if (range && range.start !== range.end) {
-        next = { ...props, paragraphs: applyRunFormat(paragraphs, range.start, range.end, patch, base) }
-      } else if (type.props[key]) {
-        next = { ...props, [type.props[key]]: value, paragraphs: clearRunFormat(paragraphs, key) }
+        next = target.withParagraphs(props, applyRunFormat(paragraphs, range.start, range.end, patch, base)) as Record<string, unknown>
+      } else if (propKey) {
+        next = target.withParagraphs({ ...props, [propKey]: value }, clearRunFormat(paragraphs, key)) as Record<string, unknown>
       } else {
-        next = { ...props, paragraphs: applyRunFormat(paragraphs, 0, richTextLength(paragraphs), patch, base) }
+        next = target.withParagraphs(props, applyRunFormat(paragraphs, 0, richTextLength(paragraphs), patch, base)) as Record<string, unknown>
       }
       return sameValue(next, props) ? node : { ...node, props: next }
     },
@@ -667,6 +657,32 @@ export const fontFamilyField = textFormatField({
   key: 'fontFamily',
   control: { kind: 'font' },
 })
+
+// 文字の太さ（100〜900）。範囲ごとに持てる（太字も同じ値。太さが 600 以上なら太字のボタンがオン）。
+// 一覧から選ぶ（select の値は文字列なので、数にして読み書きする）。フォントが持たない太さは、ブラウザが近い太さで描く
+const FONT_WEIGHT_NAMES: Record<number, string> = {
+  100: 'Thin',
+  200: 'ExtraLight',
+  300: 'Light',
+  400: 'Regular',
+  500: 'Medium',
+  600: 'SemiBold',
+  700: 'Bold',
+  800: 'ExtraBold',
+  900: 'Black',
+}
+
+const fontWeightNumberField = textFormatField({ id: 'text.fontWeight', label: '太さ', key: 'fontWeight', control: { kind: 'number' } })
+
+export const fontWeightField: DesignField<string> = {
+  id: 'text.fontWeight',
+  label: '太さ',
+  control: { kind: 'select', options: FONT_WEIGHTS.map((weight) => ({ value: String(weight), label: `${FONT_WEIGHT_NAMES[weight]} ${weight}` })) },
+  appliesTo: fontWeightNumberField.appliesTo,
+  read: (node) => String(fontWeightNumberField.read(node)),
+  values: (node, range) => fontWeightNumberField.values!(node, range).map(String),
+  write: (node, value, range) => fontWeightNumberField.write(node, Number(value), range),
+}
 
 export const fontSizeField = textFormatField({
   id: 'text.fontSize',
@@ -715,7 +731,7 @@ export const TEXT_TOGGLE_FIELDS: Record<TextToggleFormat, DesignField<boolean>> 
   strikethrough: strikethroughField,
 }
 
-// アイコンは 3 本の横線で、揃えの側をそろえる（左端のパレットと同じ形。MAI-50）
+// アイコンは 3 本の横線で、揃えの側をそろえる（MAI-50）
 function alignIcon(lines: [number, number][]) {
   return function AlignIcon() {
     return createElement(
@@ -734,10 +750,18 @@ const ALIGN_OPTIONS: SegmentOption[] = [
   { value: 'right', title: '右揃え', icon: alignIcon([[2, 14], [6, 14], [2, 14]]) },
 ]
 
-// 古い付箋には align がないので、左揃えとして読む（MAI-50）
+// 古い付箋には align がないので、左揃えとして読む（MAI-50）。align のない図形は中央揃え（geoLabelStyle）
 export const textAlignField: DesignField<TextAlign> = {
-  ...propField<TextAlign>({ id: 'text.align', label: '揃え', keys: { text: 'align', note: 'align' }, control: { kind: 'segmented', options: ALIGN_OPTIONS } }),
-  read: (node) => textAlignOf((node.props as { align?: TextAlign }).align),
+  id: 'text.align',
+  label: '揃え',
+  control: { kind: 'segmented', options: ALIGN_OPTIONS },
+  appliesTo: hasText,
+  read: (node) => richTextTargetOf(node)!.style(node.props).align,
+  write(node, value) {
+    const target = richTextTargetOf(node)
+    if (!target || target.style(node.props).align === value) return node
+    return { ...node, props: { ...(node.props as object), [target.keys.align]: value } }
+  },
 }
 
 // 行の高さ（MAI-76）。ノード単位（段落ごとには持たない）で、倍率か px。
@@ -745,37 +769,31 @@ export const textAlignField: DesignField<TextAlign> = {
 // 複数のノードを選んでいれば、それぞれの大きさで換算する）
 export type LineHeightChange = LineHeight | { convertTo: LineHeightUnit }
 
-const LINE_HEIGHT_STYLES: Record<string, (props: object) => TextStyle> = {
-  text: (props) => textStyle(props as TextProps),
-  note: (props) => noteStyle(props as NoteProps),
-}
-
 export const lineHeightField: DesignField<LineHeightChange> = {
   id: 'text.lineHeight',
   label: '行間',
   control: { kind: 'lineHeight' },
-  appliesTo: (node) => LINE_HEIGHT_STYLES[node.type] !== undefined,
-  // 行の高さを持たない古いノードは、型の既定の倍率（テキスト 1.35、付箋 1.4）を見せる
-  read: (node) => lineHeightOf(LINE_HEIGHT_STYLES[node.type]!(node.props)),
+  appliesTo: hasText,
+  // 行の高さを持たない古いノードは、型の既定の倍率（テキスト・図形 1.35、付箋 1.4）を見せる
+  read: (node) => lineHeightOf(richTextTargetOf(node)!.style(node.props)),
   write(node, change) {
-    const styleOf = LINE_HEIGHT_STYLES[node.type]
-    if (!styleOf) return node
-    const style = styleOf(node.props)
+    const target = richTextTargetOf(node)
+    if (!target) return node
+    const style = target.style(node.props)
     const current = lineHeightOf(style)
     const next = 'convertTo' in change ? convertLineHeight(current, change.convertTo, style.fontSize) : change
     if (sameValue(next, current)) return node
-    return { ...node, props: { ...(node.props as object), lineHeight: next } }
+    return { ...node, props: { ...(node.props as object), [target.keys.lineHeight]: next } }
   },
 }
 
 // 文字間（MAI-77）。ノード単位で、props には em（文字の大きさに対する割合）で持つ。
 // パネルでは Figma と同じく文字の大きさに対する % で見せる（5% = 0.05em）。持たない古いノードは 0
 export const letterSpacingField: DesignField<number> = {
-  ...propField<number>({
-    id: 'text.letterSpacing',
-    label: '文字間',
-    keys: { text: 'letterSpacing', note: 'letterSpacing' },
-    control: {
+  id: 'text.letterSpacing',
+  label: '文字間',
+  appliesTo: hasText,
+  control: {
       kind: 'number',
       min: LETTER_SPACING_LIMITS.min * 100,
       max: LETTER_SPACING_LIMITS.max * 100,
@@ -783,12 +801,12 @@ export const letterSpacingField: DesignField<number> = {
       unit: '%',
       toDisplay: (value) => Number((value * 100).toFixed(1)),
       fromDisplay: (value) => Number((value / 100).toFixed(4)),
-    },
-  }),
-  read: (node) => letterSpacingOf((node.props as { letterSpacing?: unknown }).letterSpacing),
+  },
+  read: (node) => letterSpacingOf(richTextTargetOf(node)!.style(node.props).letterSpacing),
   write(node, value) {
-    if (!letterSpacingField.appliesTo(node) || letterSpacingField.read(node) === value) return node
-    return { ...node, props: { ...(node.props as object), letterSpacing: value } }
+    const target = richTextTargetOf(node)
+    if (!target || letterSpacingField.read(node) === value) return node
+    return { ...node, props: { ...(node.props as object), [target.keys.letterSpacing]: value } }
   },
 }
 
@@ -797,12 +815,12 @@ export const letterSpacingField: DesignField<number> = {
 type ListKind = TextListType | 'none'
 
 function listParagraphs(node: NodeRecord): TextParagraph[] {
-  return paragraphsOf(node.props as { paragraphs?: TextParagraph[] })
+  return richTextTargetOf(node)!.paragraphs(node.props)
 }
 
 function withParagraphs(node: NodeRecord, paragraphs: TextParagraph[]): NodeRecord {
   const props = node.props as Record<string, unknown>
-  const next = { ...props, paragraphs }
+  const next = richTextTargetOf(node)!.withParagraphs(props, paragraphs)
   return sameValue(next, props) ? node : { ...node, props: next }
 }
 
@@ -816,7 +834,7 @@ export const listTypeField: DesignField<ListKind> = {
   id: 'text.list',
   label: 'リスト',
   control: { kind: 'segmented', options: LIST_TYPE_OPTIONS },
-  appliesTo: (node) => TEXT_FORMAT_TYPES[node.type] !== undefined,
+  appliesTo: hasText,
   read: (node) => listTypeField.values!(node, null)[0],
   values(node, range) {
     const paragraphs = listParagraphs(node)
@@ -850,7 +868,7 @@ export const listStyleField: DesignField<TextListStyle | 'none'> = {
   id: 'text.listStyle',
   label: '記号',
   control: { kind: 'select', options: LIST_STYLE_OPTIONS },
-  appliesTo: (node) => TEXT_FORMAT_TYPES[node.type] !== undefined,
+  appliesTo: hasText,
   read: (node) => listStyleField.values!(node, null)[0],
   values(node, range) {
     return listStyleTargets(listParagraphs(node), range).map((paragraph) => {
@@ -863,6 +881,13 @@ export const listStyleField: DesignField<TextListStyle | 'none'> = {
     const paragraphs = listParagraphs(node)
     return withParagraphs(node, value === 'none' ? setListType(paragraphs, range ?? null, 'none') : setListStyle(paragraphs, range ?? null, value))
   },
+}
+
+// 図形の文字を選んでいれば「文字」のタブに出す（テキスト・付箋だけなら、ほかのセクションと同じタブ）
+export const TEXT_SECTION_TAB = '文字'
+
+function textSectionTab(nodes: readonly NodeRecord[]): string | undefined {
+  return nodes.some((node) => node.type === 'geo') ? TEXT_SECTION_TAB : undefined
 }
 
 // ---- レイヤー ----
@@ -896,8 +921,9 @@ export const builtinDesignSections: DesignSection[] = [
   { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
   { id: 'effects', title: '効果', order: 250, fields: [shadowsField] },
-  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
+  { id: 'text', title: '文字', order: 300, tab: textSectionTab, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
+
 ]
 
 for (const section of builtinDesignSections) registerDesignSection(section)

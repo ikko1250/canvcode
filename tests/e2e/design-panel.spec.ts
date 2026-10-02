@@ -89,7 +89,7 @@ test('shows mixed values and only common fields for a multi selection', async ({
   await clickWorld(page, 160, 180)
   await clickWorld(page, 360, 180, ['Shift'])
   const panel = page.getByTestId('design-panel')
-  await expect(panel.locator('.design-panel-count')).toHaveText('2 個')
+  await expect(panel.getByRole('tab', { selected: true })).toHaveText('2 個')
   const fill = panel.locator('[data-section="fill"] input.design-hex')
   await expect(fill).toHaveValue('')
   await expect(fill).toHaveAttribute('placeholder', '混在')
@@ -150,4 +150,46 @@ test('the panel can be closed and reopened', async ({ page }) => {
   // 何も選んでいなければ出さない
   await clickWorld(page, 700, 600)
   await expect(page.getByTestId('design-panel')).toHaveCount(0)
+})
+
+test('edits the text style of a shape in the text tab, and opens the font list as a separate pane', async ({ page }) => {
+  await openApp(page)
+  await clickWorld(page, 160, 180)
+  const panel = page.getByTestId('design-panel')
+  // 最初は図形のタブ。文字の書式は出さない
+  await expect(panel.getByRole('tab', { selected: true })).toHaveText('図形')
+  await expect(panel.locator('[data-section="text"]')).toHaveCount(0)
+
+  await panel.getByRole('tab', { name: '文字' }).click()
+  await expect(panel.locator('[data-section="fill"]')).toHaveCount(0)
+  const size = panel.locator('[data-section="text"]').getByRole('textbox', { name: '大きさ', exact: true })
+  await expect(size).toHaveValue('18')
+  await size.fill('30')
+  await size.press('Enter')
+  await expect(size).toHaveValue('30')
+
+  // フォントの一覧は、パネルの左に重ねる別のペインに開き、下の項目を押し下げない
+  const sizeBox = (await size.boundingBox())!
+  await panel.getByRole('button', { name: 'フォント' }).click()
+  const popup = page.getByRole('dialog', { name: 'フォントを選ぶ' })
+  await expect(popup).toBeVisible()
+  const popupBox = (await popup.boundingBox())!
+  const panelBox = (await panel.boundingBox())!
+  expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(panelBox.x)
+  expect((await size.boundingBox())!.y).toBe(sizeBox.y)
+  // 外を押すと閉じる
+  await clickWorld(page, 40, 600)
+  await expect(popup).toHaveCount(0)
+
+  // 選び直しても値は残る
+  await clickWorld(page, 160, 180)
+  await panel.getByRole('tab', { name: '文字' }).click()
+  await expect(panel.locator('[data-section="text"]').getByRole('textbox', { name: '大きさ', exact: true })).toHaveValue('30')
+})
+
+test('does not show the text palette on the left', async ({ page }) => {
+  await openApp(page)
+  await clickWorld(page, 520, 330)
+  await expect(page.getByTestId('design-panel').locator('[data-section="text"]')).toBeVisible()
+  await expect(page.getByTitle('文字を大きく')).toHaveCount(0)
 })

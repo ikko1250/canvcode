@@ -1058,6 +1058,34 @@ body,
   color: var(--muted);
 }
 
+/* 図形の見た目と図形の中の文字を分けるタブ */
+.design-panel-tabs {
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+}
+
+.design-panel button.design-panel-tab {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.design-panel button.design-panel-tab:hover {
+  background: #eef1f5;
+}
+
+.design-panel button.design-panel-tab.active {
+  background: #eef1f5;
+  color: var(--text);
+  font-weight: 600;
+}
+
 .design-panel button,
 .design-panel-toggle {
   min-width: 24px;
@@ -1588,22 +1616,52 @@ body,
   white-space: nowrap;
 }
 
+.design-font-missing-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f59f00;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 選んでいるフォントがこの端末にないときの説明 */
+.design-font-missing {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #b35c00;
+}
+
 .design-font-name.mixed,
 .design-font-caret {
   color: var(--muted);
 }
 
 .design-font-popup {
+  /* デザインパネルの左に重ねる別のペイン（位置は FontField.tsx が決める） */
+  position: fixed;
+  z-index: 30;
   box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
+  width: 240px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 4px;
+  padding: 6px;
   border: 1px solid var(--panel-border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.design-font-popup-header {
+  padding: 2px 4px 4px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .design-font-filter {
@@ -1624,7 +1682,7 @@ body,
 }
 
 .design-font-list {
-  max-height: 220px;
+  max-height: min(360px, calc(100vh - 140px));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -1636,6 +1694,9 @@ body,
 }
 
 .design-font-option {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   padding: 3px 6px;
   border-radius: 4px;
   font-size: 13px;
@@ -1643,6 +1704,21 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+}
+
+.design-font-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.design-font-option-missing {
+  flex: none;
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 400;
+  color: #b35c00;
 }
 
 .design-font-option.active {

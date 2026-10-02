@@ -302,13 +302,15 @@ const TAG_FORMATS: Record<string, keyof TextRunFormat> = {
 
 function readToggleFormats(element: HTMLElement, styled: TextRunFormat): void {
   const style = element.style
+  // 太さ（fontWeight）と太字（bold・<b> など）は同じ値なので、内側の要素で決まっていれば外側では変えない
+  const weightSet = () => styled.fontWeight !== undefined || styled.bold !== undefined
   const set = (key: 'bold' | 'italic' | 'underline' | 'strikethrough', value: boolean) => {
-    if (styled[key] === undefined) styled[key] = value
+    if (key === 'bold' ? !weightSet() : styled[key] === undefined) styled[key] = value
   }
-  if (style?.fontWeight) {
-    const weight = style.fontWeight === 'bold' || style.fontWeight === 'bolder' ? 700 : Number.parseFloat(style.fontWeight)
-    if (Number.isFinite(weight)) set('bold', weight >= 600)
-    else if (style.fontWeight === 'normal') set('bold', false)
+  if (style?.fontWeight && !weightSet()) {
+    const weight =
+      style.fontWeight === 'bold' || style.fontWeight === 'bolder' ? 700 : style.fontWeight === 'normal' ? 400 : Number.parseFloat(style.fontWeight)
+    if (Number.isFinite(weight) && weight >= 1 && weight <= 1000) styled.fontWeight = weight
   }
   if (style?.fontStyle) set('italic', style.fontStyle === 'italic' || style.fontStyle.startsWith('oblique'))
   const decoration = style?.textDecorationLine || style?.textDecoration

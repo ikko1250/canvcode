@@ -1,10 +1,11 @@
-import { FONT_PRESETS, SYSTEM_FONT_CANDIDATES, fontLabel, isGenericFontFamily, type FontOption } from '@canvcode/nodes'
+import { FONT_PRESETS, SYSTEM_FONT_CANDIDATES, fontLabel, isBundledFontFamily, isGenericFontFamily, type FontOption } from '@canvcode/nodes'
 
 // デザインパネルのフォントの一覧（MAI-75）。
 // - いつも出す：ゴシック・明朝・等幅（CSS の generic family）と、同梱の M PLUS 1p（@fontsource/m-plus-1p）
 // - 端末にあれば出す：代表的な日本語のフォント・欧文のフォントの候補（SYSTEM_FONT_CANDIDATES）。
 //   あるかどうかは、代わりのフォント（generic family）と幅が違うかで見る
 // - Local Font Access API（queryLocalFonts）が使えるブラウザでは、頼まれたら端末のフォントをすべて足す（権限を聞かれる）
+// - ほかの端末で選んだフォントがこの端末になければ、そう見せる（isFontMissing。文字は代わりの同梱のフォントで描かれる）
 
 const PROBE_TEXT = 'mmmmmmmmmmlli WwQq 0123 永あア漢字'
 const PROBE_FONT_SIZE = 32
@@ -76,4 +77,22 @@ export function fontOptions(current: readonly string[] = []): FontOption[] {
   for (const family of localFonts) add(family)
   for (const family of current) add(family)
   return out
+}
+
+// 端末にないフォントの代わりに描くフォント（fonts.ts の fontFamilyCss の候補の先頭）
+export const FALLBACK_FONT_LABEL = 'Noto Sans JP'
+
+const missingCache = new Map<string, boolean>()
+
+// family がこの端末で描けないか（ゴシック・明朝・等幅と同梱のフォントは、いつも描ける）。端末のフォントは一度だけ調べる
+export function isFontMissing(family: string): boolean {
+  if (isGenericFontFamily(family) || isBundledFontFamily(family) || localFonts.includes(family)) return false
+  let missing = missingCache.get(family)
+  if (missing === undefined) {
+    const ctx = measureContext()
+    // 調べられない環境では、ないとは言わない
+    missing = ctx ? !isFontInstalled(family, ctx) : false
+    missingCache.set(family, missing)
+  }
+  return missing
 }
