@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
-import { normalizeHexColor, parseNumber } from './parse.ts'
+import type { LineHeight, LineHeightUnit } from '@canvcode/nodes'
+import { clampLineHeight, normalizeHexColor, parseLineHeight, parseNumber } from './parse.ts'
 import type { FieldControl, SegmentOption } from './registry.ts'
+import type { LineHeightChange } from './sections.ts'
 
 // デザインパネルの入力部品（MAI-73）。数字・色・切り替えボタン・スライダー。
 // 部品は値を直接書き換えず、ValueEditor を通して変える：
@@ -153,6 +155,85 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
   )
 }
 
+
+// ---- 行の高さ（MAI-76） ----
+
+const LINE_HEIGHT_UNITS: { unit: LineHeightUnit; label: string; title: string }[] = [
+  { unit: 'multiplier', label: '×', title: '文字の大きさに対する倍率' },
+  { unit: 'px', label: 'px', title: 'ピクセル（文字の大きさによらない）' },
+]
+
+// 行の高さ。数字の入力と、単位（倍率・px）の切り替え。
+// 「24px」と打てば px、「150%」なら倍率 1.5、単位のない数字は今の単位で読む。単位のボタンは、見た目を変えずに単位だけを変える。
+// ↑↓ で倍率は 0.05・px は 1 刻み（Shift で 10 倍）
+export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & { editor: ValueEditor<LineHeightChange> }) {
+  const { label, value, editor, onDone } = props
+  const { draft, setDraft, take } = useDraft()
+  const current = value.kind === 'same' ? value.value : null
+  // 選んでいるノードがみな同じ単位なら、その単位（値が混在していても）
+  const units = new Set((value.kind === 'same' ? [value.value] : value.values).map((v) => v.unit))
+  const unit: LineHeightUnit | null = units.size === 1 ? [...units][0] : null
+  const shown = current ? String(current.value) : ''
+
+  const commitDraft = () => {
+    const text = take()
+    const parsed = text === null ? null : parseLineHeight(text, unit ?? 'multiplier')
+    if (parsed) editor.set(parsed)
+  }
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commitDraft()
+      onDone?.()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      setDraft(null)
+      onDone?.()
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const base = draft !== null ? parseLineHeight(draft, unit ?? 'multiplier') : current
+      if (!base) return
+      const step = (base.unit === 'px' ? 1 : 0.05) * (e.shiftKey ? 10 : 1)
+      setDraft(null)
+      editor.set(clampLineHeight({ unit: base.unit, value: base.value + (e.key === 'ArrowUp' ? step : -step) }))
+    }
+  }
+
+  return (
+    <div className="design-field">
+      <span className="design-label">{label}</span>
+      <div className="design-control">
+        <span className="design-number">
+          <input
+            type="text"
+            inputMode="decimal"
+            aria-label={label}
+            value={draft ?? shown}
+            placeholder={value.kind === 'mixed' ? MIXED_LABEL : ''}
+            onFocus={(e) => e.currentTarget.select()}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitDraft}
+            onKeyDown={onKeyDown}
+          />
+        </span>
+        <div className="design-segmented" role="group" aria-label={`${label}の単位`}>
+          {LINE_HEIGHT_UNITS.map((option) => (
+            <button
+              key={option.unit}
+              title={option.title}
+              aria-pressed={unit === option.unit}
+              className={unit === option.unit ? 'active' : ''}
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => editor.set({ convertTo: option.unit })}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // スライダー。動かし始めてから離すまで（change が届くまで）の変更を 1 回の Undo にまとめる。
 // キーボード（← →）では 1 回押すごとに change が届くので、1 回ずつ確定する。Esc で動かす前の値に戻す

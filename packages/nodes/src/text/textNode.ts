@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
 import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
 
@@ -10,6 +10,7 @@ import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, ty
 // 文字は段落と書式付きの文字列（run）で持ち、範囲ごとに色・大きさを変えられる（MAI-74。richText.ts）。
 // props の fontSize・color・fontFamily はノードの既定で、run が持たない書式はこれに従う。
 // fontFamily（MAI-75）は版を上げずに足した。持たない古いテキストは既定のフォント（今までと同じ）で描く。
+// 行の高さ（lineHeight。MAI-76）はノード単位で、倍率か px（layout.ts の LineHeight）。版を上げずに足した。
 // 版 1 は文字をプレーンテキスト（text）で持っていた。読み込むときに版 2（paragraphs）へ移す
 export interface TextProps {
   paragraphs: TextParagraph[]
@@ -18,6 +19,8 @@ export interface TextProps {
   // フォントの名前（fonts.ts。MAI-75）。古いレコードにはない（fontFamilyOf で既定として読む）
   fontFamily: string
   align: TextAlign
+  // 行の高さ（倍率か px。MAI-76）。版を上げずに足した。持たない（古い・既定のままの）ものは TEXT_DEFAULT_LINE_HEIGHT の倍率
+  lineHeight?: LineHeight
   w: number
   autoWidth: boolean
 }
@@ -27,14 +30,15 @@ export type TextNode = NodeRecord<TextProps>
 // テキストの初期の大きさ。パイメニューの「タイトル」は、大きさだけが違うテキストとして作る（MAI-62）
 export const TEXT_DEFAULT_FONT_SIZE = 12
 export const TITLE_FONT_SIZE = 22
-const LINE_HEIGHT = 1.35
+// 行の高さの既定（倍率）。行の高さを持たないテキストはこれで描く（MAI-76 より前と同じ見た目）
+export const TEXT_DEFAULT_LINE_HEIGHT = 1.35
 // 空のときでも、カーソルを置けるだけの幅を持たせる
 const MIN_WIDTH_EM = 1
 
 export function textStyle(props: TextProps): TextStyle {
   return {
     fontSize: props.fontSize,
-    lineHeight: LINE_HEIGHT,
+    ...lineHeightStyle(props.lineHeight, TEXT_DEFAULT_LINE_HEIGHT),
     fontWeight: 400,
     color: props.color,
     align: textAlignOf(props.align),

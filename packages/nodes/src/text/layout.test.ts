@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { TEXT_FONT_SIZES, breakUnits, layoutRichText, layoutText, stepFontSize, type TextStyle } from './layout.ts'
+import {
+  TEXT_FONT_SIZES,
+  breakUnits,
+  convertLineHeight,
+  cssLineHeight,
+  layoutRichText,
+  layoutText,
+  lineHeightOf,
+  lineHeightStyle,
+  stepFontSize,
+  type TextStyle,
+} from './layout.ts'
 
 // Node には Canvas がないので、概算の文字幅（全角 = fontSize、半角 = 0.55 × fontSize、空白 = 0.3 × fontSize）で測る
 const style: TextStyle = { fontSize: 10, lineHeight: 1.5, fontWeight: 400, color: '#000', align: 'left' }
@@ -124,5 +135,60 @@ describe('layoutRichText (MAI-74)', () => {
       [30, 15],
     ])
     expect(layout.lineHeightPx).toBe(15)
+  })
+})
+
+describe('line height (MAI-76)', () => {
+  // 24px 固定の行の高さ
+  const fixed: TextStyle = { ...style, fixedLineHeight: 24 }
+
+  it('reads the line height of props, falling back to the default multiplier for old or broken records', () => {
+    expect(lineHeightStyle(undefined, 1.35)).toEqual({ lineHeight: 1.35 })
+    expect(lineHeightStyle({ unit: 'multiplier', value: 2 }, 1.35)).toEqual({ lineHeight: 2 })
+    expect(lineHeightStyle({ unit: 'px', value: 24 }, 1.35)).toEqual({ lineHeight: 1.35, fixedLineHeight: 24 })
+    expect(lineHeightStyle({ unit: 'px', value: 0 }, 1.4)).toEqual({ lineHeight: 1.4 })
+    expect(lineHeightStyle({ unit: 'em', value: 2 } as never, 1.4)).toEqual({ lineHeight: 1.4 })
+    expect(lineHeightOf(fixed)).toEqual({ unit: 'px', value: 24 })
+    expect(lineHeightOf(style)).toEqual({ unit: 'multiplier', value: 1.5 })
+  })
+
+  it('writes the same line height to the editing DOM (CSS line-height)', () => {
+    expect(cssLineHeight(style)).toBe('1.5')
+    expect(cssLineHeight(fixed)).toBe('24px')
+  })
+
+  it('converts between a multiplier and pixels without changing the look', () => {
+    expect(convertLineHeight({ unit: 'multiplier', value: 1.35 }, 'px', 12)).toEqual({ unit: 'px', value: 16.2 })
+    expect(convertLineHeight({ unit: 'px', value: 30 }, 'multiplier', 20)).toEqual({ unit: 'multiplier', value: 1.5 })
+    expect(convertLineHeight({ unit: 'px', value: 30 }, 'px', 20)).toEqual({ unit: 'px', value: 30 })
+  })
+
+  it('uses a fixed pixel height for every line, also for an empty text', () => {
+    const layout = layoutText('a\n\nb', fixed, null)
+    expect(layout.lines.map((l) => [l.top, l.height])).toEqual([
+      [0, 24],
+      [24, 24],
+      [48, 24],
+    ])
+    expect(layoutRichText([], fixed, null).height).toBe(24)
+    expect(layoutRichText([], { ...style, lineHeight: 2 }, null).height).toBe(20)
+  })
+
+  it('applies a multiplier per character size, like CSS line-height: <number>', () => {
+    // 10px の文字と 20px の文字：箱はそれぞれ 15 と 30。大きい文字の箱が小さい文字の箱を含むので、行の高さは 30
+    const line = layoutRichText([{ runs: [{ text: 'ab' }, { text: 'cd', format: { fontSize: 20 } }] }], { ...style, lineHeight: 1.5 }, null).lines[0]
+    expect(line.height).toBeCloseTo(30)
+  })
+
+  it('applies pixels to every character size alike, like CSS line-height: <length>', () => {
+    // 箱はどちらも 24px。概算の上下の高さ（上 0.88、下 0.12 × fontSize）でベースラインにそろえると、
+    // 10px：上 8.8 + 7 = 15.8、下 8.2。20px：上 17.6 + 2 = 19.6、下 4.4。行は 19.6 + 8.2
+    const line = layoutRichText([{ runs: [{ text: 'ab' }, { text: 'cd', format: { fontSize: 20 } }] }], fixed, null).lines[0]
+    expect(line.height).toBeCloseTo(27.8)
+    expect(line.baseline).toBeCloseTo(19.6)
+    // 文字より低い行の高さも、CSS と同じく文字を重ねて詰める
+    const tight = layoutRichText([{ runs: [{ text: 'ab', format: { fontSize: 20 } }] }], { ...style, fixedLineHeight: 10 }, null).lines[0]
+    expect(tight.height).toBe(10)
+    expect(tight.baseline).toBeCloseTo(17.6 - 5)
   })
 })

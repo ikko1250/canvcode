@@ -9,19 +9,67 @@ import { richTextFromPlain, type TextParagraph, type TextRunFormat } from './ric
 // - 行頭に来てはいけない句読点・閉じ括弧・小書きの仮名などは、前の文字とくっつけて扱う（簡単な禁則処理）。
 //   CSS の line-break: strict に合わせているので、編集用の DOM にも line-break: strict を指定する
 
+// 行間（行の高さ）はノード単位で、倍率か px（MAI-76。LineHeight）。CSS の line-height と同じく、倍率は文字ごとの大きさに掛け、px は文字の大きさによらない。
 // フォントは fonts.ts（MAI-75）。テキストと付箋は範囲ごとにフォントを変えられ、ほかは既定のフォント（TEXT_FONT_FAMILY）
 
 export type TextAlign = 'left' | 'center' | 'right'
 
 export interface TextStyle {
   fontSize: number
-  // 行の高さ（fontSize に対する倍率）
+  // 行の高さ（fontSize に対する倍率。CSS の line-height: 1.35 と同じく、文字ごとにその文字の大きさに掛ける）
   lineHeight: number
+  // 行の高さを px で決めるとき（CSS の line-height: 24px と同じく、文字の大きさによらない）。あれば lineHeight より優先する（MAI-76）
+  fixedLineHeight?: number
   fontWeight: 400 | 700
   color: string
   align: TextAlign
   // フォントの名前（fonts.ts）。なければ既定のフォント（MAI-75）
   fontFamily?: string
+}
+
+// ノードの props に持つ行の高さ（MAI-76）。倍率（multiplier）か px。
+// 持たない（古い）ノードは、型ごとの既定の倍率（テキスト 1.35、付箋 1.4）で描く
+export type LineHeightUnit = 'multiplier' | 'px'
+
+export interface LineHeight {
+  unit: LineHeightUnit
+  value: number
+}
+
+// 行の高さの範囲（デザインパネルで入れられる値）
+export const LINE_HEIGHT_LIMITS: Record<LineHeightUnit, { min: number; max: number }> = {
+  multiplier: { min: 0.5, max: 10 },
+  px: { min: 1, max: 1000 },
+}
+
+// props の行の高さを、TextStyle の lineHeight・fixedLineHeight にする。読めない値（壊れたデータ）は既定の倍率として扱う
+export function lineHeightStyle(lineHeight: LineHeight | undefined, defaultMultiplier: number): Pick<TextStyle, 'lineHeight' | 'fixedLineHeight'> {
+  const value = lineHeight?.value
+  const unit = lineHeight?.unit
+  if ((unit !== 'px' && unit !== 'multiplier') || typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return { lineHeight: defaultMultiplier }
+  return unit === 'px' ? { lineHeight: defaultMultiplier, fixedLineHeight: value } : { lineHeight: value }
+}
+
+// style の行の高さを、props の形にする（パネルで見せる値。既定の倍率のノードは、その倍率）
+export function lineHeightOf(style: Pick<TextStyle, 'lineHeight' | 'fixedLineHeight'>): LineHeight {
+  return style.fixedLineHeight !== undefined ? { unit: 'px', value: style.fixedLineHeight } : { unit: 'multiplier', value: style.lineHeight }
+}
+
+// 行の高さを、見た目を変えずに別の単位へ直す。fontSize はノードの既定の文字の大きさ（行の中の文字が混ざっていれば、その既定で換算する）
+export function convertLineHeight(lineHeight: LineHeight, unit: LineHeightUnit, fontSize: number): LineHeight {
+  if (lineHeight.unit === unit) return lineHeight
+  const value = unit === 'px' ? lineHeight.value * fontSize : lineHeight.value / fontSize
+  return { unit, value: Number(value.toFixed(unit === 'px' ? 1 : 2)) }
+}
+
+// 文字 1 つ分の行の高さ（CSS の inline box の高さ。px）
+export function lineBoxHeight(style: Pick<TextStyle, 'fontSize' | 'lineHeight' | 'fixedLineHeight'>): number {
+  return style.fixedLineHeight ?? style.fontSize * style.lineHeight
+}
+
+// 編集用の DOM に指定する line-height（子の要素に継ぐ。倍率は文字ごとの大きさに、px はそのまま効く）
+export function cssLineHeight(style: Pick<TextStyle, 'lineHeight' | 'fixedLineHeight'>): string {
+  return style.fixedLineHeight !== undefined ? `${style.fixedLineHeight}px` : String(style.lineHeight)
 }
 
 // テキストと付箋の文字の大きさの段階（MAI-50）。パレットの「大きく」「小さく」で、この中を行き来する
@@ -155,8 +203,9 @@ function fontMetrics(style: TextStyle): { ascent: number; descent: number } {
   return metrics
 }
 
-// 1 行の高さとベースラインの位置。CSS と同じく、文字ごとに行の高さ（fontSize × lineHeight）の箱をベースラインにそろえて並べ、
-// その上端から下端までを行の高さにする。strut は段落の要素自身の文字（編集中の DOM では、段落の中で最も小さい文字）
+// 1 行の高さとベースラインの位置。CSS と同じく、文字ごとに行の高さ（lineBoxHeight。倍率なら fontSize × lineHeight、px ならその値）の箱を
+// ベースラインにそろえて並べ、その上端から下端までを行の高さにする（箱が文字より低ければ、上下の余白は負になる。CSS と同じ）。
+// strut は段落の要素自身の文字（編集中の DOM では、段落の中で最も小さい文字）
 function lineBox(styles: readonly TextStyle[], strut: TextStyle): { height: number; baseline: number } {
   let above = -Infinity
   let below = -Infinity
@@ -164,7 +213,7 @@ function lineBox(styles: readonly TextStyle[], strut: TextStyle): { height: numb
   let belowStyle: TextStyle = strut
   for (const style of [...styles, strut]) {
     const { ascent, descent } = fontMetrics(style)
-    const box = style.fontSize * style.lineHeight
+    const box = lineBoxHeight(style)
     const top = ascent + (box - ascent - descent) / 2
     if (top > above) {
       above = top
@@ -175,8 +224,8 @@ function lineBox(styles: readonly TextStyle[], strut: TextStyle): { height: numb
       belowStyle = style
     }
   }
-  // 1 つの書式だけなら fontSize × lineHeight ちょうど（足し算の誤差を出さない）
-  const height = aboveStyle === belowStyle ? aboveStyle.fontSize * aboveStyle.lineHeight : above + below
+  // 1 つの書式だけなら箱の高さちょうど（足し算の誤差を出さない）
+  const height = aboveStyle === belowStyle ? lineBoxHeight(aboveStyle) : above + below
   return { height, baseline: above }
 }
 
@@ -347,8 +396,8 @@ export function layoutRichText(paragraphs: readonly TextParagraph[], base: TextS
   return {
     lines,
     width,
-    height: lines.length > 0 ? top : base.fontSize * base.lineHeight,
-    lineHeightPx: lines[0]?.height ?? base.fontSize * base.lineHeight,
+    height: lines.length > 0 ? top : lineBoxHeight(base),
+    lineHeightPx: lines[0]?.height ?? lineBoxHeight(base),
     maxFontSize: lines.reduce((max, l) => Math.max(max, l.fontSize), 0) || base.fontSize,
   }
 }

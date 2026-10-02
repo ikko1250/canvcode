@@ -114,7 +114,7 @@ test('changes text font size / color / align, and keys in the panel do not reach
   const text = panel.locator('[data-section="text"]')
   await expect(text).toBeVisible()
 
-  const size = text.locator('.design-number input')
+  const size = text.getByRole('textbox', { name: '大きさ', exact: true })
   await size.fill('32')
   // パネルの中の Backspace・矢印キー・a（パイメニュー）は、ノードを消したり動かしたりしない
   await size.press('Backspace')

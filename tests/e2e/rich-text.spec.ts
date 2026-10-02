@@ -63,7 +63,7 @@ test('formats part of a text from the design panel and looks the same after reop
   const panel = page.getByTestId('design-panel')
   const text = panel.locator('[data-section="text"]')
   const color = text.locator('input.design-hex')
-  const size = text.locator('.design-number input')
+  const size = text.getByRole('textbox', { name: '大きさ', exact: true })
   await expect(color).toHaveValue('#1f2328')
 
   // パネルに入れても編集は続き、選んだ範囲だけが変わる。Enter のあとは文字にフォーカスが戻る

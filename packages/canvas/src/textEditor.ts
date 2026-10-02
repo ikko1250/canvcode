@@ -3,6 +3,7 @@ import {
   applyRunFormat,
   baseFormatOf,
   cssFont,
+  cssLineHeight,
   formatAt,
   formatOfCharAt,
   layoutRichText,
@@ -728,7 +729,7 @@ function baseFormat(style: TextStyle): Required<TextRunFormat> {
 function applyEditorStyle(element: HTMLElement, spec: TextEditSpec<object>): void {
   const { style } = spec
   element.style.font = cssFont(style)
-  element.style.lineHeight = String(style.lineHeight)
+  element.style.lineHeight = cssLineHeight(style)
   element.style.color = style.color
   element.style.caretColor = style.color
   element.style.textAlign = style.align

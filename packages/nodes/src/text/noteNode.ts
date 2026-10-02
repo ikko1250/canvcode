@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
 import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
 
@@ -10,7 +10,8 @@ import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, ty
 // 文字の大きさと揃え（左・中央・右）はノード単位で変えられる（MAI-50）。align のない古い付箋は左揃え。
 // 文字はテキストと同じく段落と run で持ち、範囲ごとに色・大きさを変えられる（MAI-74）。color は地の色で、文字の既定の色は NOTE_TEXT_COLOR。
 // 版 1 は文字をプレーンテキスト（text）で持っていた。
-// fontFamily（文字の既定のフォント。MAI-75）は版を上げずに足した。持たない古い付箋は既定のフォントで描く
+// fontFamily（文字の既定のフォント。MAI-75）は版を上げずに足した。持たない古い付箋は既定のフォントで描く。
+// 行の高さ（lineHeight。倍率か px。MAI-76）も版を上げずに足した。高さは文字のレイアウトから出すので、行の高さを変えると付箋も伸び縮みする
 export interface NoteProps {
   paragraphs: TextParagraph[]
   w: number
@@ -20,12 +21,15 @@ export interface NoteProps {
   // フォントの名前（fonts.ts。MAI-75）。古いレコードにはない（fontFamilyOf で既定として読む）
   fontFamily: string
   align: TextAlign
+  // 行の高さ（倍率か px。MAI-76）。版を上げずに足した。持たない（古い・既定のままの）ものは NOTE_DEFAULT_LINE_HEIGHT の倍率
+  lineHeight?: LineHeight
 }
 
 export type NoteNode = NodeRecord<NoteProps>
 
 const PADDING = 16
-const LINE_HEIGHT = 1.4
+// 行の高さの既定（倍率）。行の高さを持たない付箋はこれで描く（MAI-76 より前と同じ見た目）
+export const NOTE_DEFAULT_LINE_HEIGHT = 1.4
 // 新しく作る付箋の文字の大きさ（MAI-62）
 export const NOTE_DEFAULT_FONT_SIZE = 12
 // 付箋の文字の既定の色
@@ -34,7 +38,7 @@ export const NOTE_TEXT_COLOR = '#2b2930'
 export function noteStyle(props: NoteProps): TextStyle {
   return {
     fontSize: props.fontSize,
-    lineHeight: LINE_HEIGHT,
+    ...lineHeightStyle(props.lineHeight, NOTE_DEFAULT_LINE_HEIGHT),
     fontWeight: 400,
     color: NOTE_TEXT_COLOR,
     align: textAlignOf(props.align),

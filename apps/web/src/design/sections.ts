@@ -4,18 +4,23 @@ import {
   applyRunFormat,
   baseFormatOf,
   clearRunFormat,
+  convertLineHeight,
   formatAt,
   formatsInRange,
+  lineHeightOf,
   noteStyle,
   paragraphsOf,
   richTextLength,
   textAlignOf,
   textStyle,
+  type LineHeight,
+  type LineHeightUnit,
   type NoteProps,
   type TextAlign,
   type TextParagraph,
   type TextProps,
   type TextRunFormat,
+  type TextStyle,
 } from '@canvcode/nodes'
 import { sameValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption } from './registry.ts'
@@ -159,6 +164,34 @@ export const textAlignField: DesignField<TextAlign> = {
   read: (node) => textAlignOf((node.props as { align?: TextAlign }).align),
 }
 
+// 行の高さ（MAI-76）。ノード単位（段落ごとには持たない）で、倍率か px。
+// 値は LineHeight。{ convertTo } を書くと、見た目を変えずに単位だけを変える（ノードの既定の文字の大きさで換算する。
+// 複数のノードを選んでいれば、それぞれの大きさで換算する）
+export type LineHeightChange = LineHeight | { convertTo: LineHeightUnit }
+
+const LINE_HEIGHT_STYLES: Record<string, (props: object) => TextStyle> = {
+  text: (props) => textStyle(props as TextProps),
+  note: (props) => noteStyle(props as NoteProps),
+}
+
+export const lineHeightField: DesignField<LineHeightChange> = {
+  id: 'text.lineHeight',
+  label: '行間',
+  control: { kind: 'lineHeight' },
+  appliesTo: (node) => LINE_HEIGHT_STYLES[node.type] !== undefined,
+  // 行の高さを持たない古いノードは、型の既定の倍率（テキスト 1.35、付箋 1.4）を見せる
+  read: (node) => lineHeightOf(LINE_HEIGHT_STYLES[node.type]!(node.props)),
+  write(node, change) {
+    const styleOf = LINE_HEIGHT_STYLES[node.type]
+    if (!styleOf) return node
+    const style = styleOf(node.props)
+    const current = lineHeightOf(style)
+    const next = 'convertTo' in change ? convertLineHeight(current, change.convertTo, style.fontSize) : change
+    if (sameValue(next, current)) return node
+    return { ...node, props: { ...(node.props as object), lineHeight: next } }
+  },
+}
+
 // ---- レイヤー ----
 
 // 不透明度はノードのレコードの opacity（0〜1）。パネルでは 0〜100 % で見せる。
@@ -186,7 +219,7 @@ export const opacityField: DesignField<number> = {
 export const builtinDesignSections: DesignSection[] = [
   { id: 'fill', title: '塗り', order: 100, fields: [fillColorField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
-  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, textColorField, textAlignField] },
+  { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, lineHeightField, textColorField, textAlignField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },
 ]
 

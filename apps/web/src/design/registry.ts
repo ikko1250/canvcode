@@ -30,6 +30,8 @@ export type FieldControl =
   | { kind: 'segmented'; options: readonly SegmentOption[] }
   // フォントの一覧から選ぶ（MAI-75。値はフォントの名前）
   | { kind: 'font' }
+  // 行の高さ（MAI-76。値は LineHeight。倍率と px を切り替えられる。controls.tsx の LineHeightField）
+  | { kind: 'lineHeight' }
 
 export interface SegmentOption {
   value: string

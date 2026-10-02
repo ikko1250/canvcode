@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { NOTE_DEFAULT_FONT_SIZE, noteHeight, noteStyle, noteType, type NoteProps } from './noteNode.ts'
+import { NOTE_DEFAULT_FONT_SIZE, NOTE_DEFAULT_LINE_HEIGHT, noteHeight, noteStyle, noteType, type NoteProps } from './noteNode.ts'
 import { richTextFromPlain } from './richText.ts'
 
 // Node には Canvas がないので、概算の文字幅で測る（layout.test.ts と同じ）。text はプレーンテキストの文字
@@ -76,5 +76,21 @@ describe('note font size and alignment (MAI-50)', () => {
     expect(spec.style.fontSize).toBe(40)
     // 3 行 × 行の高さ（40 × 1.4）+ 上下の余白（16 × 2）
     expect(noteHeight(node.props)).toBeCloseTo(3 * 56 + 32)
+  })
+})
+
+describe('note line height (MAI-76)', () => {
+  it('keeps the old line height for notes without lineHeight', () => {
+    expect(noteStyle(noteType.defaultProps()).lineHeight).toBe(NOTE_DEFAULT_LINE_HEIGHT)
+    expect(NOTE_DEFAULT_LINE_HEIGHT).toBe(1.4)
+  })
+
+  it('grows and shrinks with the line height, as a multiplier or in pixels', () => {
+    const node = note({ text: 'a\nb\nc', fontSize: 20, h: 60 })
+    expect(noteHeight({ ...node.props, lineHeight: { unit: 'multiplier', value: 2 } })).toBeCloseTo(3 * 40 + 32)
+    expect(noteHeight({ ...node.props, lineHeight: { unit: 'px', value: 30 } })).toBeCloseTo(3 * 30 + 32)
+    const spec = noteType.editText!({ ...node, props: { ...node.props, lineHeight: { unit: 'px', value: 30 } } })
+    expect(spec.style.fixedLineHeight).toBe(30)
+    expect(spec.box.h).toBeCloseTo(90)
   })
 })
