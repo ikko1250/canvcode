@@ -19,6 +19,7 @@ import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
 import { ShadowsField } from './ShadowsField.tsx'
+import { ChartDataField } from './ChartDataField.tsx'
 import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
 import { TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
 import type { PaintEditingLink } from './GradientEditor.tsx'
@@ -38,6 +39,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 画像の塗り（MAI-83）の画像は、CanvasView の Asset（ワークスペースの画像・ファイル・クリップボード）から選ぶ（paintImageSource）
 // - 影（MAI-86）は「効果」に一覧で出す（ShadowsField。＋・−・表示の切り替え、影ごとの値）
 // - 角丸（MAI-84）は、4 つの角を一緒に変える入力と、角ごとの 4 つの入力（CornerRadiusField）。図形の上の角丸のハンドルでも変えられる（cornerHandles.ts）
+// - グラフ（MAI-88）は「グラフ」にデータの表（ChartDataField。行の色・ラベル・値、CSV/TSV の貼り付け）、ドーナツの穴・開始角度・ラベルの表示
 // - 図形の「形」（MAI-87）で矩形・楕円・ブロック矢印を切り替え、ブロック矢印の軸の太さなどを % で変える。図形の上の形のハンドルでも変えられる（blockArrowHandles.ts）
 
 export function DesignPanel(props: {
@@ -241,6 +243,8 @@ function FieldView(props: {
       return <CornerRadiusField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'shadows':
       return <ShadowsField label={field.label} value={value} editor={editor} onDone={onDone} />
+    case 'chartData':
+      return <ChartDataField label={field.label} value={value} editor={editor} onDone={onDone} />
     case 'select':
       return <SelectField label={field.label} value={value} editor={editor} options={control.options} onDone={onDone} />
     case 'toggle':
@@ -316,6 +320,7 @@ const TYPE_LABELS: Record<string, string> = {
   arrow: '矢印',
   draw: 'フリーハンド',
   image: '画像',
+  chart: 'グラフ',
 }
 
 function typeLabel(node: NodeRecord | undefined): string {

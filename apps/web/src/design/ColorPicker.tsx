@@ -255,7 +255,7 @@ function usePickerOpen(keep?: (e: PointerEvent) => boolean) {
 }
 
 // 見本。色のない（混在・塗りなし）ときは模様で見せる。不透明度のある色は、市松模様の上に重ねる
-function SwatchButton(props: { label: string; color: string | null; state: 'color' | 'mixed' | 'none'; open: boolean; onToggle: () => void }) {
+export function SwatchButton(props: { label: string; color: string | null; state: 'color' | 'mixed' | 'none'; open: boolean; onToggle: () => void }) {
   const { label, color, state, open, onToggle } = props
   return (
     <button

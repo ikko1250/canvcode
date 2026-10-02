@@ -81,6 +81,7 @@ import {
   DrawTool,
   EraserTool,
   FrameTool,
+  ChartTool,
   GeoTool,
   HIT_MARGIN_PX,
   HandTool,
@@ -529,6 +530,8 @@ export class CanvasView {
       ['ellipse', new GeoTool(toolContext, 'ellipse')],
       // ブロック矢印（MAI-87）。図形と同じく、ドラッグした箱に置く
       ...BLOCK_ARROW_SHAPES.map((shape): [ToolId, Tool] => [shape, new GeoTool(toolContext, shape)]),
+      // 円グラフ（MAI-88）。3 行の初期データで、ドラッグした箱に置く
+      ['pieChart', new ChartTool(toolContext)],
       ['text', new TextTool(toolContext)],
       ['title', new TextTool(toolContext, 'title')],
       ['note', new NoteTool(toolContext)],

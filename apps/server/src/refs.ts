@@ -158,10 +158,22 @@ export interface DescribedNode {
   color?: string
   size?: number
   pointCount?: number
+  // グラフ（MAI-88）のデータ
+  chart?: DescribedChart
   note?: string
   // 範囲選択の枠が一部にかかった PDF のページの、ページの中の範囲と文字
   region?: DescribedRegion
   children?: DescribedNode[]
+}
+
+// グラフ（MAI-88）。行ごとのラベルと値、正の値の合計に対する割合（%。小数 1 桁。0・負の値の行は扇にしないので持たない）。
+// color は行で決めた色だけ（決めていない行は、画面ではテンプレートの色を行の順で割り当てる）
+export interface DescribedChart {
+  kind: string
+  rows: { label: string; value: number; percent?: number; color?: string }[]
+  // ドーナツの穴（外の半径に対する割合）。0 なら持たない
+  innerRadius?: number
+  truncated?: true
 }
 
 export interface DescribedRegion {
@@ -370,6 +382,9 @@ async function describeNode(
     case 'arrow':
       out.label = str('label')
       break
+    case 'chart':
+      out.chart = describeChart(props)
+      break
     case 'frame':
       out.name = str('name')
       break
@@ -427,6 +442,33 @@ async function describeNode(
     if (children.length) out.children = children
   }
   for (const key of Object.keys(out) as (keyof DescribedNode)[]) if (out[key] === undefined) delete out[key]
+  return out
+}
+
+// グラフのデータ（MAI-88）。nodes の chart.ts と同じく、行を構造的に読む（読めない値は 0）
+const MAX_CHART_ROWS = 200
+const MAX_CHART_LABEL = 200
+
+export function describeChart(props: Record<string, unknown>): DescribedChart {
+  const rows = (Array.isArray(props.rows) ? props.rows : [])
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
+    .map((row) => ({
+      label: typeof row.label === 'string' ? truncate(row.label, MAX_CHART_LABEL) : '',
+      value: typeof row.value === 'number' && Number.isFinite(row.value) ? row.value : 0,
+      color: typeof row.color === 'string' ? row.color : undefined,
+    }))
+  const total = rows.reduce((sum, row) => sum + (row.value > 0 ? row.value : 0), 0)
+  const out: DescribedChart = {
+    kind: typeof props.kind === 'string' ? props.kind : 'pie',
+    rows: rows.slice(0, MAX_CHART_ROWS).map(({ label, value, color }) => ({
+      label,
+      value,
+      ...(total > 0 && value > 0 ? { percent: Math.round((value / total) * 1000) / 10 } : {}),
+      ...(color ? { color } : {}),
+    })),
+  }
+  if (typeof props.innerRadius === 'number' && props.innerRadius > 0) out.innerRadius = props.innerRadius
+  if (rows.length > MAX_CHART_ROWS) out.truncated = true
   return out
 }
 

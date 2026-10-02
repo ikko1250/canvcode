@@ -198,6 +198,11 @@ describe('MCP server', () => {
           node('node:gone', 'geo', root, { label: 'x' }),
           // 画像の塗りの図形（MAI-83）は、画像ノードと同じく Asset の id を渡す
           node('node:photo', 'geo', root, { label: '写真', fill: { type: 'image', assetId: 'asset:abc', scaleMode: 'fill', crop: { x: 0, y: 0, w: 1, h: 1 }, tileScale: 1, opacity: 1 } }),
+          // グラフ（MAI-88）は、行のラベル・値と割合を渡す
+          node('node:chart', 'chart', root, {
+            kind: 'pie', w: 240, h: 240, innerRadius: 0.5, startAngle: 0, showLabels: true, showPercent: true,
+            rows: [{ label: '東', value: 3 }, { label: '西', value: 1, color: '#ff0000' }, { label: '空', value: 0 }],
+          }),
         ],
         [],
       )
@@ -214,6 +219,7 @@ describe('MCP server', () => {
             { id: 'node:rich', bounds },
             { id: 'node:gone', bounds },
             { id: 'node:photo', bounds },
+            { id: 'node:chart', bounds },
           ],
         }),
       )
@@ -225,6 +231,10 @@ describe('MCP server', () => {
         { id: 'node:rich', type: 'text', bounds, text: '赤い文字\n二行目' },
         { id: 'node:gone', type: 'unknown', bounds, deleted: true },
         { id: 'node:photo', type: 'geo', bounds, label: '写真', assetId: 'asset:abc' },
+        {
+          id: 'node:chart', type: 'chart', bounds,
+          chart: { kind: 'pie', innerRadius: 0.5, rows: [{ label: '東', value: 3, percent: 75 }, { label: '西', value: 1, percent: 25, color: '#ff0000' }, { label: '空', value: 0 }] },
+        },
       ])
       expect(result.data.content.truncated).toBe(false)
       expect(result.data.warnings.join()).toContain('deleted')

@@ -53,6 +53,8 @@ export type FieldControl =
   | { kind: 'cornerRadius' }
   // 影の一覧（MAI-86。値は Shadow[]、書くのは ShadowsChange）。影ごとの種類・表示・ずらし・ぼかし・広がり・色と、＋・−（ShadowsField.tsx）
   | { kind: 'shadows' }
+  // グラフのデータの表（MAI-88。値は ChartRow[]、書くのは ChartRowsChange）。行ごとのラベル・値・色と、足す・消す・並べ替え・CSV/TSV の貼り付け（ChartDataField.tsx）
+  | { kind: 'chartData' }
 
 export interface SelectOption {
   value: string

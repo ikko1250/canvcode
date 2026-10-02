@@ -13,6 +13,8 @@ export type ToolId =
   | 'rect'
   | 'ellipse'
   | BlockArrowShape
+  // 円グラフ（MAI-88）
+  | 'pieChart'
   | 'text'
   | 'title'
   | 'note'

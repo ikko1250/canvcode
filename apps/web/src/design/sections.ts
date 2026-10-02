@@ -1,6 +1,14 @@
 import { createElement } from 'react'
 import type { NodeRecord, Vec } from '@canvcode/core'
 import {
+  chartRowsOf,
+  clampInnerRadius,
+  clampStartAngle,
+  CHART_INNER_RADIUS_MAX,
+  isChart,
+  toChartRow,
+  type ChartProps,
+  type ChartRow,
   blockArrowParams,
   clampBlockArrowRatio,
   GEO_SHAPES,
@@ -80,6 +88,128 @@ import { propField, registerDesignSection, type DesignField, type DesignSection,
 
 // デザインパネルに最初から出すセクション（MAI-73）。
 // 塗り・線・文字・レイヤーの 4 つ。後の課題は、ここに項目を足すか、別のファイルで registerDesignSection する
+
+// ---- グラフ ----
+
+// グラフ（MAI-88。円グラフ）。データの表（ラベル・値・色の行）、ドーナツの穴、開始角度、ラベル・％の表示。
+// 表の値は行の一覧。書くときは、一覧そのもの（CSV・TSV の貼り付け）のほか、足す（末尾）・消す・並べ替える・行の一部を変える。
+// 色を null にすると自動（テンプレートの色を行の順で）に戻す。複数のグラフを選んだときは、どのグラフにも同じ変更を当てる（行の番号どうし）
+export type ChartRowsChange =
+  | ChartRow[]
+  | { op: 'add' }
+  | { op: 'remove'; index: number }
+  | { op: 'move'; from: number; to: number }
+  | { op: 'update'; index: number; patch: { label?: string; value?: number; color?: string | null } }
+
+// 足す行の値（0 だと扇が見えないので、仮の値を入れる）
+const NEW_CHART_ROW_VALUE = 10
+
+// 今の行の一覧に、変更を当てたもの
+export function applyChartRowsChange(current: readonly ChartRow[], change: ChartRowsChange): ChartRow[] {
+  if (Array.isArray(change)) return chartRowsOf(change)
+  switch (change.op) {
+    case 'add':
+      return [...current, { label: `項目 ${current.length + 1}`, value: NEW_CHART_ROW_VALUE }]
+    case 'remove':
+      return current.filter((_, i) => i !== change.index)
+    case 'move': {
+      const { from, to } = change
+      if (from === to || from < 0 || to < 0 || from >= current.length || to >= current.length) return [...current]
+      const next = [...current]
+      const [row] = next.splice(from, 1)
+      next.splice(to, 0, row)
+      return next
+    }
+    case 'update':
+      return current.map((row, i) => {
+        if (i !== change.index) return row
+        const { color, ...rest } = change.patch
+        const next = { ...row, ...rest }
+        if (color === null) delete next.color
+        else if (color !== undefined) next.color = color
+        return toChartRow(next) ?? row
+      })
+  }
+}
+
+export const chartDataField: DesignField<ChartRowsChange> = {
+  id: 'chart.rows',
+  label: 'データ',
+  control: { kind: 'chartData' },
+  appliesTo: isChart,
+  read: (node) => chartRowsOf((node.props as ChartProps).rows),
+  write(node, change) {
+    if (!isChart(node)) return node
+    const current = chartRowsOf(node.props.rows)
+    const next = applyChartRowsChange(current, change)
+    if (sameValue(next, node.props.rows)) return node
+    return { ...node, props: { ...node.props, rows: next } }
+  },
+}
+
+// ドーナツの穴（外の半径に対する割合。0〜90 %）
+export const chartInnerRadiusField: DesignField<number> = {
+  id: 'chart.innerRadius',
+  label: '穴',
+  control: {
+    kind: 'number',
+    min: 0,
+    max: CHART_INNER_RADIUS_MAX * 100,
+    step: 1,
+    unit: '%',
+    slider: true,
+    toDisplay: (value) => Math.round(value * 100),
+    fromDisplay: (value) => value / 100,
+  },
+  appliesTo: isChart,
+  read: (node) => clampInnerRadius((node.props as ChartProps).innerRadius),
+  write(node, value) {
+    if (!isChart(node)) return node
+    const next = clampInnerRadius(value)
+    return node.props.innerRadius === next ? node : { ...node, props: { ...node.props, innerRadius: next } }
+  },
+}
+
+// 開始角度（度。0 が 12 時、時計回り）
+export const chartStartAngleField: DesignField<number> = {
+  id: 'chart.startAngle',
+  label: '開始角度',
+  control: { kind: 'number', min: -360, max: 360, step: 1, unit: '°' },
+  appliesTo: isChart,
+  read: (node) => clampStartAngle((node.props as ChartProps).startAngle),
+  write(node, value) {
+    if (!isChart(node)) return node
+    const next = clampStartAngle(value)
+    return node.props.startAngle === next ? node : { ...node, props: { ...node.props, startAngle: next } }
+  },
+}
+
+// ラベル・％の表示（props の showLabels・showPercent の組み合わせを 1 つの切り替えで見せる）
+export type ChartLabelMode = 'none' | 'label' | 'percent' | 'both'
+const CHART_LABEL_OPTIONS: readonly SegmentOption[] = [
+  { value: 'none', title: 'ラベルを出さない', label: 'なし' },
+  { value: 'label', title: 'ラベルだけ', label: '名前' },
+  { value: 'percent', title: '％だけ', label: '％' },
+  { value: 'both', title: 'ラベルと％', label: '両方' },
+]
+
+export const chartLabelsField: DesignField<ChartLabelMode> = {
+  id: 'chart.labels',
+  label: 'ラベル',
+  control: { kind: 'segmented', options: CHART_LABEL_OPTIONS },
+  appliesTo: isChart,
+  read: (node) => {
+    const { showLabels, showPercent } = node.props as ChartProps
+    return showLabels ? (showPercent ? 'both' : 'label') : showPercent ? 'percent' : 'none'
+  },
+  write(node, mode) {
+    if (!isChart(node)) return node
+    const showLabels = mode === 'label' || mode === 'both'
+    const showPercent = mode === 'percent' || mode === 'both'
+    if (node.props.showLabels === showLabels && node.props.showPercent === showPercent) return node
+    return { ...node, props: { ...node.props, showLabels, showPercent } }
+  },
+}
 
 // ---- 形 ----
 
@@ -760,6 +890,7 @@ export const opacityField: DesignField<number> = {
 }
 
 export const builtinDesignSections: DesignSection[] = [
+  { id: 'chart', title: 'グラフ', order: 40, fields: [chartDataField, chartInnerRadiusField, chartStartAngleField, chartLabelsField] },
   { id: 'shape', title: '形', order: 50, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
   { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
   { id: 'corner', title: '角丸', order: 150, fields: [cornerRadiusField] },

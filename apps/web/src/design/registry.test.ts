@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
-import { defaultShadow, NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
+import { defaultChartRows, parseChartTable, type ChartProps, defaultShadow, NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
+import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartLabelsField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
 import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
 import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
@@ -602,5 +603,82 @@ describe('shape section', () => {
     editor.undo()
     expect(editor.getNode(geo.id)!.props).toMatchObject({ shape: 'blockArrow', arrowShaft: 0.3 })
     expect(geoShapeField.write(editor.getNode(geo.id)!, 'blockArrow')).toBe(editor.getNode(geo.id))
+  })
+})
+
+// グラフ（MAI-88）
+describe('chart section', () => {
+  function chartSetup() {
+    const { editor, geo } = setup()
+    const chart = editor.makeNode('chart', { x: 0, y: 600 })
+    const chart2 = editor.makeNode('chart', { x: 300, y: 600 })
+    editor.createNodes([chart, chart2])
+    editor.history.clear(editor.canvasId)
+    const rows = (id: string) => (editor.getNode(id)!.props as ChartProps).rows
+    return { editor, geo, chart, chart2, rows }
+  }
+
+  it('shows the chart fields for charts only', () => {
+    const { geo, chart } = chartSetup()
+    expect(sectionIds([chart])).toEqual(['chart', 'layer'])
+    expect(fieldIds([chart])).toEqual(['chart.rows', 'chart.innerRadius', 'chart.startAngle', 'chart.labels', 'layer.opacity'])
+    expect(sectionIds([chart, geo])).toEqual(['layer'])
+  })
+
+  it('adds, updates, recolors, reorders and removes rows, each undoable', () => {
+    const { editor, chart, rows } = chartSetup()
+    const edit = (change: ChartRowsChange) => editNodes(editor, [chart.id], (node) => chartDataField.write(node, change), 'design')
+    expect(rows(chart.id)).toEqual(defaultChartRows())
+    edit({ op: 'add' })
+    expect(rows(chart.id)[3]).toEqual({ label: '項目 4', value: 10 })
+    edit({ op: 'update', index: 0, patch: { label: 'A', value: 5, color: '#FF0000' } })
+    expect(rows(chart.id)[0]).toEqual({ label: 'A', value: 5, color: '#ff0000' })
+    // 自動の色に戻す
+    edit({ op: 'update', index: 0, patch: { color: null } })
+    expect(rows(chart.id)[0]).toEqual({ label: 'A', value: 5 })
+    edit({ op: 'move', from: 0, to: 2 })
+    expect(rows(chart.id).map((row) => row.label)).toEqual(['項目 2', '項目 3', 'A', '項目 4'])
+    edit({ op: 'remove', index: 3 })
+    expect(rows(chart.id)).toHaveLength(3)
+    // 同じ値なら変えない
+    const node = editor.getNode(chart.id)!
+    expect(chartDataField.write(node, { op: 'move', from: 1, to: 1 })).toBe(node)
+    editor.undo()
+    expect(rows(chart.id)).toHaveLength(4)
+    editor.undo()
+    expect(rows(chart.id)[0].label).toBe('A')
+  })
+
+  it('replaces all rows at once (a pasted table), as one undo step', () => {
+    const { editor, chart, rows } = chartSetup()
+    editNodes(editor, [chart.id], (node) => chartDataField.write(node, parseChartTable('名前\t数\nx\t1\ny\t2')!), 'design')
+    expect(rows(chart.id)).toEqual([
+      { label: 'x', value: 1 },
+      { label: 'y', value: 2 },
+    ])
+    editor.undo()
+    expect(rows(chart.id)).toEqual(defaultChartRows())
+  })
+
+  it('reports mixed data and applies changes to every chart', () => {
+    const { editor, chart, chart2, rows } = chartSetup()
+    editNodes(editor, [chart2.id], (node) => chartDataField.write(node, { op: 'add' }), 'design')
+    const value = visibleSections([editor.getNode(chart.id)!, editor.getNode(chart2.id)!]).find((s) => s.section.id === 'chart')!.fields[0].value
+    expect(value.kind).toBe('mixed')
+    editNodes(editor, [chart.id, chart2.id], (node) => chartDataField.write(node, { op: 'update', index: 0, patch: { value: 99 } }), 'design')
+    expect([rows(chart.id)[0].value, rows(chart2.id)[0].value]).toEqual([99, 99])
+  })
+
+  it('edits the hole, the start angle and the labels, within range', () => {
+    const { editor, chart } = chartSetup()
+    const props = () => editor.getNode(chart.id)!.props as ChartProps
+    editNodes(editor, [chart.id], (node) => chartInnerRadiusField.write(node, 2), 'design')
+    expect(props().innerRadius).toBe(0.9)
+    editNodes(editor, [chart.id], (node) => chartStartAngleField.write(node, 45), 'design')
+    expect(props().startAngle).toBe(45)
+    expect(chartLabelsField.read(editor.getNode(chart.id)!)).toBe('both')
+    editNodes(editor, [chart.id], (node) => chartLabelsField.write(node, 'percent'), 'design')
+    expect([props().showLabels, props().showPercent]).toEqual([false, true])
+    expect(applyChartRowsChange([], [{ label: 'a', value: 1 }, null as never])).toEqual([{ label: 'a', value: 1 }])
   })
 })

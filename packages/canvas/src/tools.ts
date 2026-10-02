@@ -29,6 +29,8 @@ import {
   type DrawProps,
   textLayout,
   type FrameProps,
+  type ChartProps,
+  CHART_DEFAULT_SIZE,
   type GeoProps,
   type GeoShape,
   type NoteProps,
@@ -929,30 +931,36 @@ function dragBox<P extends object>(editor: Editor, creating: BoxCreation<P>, poi
   return boxFromPoints(creating.startLocal, end)
 }
 
-// ---- 図形ツール（矩形・楕円・ブロック矢印（MAI-87）） ----
+// ---- ドラッグした箱に置くツールの共通部分（図形・グラフ） ----
 
-export class GeoTool implements Tool {
-  readonly id: GeoShape
+// type のノードを、ドラッグした箱（Shift で正方形）に置く。クリックだけなら、クリックした位置を中心に既定の大きさで置く。
+// 置いたら選択ツールに戻る
+abstract class BoxPlacementTool<P extends { w: number; h: number }> implements Tool {
+  abstract readonly id: ToolId
   readonly cursor = 'crosshair'
-  private creating: BoxCreation<GeoProps> | null = null
-  private readonly ctx: ToolContext
+  private creating: BoxCreation<P> | null = null
+  protected readonly ctx: ToolContext
 
-  constructor(ctx: ToolContext, shape: GeoShape) {
+  constructor(ctx: ToolContext) {
     this.ctx = ctx
-    this.id = shape
   }
+
+  protected abstract readonly nodeType: string
+  // 置くノードの props（w・h は置くときに決める）
+  protected abstract initialProps(): Partial<P>
+  protected abstract defaultSize(): { w: number; h: number }
 
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
     const editor = this.ctx.editor
     const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin(`create ${this.id}`)
-    const node = editor.makeNode('geo', {
+    const node = editor.makeNode(this.nodeType, {
       x: local.x,
       y: local.y,
       parentId,
-      props: { shape: this.id, w: 1, h: 1 },
-    }) as NodeRecord<GeoProps>
+      props: { ...this.initialProps(), w: 1, h: 1 },
+    }) as NodeRecord<P>
     tx.put(node)
     tx.flush()
     editor.setSelection([node.id])
@@ -978,8 +986,7 @@ export class GeoTool implements Tool {
     if (!creating) return
     this.creating = null
     if (dist(pointer.screen, creating.start.screen) < DRAG_THRESHOLD_PX) {
-      // クリックだけなら、既定の大きさでクリックした位置を中心に置く（ブロック矢印は横長など、形ごとの大きさ）
-      const size = isBlockArrowShape(this.id) ? blockArrowDefaultSize(this.id) : { w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE }
+      const size = this.defaultSize()
       creating.tx.put({
         ...creating.node,
         x: creating.startLocal.x - size.w / 2,
@@ -1004,6 +1011,43 @@ export class GeoTool implements Tool {
 
   onExit(): void {
     this.cancel()
+  }
+}
+
+// ---- 図形ツール（矩形・楕円・ブロック矢印（MAI-87）） ----
+
+export class GeoTool extends BoxPlacementTool<GeoProps> {
+  readonly id: GeoShape
+  protected readonly nodeType = 'geo'
+
+  constructor(ctx: ToolContext, shape: GeoShape) {
+    super(ctx)
+    this.id = shape
+  }
+
+  protected initialProps(): Partial<GeoProps> {
+    return { shape: this.id }
+  }
+
+  // ブロック矢印は横長など、形ごとの大きさ
+  protected defaultSize(): { w: number; h: number } {
+    return isBlockArrowShape(this.id) ? blockArrowDefaultSize(this.id) : { w: GEO_DEFAULT_SIZE, h: GEO_DEFAULT_SIZE }
+  }
+}
+
+// ---- グラフツール（MAI-88。円グラフ） ----
+
+// 型の既定の props（3 行の初期データ）で置く。クリックだけなら 240×240
+export class ChartTool extends BoxPlacementTool<ChartProps> {
+  readonly id = 'pieChart' as const
+  protected readonly nodeType = 'chart'
+
+  protected initialProps(): Partial<ChartProps> {
+    return { kind: 'pie' }
+  }
+
+  protected defaultSize(): { w: number; h: number } {
+    return { w: CHART_DEFAULT_SIZE, h: CHART_DEFAULT_SIZE }
   }
 }
 
