@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// MAI-55: an inline editor (CodeMirror on a card, textarea on a sticky note) must stay exactly
+// MAI-55: an inline editor (CodeMirror on a card, the contenteditable text editor on a sticky note) must stay exactly
 // where the card is drawn, even when the card sticks out of the viewport and the browser tries
 // to reveal the caret by scrolling the canvas root. These use trusted keyboard input so the
 // browser's real caret-reveal scrolling runs.
@@ -108,7 +108,7 @@ for (const zoom of [1, 1.5] as const) {
     expect(Math.abs(metrics.gutterRight - metrics.lineLeft)).toBeLessThanOrEqual(1)
   })
 
-  test(`sticky note sticking out of the viewport keeps its textarea aligned while typing (zoom ${zoom})`, async ({ page }) => {
+  test(`sticky note sticking out of the viewport keeps its text editor aligned while typing (zoom ${zoom})`, async ({ page }) => {
     await page.goto('/canvas-input-test.html?kind=code&sizing=auto&long=0')
     await page.waitForFunction(() => Boolean((window as any).canvasInputFixture))
     const noteId = await page.evaluate((zoom) => {
@@ -117,11 +117,11 @@ for (const zoom of [1, 1.5] as const) {
       // A 220-wide note at (700, 450) with many lines sticks out to the right and below the 800x600 container.
       return fixture.startNote(700, 450, Array.from({ length: 30 }, (_, i) => `note line ${i + 1}`).join('\n'))
     }, zoom)
-    const textarea = page.locator('textarea')
-    await expect(textarea).toBeFocused()
+    const textEditor = page.locator('.canvcode-text-editor')
+    await expect(textEditor).toBeFocused()
 
     await page.keyboard.type(' typed')
-    await expect.poll(() => textarea.inputValue()).toContain('typed')
+    await expect.poll(() => textEditor.textContent()).toContain('typed')
 
     const scroll = await rootScroll(page)
     expect(scroll.top).toBe(0)
@@ -135,7 +135,7 @@ for (const zoom of [1, 1.5] as const) {
       const spec = editor.getType(node).editText(node)
       return { ...spec.box }
     }, noteId)
-    const actual = await actualRect(page, 'textarea')
+    const actual = await actualRect(page, '.canvcode-text-editor')
     const expected = await expectedRect(page, noteId, box)
     expectClose(actual, expected)
   })

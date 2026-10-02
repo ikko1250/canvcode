@@ -1,5 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
-import { sameValue, sharedValue, type SharedValue } from '@canvcode/canvas'
+import { sameValue, sharedOf, sharedValue, type SharedValue, type TextSelection } from '@canvcode/canvas'
+import type { TextRange } from '@canvcode/nodes'
 import type { ComponentType } from 'react'
 
 // デザインパネルのセクションと項目の登録（MAI-73）。
@@ -42,8 +43,12 @@ export interface DesignField<T = unknown> {
   // この項目を持つノードか
   appliesTo(node: NodeRecord): boolean
   read(node: NodeRecord): T
-  // 値を変えたノード。同じ値なら同じノードを返す（差分に入れない）
-  write(node: NodeRecord, value: T): NodeRecord
+  // 1 つのノードの中に値をいくつも持てる項目（文字の範囲ごとの書式。MAI-74）は、その値をすべて返す。
+  // range は、そのノードの文字を編集中で、範囲を選んでいるときの範囲（その範囲の値だけを返す）
+  values?(node: NodeRecord, range: TextRange | null): T[]
+  // 値を変えたノード。同じ値なら同じノードを返す（差分に入れない）。
+  // range は values と同じ（文字の範囲ごとの書式は、その範囲に当てる。なければノード全体）
+  write(node: NodeRecord, value: T, range?: TextRange | null): NodeRecord
   control: FieldControl
 }
 
@@ -84,17 +89,34 @@ export interface VisibleSection {
   showComponent: boolean
 }
 
-export function visibleSections(nodes: readonly NodeRecord[], all: readonly DesignSection[] = sections): VisibleSection[] {
+// textSelection は、文字を編集中に選んでいる範囲（範囲ごとの書式の項目は、その範囲の値を見せる。MAI-74）
+export function visibleSections(
+  nodes: readonly NodeRecord[],
+  all: readonly DesignSection[] = sections,
+  textSelection: TextSelection | null = null,
+): VisibleSection[] {
   if (nodes.length === 0) return []
   const result: VisibleSection[] = []
   for (const section of all) {
     const fields = section.fields
       .filter((field) => nodes.every((node) => field.appliesTo(node)))
-      .map((field) => ({ field, value: sharedValue(nodes, (node) => field.read(node))! }))
+      .map((field) => ({ field, value: fieldValue(field, nodes, textSelection) }))
     const showComponent = Boolean(section.Component && (section.appliesTo ? nodes.every((node) => section.appliesTo!(node)) : fields.length > 0))
     if (fields.length > 0 || showComponent) result.push({ section, fields, showComponent })
   }
   return result
+}
+
+function fieldValue<T>(field: DesignField<T>, nodes: readonly NodeRecord[], textSelection: TextSelection | null): SharedValue<T> {
+  const values = field.values
+  if (!values) return sharedValue(nodes, (node) => field.read(node))!
+  return sharedOf(nodes.flatMap((node) => values(node, textRangeOf(node, textSelection))))!
+}
+
+// node の文字を編集中で、範囲を選んでいれば、その範囲
+export function textRangeOf(node: NodeRecord, textSelection: TextSelection | null): TextRange | null {
+  if (!textSelection || textSelection.nodeId !== node.id || textSelection.start === textSelection.end) return null
+  return { start: textSelection.start, end: textSelection.end }
 }
 
 // ---- 項目を作る手助け ----

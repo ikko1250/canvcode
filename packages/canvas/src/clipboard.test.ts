@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { AssetRecord } from '@canvcode/core'
-import { pickImageVariant } from '@canvcode/nodes'
+import type { AssetRecord, NodeRecord } from '@canvcode/core'
+import { pickImageVariant, plainTextOf, richTextFromPlain, type TextProps } from '@canvcode/nodes'
 import {
   copySelection,
   duplicateSelection,
@@ -131,12 +131,38 @@ describe('duplicate', () => {
   })
 })
 
+describe('rich text nodes (MAI-74)', () => {
+  it('keeps the formats of the characters when copying and pasting a text node', () => {
+    const { editor } = setup()
+    const paragraphs = [{ runs: [{ text: 'big', format: { fontSize: 40, color: '#ff0000' } }, { text: ' text' }] }]
+    const text = editor.makeNode('text', { x: 0, y: 0, props: { paragraphs } })
+    editor.createNodes([text])
+    editor.setSelection([text.id])
+    const payload = parsePayload({ json: JSON.stringify(copySelection(editor)) })!
+    const [id] = insertPayload(editor, payload, { center: { x: 500, y: 500 } })
+    expect(editor.getNode(id)).toMatchObject({ version: 2, props: { paragraphs } })
+  })
+
+  it('upgrades text nodes copied from a tab that still had plain text (version 1)', () => {
+    const { editor } = setup()
+    const text = editor.makeNode('text', { x: 0, y: 0 })
+    const { paragraphs: _, ...props } = text.props as TextProps
+    const legacy = { ...text, version: undefined, props: { ...props, text: 'old\ntext' } }
+    const payload = { kind: 'canvcode/nodes' as const, version: 1 as const, nodes: [legacy], roots: [legacy.id], bounds: { x: 0, y: 0, w: 10, h: 10 }, assets: [], bindings: [], anchors: [] }
+    const [id] = insertPayload(editor, payload, { center: { x: 0, y: 0 } })
+    const node = editor.getNode(id) as NodeRecord<TextProps>
+    expect(node.version).toBe(2)
+    expect(node.props.paragraphs).toEqual(richTextFromPlain('old\ntext'))
+    expect('text' in node.props).toBe(false)
+  })
+})
+
 describe('pasting from outside', () => {
   it('turns plain text into a text node centred on the point, wrapping long lines', () => {
     const { editor } = setup()
     const short = insertText(editor, 'hello\r\nworld\n\n', { x: 0, y: 0 })!
-    const node = editor.getNode(short)! as { props: { text: string; autoWidth: boolean } }
-    expect(node.props.text).toBe('hello\nworld')
+    const node = editor.getNode(short)! as NodeRecord<TextProps>
+    expect(plainTextOf(node.props.paragraphs)).toBe('hello\nworld')
     expect(node.props.autoWidth).toBe(true)
     const box = editor.index.get(short)!.worldBounds
     expect(box.x + box.w / 2).toBeCloseTo(0, 6)

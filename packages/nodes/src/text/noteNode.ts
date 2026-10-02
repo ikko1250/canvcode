@@ -1,13 +1,16 @@
 import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
-import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, textAlignOf, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
+import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
 
 // 付箋（MAI-7 の `note`、MAI-24）。幅は自由に変えられ、高さは文字に合わせて伸びる（MAI-34）。
 // props の h は「最低の高さ」で、文字がそれより多ければ、はみ出さないところまで縦に伸びる。
 // 高さは props から計算するので、前からある付箋も読み込んだときにそのまま文字に合った大きさになる。
 // 文字の大きさと揃え（左・中央・右）はノード単位で変えられる（MAI-50）。align のない古い付箋は左揃え。
+// 文字はテキストと同じく段落と run で持ち、範囲ごとに色・大きさを変えられる（MAI-74）。color は地の色で、文字の既定の色は NOTE_TEXT_COLOR。
+// 版 1 は文字をプレーンテキスト（text）で持っていた
 export interface NoteProps {
-  text: string
+  paragraphs: TextParagraph[]
   w: number
   h: number
   color: string
@@ -21,9 +24,11 @@ const PADDING = 16
 const LINE_HEIGHT = 1.4
 // 新しく作る付箋の文字の大きさ（MAI-62）
 export const NOTE_DEFAULT_FONT_SIZE = 12
+// 付箋の文字の既定の色
+export const NOTE_TEXT_COLOR = '#2b2930'
 
 export function noteStyle(props: NoteProps): TextStyle {
-  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: '#2b2930', align: textAlignOf(props.align) }
+  return { fontSize: props.fontSize, lineHeight: LINE_HEIGHT, fontWeight: 400, color: NOTE_TEXT_COLOR, align: textAlignOf(props.align) }
 }
 
 function textWidth(props: NoteProps): number {
@@ -35,7 +40,7 @@ const layoutCache = new WeakMap<NoteProps, TextLayout>()
 function noteLayout(props: NoteProps): TextLayout {
   let layout = layoutCache.get(props)
   if (!layout) {
-    layout = layoutText(props.text, noteStyle(props), textWidth(props))
+    layout = layoutRichText(paragraphsOf(props), noteStyle(props), textWidth(props))
     layoutCache.set(props, layout)
   }
   return layout
@@ -52,9 +57,11 @@ function textBox(props: NoteProps) {
 
 export const noteType = defineNodeType<NoteProps>({
   type: 'note',
-  version: 1,
+  version: 2,
 
-  defaultProps: () => ({ text: '', w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, align: 'left' }),
+  defaultProps: () => ({ paragraphs: richTextFromPlain(''), w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, align: 'left' }),
+
+  migrate: (props, fromVersion) => (fromVersion < 2 ? migratePlainTextProps<NoteProps>(props) : props),
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: noteHeight(node.props) }),
 
@@ -76,7 +83,7 @@ export const noteType = defineNodeType<NoteProps>({
     ctx.rect(0, 0, w, h)
     ctx.clip()
     const layout = noteLayout(node.props)
-    if (node.props.fontSize * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, noteStyle(node.props), textBox(node.props), 'top')
+    if (layout.maxFontSize * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, noteStyle(node.props), textBox(node.props), 'top')
     else drawTextLayout(ctx, layout, noteStyle(node.props), textBox(node.props), 'top')
     ctx.restore()
   },
@@ -88,12 +95,13 @@ export const noteType = defineNodeType<NoteProps>({
   minSize: { w: 60, h: 60 },
 
   editText: (node) => ({
-    text: node.props.text,
+    text: plainTextOf(paragraphsOf(node.props)),
     style: noteStyle(node.props),
     box: textBox(node.props),
     autoWidth: false,
     verticalAlign: 'top',
-    update: (text) => ({ ...node.props, text }),
+    update: (text) => ({ ...node.props, paragraphs: richTextFromPlain(text) }),
+    rich: { paragraphs: paragraphsOf(node.props), update: (paragraphs) => ({ ...node.props, paragraphs }) },
     deleteIfEmpty: false,
   }),
 })

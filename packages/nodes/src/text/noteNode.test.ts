@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
 import { NOTE_DEFAULT_FONT_SIZE, noteHeight, noteStyle, noteType, type NoteProps } from './noteNode.ts'
+import { richTextFromPlain } from './richText.ts'
 
-// Node には Canvas がないので、概算の文字幅で測る（layout.test.ts と同じ）
-function note(props: Partial<NoteProps>): NodeRecord<NoteProps> {
+// Node には Canvas がないので、概算の文字幅で測る（layout.test.ts と同じ）。text はプレーンテキストの文字
+function note({ text, ...rest }: Partial<NoteProps> & { text?: string }): NodeRecord<NoteProps> {
+  const props: Partial<NoteProps> = text === undefined ? rest : { ...rest, paragraphs: richTextFromPlain(text) }
   return {
     typeName: 'node',
     id: 'n1',

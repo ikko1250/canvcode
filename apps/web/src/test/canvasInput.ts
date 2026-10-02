@@ -1,7 +1,7 @@
 // Browser-level regression fixture: real CanvasView, DocumentEditor and CodeMirror,
 // with only the network-backed file storage replaced by an in-memory source.
 import { CanvasView, Editor, Workspace, type FileManager } from '@canvcode/canvas'
-import { builtinNodeTypes, createCodeCardType } from '@canvcode/nodes'
+import { builtinNodeTypes, createCodeCardType, richTextFromPlain } from '@canvcode/nodes'
 import { createMarkdownCardType } from '@canvcode/nodes/markdown'
 
 const params = new URLSearchParams(location.search)
@@ -68,7 +68,7 @@ interface Fixture {
   resetCamera(): void
   // Move the card to another world position (MAI-55: cards sticking out of the viewport).
   moveCard(x: number, y: number): void
-  // Create a sticky note and start editing its text in the textarea (MAI-55).
+  // Create a sticky note and start editing its text in the inline editor (MAI-55).
   startNote(x: number, y: number, text: string): string
 }
 const fixture: Fixture = {
@@ -85,7 +85,7 @@ const fixture: Fixture = {
     editor.transact('move fixture', (tx) => tx.put({ ...current, x, y }))
   },
   startNote(x, y, value) {
-    const note = editor.makeNode('note', { x, y, props: { text: value } })
+    const note = editor.makeNode('note', { x, y, props: { paragraphs: richTextFromPlain(value) } })
     editor.createNodes([note])
     view.textEditor.start(note.id)
     return note.id

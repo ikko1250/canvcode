@@ -1229,3 +1229,8 @@ body,
 .design-segmented {
   gap: 2px;
 }
+
+/* 文字の編集中に、デザインパネルにフォーカスが移っても、選んでいる範囲を見せる（MAI-74。CSS Custom Highlight API） */
+::highlight(canvcode-text-selection) {
+  background-color: rgba(59, 91, 219, 0.28);
+}

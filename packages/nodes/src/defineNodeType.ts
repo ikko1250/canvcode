@@ -1,5 +1,6 @@
 import type { AssetRecord, Box, NodeRecord, Vec } from '@canvcode/core'
 import type { TextStyle } from './text/layout.ts'
+import type { TextParagraph } from './text/richText.ts'
 
 // ノードの型の定義（MAI-9）。基本図形も Portal や Markdown カードも、同じ形で定義する。
 // 段階 2 で使う項目だけを先に入れている。編集モード・テキストの取り出し・右クリックメニュー・
@@ -83,8 +84,11 @@ export interface ImageRequester {
 
 export interface NodeTypeDef<P extends object> {
   type: string
+  // props の形の版。形を変えたら上げて、migrate で前の版から移す（MAI-74）
   version: number
   defaultProps(): P
+  // 前の版（fromVersion）の props を、今の版の形にする
+  migrate?(props: any, fromVersion: number): P
   // ノードのローカル座標でのバウンディングボックス
   getBounds(node: NodeRecord<P>): Box
   // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）。
@@ -124,7 +128,9 @@ export interface NodeTypeDef<P extends object> {
 }
 
 export interface TextEditSpec<P> {
+  // 文字（プレーンテキスト）
   text: string
+  // ノードの既定のスタイル。範囲ごとの書式（rich）は、これに重ねる
   style: TextStyle
   // 文字を置く箱（ローカル座標）。autoWidth のときは、幅は文字に合わせて伸びる
   box: Box
@@ -132,11 +138,24 @@ export interface TextEditSpec<P> {
   verticalAlign: 'top' | 'middle'
   // 文字を変えたときの新しい props
   update(text: string): P
+  // 範囲ごとに書式を持てる型（テキスト・付箋。MAI-74）。ない型（図形のラベルなど）は、プレーンテキストとして編集する
+  rich?: {
+    paragraphs: TextParagraph[]
+    update(paragraphs: TextParagraph[]): P
+  }
   // 空のまま編集を終えたら、ノードを消すか（テキストは消し、付箋や図形のラベルは残す）
   deleteIfEmpty: boolean
 }
 
 export type AnyNodeTypeDef = NodeTypeDef<any>
+
+// 古い版のノードを、型の今の版の形にする（MAI-74）。サーバーから読んだとき・貼り付けたときに通す。
+// 今の版ならそのまま返す。移したノードは、次に変えて保存するときに新しい版で保存される
+export function upgradeNode(def: AnyNodeTypeDef | undefined, node: NodeRecord): NodeRecord {
+  const from = node.version ?? 1
+  if (!def?.migrate || from >= def.version) return node
+  return { ...node, version: def.version, props: def.migrate(node.props, from) }
+}
 
 export function defineNodeType<P extends object>(def: NodeTypeDef<P>): NodeTypeDef<P> {
   return def

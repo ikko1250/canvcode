@@ -92,9 +92,14 @@ export type SharedValue<T> = { kind: 'same'; value: T } | { kind: 'mixed'; value
 
 export function sharedValue<T>(nodes: readonly NodeRecord[], read: (node: NodeRecord) => T): SharedValue<T> | null {
   if (nodes.length === 0) return null
-  const values = nodes.map(read)
+  return sharedOf(nodes.map(read))
+}
+
+// 値の並び（1 つのノードの中の、文字の範囲ごとの値など。MAI-74）が、すべて同じか。空なら null
+export function sharedOf<T>(values: readonly T[]): SharedValue<T> | null {
+  if (values.length === 0) return null
   const first = values[0]
-  return values.every((value) => sameValue(value, first)) ? { kind: 'same', value: first } : { kind: 'mixed', values }
+  return values.every((value) => sameValue(value, first)) ? { kind: 'same', value: first } : { kind: 'mixed', values: [...values] }
 }
 
 // 値が同じか。色や数字はそのまま比べ、オブジェクト（グラデーションなど、後で足す項目）は中身で比べる

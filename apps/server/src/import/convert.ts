@@ -402,6 +402,7 @@ export async function convertBackup(zip: ZipReader, options: ImportOptions): Pro
           put('draw', { points, color: color(props.color), size: (STROKE_SIZES[String(props.size)] ?? 3.5) * scale, isComplete: true })
           break
         }
+        // テキスト・付箋は版 1（文字をプレーンテキストの text で持つ形）で作る。ブラウザが読み込むときに版 2 へ移す（MAI-74）
         case 'text': {
           const { text, formatted } = plainText(props.richText)
           if (formatted) report.lostFormatting++

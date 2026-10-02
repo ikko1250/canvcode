@@ -18,7 +18,7 @@ import {
   type Transaction,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { builtinNodeTypes, type AnyNodeTypeDef, type ArrowProps, type DocumentReference } from '@canvcode/nodes'
+import { builtinNodeTypes, upgradeNode, type AnyNodeTypeDef, type ArrowProps, type DocumentReference } from '@canvcode/nodes'
 import { BindingIndex, resolveArrow, unbind, type NodeLookup } from './bindings.ts'
 
 // ワークスペース（MAI-8、MAI-11）。
@@ -141,6 +141,12 @@ export class Workspace implements NodeLookup {
   readonly tree = new NodeTree()
   readonly citations: CitationIndex
   readonly rootCanvasId: string
+
+  // 外から入ってくるレコード（サーバー・ほかのタブ・貼り付け）を、今の形にする。
+  // 古い版のノードは、型の今の版へ移す（MAI-74）。それ以外はそのまま
+  upgrade<R extends WorkspaceRecord>(record: R): R {
+    return isNodeRecord(record) ? (upgradeNode(this.types.get(record.type), record) as R) : record
+  }
 
   constructor(options: WorkspaceOptions = {}) {
     this.types = new Map((options.types ?? builtinNodeTypes).map((type) => [type.type, type]))

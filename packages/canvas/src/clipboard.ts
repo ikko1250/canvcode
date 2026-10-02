@@ -9,7 +9,7 @@ import {
   type SourceAnchorRecord,
   type Vec,
 } from '@canvcode/core'
-import { QUOTE_CARD_DEFAULT_WIDTH, type ArrowProps, type DocumentReference, type ImageProps, type QuoteCardProps } from '@canvcode/nodes'
+import { QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type ImageProps, type QuoteCardProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 import type { QuoteDraft } from './quotes.ts'
@@ -182,6 +182,8 @@ export function insertPayload(editor: Editor, payload: ClipboardPayload, options
 }
 
 export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayload, options: InsertOptions, label = 'paste'): InsertResult {
+  // 版を上げる前のタブでコピーしたノードは、今の形にする（MAI-74）
+  payload = { ...payload, nodes: payload.nodes.map((node) => editor.workspace.upgrade(node)) }
   const refusedOwners: string[] = []
   // 同じ参照先の持ち主が 2 つ入らないよう、持ち主として置けるのは参照先ごとに 1 つだけ
   const ownerTaken = new Set<string>()
@@ -289,13 +291,13 @@ function validPayload(value: unknown): ClipboardPayload | null {
   }
 }
 
-function encodeBase64(text: string): string {
+export function encodeBase64(text: string): string {
   let binary = ''
   for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte)
   return btoa(binary)
 }
 
-function decodeBase64(base64: string): string {
+export function decodeBase64(base64: string): string {
   const binary = atob(base64)
   return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))
 }
@@ -313,7 +315,7 @@ export function insertText(editor: Editor, text: string, center: Vec): string | 
   const node = editor.makeNode('text', {
     x: 0,
     y: 0,
-    props: wrap ? { text: trimmed, autoWidth: false, w: WRAP_WIDTH } : { text: trimmed, autoWidth: true },
+    props: wrap ? { paragraphs: richTextFromPlain(trimmed), autoWidth: false, w: WRAP_WIDTH } : { paragraphs: richTextFromPlain(trimmed), autoWidth: true },
   })
   // 大きさは作ってみないとわからないので、索引に入れてから中心を合わせる
   editor.transact('paste text', (tx) => {

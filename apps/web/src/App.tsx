@@ -1210,7 +1210,7 @@ export function App(props: { initial: InitialRecords }) {
   }
 
   // テキストと付箋のパレット（MAI-50）。テキストか付箋だけを選んでいるときに出し、文字の大きさと揃えを変える。
-  // 編集中も出しっぱなしにし、押しても textarea からフォーカスを奪わない（編集を続けられる）。
+  // 編集中も出しっぱなしにし、押しても編集中の文字からフォーカスを奪わない（編集を続けられる）。
   // 変える手順は textStyle.ts（パイメニュー「操作」と共通。MAI-57）
   const selectedTextNodes = textNodesOf(editor)
   const textPalette = selectedTextNodes.length > 0 && selectedTextNodes.length === session.selectedIds.size

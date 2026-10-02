@@ -1135,7 +1135,7 @@ export class NoteTool implements Tool {
   }
 
   // 編集モードには、手を離してから入る。押した瞬間に入ると、そのあとのブラウザの既定の動作で
-  // フォーカスがキャンバスに移り、textarea からフォーカスが外れて編集が終わってしまう
+  // フォーカスがキャンバスに移り、編集用の要素からフォーカスが外れて編集が終わってしまう
   onPointerUp(): void {
     const creating = this.creating
     if (!creating) return

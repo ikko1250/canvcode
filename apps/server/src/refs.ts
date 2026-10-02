@@ -300,6 +300,21 @@ export async function resolveReference(ref: ReferenceRecord, deps: RefDeps): Pro
   }
 }
 
+// テキスト・付箋の文字（プレーンテキスト）。版 2 は段落と run（paragraphs）で持ち、版 1 は text の文字列（MAI-74）。
+// サーバーはノードの型を読み込まないので、両方の形を構造的に読む
+export function plainTextOfProps(props: Record<string, unknown>): string {
+  const paragraphs = props.paragraphs
+  if (Array.isArray(paragraphs)) {
+    return paragraphs
+      .map((paragraph) => {
+        const runs = (paragraph as { runs?: unknown })?.runs
+        return Array.isArray(runs) ? runs.map((run) => (typeof run?.text === 'string' ? run.text : '')).join('') : ''
+      })
+      .join('\n')
+  }
+  return typeof props.text === 'string' ? props.text : ''
+}
+
 // ノードを、AI が読める形にする。ノードの型は @canvcode/nodes にあるが、サーバーは読み込まないので props を構造的に読む
 async function describeNode(
   record: StoredRecord,
@@ -326,9 +341,11 @@ async function describeNode(
   }
   switch (type) {
     case 'text':
-    case 'note':
-      out.text = str('text')
+    case 'note': {
+      const text = plainTextOfProps(props)
+      out.text = text ? truncate(text, MAX_NODE_TEXT) : undefined
       break
+    }
     case 'geo':
     case 'arrow':
       out.label = str('label')

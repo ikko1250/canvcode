@@ -1,7 +1,24 @@
 import { createElement } from 'react'
 import type { NodeRecord } from '@canvcode/core'
-import { textAlignOf, type TextAlign } from '@canvcode/nodes'
-import { propField, registerDesignSection, type DesignField, type DesignSection, type SegmentOption } from './registry.ts'
+import {
+  applyRunFormat,
+  clearRunFormat,
+  formatAt,
+  formatsInRange,
+  noteStyle,
+  paragraphsOf,
+  richTextLength,
+  textAlignOf,
+  textStyle,
+  type NoteProps,
+  type TextAlign,
+  type TextParagraph,
+  type TextProps,
+  type TextRunFormat,
+  type TextStyle,
+} from '@canvcode/nodes'
+import { sameValue } from '@canvcode/canvas'
+import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption } from './registry.ts'
 
 // デザインパネルに最初から出すセクション（MAI-73）。
 // 塗り・線・文字・レイヤーの 4 つ。後の課題は、ここに項目を足すか、別のファイルで registerDesignSection する
@@ -35,18 +52,79 @@ export const strokeWidthField = propField<number>({
 
 // ---- 文字 ----
 
-export const fontSizeField = propField<number>({
+// 文字の範囲ごとに持てる書式（MAI-74）を持つ型。base はノードの既定の書式、props はその既定を持つ props のキー
+// （ないものは既定を変えられない。付箋の文字の色）
+interface TextFormatType {
+  base(props: object): Required<TextRunFormat>
+  props: Partial<Record<keyof TextRunFormat, string>>
+}
+
+const formatOfStyle = (style: TextStyle): Required<TextRunFormat> => ({ color: style.color, fontSize: style.fontSize })
+
+const TEXT_FORMAT_TYPES: Record<string, TextFormatType> = {
+  text: { base: (props) => formatOfStyle(textStyle(props as TextProps)), props: { color: 'color', fontSize: 'fontSize' } },
+  note: { base: (props) => formatOfStyle(noteStyle(props as NoteProps)), props: { fontSize: 'fontSize' } },
+}
+
+// 文字の範囲ごとに持てる書式の項目（MAI-74）。
+// - 文字を編集中で範囲を選んでいれば、その範囲の文字の値を見せ（違えば「混在」）、その範囲に当てる
+// - そうでなければノード全体：すべての文字の値を見せ、変えるとノードの既定（props）を変えて範囲ごとの値を外す。
+//   既定を props に持たない型（付箋の文字の色）は、すべての文字に当てる
+export function textFormatField<K extends keyof TextRunFormat>(options: {
+  id: string
+  label: string
+  key: K
+  control: FieldControl
+}): DesignField<Required<TextRunFormat>[K]> {
+  const { key } = options
+  type V = Required<TextRunFormat>[K]
+  const typeOf = (node: NodeRecord) => TEXT_FORMAT_TYPES[node.type]
+  const values = (node: NodeRecord, range: { start: number; end: number } | null): V[] => {
+    const base = typeOf(node)!.base(node.props)
+    const paragraphs = paragraphsOf(node.props as { paragraphs?: TextParagraph[] })
+    const formats = range ? formatsInRange(paragraphs, range.start, range.end) : formatsInRange(paragraphs, 0, richTextLength(paragraphs))
+    const list = formats.length > 0 ? formats : [formatAt(paragraphs, range?.start ?? 0)]
+    return list.map((format) => (format?.[key] ?? base[key]) as V)
+  }
+  return {
+    id: options.id,
+    label: options.label,
+    control: options.control,
+    appliesTo: (node) => typeOf(node) !== undefined,
+    read: (node) => values(node, null)[0],
+    values,
+    write(node, value, range) {
+      const type = typeOf(node)
+      if (!type) return node
+      const props = node.props as Record<string, unknown>
+      const base = type.base(props)
+      const paragraphs = paragraphsOf(props as { paragraphs?: TextParagraph[] })
+      const patch = { [key]: value } as TextRunFormat
+      let next: Record<string, unknown>
+      if (range && range.start !== range.end) {
+        next = { ...props, paragraphs: applyRunFormat(paragraphs, range.start, range.end, patch, base) }
+      } else if (type.props[key]) {
+        next = { ...props, [type.props[key]]: value, paragraphs: clearRunFormat(paragraphs, key) }
+      } else {
+        next = { ...props, paragraphs: applyRunFormat(paragraphs, 0, richTextLength(paragraphs), patch, base) }
+      }
+      return sameValue(next, props) ? node : { ...node, props: next }
+    },
+  }
+}
+
+export const fontSizeField = textFormatField({
   id: 'text.fontSize',
   label: '大きさ',
-  keys: { text: 'fontSize', note: 'fontSize' },
+  key: 'fontSize',
   control: { kind: 'number', min: 1, max: 400, step: 1, unit: 'px' },
 })
 
-// テキストの文字の色（付箋の color は地の色なので含めない）
-export const textColorField = propField<string>({
+// 文字の色（付箋の color は地の色。付箋の文字の色は、既定を変えず、文字に当てる）
+export const textColorField = textFormatField({
   id: 'text.color',
   label: '色',
-  keys: { text: 'color' },
+  key: 'color',
   control: { kind: 'color' },
 })
 

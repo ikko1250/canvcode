@@ -1,6 +1,6 @@
 import type { NodeRecord } from '@canvcode/core'
 import type { CanvasView, Editor } from '@canvcode/canvas'
-import { stepFontSize, type NoteProps, type TextAlign, type TextProps } from '@canvcode/nodes'
+import { mapRunFormats, paragraphsOf, stepFontSize, type NoteProps, type TextAlign, type TextProps } from '@canvcode/nodes'
 
 // テキストと付箋の文字の大きさ・揃えを変える（MAI-50、MAI-52）。
 // 左端のパレットとパイメニュー「操作」（MAI-57）の両方から同じ手順で変えるので、ここにまとめる
@@ -34,9 +34,18 @@ export function applyTextStyle(editor: Editor, view: CanvasView | null, nodes: r
   })
 }
 
-// 文字を 1 段階大きく（direction = 1）・小さく（-1）する
+// 文字を 1 段階大きく（direction = 1）・小さく（-1）する。
+// 範囲ごとに大きさを変えた文字（MAI-74）も、それぞれ 1 段階ずつ変える（大きさの違いを残す）
 export function stepTextFontSize(editor: Editor, view: CanvasView | null, nodes: readonly NodeRecord[], direction: 1 | -1): void {
-  applyTextStyle(editor, view, nodes, (props) => ({ fontSize: stepFontSize(props.fontSize, direction) }))
+  applyTextStyle(editor, view, nodes, (props) => {
+    const fontSize = stepFontSize(props.fontSize, direction)
+    const paragraphs = mapRunFormats(
+      paragraphsOf(props),
+      (format) => (format?.fontSize === undefined ? format : { ...format, fontSize: stepFontSize(format.fontSize, direction) }),
+      { fontSize },
+    )
+    return { fontSize, paragraphs }
+  })
 }
 
 // 揃えを変える

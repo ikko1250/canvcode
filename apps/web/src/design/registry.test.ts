@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { Editor, editNodes } from '@canvcode/canvas'
+import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
+import { NOTE_TEXT_COLOR, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
 import { fillColorField, fontSizeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
@@ -10,8 +11,8 @@ function setup() {
   const editor = new Editor()
   const geo = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100 } })
   const geo2 = editor.makeNode('geo', { x: 200, y: 0, props: { shape: 'ellipse', w: 100, h: 100, fill: '#ff0000' } })
-  const text = editor.makeNode('text', { x: 0, y: 200, props: { text: 'hello' } })
-  const note = editor.makeNode('note', { x: 200, y: 200, props: { text: 'memo' } })
+  const text = editor.makeNode('text', { x: 0, y: 200, props: { paragraphs: richTextFromPlain('hello') } })
+  const note = editor.makeNode('note', { x: 200, y: 200, props: { paragraphs: richTextFromPlain('memo') } })
   const arrow = editor.makeNode('arrow', { x: 0, y: 400, props: { start: { x: 0, y: 0 }, end: { x: 100, y: 0 } } })
   const group = editor.makeNode('group', { x: 0, y: 0 })
   editor.createNodes([geo, geo2, text, note, arrow, group])
@@ -34,8 +35,9 @@ describe('design sections', () => {
 
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
-    // テキストと付箋：大きさと揃えは共通。文字の色はテキストだけ、塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontSize', 'text.align', 'layer.opacity'])
+    // テキストと付箋：文字の大きさ・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
+    expect(fieldIds([text, note])).toEqual(['text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontSize', 'text.color', 'text.align', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -105,5 +107,56 @@ describe('design sections', () => {
     expect(designSections().filter((s) => s.id === 'fill')).toHaveLength(1)
     expect(designSections().find((s) => s.id === 'fill')!.title).toBe('角丸')
     registerDesignSection({ id: 'fill', title: '塗り', order: 100, fields: [fillColorField] })
+  })
+})
+
+describe('text format fields per range (MAI-74)', () => {
+  const red = { color: '#ff0000' }
+
+  function setupRich() {
+    const editor = new Editor()
+    const text = editor.makeNode('text', {
+      x: 0,
+      y: 0,
+      props: { color: '#000000', fontSize: 16, paragraphs: [{ runs: [{ text: 'red', format: red }, { text: ' plain' }] }] },
+    })
+    const note = editor.makeNode('note', { x: 300, y: 0, props: { paragraphs: richTextFromPlain('memo') } })
+    editor.createNodes([text, note])
+    return { editor, text: editor.getNode(text.id)!, note: editor.getNode(note.id)! }
+  }
+  const valueOf = (nodes: NodeRecord[], id: string, selection: TextSelection | null = null) =>
+    visibleSections(nodes, undefined, selection)
+      .flatMap((s) => s.fields)
+      .find((f) => f.field.id === id)!.value
+
+  it('shows mixed when the characters differ, and the value of the selected range while editing', () => {
+    const { text } = setupRich()
+    expect(valueOf([text], 'text.color')).toEqual({ kind: 'mixed', values: ['#ff0000', '#000000'] })
+    expect(valueOf([text], 'text.fontSize')).toEqual({ kind: 'same', value: 16 })
+    expect(valueOf([text], 'text.color', { nodeId: text.id, start: 0, end: 2 })).toEqual({ kind: 'same', value: '#ff0000' })
+    expect(valueOf([text], 'text.color', { nodeId: text.id, start: 4, end: 9 })).toEqual({ kind: 'same', value: '#000000' })
+    // 範囲が空（カーソルだけ）なら、ノード全体
+    expect(valueOf([text], 'text.color', { nodeId: text.id, start: 1, end: 1 }).kind).toBe('mixed')
+  })
+
+  it('writes to the selected range, or to the whole node clearing the per-range values', () => {
+    const { text } = setupRich()
+    const ranged = fontSizeField.write(text, 32, { start: 4, end: 9 })
+    expect((ranged.props as TextProps).paragraphs).toEqual([
+      { runs: [{ text: 'red', format: red }, { text: ' ' }, { text: 'plain', format: { fontSize: 32 } }] },
+    ])
+    expect((ranged.props as TextProps).fontSize).toBe(16)
+    const whole = textColorField.write(text, '#0000ff')
+    expect(whole.props).toMatchObject({ color: '#0000ff', paragraphs: [{ runs: [{ text: 'red plain' }] }] })
+    expect(textColorField.write(whole, '#0000ff')).toBe(whole)
+  })
+
+  it('colors the characters of a sticky note (the note has no default text color to change)', () => {
+    const { note } = setupRich()
+    expect(valueOf([note], 'text.color')).toEqual({ kind: 'same', value: NOTE_TEXT_COLOR })
+    const colored = textColorField.write(note, '#ff0000')
+    expect((colored.props as NoteProps).paragraphs).toEqual([{ runs: [{ text: 'memo', format: red }] }])
+    expect((colored.props as NoteProps).color).toBe((note.props as NoteProps).color)
+    expect(textColorField.write(colored, NOTE_TEXT_COLOR).props).toMatchObject({ paragraphs: richTextFromPlain('memo') })
   })
 })

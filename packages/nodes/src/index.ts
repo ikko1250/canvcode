@@ -25,6 +25,7 @@ export * from './slideDeckCard.ts'
 export * from './slidePage.ts'
 export * from './text/layout.ts'
 export * from './text/noteNode.ts'
+export * from './text/richText.ts'
 export * from './text/textNode.ts'
 
 // ビルド時に組み込むノードの型の一覧（MAI-9）

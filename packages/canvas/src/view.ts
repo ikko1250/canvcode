@@ -272,7 +272,7 @@ export class CanvasView {
       position: 'absolute',
       inset: '0',
       // 'hidden' ではなく 'clip'。'hidden' だとスクロールできる要素として扱われ、編集中のカードが画面外へはみ出しているとき、
-      // CodeMirror や textarea がキャレットを見せようとして root 自体をスクロールし、キャンバスごとずれてしまう
+      // CodeMirror や文字の編集用の要素がキャレットを見せようとして root 自体をスクロールし、キャンバスごとずれてしまう
       overflow: 'clip',
       touchAction: 'none',
       userSelect: 'none',
@@ -520,7 +520,7 @@ export class CanvasView {
       editor.store.listen((event) => {
         // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
         if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
-        // 編集中のノードが（Undo などで）変わったら、textarea の位置を合わせ直す
+        // 編集中のノードが（Undo などで）変わったら、編集用の要素の位置を合わせ直す
         if (this.textEditor.editingId && event.patch.has(this.textEditor.editingId)) this.textEditor.layout()
         const documentEditing = this.documentEditor?.editingId
         if (documentEditing && event.patch.has(documentEditing)) this.documentEditor?.layout()
@@ -1575,7 +1575,7 @@ export class CanvasView {
 
   // ---- クリップボードとファイル（MAI-26） ----
 
-  // 文字の入力欄（編集中の textarea など）でのコピー・貼り付けは、ブラウザに任せる
+  // 文字の入力欄（編集中の文字など）でのコピー・貼り付けは、そちらに任せる
   private ownsClipboardEvent(e: ClipboardEvent): boolean {
     return (
       !isEditableKeyboardTarget(e.target) &&

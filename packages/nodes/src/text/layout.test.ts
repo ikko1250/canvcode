@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TEXT_FONT_SIZES, breakUnits, layoutText, stepFontSize, type TextStyle } from './layout.ts'
+import { TEXT_FONT_SIZES, breakUnits, layoutRichText, layoutText, stepFontSize, type TextStyle } from './layout.ts'
 
 // Node には Canvas がないので、概算の文字幅（全角 = fontSize、半角 = 0.55 × fontSize、空白 = 0.3 × fontSize）で測る
 const style: TextStyle = { fontSize: 10, lineHeight: 1.5, fontWeight: 400, color: '#000', align: 'left' }
@@ -77,5 +77,52 @@ describe('stepFontSize (MAI-50)', () => {
     expect(stepFontSize(largest, 1)).toBe(largest)
     expect(stepFontSize(TEXT_FONT_SIZES[0], -1)).toBe(TEXT_FONT_SIZES[0])
     expect(stepFontSize(200, 1)).toBe(200)
+  })
+})
+
+describe('layoutRichText (MAI-74)', () => {
+  const red = { color: '#ff0000' }
+
+  it('splits each line into segments per format', () => {
+    const layout = layoutRichText([{ runs: [{ text: 'ab' }, { text: 'cd', format: { ...red, fontSize: 20 } }] }], style, null)
+    const [line] = layout.lines
+    expect(line.text).toBe('abcd')
+    expect(line.segments.map((s) => [s.text, s.x, s.width, s.style.fontSize, s.style.color])).toEqual([
+      ['ab', 0, 11, 10, '#000'],
+      ['cd', 11, 22, 20, '#ff0000'],
+    ])
+    expect(line.width).toBe(33)
+    // 行の高さは、行の中の最も大きい文字に合わせる
+    expect(line.height).toBeCloseTo(30)
+    expect(layout.maxFontSize).toBe(20)
+  })
+
+  it('wraps across runs and measures each line by its own characters', () => {
+    // 1 行目は大きい文字（幅 20）が 2 つ、2 行目は小さい文字だけ
+    const layout = layoutRichText(
+      [{ runs: [{ text: 'あい', format: { fontSize: 20 } }, { text: 'うえおか' }] }],
+      style,
+      40,
+    )
+    expect(layout.lines.map((l) => l.text)).toEqual(['あい', 'うえおか'])
+    expect(layout.lines[0].height).toBeCloseTo(30)
+    expect(layout.lines[1].height).toBeCloseTo(15)
+    expect(layout.lines[1].top).toBeCloseTo(30)
+    expect(layout.height).toBeCloseTo(45)
+  })
+
+  it('keeps the height of an empty paragraph from its format', () => {
+    const layout = layoutRichText([{ runs: [{ text: 'a' }] }, { runs: [{ text: '', format: { fontSize: 40 } }] }], style, null)
+    expect(layout.lines.map((l) => l.height)).toEqual([15, 60])
+  })
+
+  it('lays out plain text exactly as before', () => {
+    const layout = layoutText('上\n\n下', style, 100)
+    expect(layout.lines.map((l) => [l.top, l.height])).toEqual([
+      [0, 15],
+      [15, 15],
+      [30, 15],
+    ])
+    expect(layout.lineHeightPx).toBe(15)
   })
 })

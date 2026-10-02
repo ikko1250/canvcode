@@ -275,6 +275,8 @@ export class Editor {
       locked: false,
       props: { ...def.defaultProps(), ...fields.props },
       meta: {},
+      // 版を上げた型のノードは、その版で作る（MAI-74）
+      ...(def.version > 1 ? { version: def.version } : {}),
     }
   }
 
