@@ -3,15 +3,21 @@ import type { NodeRecord, Vec } from '@canvcode/core'
 import {
   applyRunFormat,
   clampOpacity,
+  clampTileScale,
   convertPaint,
+  coverCrop,
   GEO_DEFAULT_FILL,
+  imagePaint,
   isGradientPaint,
+  normalizeCrop,
   solidPaint,
   sortStops,
   toFill,
   withGradientAngle,
   type Fill,
   type GradientStop,
+  type ImageCrop,
+  type ImageScaleMode,
   type PaintType,
   baseFormatOf,
   clearRunFormat,
@@ -56,12 +62,19 @@ import { propField, registerDesignSection, type DesignField, type DesignSection,
 // 値は Fill。書くときは、塗りそのもののほか、色だけ・不透明度だけを変えられる（複数を選んで色が違っても、不透明度だけをそろえるなど）。
 // 付箋の地は単色だけ：不透明度・塗りなし・グラデーションは持たない（control の opacity・none・gradient が false。パネルはそのボタンを出さない）。
 // グラデーション（MAI-82）：種類の切り替え（今の色から始める。paint.ts の convertPaint）、止め色の並び、線形の角度、円形の中心・半径。
-// 角度はノードの箱の大きさで見た向きなので、ノードごとに換算する（withGradientAngle）
+// 角度はノードの箱の大きさで見た向きなので、ノードごとに換算する（withGradientAngle）。
+// 画像（MAI-83）：画像を選ぶ（image。今が画像なら表示のしかたなどはそのまま）、表示のしかた（scaleMode）、切り抜く範囲（crop）、タイルの倍率（tileScale）。
+// 切り抜きへ切り替えるときは、塗りつぶしで見えていた範囲から始める（ノードの箱の大きさで決まるので、ノードごとに換算する）
 export type FillChange =
   | Fill
   | { change: 'color'; color: string }
   | { change: 'opacity'; opacity: number }
-  | { change: 'type'; type: PaintType }
+  | { change: 'type'; type: Exclude<PaintType, 'image'> }
+  | { change: 'image'; assetId: string }
+  // image は画像の元の大きさ（画素）。切り抜きへ切り替えるときに使う
+  | { change: 'scaleMode'; scaleMode: ImageScaleMode; image?: { width: number; height: number } }
+  | { change: 'crop'; crop: Partial<ImageCrop> }
+  | { change: 'tileScale'; tileScale: number }
   | { change: 'stops'; stops: GradientStop[] }
   | { change: 'angle'; angle: number }
   | { change: 'radial'; center?: Vec; radius?: number }
@@ -97,13 +110,31 @@ export function applyFillChange(current: Fill, change: FillChange, size: { w: nu
     case 'radial':
       if (current?.type !== 'radial') return current
       return { ...current, center: change.center ?? current.center, radius: Math.max(0, change.radius ?? current.radius) }
+    case 'image':
+      return current?.type === 'image' ? { ...current, assetId: change.assetId } : imagePaint(change.assetId, { opacity: current?.opacity ?? 1 })
+    case 'scaleMode': {
+      if (current?.type !== 'image' || current.scaleMode === change.scaleMode) return current
+      const full = current.crop.x === 0 && current.crop.y === 0 && current.crop.w === 1 && current.crop.h === 1
+      const crop = change.scaleMode === 'crop' && full && change.image ? coverCrop(change.image, size) : current.crop
+      return { ...current, scaleMode: change.scaleMode, crop }
+    }
+    case 'crop':
+      return current?.type === 'image' ? { ...current, crop: normalizeCrop({ ...current.crop, ...change.crop }) } : current
+    case 'tileScale':
+      return current?.type === 'image' ? { ...current, tileScale: clampTileScale(change.tileScale) } : current
   }
 }
 
 export const fillField: DesignField<FillChange> = {
   id: 'fill.paint',
   label: '色',
-  control: { kind: 'paint', opacity: (node) => node.type === 'geo', none: (node) => node.type === 'geo', gradient: (node) => node.type === 'geo' },
+  control: {
+    kind: 'paint',
+    opacity: (node) => node.type === 'geo',
+    none: (node) => node.type === 'geo',
+    gradient: (node) => node.type === 'geo',
+    image: (node) => node.type === 'geo',
+  },
   appliesTo: (node) => FILL_TYPES.has(node.type),
   read: readFill,
   write(node, change) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
-import { NOTE_TEXT_COLOR, gradientStop, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
+import { NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
 import { applyFillChange, boldField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
@@ -403,5 +403,29 @@ describe('fill field', () => {
     expect(applyFillChange(radial, { change: 'radial', radius: 0.8 })).toMatchObject({ center: { x: 0.5, y: 0.5 }, radius: 0.8 })
     // 単色に角度は当たらない
     expect(applyFillChange(solidPaint('#ff0000'), { change: 'angle', angle: 30 })).toEqual(solidPaint('#ff0000'))
+  })
+
+  // 画像（MAI-83）
+  it('sets an image, keeping the opacity, and switches how it is shown', () => {
+    const { geo, note } = setup()
+    const half = fillField.write(geo, { change: 'opacity', opacity: 0.5 })
+    const image = fillField.write(half, { change: 'image', assetId: 'asset:a' })
+    expect((image.props as { fill: unknown }).fill).toEqual(imagePaint('asset:a', { opacity: 0.5 }))
+    // 画像を差し替えても、表示のしかたはそのまま
+    const tiled = applyFillChange(imagePaint('asset:a', { scaleMode: 'tile', tileScale: 2 }), { change: 'image', assetId: 'asset:b' })
+    expect(tiled).toEqual(imagePaint('asset:b', { scaleMode: 'tile', tileScale: 2 }))
+    expect(applyFillChange(tiled, { change: 'tileScale', tileScale: 0 })).toMatchObject({ tileScale: 1 })
+    // 切り抜きへは、塗りつぶしで見えていた範囲から（横長の画像を正方形の図形に）
+    const cropped = applyFillChange(imagePaint('asset:a'), { change: 'scaleMode', scaleMode: 'crop', image: { width: 400, height: 200 } }, { w: 100, h: 100 })
+    expect(cropped).toMatchObject({ scaleMode: 'crop', crop: { x: 0.25, y: 0, w: 0.5, h: 1 } })
+    expect(applyFillChange(cropped, { change: 'crop', crop: { x: 0.1 } })).toMatchObject({ crop: { x: 0.1, y: 0, w: 0.5, h: 1 } })
+    // 切り抜いた範囲は、ほかのモードへ切り替えても覚えておく
+    const fit = applyFillChange(cropped, { change: 'scaleMode', scaleMode: 'fit' })
+    expect(fit).toMatchObject({ scaleMode: 'fit', crop: { x: 0.25, y: 0, w: 0.5, h: 1 } })
+    // 画像から単色へ戻せる。付箋の地は画像にしない
+    expect((fillField.write(image, { change: 'type', type: 'solid' }).props as { fill: unknown }).fill).toEqual(solidPaint('#e8eefc', 0.5))
+    const control = fillField.control as Extract<typeof fillField.control, { kind: 'paint' }>
+    expect(control.image?.(note)).toBe(false)
+    expect(control.image?.(geo)).toBe(true)
   })
 })

@@ -13,7 +13,7 @@ import {
   type SharedValue,
   type TextSelection,
 } from '@canvcode/canvas'
-import { TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
+import { IMAGE_VARIANT_SIZES, TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
 import { LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
 import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
@@ -21,6 +21,7 @@ import { FontField } from './FontField.tsx'
 import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
 import { TEXT_TOGGLE_FIELDS, paintBoxSize } from './sections.ts'
 import type { PaintEditingLink } from './GradientEditor.tsx'
+import type { PaintImageSource } from './ImagePaintEditor.tsx'
 import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggles.ts'
 
 // デザインパネル（MAI-73）。Figma の右のパネルのように、選んでいるノードの見た目のプロパティを並べて変える。
@@ -33,6 +34,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 太字・斜体・下線・取り消し線（MAI-79）は 1 行にボタンを並べる（control の group）。編集中は Ctrl+B などと同じに切り替える（textToggles.ts）
 // - 色の項目はカラーピッカー（ColorPicker.tsx。MAI-81）。「このキャンバスで使った色」は、ピッカーを開いたときに今の Canvas から集める
 // - 塗りのグラデーション（MAI-82）を開いている間は、図形の上にハンドルを出す（session.paintEditing。1 つの図形を選んでいるときだけ）
+// - 画像の塗り（MAI-83）の画像は、CanvasView の Asset（ワークスペースの画像・ファイル・クリップボード）から選ぶ（paintImageSource）
 
 export function DesignPanel(props: {
   editor: Editor
@@ -110,6 +112,7 @@ export function DesignPanel(props: {
   const paintEditing = useSyncExternalStore(editor.session.subscribe, () => editor.session.get().paintEditing)
   const singleId = nodes.length === 1 ? nodes[0].id : null
   const paintLink = useMemo(() => paintEditingLink(editor, view, singleId), [editor, view, singleId])
+  const paintImages = useMemo(() => paintImageSource(view), [view])
 
   const sections = visibleSections(nodes, undefined, textSelection)
   if (sections.length === 0) return null
@@ -177,7 +180,7 @@ export function DesignPanel(props: {
                     value={row.field.value}
                     editor={valueEditor(row.field.field)}
                     nodes={nodes}
-                    paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null }}
+                    paint={{ link: paintLink, editing: paintEditing?.nodeId === singleId ? paintEditing : null, images: paintImages }}
                     onDone={backToCanvas}
                   />
                 ),
@@ -196,7 +199,7 @@ function FieldView(props: {
   value: SharedValue<any>
   editor: ValueEditor<any>
   nodes: readonly NodeRecord[]
-  paint: { link: PaintEditingLink | null; editing: PaintEditing | null }
+  paint: { link: PaintEditingLink | null; editing: PaintEditing | null; images: PaintImageSource | null }
   onDone: () => void
 }) {
   const { field, value, editor, nodes, paint, onDone } = props
@@ -213,6 +216,8 @@ function FieldView(props: {
           canOpacity={nodes.every((node) => control.opacity?.(node) ?? true)}
           canNone={nodes.every((node) => control.none?.(node) ?? true)}
           canGradient={nodes.every((node) => control.gradient?.(node) ?? false)}
+          canImage={nodes.every((node) => control.image?.(node) ?? false)}
+          images={paint.images}
           sizes={nodes.map(paintBoxSize)}
           link={paint.link}
           paintEditing={paint.editing}
@@ -273,6 +278,22 @@ function paintEditingLink(editor: Editor, view: CanvasView | null, nodeId: strin
       const rect = root.getBoundingClientRect()
       return hitGradientHandle(editor, { x: e.clientX - rect.left, y: e.clientY - rect.top }) !== null
     },
+  }
+}
+
+// 画像の塗り（MAI-83）の画像を選ぶ先。Asset は CanvasView が持つ
+function paintImageSource(view: CanvasView | null): PaintImageSource | null {
+  if (!view) return null
+  const assets = view.assets
+  return {
+    list: () => assets.images(),
+    get: (assetId) => assets.get(assetId),
+    url: (assetId) => {
+      const record = assets.get(assetId)
+      return record ? assets.url(record, IMAGE_VARIANT_SIZES[0]) : null
+    },
+    importFile: (file) => view.importImageFile(file),
+    importClipboard: () => view.importClipboardImage(),
   }
 }
 

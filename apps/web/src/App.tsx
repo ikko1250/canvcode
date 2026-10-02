@@ -1062,8 +1062,11 @@ export function App(props: { initial: InitialRecords }) {
       console.error('Failed to load files', error)
       notify('ファイルの一覧を読み込めませんでした')
     })
-    // 保存されている Asset（画像・PDF）の一覧を読む
-    void created.assets.loadList().catch((error: unknown) => console.error('Failed to load assets', error))
+    // 保存されている Asset（画像・PDF）の一覧を読む。読めたら描き直す（一覧より先に描いた画像・画像の塗りは、プレースホルダーのままになるので）
+    void created.assets
+      .loadList()
+      .then(() => created.invalidate('scene'))
+      .catch((error: unknown) => console.error('Failed to load assets', error))
     // 開いた URL の Canvas に入る
     const initial = canvasIdFromUrl()
     const initialRef = refIdFromUrl()

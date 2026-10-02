@@ -12,6 +12,7 @@ import {
   linesOfSelection,
   quoteRange,
   isNodeRecord,
+  type AssetRecord,
   type Box,
   type Camera,
   type CanvasRefTarget,
@@ -28,8 +29,9 @@ import {
   pickImageLevel,
   resetTextMetrics,
   textMetricsGeneration,
-  type CitationResolver, type DocumentResolver, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
-import { AssetManager, isPdf, isSupportedImage, type PdfService } from './assets.ts'
+  type CitationResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
+import { AssetManager, IMAGE_MIME_TYPES, isPdf, isSupportedImage, type PdfService } from './assets.ts'
+import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
   CLIPBOARD_MIME,
   copySelection,
@@ -576,7 +578,7 @@ export class CanvasView {
     const scale = Math.min(THUMBNAIL_MAX.w / bounds.w, THUMBNAIL_MAX.h / bounds.h, 2)
     const width = Math.max(1, Math.round(bounds.w * scale))
     const height = Math.max(1, Math.round(bounds.h * scale))
-    const canvas = this.renderRegion(editor, bounds, scale, width, height)
+    const canvas = await this.renderRegionLoaded(editor, bounds, scale, width, height)
     const image = await createImageBitmap(canvas)
     const previous = this.thumbnails.get(editor.canvasId)?.image
     if (previous instanceof ImageBitmap) previous.close()
@@ -655,16 +657,43 @@ export class CanvasView {
     await this.loadPdfPages(editor, box, scale)
     // フレームとその中だけを描く（上に重なった別のノードは写さない）
     const only = new Set([frameId, ...editor.index.descendantsOf(frameId)])
-    const canvas = this.renderRegion(editor, box, scale, width, height, only)
+    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height, only)
     const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
     if (!png) return false
     await figures.upload(frameId, png)
     return true
   }
 
+  // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）のうち、
+  // 頼んだ解像度のものが手元になかったものを読み込んでから、描き直す（読み込み中のプレースホルダーや粗い画像を写さない）。
+  // 頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
+  // （上限を超えれば、いつもどおり古いものから捨てる）
+  private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): Promise<HTMLCanvasElement> {
+    const missing = new Map<string, { key: string; version: string; level: number; produce: () => Promise<RasterImage> }>()
+    const recorder: ImageRequester = {
+      get: (key, version, level, produce) => {
+        const image = this.images.get(key, version, level, produce)
+        if (key.startsWith('asset:') && image?.level !== level) missing.set(`${key}@${level}`, { key, version, level, produce })
+        return image
+      },
+    }
+    const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder)
+    if (missing.size === 0) return canvas
+    await Promise.all([...missing.values()].map(({ key, version, level, produce }) => this.images.load(key, version, level, produce)))
+    return this.renderRegion(editor, box, scale, width, height, only)
+  }
+
   // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像、スライドの図）。
   // only を渡すと、そのノードだけを描く
-  private renderRegion(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): HTMLCanvasElement {
+  private renderRegion(
+    editor: Editor,
+    box: Box,
+    scale: number,
+    width: number,
+    height: number,
+    only?: ReadonlySet<string>,
+    images: ImageRequester = this.images,
+  ): HTMLCanvasElement {
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -676,7 +705,7 @@ export class CanvasView {
       width,
       height,
       dpr: 1,
-      images: this.images,
+      images,
       assets: this.assets,
       documents: this.documents,
       files: this.files ?? undefined,
@@ -692,7 +721,7 @@ export class CanvasView {
     const { width, height, scale } = refImageSize(box, maxEdge)
     await this.settleFonts(editor)
     await this.loadPdfPages(editor, box, scale)
-    const canvas = this.renderRegion(editor, box, scale, width, height)
+    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height)
     return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
   }
 
@@ -1569,6 +1598,12 @@ export class CanvasView {
       void this.copyCanvasReference()
       return
     }
+    // Ctrl（⌘）+Alt+V：クリップボードの画像を、選んでいる図形の塗りにする（MAI-83）。Option+V は文字になるので code で見る
+    if (mod && e.altKey && e.code === 'KeyV') {
+      e.preventDefault()
+      void this.pasteImageFill()
+      return
+    }
     if (mod && e.key.toLowerCase() === 'v') {
       // 貼り付けそのものは paste イベントで行う。ここでは Shift を押しているかだけを覚えておく
       this.pasteAtPointer = e.shiftKey
@@ -1714,7 +1749,77 @@ export class CanvasView {
     if (files.length === 0) return
     e.preventDefault()
     this.root.focus({ preventScroll: true })
-    await this.importFiles(files, this.toPointer(e).world)
+    const point = this.toPointer(e).world
+    // Alt（Option）を押しながら図形の上へ画像を落とすと、その図形の塗りにする（MAI-83）。押していなければ、画像ノードを置く
+    const target = e.altKey ? imageFillTargetAt(this.editor, point) : null
+    const image = files.find(isSupportedImage)
+    if (target && image) {
+      await this.setImageFillFromFile([target.id], image)
+      return
+    }
+    await this.importFiles(files, point)
+  }
+
+  // ---- 画像の塗り（MAI-83） ----
+
+  // 画像のファイルを Asset にして、ids の図形の塗りにする。変えたノードの id を返す（読めなければ知らせて空）
+  async setImageFillFromFile(ids: readonly string[], file: Blob & { name?: string }): Promise<string[]> {
+    const editor = this.editor
+    const asset = await this.importImageFile(file)
+    if (!asset || this.editor !== editor) return []
+    const changed = setImageFill(editor, ids, asset.id)
+    if (changed.length > 0) editor.setSelection(changed)
+    return changed
+  }
+
+  // 画像のファイルを Asset にする（塗りに使う。ノードは置かない）。画像でない・読めなければ知らせて null
+  async importImageFile(file: Blob & { name?: string }): Promise<AssetRecord | null> {
+    if (!isSupportedImage(file)) {
+      this.options.notify(`${file.name ?? ''}：塗りにできるのは画像（PNG・JPEG・GIF・WebP・AVIF・BMP）だけです`)
+      return null
+    }
+    try {
+      return await this.assets.importImage(file)
+    } catch (error) {
+      console.error('Failed to import image', file.name, error)
+      this.options.notify(`画像を読み込めませんでした：${file.name ?? ''}`)
+      return null
+    }
+  }
+
+  // クリップボードの画像を Asset にする。paste イベントは Ctrl+V（と Shift 付き）でしか来ないので、
+  // 非同期のクリップボード API で読む（ブラウザが許可を求めることがある）。画像がなければ知らせて null
+  async importClipboardImage(): Promise<AssetRecord | null> {
+    let blob: Blob | null = null
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((t) => IMAGE_MIME_TYPES.includes(t))
+        if (type) {
+          blob = await item.getType(type)
+          break
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to read the clipboard', error)
+    }
+    if (!blob) {
+      this.options.notify('クリップボードに画像がありません')
+      return null
+    }
+    return this.importImageFile(blob)
+  }
+
+  // クリップボードの画像を、選んでいる図形の塗りにする（Ctrl（⌘）+Alt+V）
+  async pasteImageFill(ids: Iterable<string> = this.editor.session.get().selectedIds): Promise<string[]> {
+    const editor = this.editor
+    const targets = [...ids].filter((id) => canHoldImageFill(editor.getNode(id)))
+    if (targets.length === 0) {
+      this.options.notify('画像を塗りに貼り付けるには、図形を選んでください')
+      return []
+    }
+    const asset = await this.importClipboardImage()
+    if (!asset || this.editor !== editor) return []
+    return setImageFill(editor, targets, asset.id)
   }
 
   // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる。

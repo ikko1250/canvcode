@@ -10,9 +10,10 @@ import {
   type ReactNode,
 } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
-import { GEO_DEFAULT_FILL, isGradientPaint, normalizeColor, solidPaint, type Fill, type PaintType } from '@canvcode/nodes'
+import { GEO_DEFAULT_FILL, isGradientPaint, normalizeColor, solidPaint, type Fill, type ImagePaint, type PaintType } from '@canvcode/nodes'
 import { MIXED_LABEL, Slider, type ValueEditor } from './controls.tsx'
 import { GradientEditor, type PaintEditing, type PaintEditingLink } from './GradientEditor.tsx'
+import { ImagePaintEditor, type PaintImageSource } from './ImagePaintEditor.tsx'
 import { useDraft } from './useDraft.ts'
 import { eyeDropperColor, hsvToHex, paintSummary, syncHsv, type Hsv } from './colorModel.ts'
 import { UsedColorsContext } from './usedColorsContext.ts'
@@ -30,6 +31,8 @@ import type { FillChange } from './sections.ts'
 // - 図形の塗りは、ピッカーの上で種類（単色・線形・円形）を切り替えられる（MAI-82）。グラデーションなら、止め色の帯・位置・
 //   角度（中心・半径）を出し（GradientEditor.tsx）、ピッカーは選んでいる止め色の色と不透明度を変える。
 //   ピッカーを開いている間は、図形の上にグラデーションのハンドルを出す（PaintEditingLink）
+// - 種類を「画像」（MAI-83）にすると、ピッカーの代わりに画像の選択と表示のしかたを出す（ImagePaintEditor.tsx）。
+//   画像を選ぶまでは塗りを変えない（選んだときに画像の塗りにする）
 // ボタン・見本は pointerdown を止めて、キャンバス（編集中の文字）からフォーカスを奪わない
 
 // EyeDropper API（Chromium 系だけ）。ないブラウザではスポイトのボタンを出さない
@@ -260,7 +263,7 @@ function SwatchButton(props: { label: string; color: string | null; state: 'colo
       aria-label={`${label}を選ぶ`}
       aria-haspopup="dialog"
       aria-expanded={open}
-      title={state === 'mixed' ? MIXED_LABEL : state === 'none' ? 'なし' : (color ?? '')}
+      title={state === 'mixed' ? MIXED_LABEL : state === 'none' ? 'なし' : color?.startsWith('url(') ? '画像' : (color ?? '')}
       onPointerDown={(e) => e.preventDefault()}
       onClick={onToggle}
     >
@@ -351,9 +354,10 @@ const PAINT_TYPE_OPTIONS = [
   { value: 'solid', title: '単色', label: '単色' },
   { value: 'linear', title: '線形のグラデーション', label: '線形' },
   { value: 'radial', title: '円形のグラデーション', label: '円形' },
+  { value: 'image', title: '画像', label: '画像' },
 ] as const
 
-const PAINT_TYPE_LABELS: Record<PaintType, string> = { solid: '単色', linear: '線形', radial: '円形' }
+const PAINT_TYPE_LABELS: Record<PaintType, string> = { solid: '単色', linear: '線形', radial: '円形', image: '画像' }
 
 export function PaintField(props: {
   label: string
@@ -363,6 +367,9 @@ export function PaintField(props: {
   canOpacity: boolean
   canNone: boolean
   canGradient?: boolean
+  // 画像の塗りを選べるか（MAI-83）と、画像を選ぶ先
+  canImage?: boolean
+  images?: PaintImageSource | null
   // 選んでいるノードの箱の大きさ（線形の角度を見せる。MAI-82）
   sizes?: readonly { w: number; h: number }[]
   // 図形の上のグラデーションのハンドルとのつなぎ（1 つの図形を選んでいるときだけ）と、今の編集の状態（session.paintEditing）
@@ -370,10 +377,14 @@ export function PaintField(props: {
   paintEditing?: PaintEditing | null
   onDone?: () => void
 }) {
-  const { label, value, editor, canOpacity, canNone, canGradient = false, sizes = [], link = null, paintEditing = null, onDone } = props
+  const { label, value, editor, canOpacity, canNone, canGradient = false, canImage = false, images = null, sizes = [], link = null, paintEditing = null, onDone } = props
   const { open, setOpen, rootRef } = usePickerOpen(link?.ownsPointer)
-  const summary = paintSummary(value)
+  const summary = paintSummary(value, images ? (assetId) => images.url(assetId) : undefined)
   const gradient = value.kind === 'same' && isGradientPaint(value.value) ? value.value : null
+  // 種類の「画像」を押したが、まだ画像を選んでいない（ピッカーの代わりに画像の選択を出す）
+  const [choosingImage, setChoosingImage] = useState(false)
+  const imagePaints = summary.type === 'image' ? (value.kind === 'same' ? [value.value] : value.values).filter((fill): fill is ImagePaint => fill?.type === 'image') : []
+  const showImage = summary.type === 'image' || choosingImage
   // 選んでいる止め色。キャンバスとつながっていれば session の値（キャンバスのハンドルで選んだものも）
   const [localStop, setLocalStop] = useState(0)
   const rawStop = link && paintEditing ? paintEditing.stop : localStop
@@ -418,11 +429,12 @@ export function PaintField(props: {
   const state = summary.allNone ? 'none' : summary.preview ? 'color' : 'mixed'
   const showOpacity = canOpacity && !summary.anyNone
   // 塗りの種類（ピッカーの上の 1 行）
+  const typeOptions = PAINT_TYPE_OPTIONS.filter((option) => (option.value === 'image' ? canImage : option.value === 'solid' || canGradient))
   const typeSwitch =
-    canGradient && !summary.anyNone ? (
+    typeOptions.length > 1 && !summary.anyNone ? (
       <div className="design-segmented design-paint-types" role="group" aria-label="種類">
-        {PAINT_TYPE_OPTIONS.map((option) => {
-          const active = summary.type === option.value
+        {typeOptions.map((option) => {
+          const active = option.value === 'image' ? showImage : !choosingImage && summary.type === option.value
           return (
             <button
               key={option.value}
@@ -430,7 +442,14 @@ export function PaintField(props: {
               aria-pressed={active}
               className={active ? 'active' : ''}
               onPointerDown={(e) => e.preventDefault()}
-              onClick={() => editor.set({ change: 'type', type: option.value })}
+              onClick={() => {
+                if (option.value === 'image') {
+                  if (summary.type !== 'image') setChoosingImage(true)
+                  return
+                }
+                setChoosingImage(false)
+                editor.set({ change: 'type', type: option.value })
+              }}
             >
               {option.label}
             </button>
@@ -443,8 +462,17 @@ export function PaintField(props: {
     <div className="design-field design-color-field design-paint-field" ref={rootRef}>
       <span className="design-label">{label}</span>
       <div className="design-control">
-        <SwatchButton label={label} color={summary.preview} state={state} open={open} onToggle={() => setOpen(!open)} />
-        {summary.type === 'linear' || summary.type === 'radial' ? (
+        <SwatchButton
+          label={label}
+          color={summary.preview}
+          state={state}
+          open={open}
+          onToggle={() => {
+            setOpen(!open)
+            setChoosingImage(false)
+          }}
+        />
+        {summary.type === 'linear' || summary.type === 'radial' || summary.type === 'image' ? (
           <button className="design-paint-kind" title={`${label}を編集する`} onPointerDown={(e) => e.preventDefault()} onClick={() => setOpen(!open)}>
             {PAINT_TYPE_LABELS[summary.type]}
           </button>
@@ -471,7 +499,38 @@ export function PaintField(props: {
               −
             </button>
           ))}
-        {open && (
+        {open && showImage && (
+          <div
+            className="design-color-popup"
+            role="dialog"
+            aria-label={`${label}の画像`}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                setChoosingImage(false)
+                onDone?.()
+              }
+            }}
+          >
+            {typeSwitch}
+            <ImagePaintEditor
+              label={label}
+              paints={imagePaints}
+              images={images}
+              editor={{
+                ...editor,
+                set: (change) => {
+                  setChoosingImage(false)
+                  editor.set(change)
+                },
+              }}
+              onDone={onDone}
+            />
+          </div>
+        )}
+        {open && !showImage && (
           <ColorPicker
             label={gradient ? `止め色 ${stopIndex + 1}` : label}
             color={gradient ? (selectedStop?.color ?? null) : summary.color}

@@ -5,7 +5,8 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 
 // 矩形・楕円などの図形（MAI-7 の `geo`）
 // 版 2（MAI-81）：塗り（fill）を色の文字列から塗り（paint.ts の Fill。種類＋中身、不透明度、塗りなしは null）にした。
-// 版 1 の色の文字列は、読み込むときに単色の塗りへ移す
+// 版 1 の色の文字列は、読み込むときに単色の塗りへ移す。
+// 塗りの種類（グラデーション（MAI-82）・画像（MAI-83））を足しても版は上げない（fill の形は同じ。読めない種類は toFill が既定にする）
 export interface GeoProps {
   shape: 'rect' | 'ellipse'
   w: number
@@ -61,7 +62,8 @@ export const geoType = defineNodeType<GeoProps>({
     ctx.beginPath()
     if (shape === 'rect') ctx.rect(0, 0, w, h)
     else ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
-    fillShape(ctx, fillOf(node.props), { x: 0, y: 0, w, h })
+    // 画像の塗り（MAI-83）は、このパス（矩形・楕円）で切り抜いて描く
+    fillShape(ctx, fillOf(node.props), { x: 0, y: 0, w, h }, info)
     // 画面上で 0.5 ピクセル未満になる線は、見た目にほぼ影響しないので描かない（MAI-14）
     if (strokeWidth * info.zoom >= 0.5) {
       ctx.lineWidth = strokeWidth
@@ -80,6 +82,12 @@ export const geoType = defineNodeType<GeoProps>({
   roughColor: (node) => fillPreviewColor(fillOf(node.props)) ?? colorWithAlpha(node.props.stroke, 0.35),
 
   colors: (node) => [...paintColors(fillOf(node.props)), ...(node.props.strokeWidth > 0 ? [node.props.stroke] : [])],
+
+  // 画像の塗りの Asset（MAI-83）
+  assets: (node) => {
+    const fill = fillOf(node.props)
+    return fill?.type === 'image' ? [fill.assetId] : []
+  },
 
   // 楕円は、矢印が縁で止まるよう多角形で近似する（MAI-28）
   outline(node) {

@@ -9,7 +9,7 @@ import {
   type SourceAnchorRecord,
   type Vec,
 } from '@canvcode/core'
-import { QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type ImageProps, type QuoteCardProps } from '@canvcode/nodes'
+import { QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type QuoteCardProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 import type { QuoteDraft } from './quotes.ts'
@@ -67,11 +67,12 @@ export function copySelection(editor: Editor, resolveAsset?: (id: string) => Ass
     if (props !== node.props) nodes[i] = { ...node, props }
   }
   const assets = new Map<string, AssetRecord>()
+  // 画像ノードと、画像の塗りの図形（MAI-83）が参照している Asset
   for (const node of nodes) {
-    if (node.type !== 'image') continue
-    const assetId = (node.props as ImageProps).assetId
-    const asset = resolveAsset?.(assetId)
-    if (asset) assets.set(assetId, asset)
+    for (const assetId of editor.types.get(node.type)?.assets?.(node) ?? []) {
+      const asset = resolveAsset?.(assetId)
+      if (asset) assets.set(assetId, asset)
+    }
   }
   const anchors = new Map<string, SourceAnchorRecord>()
   for (const node of nodes) {

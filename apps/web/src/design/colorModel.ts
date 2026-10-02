@@ -61,8 +61,8 @@ export function eyeDropperColor(value: string): string | null {
 }
 
 // 選んでいるノードの塗りから、パネルに出す値（色・不透明度・種類は、すべて同じときだけ。違えば null）。
-// preview は見本の CSS の background（グラデーションなら CSS のグラデーション）
-export function paintSummary(value: SharedValue<Fill>) {
+// preview は見本の CSS の background（グラデーションなら CSS のグラデーション、画像なら imageUrl の画像。MAI-83）
+export function paintSummary(value: SharedValue<Fill>, imageUrl?: (assetId: string) => string | null) {
   const fills = value.kind === 'same' ? [value.value] : value.values
   const first = fills[0]
   const allNone = fills.every((fill) => fill === null)
@@ -70,5 +70,5 @@ export function paintSummary(value: SharedValue<Fill>) {
   const color = !anyNone && first?.type === 'solid' && fills.every((fill) => fill?.type === 'solid' && normalizeColor(fill.color) === normalizeColor(first.color)) ? first.color : null
   const opacity = !anyNone && first && fills.every((fill) => fill?.opacity === first.opacity) ? first.opacity : null
   const type: PaintType | null = !anyNone && first && fills.every((fill) => fill?.type === first.type) ? first.type : null
-  return { allNone, anyNone, color, opacity, type, preview: value.kind === 'same' ? paintCss(value.value) : null }
+  return { allNone, anyNone, color, opacity, type, preview: value.kind === 'same' ? paintCss(value.value, undefined, imageUrl) : null }
 }

@@ -1293,6 +1293,9 @@ body,
 
 .design-panel .design-paint-types button {
   flex: 1;
+  min-width: 0;
+  padding: 0 2px;
+  white-space: nowrap;
 }
 
 /* グラデーションの編集（MAI-82）。止め色の帯は、市松模様の上に今のグラデーション。印はその止め色 */
@@ -1355,6 +1358,70 @@ body,
 .design-panel button.design-gradient-remove {
   height: 22px;
   font-size: 11px;
+}
+
+/* 画像の塗り（MAI-83）。表示のしかたの切り替え・切り抜きの範囲・タイルの倍率・画像の選択 */
+.design-image-paint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ピッカーは狭いので、表示のしかたは 2 列に並べる */
+.design-image-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.design-panel .design-image-modes button {
+  min-width: 0;
+  padding: 0 2px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.design-image-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.design-panel .design-image-actions button {
+  flex: 1;
+  min-width: 0;
+  padding: 0 2px;
+  white-space: nowrap;
+  height: 24px;
+  font-size: 11px;
+}
+
+.design-image-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.design-panel button.design-image-chip {
+  min-width: 0;
+  height: 40px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #eef0f3;
+}
+
+.design-panel button.design-image-chip.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.design-image-chip img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
 }
 
 /* カラーピッカー（MAI-81）。パネルの中、項目の下に開く */

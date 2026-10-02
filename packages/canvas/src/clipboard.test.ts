@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AssetRecord, NodeRecord } from '@canvcode/core'
-import { pickImageVariant, plainTextOf, richTextFromPlain, type TextProps } from '@canvcode/nodes'
+import { imagePaint, pickImageVariant, plainTextOf, richTextFromPlain, type TextProps } from '@canvcode/nodes'
 import {
   copySelection,
   duplicateSelection,
@@ -12,6 +12,7 @@ import {
   payloadToHtml,
 } from './clipboard.ts'
 import { Editor } from './editor.ts'
+import { imageFillTargetAt, setImageFill } from './imageFill.ts'
 
 // コピー・貼り付け・複製と、画像の縮小版の選び方（MAI-26）
 
@@ -200,5 +201,32 @@ describe('image variants', () => {
     expect(pickImageVariant(asset, 2000)).toBe(4000)
     // 縮小版がない小さな画像は、いつも原本
     expect(pickImageVariant({ ...asset, width: 200, height: 100, variants: [] }, 50)).toBe(200)
+  })
+})
+
+// 画像の塗り（MAI-83）
+describe('image fills', () => {
+  it('sets the image fill of shapes only, in one undo step, and copies the asset with the shape', () => {
+    const { editor, rect } = setup()
+    const shape = { ...rect(0, 0), props: { ...rect(0, 0).props, fill: { type: 'solid', color: '#ff0000', opacity: 0.4 } } }
+    const text = editor.makeNode('text', { x: 300, y: 0, props: { paragraphs: richTextFromPlain('a'), autoWidth: true } })
+    editor.createNodes([shape, text])
+    expect(setImageFill(editor, [shape.id, text.id], asset.id)).toEqual([shape.id])
+    expect((editor.getNode(shape.id)!.props as { fill: unknown }).fill).toEqual(imagePaint(asset.id, { opacity: 0.4 }))
+    editor.undo()
+    expect((editor.getNode(shape.id)!.props as { fill: { type: string } }).fill.type).toBe('solid')
+    editor.redo()
+
+    editor.setSelection([shape.id])
+    const payload = copySelection(editor, (id) => (id === asset.id ? asset : undefined))!
+    expect(payload.assets).toEqual([asset])
+  })
+
+  it('finds the shape under a dropped image', () => {
+    const { editor, rect } = setup()
+    const shape = rect(0, 0)
+    editor.createNodes([shape])
+    expect(imageFillTargetAt(editor, { x: 50, y: 25 })?.id).toBe(shape.id)
+    expect(imageFillTargetAt(editor, { x: 500, y: 25 })).toBeNull()
   })
 })

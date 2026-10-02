@@ -1,8 +1,10 @@
 import type { Box, Vec } from '@canvcode/core'
+import type { RenderInfo } from './defineNodeType.ts'
+import { IMAGE_PLACEHOLDER_FILL, requestAssetImage } from './image.ts'
 
 // 塗り（MAI-81）。図形（geo）の塗りの形と、Canvas への描き方。
 // 後の課題の、グラデーション（MAI-82）・画像（MAI-83）・ボーダー（MAI-85）・ブロック矢印（MAI-87）も同じ形を使う。
-// - Paint は「種類（type）＋中身」。単色（solid）と、線形・円形のグラデーション（linear・radial。MAI-82）。
+// - Paint は「種類（type）＋中身」。単色（solid）と、線形・円形のグラデーション（linear・radial。MAI-82）、画像（image。MAI-83）。
 //   種類を足すときは、union に足して paintStyle・paintColors・fillPreviewColor・paintCss を対応させる
 // - opacity は塗りの不透明度（0〜1）。種類によらず持つ（Figma と同じ）。ノードの不透明度（NodeRecord.opacity）とは別で、掛け合わせて描く
 // - 塗りなしは null（Fill）。Figma のような塗りの配列（重ね塗り）にはしない：パネルで 1 つの塗りを選ぶ UI に合わせ、
@@ -49,7 +51,34 @@ export interface RadialGradientPaint {
 
 export type GradientPaint = LinearGradientPaint | RadialGradientPaint
 
-export type Paint = SolidPaint | GradientPaint
+// 画像の塗り（MAI-83）。実体は Asset にあり、画像ノード（image.ts）と同じく assetId で参照する（同じ画像キャッシュの項目を使う）。
+// 表示のしかた（scaleMode。Figma と同じ 4 つ）：
+// - fill：形の箱を覆うように縦横比を保って拡大・縮小し、中央に置く（はみ出した所は形で切り抜く）
+// - fit：形の箱に全体が収まるように縦横比を保って拡大・縮小し、中央に置く（余った所は塗らない）
+// - crop：画像の crop の範囲（画像全体を 0〜1 とした割合）を、形の箱にぴったり合わせる（縦横比は箱に合わせて変わる）
+// - tile：画像を元の大きさ（画素＝ワールド 1 単位）の tileScale 倍で、箱の左上から敷き詰める
+// crop・tileScale は、そのモードのときだけ使う（ほかのモードに切り替えても覚えておく）
+export type ImageScaleMode = 'fill' | 'fit' | 'crop' | 'tile'
+
+export const IMAGE_SCALE_MODES: readonly ImageScaleMode[] = ['fill', 'fit', 'crop', 'tile']
+
+export interface ImageCrop {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface ImagePaint {
+  type: 'image'
+  assetId: string
+  scaleMode: ImageScaleMode
+  crop: ImageCrop
+  tileScale: number
+  opacity: number
+}
+
+export type Paint = SolidPaint | GradientPaint | ImagePaint
 
 export type PaintType = Paint['type']
 
@@ -70,8 +99,10 @@ export function isGradientPaint(paint: Fill | undefined): paint is GradientPaint
 
 export function isPaint(value: unknown): value is Paint {
   if (typeof value !== 'object' || value === null) return false
-  const paint = value as { type?: unknown; color?: unknown; start?: unknown; end?: unknown; center?: unknown; radius?: unknown; stops?: unknown }
+  const paint = value as { type?: unknown; color?: unknown; start?: unknown; end?: unknown; center?: unknown; radius?: unknown; stops?: unknown; assetId?: unknown }
   switch (paint.type) {
+    case 'image':
+      return typeof paint.assetId === 'string' && paint.assetId !== ''
     case 'solid':
       return typeof paint.color === 'string'
     case 'linear':
@@ -144,8 +175,9 @@ export function radialGradient(stops: readonly GradientStop[], options: { center
 // - 単色 → グラデーション：今の色から、同じ色の透明へ（Figma と同じ）
 // - 線形 ↔ 円形：止め色はそのまま、位置は既定
 // - グラデーション → 単色：最初の止め色
-// - 塗りなし → fallback の色（図形の既定の色）から
-export function convertPaint(current: Fill, type: PaintType, fallbackColor: string): Paint {
+// - 塗りなし・画像 → fallback の色（図形の既定の色）から
+// 画像へは、画像を選んだときに imagePaint で作る（画像がないと作れないので、ここでは扱わない）
+export function convertPaint(current: Fill, type: Exclude<PaintType, 'image'>, fallbackColor: string): Paint {
   if (current?.type === type) return current
   const opacity = current?.opacity ?? 1
   if (type === 'solid') {
@@ -225,6 +257,7 @@ export function toFill(value: unknown, fallback: Fill = null): Fill {
   if (isPaint(value)) {
     const opacity = clampOpacity(typeof value.opacity === 'number' ? value.opacity : 1)
     if (value.type === 'solid') return { ...value, opacity }
+    if (value.type === 'image') return imagePaint(value.assetId, { ...value, opacity })
     const stops = sortStops(value.stops.map((stop) => gradientStop(stop.position, stop.color, typeof stop.opacity === 'number' ? stop.opacity : 1)))
     return value.type === 'linear' ? { ...value, stops, opacity } : { ...value, radius: Math.max(0, value.radius), stops, opacity }
   }
@@ -232,9 +265,15 @@ export function toFill(value: unknown, fallback: Fill = null): Fill {
 }
 
 // 今の Canvas のパスを、塗りで塗る（ctx はノードのローカル座標）。box は塗る形の外接の箱（グラデーション・画像の位置に使う）。
-// 塗りの不透明度は globalAlpha に掛ける（ノードの不透明度はすでに掛かっている）。パスはそのまま残る（あとで線を描ける）
-export function fillShape(ctx: CanvasRenderingContext2D, fill: Fill, box: Box): void {
+// 塗りの不透明度は globalAlpha に掛ける（ノードの不透明度はすでに掛かっている）。パスはそのまま残る（あとで線を描ける）。
+// 画像の塗り（MAI-83）は、info の画像キャッシュ（images）と Asset（assets）から画像を引き、今のパスで切り抜いて描く
+// （楕円・角丸など、パスの形がそのまま切り抜く形になる）。info がない・読み込み中なら、灰色のプレースホルダーで塗る
+export function fillShape(ctx: CanvasRenderingContext2D, fill: Fill, box: Box, info?: PaintImageInfo): void {
   if (!fill || fill.opacity <= 0) return
+  if (fill.type === 'image') {
+    fillImage(ctx, fill, box, info)
+    return
+  }
   // 幅・高さのない箱には、グラデーションの位置が決まらない
   if (isGradientPaint(fill) && (box.w <= 0 || box.h <= 0)) return
   ctx.save()
@@ -249,14 +288,15 @@ export function fillShape(ctx: CanvasRenderingContext2D, fill: Fill, box: Box): 
 
 // paintStyle の模様を描く座標（今の座標からの行列 [a, b, c, d, e, f]）。null なら今の座標のまま。
 // 円形のグラデーションは、箱を 1×1 にした座標で作る（横長の箱で楕円になる）
-export function paintTransform(paint: Paint, box: Box): [number, number, number, number, number, number] | null {
+export function paintTransform(paint: SolidPaint | GradientPaint, box: Box): [number, number, number, number, number, number] | null {
   if (paint.type !== 'radial') return null
   return [box.w, 0, 0, box.h, box.x, box.y]
 }
 
 // Canvas の fillStyle（strokeStyle）にする値。不透明度（paint.opacity）は含めない（fillShape が globalAlpha で掛ける）。
 // 止め色の不透明度は含める。グラデーションは paintTransform の座標で作る（線形は今の座標、円形は箱を 1×1 にした座標）
-export function paintStyle(ctx: CanvasRenderingContext2D, paint: Paint, box: Box): string | CanvasGradient | CanvasPattern {
+// 画像の塗りは、読み込んだ画像が要るので扱わない（fillShape が描く）
+export function paintStyle(ctx: CanvasRenderingContext2D, paint: SolidPaint | GradientPaint, box: Box): string | CanvasGradient | CanvasPattern {
   switch (paint.type) {
     case 'solid':
       return paint.color
@@ -297,6 +337,9 @@ export function fillPreviewColor(fill: Fill): string | null {
     case 'linear':
     case 'radial':
       return averageStopColor(fill)
+    case 'image':
+      // 画像の平均の色は持っていないので、中くらいの灰色にする
+      return colorWithAlpha(IMAGE_PAINT_PREVIEW_COLOR, fill.opacity)
   }
 }
 
@@ -326,9 +369,17 @@ function averageStopColor(paint: GradientPaint): string {
 
 // 塗りの見本（パネル）に使う CSS の background。グラデーションは CSS のグラデーションにする（向き・中心は箱の割合で近い形に）。
 // size は見本に見せる図形の大きさ（線形の角度を合わせる）。不透明度も入れる。塗りなしは null
-export function paintCss(fill: Fill, size: { w: number; h: number } = { w: 1, h: 1 }): string | null {
+// 画像の塗りは、imageUrl（Asset の縮小版の URL を返す）があれば、その画像を表示のしかたに近い形で（不透明度は入れない）、
+// なければ中くらいの灰色
+export function paintCss(fill: Fill, size: { w: number; h: number } = { w: 1, h: 1 }, imageUrl?: (assetId: string) => string | null): string | null {
   if (!fill) return null
   if (fill.type === 'solid') return colorWithAlpha(fill.color, fill.opacity)
+  if (fill.type === 'image') {
+    const url = imageUrl?.(fill.assetId)
+    if (!url) return colorWithAlpha(IMAGE_PAINT_PREVIEW_COLOR, fill.opacity)
+    const layout = fill.scaleMode === 'fit' ? 'center / contain no-repeat' : fill.scaleMode === 'tile' ? '0 0 / 50% repeat' : 'center / cover no-repeat'
+    return `url(${JSON.stringify(url)}) ${layout} ${IMAGE_PLACEHOLDER_FILL}`
+  }
   const stops = sortStops(fill.stops)
     .map((stop) => `${colorWithAlpha(stop.color, clampOpacity(stop.opacity) * fill.opacity)} ${Math.round(stop.position * 1000) / 10}%`)
     .join(', ')
@@ -349,7 +400,134 @@ export function paintColors(fill: Fill): string[] {
     case 'linear':
     case 'radial':
       return fill.stops.map((stop) => stop.color)
+    // 画像の色は「使った色」に出さない
+    case 'image':
+      return []
   }
+}
+
+// ---- 画像（MAI-83） ----
+
+// 画像の塗りを 1 色で表すときの色（ズームアウト時の簡略描画・パネルの見本の代わり）
+export const IMAGE_PAINT_PREVIEW_COLOR = '#9aa0a6'
+export const FULL_CROP: ImageCrop = { x: 0, y: 0, w: 1, h: 1 }
+export const DEFAULT_TILE_SCALE = 1
+// タイルの倍率の範囲（小さすぎると敷き詰める数が増えすぎる）
+export const MIN_TILE_SCALE = 0.01
+export const MAX_TILE_SCALE = 100
+// 切り抜く範囲の最小（画像に対する割合）
+const MIN_CROP_SIZE = 0.01
+
+// 画像の塗りを描くのに要るもの（RenderInfo の一部）
+export type PaintImageInfo = Pick<RenderInfo, 'zoom' | 'devicePixelRatio' | 'images' | 'assets'>
+
+export function imagePaint(
+  assetId: string,
+  options: { scaleMode?: unknown; crop?: unknown; tileScale?: unknown; opacity?: number } = {},
+): ImagePaint {
+  const scaleMode = IMAGE_SCALE_MODES.includes(options.scaleMode as ImageScaleMode) ? (options.scaleMode as ImageScaleMode) : 'fill'
+  return {
+    type: 'image',
+    assetId,
+    scaleMode,
+    crop: normalizeCrop(options.crop),
+    tileScale: clampTileScale(options.tileScale),
+    opacity: clampOpacity(options.opacity ?? 1),
+  }
+}
+
+export function clampTileScale(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(MAX_TILE_SCALE, Math.max(MIN_TILE_SCALE, value)) : DEFAULT_TILE_SCALE
+}
+
+// 切り抜く範囲を、画像の中（0〜1）に収める。読めなければ画像全体
+export function normalizeCrop(value: unknown): ImageCrop {
+  const c = value as Partial<ImageCrop> | null
+  if (typeof c !== 'object' || c === null || ![c.x, c.y, c.w, c.h].every((v) => typeof v === 'number' && Number.isFinite(v))) return { ...FULL_CROP }
+  const w = Math.min(1, Math.max(MIN_CROP_SIZE, c.w!))
+  const h = Math.min(1, Math.max(MIN_CROP_SIZE, c.h!))
+  const x = Math.min(1 - w, Math.max(0, c.x!))
+  const y = Math.min(1 - h, Math.max(0, c.y!))
+  const round = (v: number) => Math.round(v * 1e6) / 1e6
+  return { x: round(x), y: round(y), w: round(w), h: round(h) }
+}
+
+// 「塗りつぶし（fill）」で見えている画像の範囲。切り抜き（crop）へ切り替えるとき、見た目が変わらないようにこれから始める
+export function coverCrop(image: { width: number; height: number }, size: { w: number; h: number }): ImageCrop {
+  if (image.width <= 0 || image.height <= 0 || size.w <= 0 || size.h <= 0) return { ...FULL_CROP }
+  const s = Math.max(size.w / image.width, size.h / image.height)
+  const w = Math.min(1, size.w / s / image.width)
+  const h = Math.min(1, size.h / s / image.height)
+  return normalizeCrop({ x: (1 - w) / 2, y: (1 - h) / 2, w, h })
+}
+
+// 画像の塗りの置き方。image は画像の元の大きさ（画素）、box は塗る形の外接の箱（ローカル座標）。
+// - draw：画像の src（画像全体を 0〜1 とした範囲）を、dest（ローカル座標の矩形）に描く
+// - tile：box の左上から、tile の大きさ（ローカル座標）で敷き詰める
+export type ImagePlacement = { kind: 'draw'; src: ImageCrop; dest: Box } | { kind: 'tile'; origin: Vec; tile: { w: number; h: number } }
+
+export function imagePlacement(paint: ImagePaint, image: { width: number; height: number }, box: Box): ImagePlacement {
+  const iw = Math.max(image.width, 1)
+  const ih = Math.max(image.height, 1)
+  switch (paint.scaleMode) {
+    case 'fill':
+    case 'fit': {
+      const s = paint.scaleMode === 'fill' ? Math.max(box.w / iw, box.h / ih) : Math.min(box.w / iw, box.h / ih)
+      const w = iw * s
+      const h = ih * s
+      return { kind: 'draw', src: { ...FULL_CROP }, dest: { x: box.x + (box.w - w) / 2, y: box.y + (box.h - h) / 2, w, h } }
+    }
+    case 'crop':
+      return { kind: 'draw', src: normalizeCrop(paint.crop), dest: { ...box } }
+    case 'tile': {
+      const scale = clampTileScale(paint.tileScale)
+      return { kind: 'tile', origin: { x: box.x, y: box.y }, tile: { w: iw * scale, h: ih * scale } }
+    }
+  }
+}
+
+// 画面に要る、画像全体の長辺の画素数（読む縮小版を選ぶのに使う。画像ノードと同じ考え方）
+export function imagePixelsNeeded(placement: ImagePlacement, zoom: number, devicePixelRatio: number): number {
+  const full =
+    placement.kind === 'tile'
+      ? Math.max(placement.tile.w, placement.tile.h)
+      : Math.max(placement.dest.w / Math.max(placement.src.w, 1e-6), placement.dest.h / Math.max(placement.src.h, 1e-6))
+  return full * zoom * devicePixelRatio
+}
+
+function fillImage(ctx: CanvasRenderingContext2D, paint: ImagePaint, box: Box, info: PaintImageInfo | undefined): void {
+  if (box.w <= 0 || box.h <= 0) return
+  const asset = info?.assets?.get(paint.assetId)
+  const placement = asset ? imagePlacement(paint, asset, box) : null
+  const raster = asset && placement && info ? requestAssetImage(info, asset, imagePixelsNeeded(placement, info.zoom, info.devicePixelRatio)) : null
+  ctx.save()
+  ctx.globalAlpha *= paint.opacity
+  if (!raster || !placement) {
+    // 読み込み中（または Asset が見つからない）：画像ノードと同じ灰色
+    ctx.fillStyle = IMAGE_PLACEHOLDER_FILL
+    ctx.fill()
+    ctx.restore()
+    return
+  }
+  if (placement.kind === 'tile') {
+    const pattern = ctx.createPattern(raster.image, 'repeat')
+    if (pattern) {
+      // パスは今の座標で決まっているので、座標を変えても塗る形は変わらない（模様の大きさと起点だけが変わる）
+      ctx.translate(placement.origin.x, placement.origin.y)
+      ctx.scale(placement.tile.w / raster.width, placement.tile.h / raster.height)
+      ctx.imageSmoothingEnabled = true
+      ctx.fillStyle = pattern
+      ctx.fill()
+    }
+    ctx.restore()
+    return
+  }
+  // 形（今のパス）で切り抜いて描く
+  ctx.clip()
+  const { src, dest } = placement
+  ctx.imageSmoothingEnabled = true
+  ctx.drawImage(raster.image, src.x * raster.width, src.y * raster.height, src.w * raster.width, src.h * raster.height, dest.x, dest.y, dest.w, dest.h)
+  ctx.restore()
 }
 
 // ---- 色 ----

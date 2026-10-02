@@ -196,6 +196,8 @@ describe('MCP server', () => {
             version: 2,
           },
           node('node:gone', 'geo', root, { label: 'x' }),
+          // 画像の塗りの図形（MAI-83）は、画像ノードと同じく Asset の id を渡す
+          node('node:photo', 'geo', root, { label: '写真', fill: { type: 'image', assetId: 'asset:abc', scaleMode: 'fill', crop: { x: 0, y: 0, w: 1, h: 1 }, tileScale: 1, opacity: 1 } }),
         ],
         [],
       )
@@ -211,6 +213,7 @@ describe('MCP server', () => {
             { id: 'node:card', bounds },
             { id: 'node:rich', bounds },
             { id: 'node:gone', bounds },
+            { id: 'node:photo', bounds },
           ],
         }),
       )
@@ -221,6 +224,7 @@ describe('MCP server', () => {
         { id: 'node:card', type: 'markdown-card', bounds, file: { id: doc.id, kind: 'markdown', title: 'メモ', path: 'メモ.md', absPath: join(workspace, 'メモ.md') } },
         { id: 'node:rich', type: 'text', bounds, text: '赤い文字\n二行目' },
         { id: 'node:gone', type: 'unknown', bounds, deleted: true },
+        { id: 'node:photo', type: 'geo', bounds, label: '写真', assetId: 'asset:abc' },
       ])
       expect(result.data.content.truncated).toBe(false)
       expect(result.data.warnings.join()).toContain('deleted')

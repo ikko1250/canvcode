@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { NodeRecord } from '@canvcode/core'
-import { upgradeNode } from './defineNodeType.ts'
+import type { AssetRecord, NodeRecord } from '@canvcode/core'
+import { upgradeNode, type ImageRequester, type RasterImage } from './defineNodeType.ts'
 import { GEO_DEFAULT_FILL, geoType, type GeoProps } from './geo.ts'
 import {
   colorAtPosition,
   colorWithAlpha,
   convertPaint,
+  coverCrop,
+  imagePaint,
+  imagePixelsNeeded,
+  imagePlacement,
+  IMAGE_PAINT_PREVIEW_COLOR,
+  normalizeCrop,
   fillPreviewColor,
   fillShape,
   gradientAngle,
@@ -265,5 +271,133 @@ describe('gradient paint', () => {
     const fill = linearGradient(stops)
     expect(geoType.colors!(geo({ fill, stroke: '#00ff00' }))).toEqual(['#ff0000', '#0000ff', '#00ff00'])
     expect(geoType.roughColor!(geo({ fill }))).toBe('rgba(128, 0, 128, 0.75)')
+  })
+})
+
+// 画像の塗り（MAI-83）
+describe('image paint', () => {
+  const asset: AssetRecord = { typeName: 'asset', id: 'asset:img', mime: 'image/png', size: 1, hash: 'img', width: 400, height: 200, variants: [256] }
+  const box = { x: 0, y: 0, w: 100, h: 100 }
+
+  it('reads image paints, keeping the asset and clamping the values', () => {
+    const read = toFill({ type: 'image', assetId: 'asset:img', scaleMode: 'tile', crop: { x: 0.9, y: -1, w: 0.5, h: 2 }, tileScale: -3, opacity: 2 })
+    expect(read).toEqual({ type: 'image', assetId: 'asset:img', scaleMode: 'tile', crop: { x: 0.5, y: 0, w: 0.5, h: 1 }, tileScale: 1, opacity: 1 })
+    // 表示のしかた・範囲がなければ既定（塗りつぶし・画像全体）
+    expect(toFill({ type: 'image', assetId: 'asset:img' })).toEqual(imagePaint('asset:img'))
+    expect(imagePaint('asset:img')).toEqual({ type: 'image', assetId: 'asset:img', scaleMode: 'fill', crop: { x: 0, y: 0, w: 1, h: 1 }, tileScale: 1, opacity: 1 })
+    // Asset のない画像は読めない
+    expect(toFill({ type: 'image', assetId: '' }, null)).toBeNull()
+    expect(normalizeCrop(null)).toEqual({ x: 0, y: 0, w: 1, h: 1 })
+  })
+
+  it('places the image for each scale mode', () => {
+    // 横長（2:1）の画像を、正方形の箱に
+    expect(imagePlacement(imagePaint('a', { scaleMode: 'fill' }), asset, box)).toEqual({ kind: 'draw', src: { x: 0, y: 0, w: 1, h: 1 }, dest: { x: -50, y: 0, w: 200, h: 100 } })
+    expect(imagePlacement(imagePaint('a', { scaleMode: 'fit' }), asset, box)).toEqual({ kind: 'draw', src: { x: 0, y: 0, w: 1, h: 1 }, dest: { x: 0, y: 25, w: 100, h: 50 } })
+    const crop = { x: 0.25, y: 0, w: 0.5, h: 1 }
+    expect(imagePlacement(imagePaint('a', { scaleMode: 'crop', crop }), asset, box)).toEqual({ kind: 'draw', src: crop, dest: box })
+    expect(imagePlacement(imagePaint('a', { scaleMode: 'tile', tileScale: 0.1 }), asset, { x: 5, y: 6, w: 100, h: 100 })).toEqual({
+      kind: 'tile',
+      origin: { x: 5, y: 6 },
+      tile: { w: 40, h: 20 },
+    })
+  })
+
+  it('asks for the resolution of the whole image on the screen', () => {
+    const fill = imagePlacement(imagePaint('a'), asset, box)
+    expect(imagePixelsNeeded(fill, 2, 1.5)).toBe(600)
+    const crop = imagePlacement(imagePaint('a', { scaleMode: 'crop', crop: { x: 0, y: 0, w: 0.5, h: 0.5 } }), asset, box)
+    expect(imagePixelsNeeded(crop, 1, 1)).toBe(200)
+    const tile = imagePlacement(imagePaint('a', { scaleMode: 'tile', tileScale: 0.5 }), asset, box)
+    expect(imagePixelsNeeded(tile, 1, 1)).toBe(200)
+  })
+
+  it('starts cropping from what the fill mode shows', () => {
+    expect(coverCrop({ width: 400, height: 200 }, { w: 100, h: 100 })).toEqual({ x: 0.25, y: 0, w: 0.5, h: 1 })
+    expect(coverCrop({ width: 400, height: 200 }, { w: 400, h: 100 })).toEqual({ x: 0, y: 0.25, w: 1, h: 0.5 })
+  })
+
+  // 画像の描き方を記録する Canvas と、画像キャッシュ
+  function imageContext() {
+    const calls: unknown[][] = []
+    let alpha = 1
+    const stack: number[] = []
+    const ctx = {
+      fillStyle: '#000000' as unknown,
+      imageSmoothingEnabled: false,
+      get globalAlpha() {
+        return alpha
+      },
+      set globalAlpha(v: number) {
+        alpha = v
+      },
+      save: () => stack.push(alpha),
+      restore: () => {
+        alpha = stack.pop()!
+        calls.push(['restore'])
+      },
+      clip: () => calls.push(['clip']),
+      fill: () => calls.push(['fill', ctx.fillStyle, alpha]),
+      translate: (...args: number[]) => calls.push(['translate', ...args]),
+      scale: (...args: number[]) => calls.push(['scale', ...args]),
+      createPattern: (image: unknown, repeat: string) => ({ pattern: image, repeat }),
+      drawImage: (...args: unknown[]) => calls.push(['drawImage', ...args.slice(1)]),
+    }
+    return { ctx: ctx as unknown as CanvasRenderingContext2D, calls }
+  }
+  const raster: RasterImage = { image: 'bitmap' as unknown as CanvasImageSource, width: 256, height: 128, level: 256 }
+  function info(image: RasterImage | null) {
+    const requests: [string, number][] = []
+    const images: ImageRequester = {
+      get: (key, _version, level) => {
+        requests.push([key, level])
+        return image
+      },
+    }
+    const assets = { get: (id: string) => (id === asset.id ? asset : undefined), load: async () => raster }
+    return { info: { zoom: 1, devicePixelRatio: 1, images, assets }, requests }
+  }
+
+  it('draws a placeholder until the image is loaded, and asks the cache for the right variant', () => {
+    const { ctx, calls } = imageContext()
+    const { info: loading, requests } = info(null)
+    fillShape(ctx, imagePaint(asset.id, { opacity: 0.5 }), box, loading)
+    expect(calls).toEqual([['fill', '#eef0f3', 0.5], ['restore']])
+    // 画面で長辺 200 画素なので、256 の縮小版を頼む（画像ノードと同じキー）
+    expect(requests).toEqual([[asset.id, 256]])
+    // info がない・Asset がないときも、プレースホルダー
+    const other = imageContext()
+    fillShape(other.ctx, imagePaint('asset:unknown'), box, loading)
+    fillShape(other.ctx, imagePaint(asset.id), box)
+    expect(other.calls.filter((c) => c[0] === 'fill')).toHaveLength(2)
+  })
+
+  it('clips to the current path and draws the image', () => {
+    const { ctx, calls } = imageContext()
+    fillShape(ctx, imagePaint(asset.id, { scaleMode: 'fit' }), box, info(raster).info)
+    expect(calls).toEqual([['clip'], ['drawImage', 0, 0, 256, 128, 0, 25, 100, 50], ['restore']])
+    const cropped = imageContext()
+    fillShape(cropped.ctx, imagePaint(asset.id, { scaleMode: 'crop', crop: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }), box, info(raster).info)
+    expect(cropped.calls[1]).toEqual(['drawImage', 128, 64, 128, 64, 0, 0, 100, 100])
+  })
+
+  it('tiles the image with a pattern scaled to the tile size', () => {
+    const { ctx, calls } = imageContext()
+    fillShape(ctx, imagePaint(asset.id, { scaleMode: 'tile', tileScale: 0.5 }), { x: 10, y: 20, w: 100, h: 100 }, info(raster).info)
+    // 元の大きさ 400×200 の半分 = 200×100 のタイル。読んだ画像は 256×128
+    expect(calls).toEqual([['translate', 10, 20], ['scale', 200 / 256, 100 / 128], ['fill', { pattern: 'bitmap', repeat: 'repeat' }, 1], ['restore']])
+  })
+
+  it('shows images as gray in rough drawing, the swatch and the used colors', () => {
+    const fill = imagePaint(asset.id, { opacity: 0.5 })
+    expect(fillPreviewColor(fill)).toBe(colorWithAlpha(IMAGE_PAINT_PREVIEW_COLOR, 0.5))
+    expect(paintColors(fill)).toEqual([])
+    expect(paintCss(fill)).toBe(colorWithAlpha(IMAGE_PAINT_PREVIEW_COLOR, 0.5))
+    expect(paintCss(imagePaint(asset.id, { scaleMode: 'fit' }), undefined, () => '/a.png')).toBe('url("/a.png") center / contain no-repeat #eef0f3')
+    expect(geoType.colors!(geo({ fill, stroke: '#00ff00' }))).toEqual(['#00ff00'])
+    expect(geoType.assets!(geo({ fill }))).toEqual([asset.id])
+    expect(geoType.assets!(geo({ fill: solidPaint('#ffffff') }))).toEqual([])
+    // 画像から単色・グラデーションへは、既定の色から
+    expect(convertPaint(fill, 'solid', '#e8eefc')).toEqual(solidPaint('#e8eefc', 0.5))
   })
 })

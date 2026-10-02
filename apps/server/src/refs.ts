@@ -360,7 +360,13 @@ async function describeNode(
       out.text = text ? truncate(text, MAX_NODE_TEXT) : undefined
       break
     }
-    case 'geo':
+    case 'geo': {
+      out.label = str('label')
+      // 画像の塗り（MAI-83）は、画像ノードと同じく Asset の id を渡す
+      const fill = props.fill as { type?: unknown; assetId?: unknown } | null | undefined
+      if (fill?.type === 'image' && typeof fill.assetId === 'string') out.assetId = fill.assetId
+      break
+    }
     case 'arrow':
       out.label = str('label')
       break

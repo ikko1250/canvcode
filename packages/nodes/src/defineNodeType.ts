@@ -119,6 +119,9 @@ export interface NodeTypeDef<P extends object> {
   reference?(node: NodeRecord<P>): DocumentReference | null
   // role を変えた props（貼り付けで持ち主をショートカットにするときなど）
   withRole?(node: NodeRecord<P>, role: 'owner' | 'shortcut'): P
+  // ノードが参照している画像の Asset の id（画像ノード、画像の塗り（MAI-83）の図形）。
+  // コピーするとき、クリップボードに Asset のレコードを一緒に載せる（別のタブ・ワークスペースでも読めるように）
+  assets?(node: NodeRecord<P>): string[]
   // 引用ノートは、参照している SourceAnchor の id を返す（逆リンクの索引に使う。MAI-33）
   citation?(node: NodeRecord<P>): string | null
   // ローカル座標の点にあるリンク（Ctrl（⌘）+クリックで開く。MAI-21）
