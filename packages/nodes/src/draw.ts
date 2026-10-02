@@ -180,6 +180,8 @@ export const drawType = defineNodeType<DrawProps>({
 
   roughColor: (node) => node.props.color,
 
+  colors: (node) => [node.props.color],
+
   // 点列を伸ばす。線の太さは変えない
   resize(node, size) {
     const { points, size: stroke } = node.props

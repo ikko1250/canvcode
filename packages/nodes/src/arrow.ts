@@ -295,6 +295,8 @@ export const arrowType = defineNodeType<ArrowProps>({
   },
 
   roughColor: (node) => node.props.color,
+
+  colors: (node) => [node.props.color],
   // 矢印は端の点で形を変える（リサイズや回転のハンドルは出さない）
   canRotate: false,
   canBind: false,

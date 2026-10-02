@@ -2,7 +2,7 @@ import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, letterSpacingOf, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
-import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
+import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParagraph } from './richText.ts'
 
 // テキスト（MAI-7 の `text`、MAI-24）。
 // - autoWidth：打った分だけ幅が伸びる（クリックで作ったとき）
@@ -102,6 +102,8 @@ export const textType = defineNodeType<TextProps>({
   },
 
   roughColor: () => 'rgba(120, 120, 120, 0.45)',
+
+  colors: (node) => [node.props.color, ...runColors(paragraphsOf(node.props))],
 
   // 横に伸ばすと、その幅で折り返すようになる。文字の大きさは変えない
   resize: (node, size) => ({ ...node.props, w: size.w, autoWidth: false }),

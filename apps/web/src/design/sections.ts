@@ -2,6 +2,10 @@ import { createElement } from 'react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   applyRunFormat,
+  clampOpacity,
+  solidPaint,
+  toFill,
+  type Fill,
   baseFormatOf,
   clearRunFormat,
   convertLineHeight,
@@ -41,13 +45,45 @@ import { propField, registerDesignSection, type DesignField, type DesignSection,
 
 // ---- 塗り ----
 
-// 図形の塗りと、付箋の地の色（付箋の color は地の色）
-export const fillColorField = propField<string>({
-  id: 'fill.color',
+// 塗り（MAI-81）。図形の塗り（paint.ts の Fill：種類＋中身・不透明度・塗りなし）と、付箋の地の色（付箋の color）。
+// 値は Fill。書くときは、塗りそのもののほか、色だけ・不透明度だけを変えられる（複数を選んで色が違っても、不透明度だけをそろえるなど）。
+// 付箋の地は単色だけ：不透明度と塗りなしは持たない（control の opacity・none が false。パネルはそのボタンを出さない）
+export type FillChange = Fill | { change: 'color'; color: string } | { change: 'opacity'; opacity: number }
+
+const FILL_TYPES = new Set(['geo', 'note'])
+
+function readFill(node: NodeRecord): Fill {
+  const props = node.props as { fill?: unknown; color?: string }
+  if (node.type === 'note') return solidPaint(props.color ?? '#ffffff')
+  return toFill(props.fill)
+}
+
+// 今の塗りに、変更を当てた塗り
+export function applyFillChange(current: Fill, change: FillChange): Fill {
+  if (change === null || !('change' in change)) return change
+  if (change.change === 'color') return current?.type === 'solid' ? { ...current, color: change.color } : solidPaint(change.color)
+  return current ? { ...current, opacity: clampOpacity(change.opacity) } : current
+}
+
+export const fillField: DesignField<FillChange> = {
+  id: 'fill.paint',
   label: '色',
-  keys: { geo: 'fill', note: 'color' },
-  control: { kind: 'color' },
-})
+  control: { kind: 'paint', opacity: (node) => node.type === 'geo', none: (node) => node.type === 'geo' },
+  appliesTo: (node) => FILL_TYPES.has(node.type),
+  read: readFill,
+  write(node, change) {
+    if (!FILL_TYPES.has(node.type)) return node
+    const props = node.props as Record<string, unknown>
+    const current = readFill(node)
+    const next = applyFillChange(current, change)
+    if (sameValue(next, current)) return node
+    if (node.type === 'note') {
+      // 付箋の地は単色の色だけを変える（塗りなし・不透明度は持たない）
+      return next?.type === 'solid' && next.color !== props.color ? { ...node, props: { ...props, color: next.color } } : node
+    }
+    return { ...node, props: { ...props, fill: next } }
+  },
+}
 
 // ---- 線 ----
 
@@ -357,7 +393,7 @@ export const opacityField: DesignField<number> = {
 }
 
 export const builtinDesignSections: DesignSection[] = [
-  { id: 'fill', title: '塗り', order: 100, fields: [fillColorField] },
+  { id: 'fill', title: '塗り', order: 100, fields: [fillField] },
   { id: 'stroke', title: '線', order: 200, fields: [strokeColorField, strokeWidthField] },
   { id: 'text', title: '文字', order: 300, fields: [fontFamilyField, fontSizeField, boldField, italicField, underlineField, strikethroughField, lineHeightField, letterSpacingField, textColorField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, fields: [opacityField] },

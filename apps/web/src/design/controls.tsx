@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useEffect, useRef, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { SharedValue } from '@canvcode/canvas'
 import type { LineHeight, LineHeightUnit } from '@canvcode/nodes'
-import { clampLineHeight, normalizeHexColor, parseLineHeight, parseNumber } from './parse.ts'
+import { clampLineHeight, parseLineHeight, parseNumber } from './parse.ts'
+import { useDraft } from './useDraft.ts'
 import type { FieldControl, SegmentOption, SelectOption } from './registry.ts'
 import type { LineHeightChange } from './sections.ts'
 
-// デザインパネルの入力部品（MAI-73）。数字・色・切り替えボタン・スライダー。
+// デザインパネルの入力部品（MAI-73）。数字・切り替えボタン・スライダー（色は ColorPicker.tsx）。
 // 部品は値を直接書き換えず、ValueEditor を通して変える：
 // - set：1 回の変更（Enter・ボタン）。Undo 1 回で戻る
 // - preview → end：続けて変わる操作（スライダー・ラベルのドラッグ・色の選択）。end までが Undo 1 回にまとまる。
@@ -26,24 +27,6 @@ interface FieldProps<T> {
   editor: ValueEditor<T>
   // 入力を終えたら、キャンバスにフォーカスを戻す（Esc・Enter のあと）
   onDone?: () => void
-}
-
-// 入力欄に打っている途中の文字。確定（Enter・フォーカスを外す）までは値を変えない。
-// Esc のあとフォーカスを外したときに、古い文字で確定しないよう、ref でも持つ
-function useDraft() {
-  const [draft, setState] = useState<string | null>(null)
-  const ref = useRef<string | null>(null)
-  const setDraft = (next: string | null) => {
-    ref.current = next
-    setState(next)
-  }
-  // 打っている文字を取り出して、空にする
-  const take = (): string | null => {
-    const text = ref.current
-    setDraft(null)
-    return text
-  }
-  return { draft, setDraft, take }
 }
 
 // ---- 数字 ----
@@ -237,7 +220,7 @@ export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & 
 
 // スライダー。動かし始めてから離すまで（change が届くまで）の変更を 1 回の Undo にまとめる。
 // キーボード（← →）では 1 回押すごとに change が届くので、1 回ずつ確定する。Esc で動かす前の値に戻す
-function Slider(props: {
+export function Slider(props: {
   label: string
   min: number
   max: number
@@ -246,8 +229,10 @@ function Slider(props: {
   mixed: boolean
   onPreview: (value: number) => void
   onEnd: (commit: boolean) => void
+  // 見た目を変えるクラス（色相・不透明度のスライダーの背景など。MAI-81）
+  className?: string
 }) {
-  const { label, min, max, step, value, mixed, onPreview, onEnd } = props
+  const { label, min, max, step, value, mixed, onPreview, onEnd, className } = props
   const inputRef = useRef<HTMLInputElement>(null)
   const changing = useRef(false)
   const onEndRef = useRef(onEnd)
@@ -275,7 +260,7 @@ function Slider(props: {
     <input
       ref={inputRef}
       type="range"
-      className={mixed ? 'design-slider mixed' : 'design-slider'}
+      className={['design-slider', mixed ? 'mixed' : '', className ?? ''].filter(Boolean).join(' ')}
       aria-label={`${label}のスライダー`}
       min={min}
       max={max}
@@ -298,87 +283,7 @@ function Slider(props: {
 }
 
 // ---- 色 ----
-
-
-export function ColorField(props: FieldProps<string>) {
-  const { label, value, editor, onDone } = props
-  const { draft, setDraft, take } = useDraft()
-  const pickerRef = useRef<HTMLInputElement>(null)
-  const picking = useRef(false)
-  const editorRef = useRef(editor)
-  useEffect(() => {
-    editorRef.current = editor
-  })
-  const current = value.kind === 'same' ? value.value : null
-
-  // ブラウザの色の選択は、選んでいる間 input、閉じたときに change が届く。change までを 1 回の Undo にまとめる。
-  // React の onChange は input で呼ばれるので、change はここで直接受ける
-  useEffect(() => {
-    const picker = pickerRef.current
-    if (!picker) return
-    const onChange = () => {
-      if (!picking.current) return
-      picking.current = false
-      editorRef.current.end(true)
-    }
-    picker.addEventListener('change', onChange)
-    picker.addEventListener('blur', onChange)
-    return () => {
-      picker.removeEventListener('change', onChange)
-      picker.removeEventListener('blur', onChange)
-    }
-  }, [])
-
-  const commitDraft = () => {
-    const text = take()
-    const color = text === null ? null : normalizeHexColor(text)
-    if (color) editor.set(color)
-  }
-
-  return (
-    <div className="design-field">
-      <span className="design-label">{label}</span>
-      <div className="design-control">
-        <span className={value.kind === 'mixed' ? 'design-swatch mixed' : 'design-swatch'} style={current ? { background: current } : undefined}>
-          <input
-            ref={pickerRef}
-            type="color"
-            aria-label={`${label}を選ぶ`}
-            value={(current && normalizeHexColor(current)) ?? '#000000'}
-            onInput={(e) => {
-              picking.current = true
-              editor.preview(e.currentTarget.value)
-            }}
-            // 値は onInput で受ける（React の onChange は input と同じ）。制御された input の警告を出さないために置く
-            onChange={() => {}}
-          />
-        </span>
-        <input
-          type="text"
-          className="design-hex"
-          aria-label={label}
-          spellCheck={false}
-          value={draft ?? current ?? ''}
-          placeholder={value.kind === 'mixed' ? MIXED_LABEL : ''}
-          onFocus={(e) => e.currentTarget.select()}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitDraft}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              commitDraft()
-              onDone?.()
-            } else if (e.key === 'Escape') {
-              e.preventDefault()
-              setDraft(null)
-              onDone?.()
-            }
-          }}
-        />
-      </div>
-    </div>
-  )
-}
+// 色・塗りの部品（ColorField・PaintField）とカラーピッカーは ColorPicker.tsx（MAI-81）
 
 // ---- 切り替えボタン ----
 

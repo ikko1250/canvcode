@@ -1066,6 +1066,20 @@ export class Editor {
       const local = applyMat(invert(entry.worldMatrix), point)
       if (this.getType(entry.node).hitTest(entry.node, local, marginWorld, zoom)) return entry.node
     }
+    return this.selectedBoxAt(point, options)
+  }
+
+  // 何にも当たらなかった点が、選んでいるノード（group・frame 以外）の箱の中なら、そのノード。
+  // 塗りなしの図形（MAI-81）は枠の線にしか当たらないが、選んだあとは Figma と同じく中を押しても掴める
+  private selectedBoxAt(point: Vec, options: { includeLocked?: boolean }): NodeRecord | null {
+    for (const id of this.session.get().selectedIds) {
+      const entry = this.index.get(id)
+      if (!entry || this.isContainer(entry.node) || (entry.node.locked && !options.includeLocked)) continue
+      if (this.clippedAway(entry, point)) continue
+      const local = applyMat(invert(entry.worldMatrix), point)
+      const box = this.getType(entry.node).getBounds(entry.node)
+      if (local.x >= box.x && local.y >= box.y && local.x <= box.x + box.w && local.y <= box.y + box.h) return entry.node
+    }
     return null
   }
 

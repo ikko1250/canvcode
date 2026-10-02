@@ -2,7 +2,7 @@ import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from '../defineNodeType.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, letterSpacingOf, lineHeightStyle, textAlignOf, type LineHeight, type TextAlign, type TextLayout, type TextStyle } from './layout.ts'
 import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './fonts.ts'
-import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, type TextParagraph } from './richText.ts'
+import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParagraph } from './richText.ts'
 
 // 付箋（MAI-7 の `note`、MAI-24）。幅は自由に変えられ、高さは文字に合わせて伸びる（MAI-34）。
 // props の h は「最低の高さ」で、文字がそれより多ければ、はみ出さないところまで縦に伸びる。
@@ -111,6 +111,8 @@ export const noteType = defineNodeType<NoteProps>({
   },
 
   roughColor: (node) => node.props.color,
+
+  colors: (node) => [node.props.color, ...runColors(paragraphsOf(node.props))],
 
   // 幅は指定どおりにし、高さは最低の高さとして持つ（文字が多ければ、それより縦に伸びる）
   resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),

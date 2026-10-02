@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
-import { NOTE_TEXT_COLOR, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
+import { NOTE_TEXT_COLOR, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
-import { boldField, fillColorField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { applyFillChange, boldField, fillField, fontFamilyField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
 function setup() {
   const editor = new Editor()
   const geo = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100 } })
-  const geo2 = editor.makeNode('geo', { x: 200, y: 0, props: { shape: 'ellipse', w: 100, h: 100, fill: '#ff0000' } })
+  const geo2 = editor.makeNode('geo', { x: 200, y: 0, props: { shape: 'ellipse', w: 100, h: 100, fill: solidPaint('#ff0000') } })
   const text = editor.makeNode('text', { x: 0, y: 200, props: { paragraphs: richTextFromPlain('hello') } })
   const note = editor.makeNode('note', { x: 200, y: 200, props: { paragraphs: richTextFromPlain('memo') } })
   const arrow = editor.makeNode('arrow', { x: 0, y: 400, props: { start: { x: 0, y: 0 }, end: { x: 100, y: 0 } } })
@@ -27,7 +27,7 @@ describe('design sections', () => {
   it('shows the sections for the type of the selected node', () => {
     const { geo, text, arrow } = setup()
     expect(sectionIds([geo])).toEqual(['fill', 'stroke', 'layer'])
-    expect(fieldIds([geo])).toEqual(['fill.color', 'stroke.color', 'stroke.width', 'layer.opacity'])
+    expect(fieldIds([geo])).toEqual(['fill.paint', 'stroke.color', 'stroke.width', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
@@ -37,7 +37,7 @@ describe('design sections', () => {
     const { geo, text, note, arrow, group } = setup()
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
     expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.color', 'text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.lineHeight', 'text.letterSpacing', 'text.color', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     // 図形と矢印：線は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -50,7 +50,7 @@ describe('design sections', () => {
   it('reports mixed values when the selected nodes differ', () => {
     const { geo, geo2 } = setup()
     const fields = visibleSections([geo, geo2]).flatMap((s) => s.fields)
-    const fill = fields.find((f) => f.field.id === 'fill.color')!
+    const fill = fields.find((f) => f.field.id === 'fill.paint')!
     const width = fields.find((f) => f.field.id === 'stroke.width')!
     expect(fill.value.kind).toBe('mixed')
     expect(width.value).toEqual({ kind: 'same', value: 2 })
@@ -66,7 +66,7 @@ describe('design sections', () => {
     const { geo, arrow, note } = setup()
     expect((strokeColorField.write(geo, '#123456').props as { stroke: string }).stroke).toBe('#123456')
     expect((strokeColorField.write(arrow, '#123456').props as { color: string }).color).toBe('#123456')
-    expect((fillColorField.write(note, '#abcdef').props as { color: string }).color).toBe('#abcdef')
+    expect((fillField.write(note, { change: 'color', color: '#abcdef' }).props as { color: string }).color).toBe('#abcdef')
     expect(strokeWidthField.write(geo, 2)).toBe(geo)
     expect(opacityField.write(geo, 1)).toBe(geo)
     expect(opacityField.write(geo, 0.5).opacity).toBe(0.5)
@@ -76,18 +76,18 @@ describe('design sections', () => {
     const { editor, geo, text } = setup()
     const apply = <T,>(node: NodeRecord, field: { write(node: NodeRecord, value: T): NodeRecord }, value: T) =>
       editNodes(editor, [node.id], (n) => field.write(n, value), 'design')
-    apply(geo, fillColorField, '#ff8800')
+    apply(geo, fillField, { change: 'color', color: '#ff8800' })
     apply(geo, strokeColorField, '#0000ff')
     apply(geo, strokeWidthField, 6)
     apply(text, fontSizeField, 32)
     apply(text, textColorField, '#e03131')
     apply(text, textAlignField, 'center')
-    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: '#ff8800', stroke: '#0000ff', strokeWidth: 6 })
+    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: solidPaint('#ff8800'), stroke: '#0000ff', strokeWidth: 6 })
     expect(editor.getNode(text.id)!.props).toMatchObject({ fontSize: 32, color: '#e03131', align: 'center' })
     editor.undo()
     expect(editor.getNode(text.id)!.props).toMatchObject({ fontSize: 32, color: '#e03131', align: 'left' })
     for (let i = 0; i < 5; i++) editor.undo()
-    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: '#e8eefc', stroke: '#3b5bdb', strokeWidth: 2 })
+    expect(editor.getNode(geo.id)!.props).toMatchObject({ fill: solidPaint('#e8eefc'), stroke: '#3b5bdb', strokeWidth: 2 })
     expect(editor.getNode(text.id)!.props).toMatchObject({ fontSize: 12, color: '#1f2328' })
   })
 
@@ -106,7 +106,7 @@ describe('design sections', () => {
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
     expect(designSections().filter((s) => s.id === 'fill')).toHaveLength(1)
     expect(designSections().find((s) => s.id === 'fill')!.title).toBe('角丸')
-    registerDesignSection({ id: 'fill', title: '塗り', order: 100, fields: [fillColorField] })
+    registerDesignSection({ id: 'fill', title: '塗り', order: 100, fields: [fillField] })
   })
 })
 
@@ -329,5 +329,48 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     // 範囲
     const ranged = strikethroughField.write(text, true, { start: 0, end: 1 })
     expect((ranged.props as TextProps).paragraphs[0].runs[0]).toEqual({ text: 'a', format: { bold: true, strikethrough: true } })
+  })
+})
+
+// 塗り（MAI-81）
+describe('fill field', () => {
+  it('reads the geo fill as a paint and the note background as a solid paint', () => {
+    const { geo, geo2, note } = setup()
+    expect(fillField.read(geo)).toEqual(solidPaint('#e8eefc'))
+    expect(fillField.read(geo2)).toEqual(solidPaint('#ff0000'))
+    expect(fillField.read(note)).toEqual(solidPaint('#fff3bf'))
+  })
+
+  it('changes only the color or only the opacity, keeping the other part', () => {
+    const { geo } = setup()
+    const half = fillField.write(geo, { change: 'opacity', opacity: 0.5 })
+    expect((half.props as { fill: unknown }).fill).toEqual(solidPaint('#e8eefc', 0.5))
+    const red = fillField.write(half, { change: 'color', color: '#ff0000' })
+    expect((red.props as { fill: unknown }).fill).toEqual(solidPaint('#ff0000', 0.5))
+    expect(fillField.write(red, { change: 'color', color: '#ff0000' })).toBe(red)
+  })
+
+  it('removes the fill and adds it back from a color', () => {
+    const { geo } = setup()
+    const none = fillField.write(geo, null)
+    expect((none.props as { fill: unknown }).fill).toBeNull()
+    // 塗りなしの不透明度は変えられない。色を選べば不透明な単色の塗りになる
+    expect(fillField.write(none, { change: 'opacity', opacity: 0.3 })).toBe(none)
+    expect((fillField.write(none, { change: 'color', color: '#00ff00' }).props as { fill: unknown }).fill).toEqual(solidPaint('#00ff00'))
+  })
+
+  it('keeps the note background solid (no opacity, no none)', () => {
+    const { note } = setup()
+    expect(fillField.write(note, null)).toBe(note)
+    expect(fillField.write(note, { change: 'opacity', opacity: 0.2 })).toBe(note)
+    const control = fillField.control as Extract<typeof fillField.control, { kind: 'paint' }>
+    expect(control.opacity?.(note)).toBe(false)
+    expect(control.none?.(note)).toBe(false)
+  })
+
+  it('applies a change to several fills, each keeping its own color', () => {
+    expect(applyFillChange(solidPaint('#ff0000'), { change: 'opacity', opacity: 0.25 })).toEqual(solidPaint('#ff0000', 0.25))
+    expect(applyFillChange(solidPaint('#00ff00', 0.4), { change: 'opacity', opacity: 2 })).toEqual(solidPaint('#00ff00', 1))
+    expect(applyFillChange(solidPaint('#00ff00'), solidPaint('#123456'))).toEqual(solidPaint('#123456'))
   })
 })

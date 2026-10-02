@@ -86,6 +86,15 @@ export function richTextLength(paragraphs: readonly TextParagraph[]): number {
 }
 
 // 段落の属性（runs 以外）
+// 文字の範囲ごとの色（run の format.color。空の run は除く）。「このキャンバスで使った色」に出す（MAI-81）
+export function runColors(paragraphs: readonly TextParagraph[]): string[] {
+  const colors: string[] = []
+  for (const paragraph of paragraphs) {
+    for (const run of paragraph.runs) if (run.text !== '' && run.format?.color) colors.push(run.format.color)
+  }
+  return colors
+}
+
 export function paragraphAttributes(paragraph: TextParagraph): Omit<TextParagraph, 'runs'> {
   const { runs: _runs, ...attributes } = paragraph
   return attributes

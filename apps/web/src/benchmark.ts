@@ -1,5 +1,6 @@
 import { fitBox, indicesBetween, type Camera, type NodeRecord } from '@canvcode/core'
 import type { CanvasView, Editor, StatsSummary } from '@canvcode/canvas'
+import { solidPaint } from '@canvcode/nodes'
 
 // 1 万ノードのベンチマーク（MAI-14、MAI-20）。
 // 手元の PC のブラウザで開いて測る。決まった動きでパンとズームを行い、段階ごとにフレーム時間を集計する。
@@ -36,7 +37,7 @@ export function generateNodes(editor: Editor, count: number): void {
       x: (i % columns) * spacing + (spacing - w) / 2,
       y: Math.floor(i / columns) * spacing + (spacing - h) / 2,
       index: indices[i],
-      props: { shape: random() < 0.5 ? 'rect' : 'ellipse', w, h, ...colors },
+      props: { shape: random() < 0.5 ? 'rect' : 'ellipse', w, h, fill: solidPaint(colors.fill), stroke: colors.stroke },
     })
     nodes.push(node)
   }

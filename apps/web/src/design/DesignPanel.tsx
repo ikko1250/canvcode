@@ -1,17 +1,20 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   KEEP_TEXT_EDITING_ATTRIBUTE,
   OWN_KEYS_ATTRIBUTE,
   PropertyEdit,
   editNodes,
+  usedColors,
   type CanvasView,
   type Editor,
   type SharedValue,
   type TextSelection,
 } from '@canvcode/canvas'
 import { TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
-import { ColorField, LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
+import { LineHeightField, NumberField, SegmentedField, SelectField, ToggleGroup, type ValueEditor } from './controls.tsx'
+import { ColorField, PaintField } from './ColorPicker.tsx'
+import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
 import { textRangeOf, visibleSections, type DesignField, type VisibleSection } from './registry.ts'
 import { TEXT_TOGGLE_FIELDS } from './sections.ts'
@@ -25,6 +28,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 文字を編集中に範囲を選んでいれば、文字の色・大きさ・フォントはその範囲の値を見せ（行間はノード単位。MAI-76）、その範囲に当てる（MAI-74、MAI-75）。
 //   パネルにフォーカスが移っても文字の編集は終わらない（data-keep-text-editing）。値を入れ終えたら、編集中の文字にフォーカスを戻す
 // - 太字・斜体・下線・取り消し線（MAI-79）は 1 行にボタンを並べる（control の group）。編集中は Ctrl+B などと同じに切り替える（textToggles.ts）
+// - 色の項目はカラーピッカー（ColorPicker.tsx。MAI-81）。「このキャンバスで使った色」は、ピッカーを開いたときに今の Canvas から集める
 
 export function DesignPanel(props: {
   editor: Editor
@@ -96,6 +100,8 @@ export function DesignPanel(props: {
     }
   }
 
+  const getUsedColors = useCallback(() => usedColors(editor), [editor])
+
   const sections = visibleSections(nodes, undefined, textSelection)
   if (sections.length === 0) return null
 
@@ -128,50 +134,63 @@ export function DesignPanel(props: {
         </button>
       </header>
       {/* 選択が変わったら作り直し、入力中の文字を捨てる */}
-      <div key={selectionKey} className="design-panel-body">
-        {sections.map(({ section, fields, showComponent }) => (
-          <section key={section.id} className="design-section" data-section={section.id}>
-            <h3>{section.title}</h3>
-            {fieldRows(fields).map((row) =>
-              row.kind === 'toggles' ? (
-                <ToggleGroup
-                  key={row.group}
-                  label={row.group}
-                  items={row.fields.map(({ field, value }) => {
-                    const control = field.control as Extract<DesignField['control'], { kind: 'toggle' }>
-                    const key = TEXT_TOGGLE_FORMATS.find((k) => TEXT_TOGGLE_FIELDS[k] === field)!
-                    const editing = editingTextOf(textEditor, nodes)
-                    const shown = editing ? editingToggleValue(editing, key) : (value as SharedValue<boolean>)
-                    return {
-                      id: field.id,
-                      title: control.title,
-                      icon: control.icon,
-                      value: shown,
-                      onToggle: () => {
-                        endRunning(true)
-                        applyTextToggle(editor, textEditor, nodes, key, shown)
-                      },
-                    }
-                  })}
-                />
-              ) : (
-                <FieldView key={row.field.field.id} field={row.field.field} value={row.field.value} editor={valueEditor(row.field.field)} onDone={backToCanvas} />
-              ),
-            )}
-            {showComponent && section.Component && <section.Component nodes={nodes} />}
-          </section>
-        ))}
-      </div>
+      <UsedColorsContext.Provider value={getUsedColors}>
+        <div key={selectionKey} className="design-panel-body">
+          {sections.map(({ section, fields, showComponent }) => (
+            <section key={section.id} className="design-section" data-section={section.id}>
+              <h3>{section.title}</h3>
+              {fieldRows(fields).map((row) =>
+                row.kind === 'toggles' ? (
+                  <ToggleGroup
+                    key={row.group}
+                    label={row.group}
+                    items={row.fields.map(({ field, value }) => {
+                      const control = field.control as Extract<DesignField['control'], { kind: 'toggle' }>
+                      const key = TEXT_TOGGLE_FORMATS.find((k) => TEXT_TOGGLE_FIELDS[k] === field)!
+                      const editing = editingTextOf(textEditor, nodes)
+                      const shown = editing ? editingToggleValue(editing, key) : (value as SharedValue<boolean>)
+                      return {
+                        id: field.id,
+                        title: control.title,
+                        icon: control.icon,
+                        value: shown,
+                        onToggle: () => {
+                          endRunning(true)
+                          applyTextToggle(editor, textEditor, nodes, key, shown)
+                        },
+                      }
+                    })}
+                  />
+                ) : (
+                  <FieldView key={row.field.field.id} field={row.field.field} value={row.field.value} editor={valueEditor(row.field.field)} nodes={nodes} onDone={backToCanvas} />
+                ),
+              )}
+              {showComponent && section.Component && <section.Component nodes={nodes} />}
+            </section>
+          ))}
+        </div>
+      </UsedColorsContext.Provider>
     </aside>
   )
 }
 
-function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; editor: ValueEditor<any>; onDone: () => void }) {
-  const { field, value, editor, onDone } = props
+function FieldView(props: { field: DesignField<any>; value: SharedValue<any>; editor: ValueEditor<any>; nodes: readonly NodeRecord[]; onDone: () => void }) {
+  const { field, value, editor, nodes, onDone } = props
   const control = field.control
   switch (control.kind) {
     case 'color':
       return <ColorField label={field.label} value={value} editor={editor} onDone={onDone} />
+    case 'paint':
+      return (
+        <PaintField
+          label={field.label}
+          value={value}
+          editor={editor}
+          canOpacity={nodes.every((node) => control.opacity?.(node) ?? true)}
+          canNone={nodes.every((node) => control.none?.(node) ?? true)}
+          onDone={onDone}
+        />
+      )
     case 'number':
       return <NumberField label={field.label} value={value} editor={editor} control={control} onDone={onDone} />
     case 'segmented':

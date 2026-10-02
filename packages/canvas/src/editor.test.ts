@@ -61,3 +61,22 @@ describe('editor', () => {
     expect(editor.history.canUndo('canvas:other')).toBe(false)
   })
 })
+
+// 塗りなしの図形（MAI-81）：枠の線にだけ当たる。選んだあとは中を押しても掴める
+describe('hit test of a shape without fill', () => {
+  it('passes clicks inside to the node below until it is selected', () => {
+    const editor = new Editor()
+    const below = rect(editor, 40, 40, 20, 20)
+    editor.createNodes([below])
+    const hollow = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, fill: null, strokeWidth: 2 } })
+    editor.createNodes([hollow])
+    expect(editor.hitTest({ x: 50, y: 50 }, 0)?.id).toBe(below.id)
+    expect(editor.hitTest({ x: 20, y: 20 }, 0)).toBeNull()
+    expect(editor.hitTest({ x: 0.5, y: 20 }, 0)?.id).toBe(hollow.id)
+    editor.setSelection([hollow.id])
+    // 中の何もないところは、選んでいる図形に当たる。下のノードの上は、下のノード
+    expect(editor.hitTest({ x: 20, y: 20 }, 0)?.id).toBe(hollow.id)
+    expect(editor.hitTest({ x: 50, y: 50 }, 0)?.id).toBe(below.id)
+    expect(editor.hitTest({ x: 150, y: 20 }, 0)).toBeNull()
+  })
+})

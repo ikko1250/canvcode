@@ -1192,30 +1192,164 @@ body,
   opacity: 0.4;
 }
 
-.design-swatch {
+/* 色の見本（MAI-81）。押すとカラーピッカーを開く。不透明度のある色が分かるよう、市松模様の上に色を重ねる */
+.design-panel button.design-swatch {
+  min-width: 0;
   position: relative;
   flex: 0 0 22px;
   width: 22px;
   height: 22px;
+  padding: 0;
+  border: none;
   border-radius: 4px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
   overflow: hidden;
+  cursor: pointer;
+}
+
+.design-swatch > span {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
 }
 
 /* 混在：斜めの縞 */
-.design-swatch.mixed {
+.design-panel button.design-swatch.mixed {
   background: repeating-linear-gradient(45deg, #d9dde3 0 4px, #ffffff 4px 8px);
 }
 
-.design-swatch input[type='color'] {
-  position: absolute;
-  inset: 0;
+/* 塗りなし：白地に赤の斜線 */
+.design-panel button.design-swatch.none {
+  background: linear-gradient(to top right, transparent calc(50% - 1px), #e03131 calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)), #ffffff;
+}
+
+.design-color-field .design-hex {
+  width: 0;
+  min-width: 56px;
+}
+
+.design-number.design-opacity {
+  flex: 0 0 52px;
+  width: 52px;
+}
+
+.design-panel button.design-fill-toggle {
+  min-width: 0;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* カラーピッカー（MAI-81）。パネルの中、項目の下に開く */
+.design-color-popup {
+  box-sizing: border-box;
   width: 100%;
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.design-color-square {
+  position: relative;
+  height: 120px;
+  border-radius: 4px;
+  background-image: linear-gradient(to top, #000000, transparent), linear-gradient(to right, #ffffff, transparent);
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+
+.design-color-square:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.design-color-thumb {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.design-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.design-slider.design-hue-slider,
+.design-slider.design-alpha-slider {
+  flex: 1;
+  height: 10px;
+  border-radius: 5px;
+  appearance: none;
+}
+
+.design-slider.design-hue-slider {
+  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+}
+
+.design-slider.design-alpha-slider {
+  background: linear-gradient(to right, transparent, var(--alpha-color, #1f2328)), repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+}
+
+.design-panel button.design-eyedropper {
+  min-width: 0;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+}
+
+.design-eyedropper svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.design-color-group-title {
+  margin-bottom: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.design-color-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.design-panel button.design-color-chip {
+  min-width: 0;
+  position: relative;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: none;
-  opacity: 0;
+  border-radius: 3px;
+  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 6px 6px;
+  overflow: hidden;
   cursor: pointer;
+}
+
+.design-color-chip > span {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.design-panel button.design-color-chip.selected {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .design-hex {

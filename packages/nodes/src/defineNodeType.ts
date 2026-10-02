@@ -100,6 +100,8 @@ export interface NodeTypeDef<P extends object> {
   renderRough?(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
   // 簡略描画に使う色
   roughColor?(node: NodeRecord<P>): string
+  // ノードが使っている色（塗り・線・文字・文字の範囲ごとの色など）。カラーピッカーの「このキャンバスで使った色」に出す（MAI-81）
+  colors?(node: NodeRecord<P>): string[]
   // リサイズしたときの新しい props（MAI-23）。定義しなければリサイズできない。
   // リサイズできる型は、getBounds の箱の原点を (0, 0) にする
   resize?(node: NodeRecord<P>, size: { w: number; h: number }): P
