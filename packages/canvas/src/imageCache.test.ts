@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RasterImage } from '@canvcode/nodes'
-import { ImageCache } from './imageCache.ts'
+import { ImageCache, MissingImageRecorder } from './imageCache.ts'
 
 function fakeImage(level: number, size = 10): RasterImage {
   return { image: {} as CanvasImageSource, width: size * level, height: size * level, level }
@@ -123,5 +123,37 @@ describe('ImageCache', () => {
     expect(frame(cache, [['a', 1]])[0]?.level).toBe(1)
     cache.trim(0)
     expect(cache.stats).toMatchObject({ entries: 0, bytes: 0 })
+  })
+})
+
+// 書き出しの前に、足りない画像を読み込む（MAI-83）
+describe('MissingImageRecorder', () => {
+  it('does not reject when an image fails to load, and loads the others', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cache = new ImageCache({ onReady: () => {} })
+    // ImageCache.load は、作れなければ reject せずに null を返す
+    expect(await cache.load('asset:broken', 'v1', 1, async () => Promise.reject(new Error('404')))).toBeNull()
+    const recorder = new MissingImageRecorder(cache, (key) => key.startsWith('asset:'))
+    expect(recorder.get('asset:ok', 'v1', 2, async () => fakeImage(2))).toBeNull()
+    expect(recorder.get('asset:broken', 'v1', 2, async () => Promise.reject(new Error('404')))).toBeNull()
+    expect(recorder.get('asset:throws', 'v1', 2, () => {
+      throw new Error('broken image')
+    })).toBeNull()
+    // asset: でないもの（Markdown カードなど）は覚えない
+    recorder.get('node:card', 'v1', 2, async () => fakeImage(2))
+    expect(recorder.size).toBe(3)
+    expect(await recorder.loadAll()).toBe(1)
+    expect(cache.get('asset:ok', 'v1', 2, async () => fakeImage(2))?.level).toBe(2)
+    expect(cache.get('asset:broken', 'v1', 2, async () => fakeImage(2))).toBeNull()
+    errors.mockRestore()
+  })
+
+  it('does not record images that are already at the asked level', async () => {
+    const cache = new ImageCache({ onReady: () => {} })
+    await cache.load('asset:a', 'v1', 2, async () => fakeImage(2))
+    const recorder = new MissingImageRecorder(cache, () => true)
+    expect(recorder.get('asset:a', 'v1', 2, async () => fakeImage(2))?.level).toBe(2)
+    expect(recorder.size).toBe(0)
+    expect(await recorder.loadAll()).toBe(0)
   })
 })

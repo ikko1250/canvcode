@@ -71,7 +71,7 @@ import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
 import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
 import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
-import { ImageCache } from './imageCache.ts'
+import { ImageCache, MissingImageRecorder } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
 import { TextEditor } from './textEditor.ts'
 import {
@@ -666,20 +666,14 @@ export class CanvasView {
 
   // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）のうち、
   // 頼んだ解像度のものが手元になかったものを読み込んでから、描き直す（読み込み中のプレースホルダーや粗い画像を写さない）。
-  // 頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
+  // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
   // （上限を超えれば、いつもどおり古いものから捨てる）
   private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): Promise<HTMLCanvasElement> {
-    const missing = new Map<string, { key: string; version: string; level: number; produce: () => Promise<RasterImage> }>()
-    const recorder: ImageRequester = {
-      get: (key, version, level, produce) => {
-        const image = this.images.get(key, version, level, produce)
-        if (key.startsWith('asset:') && image?.level !== level) missing.set(`${key}@${level}`, { key, version, level, produce })
-        return image
-      },
-    }
+    const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:'))
     const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder)
-    if (missing.size === 0) return canvas
-    await Promise.all([...missing.values()].map(({ key, version, level, produce }) => this.images.load(key, version, level, produce)))
+    if (recorder.size === 0) return canvas
+    // 読み込めなかった画像は諦め、プレースホルダーのまま書き出す（1 つの失敗で書き出し全体を失敗させない）
+    if ((await recorder.loadAll()) === 0) return canvas
     return this.renderRegion(editor, box, scale, width, height, only)
   }
 
