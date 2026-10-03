@@ -5,7 +5,11 @@ import type { ImageRequester, RasterImage } from '@canvcode/nodes'
 // - 足りない画像は順番待ちに入れ、カメラが止まってから 1 枚ずつ作る。動いている間は作らない
 // - 作れたら onReady を呼び、シーンを描き直してもらう
 // - 中身が変わった（version が違う）ときは、新しいものができるまで古いものを返す
-// - 容量はバイト数で数え、上限を超えたら最も長く使われていないものから捨てる
+// - 容量はバイト数で数え、上限を超えたら最も長く使われていないものから捨てる。
+//   画面に見えている（直近のフレームで頼まれた）ものは捨てない。捨てると、作り直すたびに別の見えているものを捨てて、
+//   画像とプレースホルダーを繰り返してしまう（拡大した PDF のページが何枚も見えているとき）。
+//   それでも上限を超えるなら、見えているものの今は使わない解像度を捨て、残りは上限を超えたまま持つ
+//   （見えている分は画面の大きさで決まるので、際限なく増えはしない）
 // - Canvas を移るときは trim で、ほかの Canvas の画像を減らす（使った順なので、直前の Canvas のものは残りやすい。MAI-66）
 
 export interface ImageCacheOptions {
@@ -36,6 +40,9 @@ interface Job {
 interface Entry {
   version: string
   levels: Map<number, RasterImage>
+  // 最後に頼まれたフレームと解像度
+  frame: number
+  level: number
 }
 
 const DEFAULT_IDLE_DELAY_MS = 150
@@ -73,8 +80,10 @@ export class ImageCache implements ImageRequester {
     this.frame++
   }
 
-  // 描画の最後に呼ぶ。足りない画像があれば、作る準備をする
+  // 描画の最後に呼ぶ。足りない画像があれば、作る準備をする。
+  // 見えていたので上限を超えて持っていた画像が画面から外れたなら、ここで捨てる
   endFrame(): void {
+    if (this.bytes > this.options.budgetBytes) this.evict()
     this.schedule()
   }
 
@@ -87,7 +96,11 @@ export class ImageCache implements ImageRequester {
     const entry = this.images.get(key)
     const current = entry?.version === version
     const exact = current ? entry.levels.get(level) : undefined
-    if (entry) this.touch(key, entry)
+    if (entry) {
+      entry.frame = this.frame
+      entry.level = level
+      this.touch(key, entry)
+    }
     if (exact) return exact
     const jobKey = `${key}@${level}`
     const job = this.jobs.get(jobKey)
@@ -127,8 +140,9 @@ export class ImageCache implements ImageRequester {
   }
 
   // 最も長く使われていないものから捨てて、maxBytes 以下にする（Canvas を移ったときなど。MAI-66）
+  // 見えているかどうかは問わない（Canvas を移ると、直前に見えていたものはもう見えない）
   trim(maxBytes: number): void {
-    this.evict(maxBytes)
+    this.evict(maxBytes, false)
   }
 
   // 作るべき画像がもう残っていないか（ベンチマークで「くっきりするまで」を測るのに使う）
@@ -189,7 +203,8 @@ export class ImageCache implements ImageRequester {
     if (!entry || entry.version !== version) {
       // 中身が変わったので、古い版の画像はまとめて捨てる
       if (entry) this.release(entry)
-      entry = { version, levels: new Map() }
+      // 作るのは直近のフレームで頼まれたものだけなので、見えているものとして始める
+      entry = { version, levels: new Map(), frame: this.frame, level: image.level }
       this.images.set(key, entry)
     }
     const previous = entry.levels.get(image.level)
@@ -209,21 +224,42 @@ export class ImageCache implements ImageRequester {
   private release(entry: Entry): void {
     for (const image of entry.levels.values()) {
       this.bytes -= sizeOf(image)
-      if (typeof ImageBitmap !== 'undefined' && image.image instanceof ImageBitmap) image.image.close()
+      close(image)
     }
   }
 
-  private evict(maxBytes = this.options.budgetBytes): void {
+  private evict(maxBytes = this.options.budgetBytes, keepVisible = true): void {
     for (const [key, entry] of this.images) {
       if (this.bytes <= maxBytes) return
+      if (keepVisible && this.isVisible(entry)) continue
       this.release(entry)
       this.images.delete(key)
     }
+    // 見えているものだけが残った。いま頼まれている解像度が手元にあるなら、ほかの解像度を捨てる
+    for (const entry of this.images.values()) {
+      if (this.bytes <= maxBytes) return
+      if (!entry.levels.has(entry.level)) continue
+      for (const [level, image] of entry.levels) {
+        if (level === entry.level) continue
+        entry.levels.delete(level)
+        this.bytes -= sizeOf(image)
+        close(image)
+      }
+    }
+  }
+
+  // 直近のフレームで頼まれたか（pendingJobs と同じ基準）
+  private isVisible(entry: Entry): boolean {
+    return entry.frame >= this.frame - 1
   }
 }
 
 function sizeOf(image: RasterImage): number {
   return image.width * image.height * 4
+}
+
+function close(image: RasterImage): void {
+  if (typeof ImageBitmap !== 'undefined' && image.image instanceof ImageBitmap) image.image.close()
 }
 
 // 手元にある解像度のうち、頼まれたものに最も近いもの。

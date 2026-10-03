@@ -109,6 +109,36 @@ describe('ImageCache', () => {
     expect(frame(cache, [['a', 1]])).toEqual([null])
   })
 
+  it('keeps images on screen over the budget, instead of flickering between them and placeholders', async () => {
+    // 上限 1000 バイトに、400 バイトの画像が 3 つ見えている（拡大した PDF のページが何枚も見えているとき）
+    let ready = 0
+    const cache = new ImageCache({ onReady: () => ready++, idleDelayMs: 0, budgetBytes: 1000 })
+    const visible: [string, number][] = [['a', 1], ['b', 1], ['c', 1]]
+    for (let i = 0; i < 10; i++) {
+      frame(cache, visible)
+      await vi.advanceTimersByTimeAsync(10)
+    }
+    // 1 枚ずつ作ったら、それ以上は作り直さない
+    expect(ready).toBe(3)
+    expect(frame(cache, visible).map((image) => image?.level)).toEqual([1, 1, 1])
+    expect(cache.stats.bytes).toBe(1200)
+    // 画面から外れたら、上限まで捨てる
+    frame(cache, [['d', 1]])
+    frame(cache, [['d', 1]])
+    expect(cache.stats.bytes).toBeLessThanOrEqual(1000)
+  })
+
+  it('drops the unused levels of images on screen over the budget', async () => {
+    // 1 倍は 400 バイト、2 倍は 1600 バイト
+    const cache = new ImageCache({ onReady: () => {}, idleDelayMs: 0, budgetBytes: 1000 })
+    frame(cache, [['a', 1]])
+    await vi.advanceTimersByTimeAsync(10)
+    expect(frame(cache, [['a', 2]])[0]?.level).toBe(1)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(frame(cache, [['a', 2]])[0]?.level).toBe(2)
+    expect(cache.stats.bytes).toBe(1600)
+  })
+
   it('trims down to the given size, keeping the most recently used images (MAI-66)', async () => {
     const cache = new ImageCache({ onReady: () => {}, idleDelayMs: 0 })
     for (const key of ['a', 'b', 'c']) {
