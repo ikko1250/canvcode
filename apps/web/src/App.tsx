@@ -49,6 +49,7 @@ import { DrawPalette } from './palette/DrawPalette.tsx'
 import { DesignPanel } from './design/DesignPanel.tsx'
 import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
+import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
@@ -59,6 +60,7 @@ import { canvasUrl, fileUrl, newTabUrl, openInNewTab, slideEditorUrl } from './w
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
 import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
+import { usePresence } from './workspace/usePresence.ts'
 import { useSelectionVersion, useWorkspaceVersion } from './workspace/useWorkspace.ts'
 
 // 画面（MAI-29 から、サイドバーとパンくずリストを持つ）。ツールなどは、キーで出すパイメニューから選ぶ（MAI-39）。
@@ -270,6 +272,8 @@ export function App(props: { initial: InitialRecords }) {
   const [canvasId, setCanvasId] = useState(workspace.rootCanvasId)
   const editor = getEditor(canvasId)
   const [view, setView] = useState<CanvasView | null>(null)
+  // いま見ている Canvas と範囲をサーバーに知らせる（AI のツールの既定）
+  usePresence(sync, view, editor)
   const session = useSyncExternalStore(editor.session.subscribe, editor.session.getSnapshot)
   useWorkspaceVersion(workspace)
   // 選んでいるノードが変わったら描き直す（パレットに出す文字の大きさなど。MAI-52）
@@ -1481,6 +1485,8 @@ export function App(props: { initial: InitialRecords }) {
         <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
           {syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
         </div>
+
+        <AgentToasts sync={sync} />
 
         {notices.length > 0 && (
           <div className="notices">

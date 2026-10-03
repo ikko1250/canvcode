@@ -215,6 +215,37 @@ body,
   line-height: 1.5;
 }
 
+/* AI の編集の知らせ（AgentToasts）。ほかの知らせの上に出し、「元に戻す」を押せるようにする */
+.agent-notices {
+  bottom: 168px;
+}
+
+.agent-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.agent-notice button {
+  padding: 2px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-notice button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-notice-state {
+  opacity: 0.75;
+}
+
 /* 左端のパレットの置き場（MAI-54）。ツールバーが折り返しても重ならないよう、左端の中ほどに縦に並べる。
    複数のパレット（文字の大きさと整列など）が出るときは、縦に積む */
 .palette-column {

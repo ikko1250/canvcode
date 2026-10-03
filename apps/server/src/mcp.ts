@@ -6,6 +6,11 @@ import { z } from 'zod'
 import { describeRowCountLimits, type SlideData } from '@canvcode/slides'
 import { normalizeRefId } from '@canvcode/core'
 import { HttpError, type FileInfo } from './files.ts'
+import type { AgentHost } from './agent/host.ts'
+import { EditError, editCanvas, editCanvasInput, undoCanvasEdit } from './agent/ops.ts'
+import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } from './agent/outline.ts'
+import type { RecordStore } from './records.ts'
+import type { Presence } from './sync.ts'
 import { resolveReference, type RefDeps } from './refs.ts'
 import type { SlidesApi } from './slides.ts'
 
@@ -16,10 +21,14 @@ import type { SlidesApi } from './slides.ts'
 // - 書いたら開いているブラウザに知らせる。ブラウザは保存していない編集がなければ読み直し、あれば衝突として尋ねる
 // - セッションは持たない（要求ごとにサーバーを作る）
 // - ユーザーが CanvCode で範囲を選んでコピーした ref:XXXXXXXXXX は、resolve_reference で中身にする
+// - 第 3 段で Canvas の上のものを読むツールを足した（agent/outline.ts）
+// - 第 4 段で Canvas のノードを書き換えるツールを足した（agent/ops.ts。サーバーの中のワークスペース agent/host.ts で行う）
+// - 第 5 段で、ユーザーが見ている Canvas と範囲（ブラウザが /api/sync で知らせる presence）を、Canvas のツールの既定にした
 
 export const MCP_PATH = '/mcp'
 
-export type McpDeps = RefDeps & { slides?: SlidesApi }
+// agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）
+export type McpDeps = RefDeps & { slides?: SlidesApi; agent?: AgentHost; presence?: () => Presence | null }
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const { files, slides } = deps
@@ -37,7 +46,12 @@ export function createMcpServer(deps: McpDeps): McpServer {
         '(a region of a canvas, lines of a document, or a region of a PDF page): call resolve_reference with it first. ' +
         'Document ids (file:...) in its result can be passed to read_document. ' +
         'Documents in its result also carry absPath (the Markdown / Python file) or textPath (plain text extracted from a PDF, ' +
-        'each page starting with a "=== page N ===" line); read those files directly when you need more than the referenced part.',
+        'each page starting with a "=== page N ===" line); read those files directly when you need more than the referenced part. ' +
+        'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details. ' +
+        'Canvas tools default to the canvas the user is viewing ("this", "here").' +
+        (deps.agent
+          ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.'
+          : ''),
     },
   )
 
@@ -191,7 +205,132 @@ export function createMcpServer(deps: McpDeps): McpServer {
   }
 
   if (slides) registerSlideTools(server, slides)
+  registerCanvasTools(server, deps.records, deps.agent, deps.presence)
   return server
+}
+
+// ---- Canvas の上のもの ----
+
+// 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
+function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null): void {
+  // ユーザーが見ている所（その Canvas がまだあるときだけ）
+  const viewing = (): Presence | null => {
+    const current = presence?.() ?? null
+    const canvas = current && records.get(current.canvasId)
+    return canvas && canvas.typeName === 'canvas' && !canvas.deletedAt ? current : null
+  }
+
+  server.registerTool(
+    'get_canvas_format',
+    {
+      title: 'Get the canvas format',
+      description: 'Explains canvases, node types, coordinates, the read_canvas outline and edit_canvas ops. Call once first.',
+      annotations: { readOnlyHint: true },
+    },
+    () => text(canvasFormatGuide({ editable: Boolean(agent) })),
+  )
+
+  server.registerTool(
+    'list_canvases',
+    {
+      title: 'List canvases',
+      description: 'The tree of canvases: id, title and node count; "viewing" marks the one the user is viewing. Filter by a substring of the title.',
+      inputSchema: { query: z.string().optional().describe('Case-insensitive substring of the title') },
+      annotations: { readOnlyHint: true },
+    },
+    ({ query }) => text(listCanvases(records, query, viewing()?.canvasId)),
+  )
+
+  server.registerTool(
+    'read_canvas',
+    {
+      title: 'Read a canvas',
+      description: 'Compact outline of the nodes on a canvas, one line per node, in world coordinates. Filter, page, or get only changes since a rev.',
+      inputSchema: {
+        canvas_id: z.string().optional().describe('Canvas id (default: the one the user is viewing, else the root)'),
+        view: z.boolean().optional().describe("Only nodes on the user's screen"),
+        rect: z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() }).optional().describe('Only nodes intersecting this world rectangle'),
+        query: z.string().optional().describe('Case-insensitive substring of the text'),
+        types: z.array(z.string()).optional().describe('Node types, e.g. ["note", "geo/rect"]'),
+        depth: z.number().int().min(0).optional().describe('Expand groups/frames this many levels (default 0)'),
+        since: z.number().int().min(0).optional().describe('Only nodes changed after this rev'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Max lines (default 200)'),
+        cursor: z.string().optional().describe('next= from the previous result'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ canvas_id, view, ...options }) =>
+      outlineGuard(() => {
+        const user = viewing()
+        const canvasId = canvas_id ?? user?.canvasId ?? records.rootCanvasId
+        const here = user?.canvasId === canvasId ? user.viewport : undefined
+        if (view && !here) {
+          throw new OutlineError(user ? `The user is viewing ${user.canvasId}, not ${canvasId}.` : 'No open CanvCode tab reports a view. Pass rect instead.')
+        }
+        return text(readCanvas(records, { canvasId, ...options, ...(view ? { rect: here } : {}), viewing: here }))
+      }),
+  )
+
+  server.registerTool(
+    'read_nodes',
+    {
+      title: 'Read nodes',
+      description: 'Details of nodes by id (compact JSON): world position and size, text, colours, file, arrow ends, children.',
+      inputSchema: { ids: z.array(z.string()).min(1).max(100).describe('Node ids (node:...)') },
+      annotations: { readOnlyHint: true },
+    },
+    ({ ids }) => text(JSON.stringify(readNodes(records, ids))),
+  )
+
+  if (!agent) return
+  server.registerTool(
+    'edit_canvas',
+    {
+      title: 'Edit a canvas',
+      description: 'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, reparent) atomically. World coordinates.',
+      inputSchema: editCanvasInput,
+      annotations: { destructiveHint: true },
+    },
+    ({ canvas_id, ops, if_rev, label }) =>
+      editGuard(() => {
+        const user = viewing()
+        const canvasId = canvas_id ?? user?.canvasId
+        if (!canvasId) throw new EditError('No canvas_id, and no open CanvCode tab reports which canvas the user is viewing. Pass canvas_id (see list_canvases).')
+        const viewport = user?.canvasId === canvasId ? user.viewport : undefined
+        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport })
+        // 既定の Canvas を使ったときは、どこを変えたかを返す
+        return text(JSON.stringify(canvas_id ? result : { canvas: canvasId, ...result }))
+      }),
+  )
+
+  server.registerTool(
+    'undo_canvas_edit',
+    {
+      title: 'Undo a canvas edit',
+      description: 'Undo an edit_canvas call by its batch id, unless its nodes changed since.',
+      inputSchema: { batch_id: z.string().describe('batch from edit_canvas') },
+      annotations: { destructiveHint: true },
+    },
+    ({ batch_id }) => editGuard(() => text(JSON.stringify(undoCanvasEdit(agent, batch_id)))),
+  )
+}
+
+function editGuard(run: () => CallToolResult): CallToolResult {
+  try {
+    return run()
+  } catch (err) {
+    if (err instanceof EditError) return error(err.message)
+    throw err
+  }
+}
+
+function outlineGuard(run: () => CallToolResult): CallToolResult {
+  try {
+    return run()
+  } catch (err) {
+    if (err instanceof OutlineError) return error(err.message)
+    throw err
+  }
 }
 
 // ---- スライドデッキ ----
@@ -454,6 +593,10 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, path:
 
 function summary(info: FileInfo): Pick<FileInfo, 'id' | 'kind' | 'title' | 'path' | 'missing'> {
   return { id: info.id, kind: info.kind, title: info.title, path: info.path, missing: info.missing }
+}
+
+function text(value: string): CallToolResult {
+  return { content: [{ type: 'text', text: value }] }
 }
 
 function json(value: unknown): CallToolResult {

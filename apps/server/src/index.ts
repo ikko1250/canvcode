@@ -5,6 +5,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { AgentHost } from './agent/host.ts'
+import { handleAgentOps } from './agent/ops.ts'
 import { AssetStore } from './assets.ts'
 import { FigureStore } from './figures.ts'
 import { FileStore, type FileEvent } from './files.ts'
@@ -23,7 +25,8 @@ import { SlidesApi } from './slides.ts'
 // - 本番では、ビルドした画面（apps/web/dist）も同じサーバーから配信する
 // - ワークスペースのフォルダ（MAI-13）の .canvcode/ に、画像の Asset を保存する（MAI-26）
 // - レコードは .canvcode/workspace.db（SQLite）に保存し、/api/sync の WebSocket で同期する（MAI-11、MAI-13）
-// - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きし、スライドデッキを作れる（MAI-59）
+// - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きし、スライドデッキを作れる（MAI-59）。
+//   Canvas のノードの書き換えは、サーバーの中のワークスペース（agent/host.ts）で行い、画面から取り消せる（/api/agent-ops）
 
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
@@ -69,6 +72,8 @@ await figures.init()
 // フレームがあるか（消したノードは records に残らない）。スライドの図の警告と代わりの絵に使う
 const frameExists = (id: string): boolean => records.get(id)?.type === 'frame'
 const slides = new SlidesApi(files, WORKSPACE, PORT, DATA_DIR, { figures, frameExists })
+// AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
+const agent = new AgentHost({ records, sync, files })
 const figureHooks = slides.figureHooks()
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
@@ -134,6 +139,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (sync.handle(req, res, url.pathname)) return
+  if (handleAgentOps(req, res, url.pathname, agent)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
@@ -141,7 +147,7 @@ const server = createServer(async (req, res) => {
   if (await slides.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await files.handle(req, res, url.pathname)) return
-  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides, refImages })) return
+  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides, refImages, agent, presence: () => sync.latestPresence() })) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return

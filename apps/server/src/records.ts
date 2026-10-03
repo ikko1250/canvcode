@@ -23,8 +23,43 @@ export interface Changes {
 }
 
 // テーブルの構造の版。変えるときは MIGRATIONS に足す（起動時に、適用する前に workspace.db のコピーを作る）
-const SCHEMA_VERSION = 1
-const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {}
+const SCHEMA_VERSION = 2
+const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
+  // AI の編集の記録（MCP の edit_canvas。Undo に使う）
+  2: (db) =>
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_ops (
+        id TEXT PRIMARY KEY,
+        canvas_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        rev INTEGER NOT NULL,
+        patch TEXT NOT NULL,
+        undone_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS agent_ops_created_at ON agent_ops (created_at);
+    `),
+}
+
+// 残しておく AI の編集の記録の数
+const MAX_AGENT_OPS = 50
+
+// AI の編集 1 回分の記録。patch は変わったレコードの前後（null はなかった・消した）
+export interface AgentOpEntry {
+  id: string
+  before: StoredRecord | null
+  after: StoredRecord | null
+}
+
+export interface AgentOp {
+  id: string
+  canvasId: string
+  label: string
+  createdAt: number
+  rev: number
+  patch: AgentOpEntry[]
+  undoneAt: number | null
+}
 
 // 受け付けるレコードの種類と、id の接頭辞（MAI-7）
 const RECORD_PREFIX: Record<string, string> = { canvas: 'canvas:', file: 'file:', node: 'node:', binding: 'binding:', anchor: 'anchor:' }
@@ -53,6 +88,7 @@ export class RecordStore {
       );
       CREATE INDEX IF NOT EXISTS records_parent ON records (parent_id);
       CREATE INDEX IF NOT EXISTS records_rev ON records (rev);
+      CREATE INDEX IF NOT EXISTS records_type_name ON records (type_name);
       CREATE TABLE IF NOT EXISTS deleted (id TEXT PRIMARY KEY, rev INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS deleted_rev ON deleted (rev);
       CREATE TABLE IF NOT EXISTS refs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -86,7 +122,8 @@ export class RecordStore {
   }
 
   // 差分を 1 つのトランザクションで保存し、新しい変更番号を返す。正しくないレコードがあれば、何も保存せずに投げる
-  apply(puts: unknown[], deletes: unknown[]): number {
+  // also は同じトランザクションの中で、ほかの表に書くとき（AI の編集の記録）
+  apply(puts: unknown[], deletes: unknown[], also?: (rev: number) => void): number {
     for (const record of puts) validRecord(record)
     for (const id of deletes) if (typeof id !== 'string') throw new Error('invalid id')
     const rev = this.rev + 1
@@ -113,6 +150,7 @@ export class RecordStore {
       }
       // ルートの Canvas は消させない
       if (!this.db.prepare('SELECT 1 FROM records WHERE id = ?').get(this.rootCanvasId)) throw new Error('the root canvas cannot be deleted')
+      also?.(rev)
       this.setMeta('rev', String(rev))
       this.db.exec('COMMIT')
     } catch (error) {
@@ -120,6 +158,50 @@ export class RecordStore {
       throw error
     }
     return rev
+  }
+
+  // レコードを最後に変えた変更番号（ないものは入れない）
+  revsOf(ids: readonly string[]): Map<string, number> {
+    const out = new Map<string, number>()
+    if (ids.length === 0) return out
+    const rows = this.db.prepare('SELECT id, rev FROM records WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids)) as { id: string; rev: number }[]
+    for (const row of rows) out.set(row.id, Number(row.rev))
+    return out
+  }
+
+  // 差分を保存し、AI の編集として記録する（同じトランザクション）。古い記録は MAX_AGENT_OPS 件を残して消す
+  applyAgentOp(op: Omit<AgentOp, 'rev' | 'undoneAt'>): number {
+    const puts = op.patch.flatMap((e) => (e.after ? [e.after] : []))
+    const deletes = op.patch.flatMap((e) => (e.after ? [] : [e.id]))
+    return this.apply(puts, deletes, (rev) => {
+      this.db
+        .prepare('INSERT INTO agent_ops (id, canvas_id, label, created_at, rev, patch) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(op.id, op.canvasId, op.label, op.createdAt, rev, JSON.stringify(op.patch))
+      this.db.prepare('DELETE FROM agent_ops WHERE id NOT IN (SELECT id FROM agent_ops ORDER BY created_at DESC, rowid DESC LIMIT ?)').run(MAX_AGENT_OPS)
+    })
+  }
+
+  getAgentOp(id: string): AgentOp | undefined {
+    const row = this.db.prepare('SELECT * FROM agent_ops WHERE id = ?').get(id) as
+      | { id: string; canvas_id: string; label: string; created_at: number; rev: number; patch: string; undone_at: number | null }
+      | undefined
+    if (!row) return undefined
+    return {
+      id: row.id,
+      canvasId: row.canvas_id,
+      label: row.label,
+      createdAt: Number(row.created_at),
+      rev: Number(row.rev),
+      patch: JSON.parse(row.patch) as AgentOpEntry[],
+      undoneAt: row.undone_at === null ? null : Number(row.undone_at),
+    }
+  }
+
+  // AI の編集を取り消した差分を保存し、取り消したことを記録する（同じトランザクション）
+  applyAgentUndo(id: string, puts: StoredRecord[], deletes: string[]): number {
+    return this.apply(puts, deletes, () => {
+      this.db.prepare('UPDATE agent_ops SET undone_at = ? WHERE id = ?').run(Date.now(), id)
+    })
   }
 
   // 1 件のレコード（なければ undefined）
@@ -132,6 +214,41 @@ export class RecordStore {
   childrenOf(parentId: string): StoredRecord[] {
     const rows = this.db.prepare('SELECT body FROM records WHERE parent_id = ?').all(parentId) as { body: string }[]
     return rows.map((row) => JSON.parse(row.body) as StoredRecord)
+  }
+
+  // この種類（typeName）のレコード（AI に Canvas の木を渡すときに、Canvas と File だけを読む）
+  ofTypeName(typeName: string): StoredRecord[] {
+    const rows = this.db.prepare('SELECT body FROM records WHERE type_name = ?').all(typeName) as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as StoredRecord)
+  }
+
+  // ノードの数を親ごとに数える。group / frame の親も返す（Canvas ごとの数を、中身を読まずに足し上げるため）
+  nodeCounts(): { counts: Map<string, number>; containers: Map<string, string> } {
+    const counts = new Map<string, number>()
+    for (const row of this.db.prepare("SELECT parent_id, COUNT(*) AS n FROM records WHERE type_name = 'node' GROUP BY parent_id").all() as { parent_id: string | null; n: number }[]) {
+      if (row.parent_id !== null) counts.set(row.parent_id, Number(row.n))
+    }
+    const containers = new Map<string, string>()
+    for (const row of this.db.prepare("SELECT id, parent_id FROM records WHERE type_name = 'node' AND type IN ('group', 'frame')").all() as { id: string; parent_id: string | null }[]) {
+      if (row.parent_id !== null) containers.set(row.id, row.parent_id)
+    }
+    return { counts, containers }
+  }
+
+  // 矢印（fromId）のつながり（Binding）
+  bindingsFrom(arrowIds: readonly string[]): StoredRecord[] {
+    if (arrowIds.length === 0) return []
+    const rows = this.db
+      .prepare("SELECT body FROM records WHERE type_name = 'binding' AND json_extract(body, '$.fromId') IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(arrowIds)) as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as StoredRecord)
+  }
+
+  // since より後に変わったレコードの id と、消えたレコードの id（中身は読まない）
+  idsChangedSince(since: number): { changed: Set<string>; deleted: string[] } {
+    const changed = new Set((this.db.prepare('SELECT id FROM records WHERE rev > ?').all(since) as { id: string }[]).map((row) => row.id))
+    const deleted = (this.db.prepare('SELECT id FROM deleted WHERE rev > ? ORDER BY rev').all(since) as { id: string }[]).map((row) => row.id)
+    return { changed, deleted }
   }
 
   // AI に渡す参照（ref）を保存する。同期するレコードとは別のテーブルに置き、rev も進めない（ブラウザには流さない）。
@@ -183,11 +300,12 @@ export class RecordStore {
     this.db.exec('COMMIT')
   }
 
+  // 新しく作った db も版 1 から順に当てる（版 2 からの表は MIGRATIONS だけで作る）。写しを作るのは、前からあった db だけ
   private migrate(existed: boolean): void {
-    const current = Number(this.meta('schema') ?? (existed ? 1 : SCHEMA_VERSION))
+    const current = Number(this.meta('schema') ?? 1)
     if (current < SCHEMA_VERSION) {
       // 適用する前に写しを作る（WAL の中身も含めて写すため、VACUUM INTO を使う）
-      this.snapshot(`${this.path}.before-v${SCHEMA_VERSION}-${Date.now()}.bak`)
+      if (existed) this.snapshot(`${this.path}.before-v${SCHEMA_VERSION}-${Date.now()}.bak`)
       for (let v = current + 1; v <= SCHEMA_VERSION; v++) MIGRATIONS[v]?.(this.db)
     }
     this.setMeta('schema', String(SCHEMA_VERSION))

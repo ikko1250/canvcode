@@ -7,6 +7,8 @@ import type { Workspace } from './workspace.ts'
 //   応答（ack）が来るまでは手元に持っておき、切れたら、つなぎ直したときに送り直す
 // - ほかのタブの変更は、履歴に入れずに当てる。まだ送っていない（応答のない）レコードへの変更は当てない（自分のほうが新しい）
 // - ドラッグや文字の編集の途中（トランザクションが開いている間）に届いた変更は、終わってから当てる
+// - AI（MCP の edit_canvas）がサーバーで行った変更は origin: { kind: 'ai' } 付きで届く。onAgentChange で画面に知らせる
+// - いま見ている Canvas と範囲（reportPresence）を、カメラが止まってから送る。AI のツールが、ユーザーの見ている所を既定にする
 
 export interface InitialRecords {
   rootCanvasId: string
@@ -15,6 +17,23 @@ export interface InitialRecords {
 }
 
 export type SyncStatus = 'saved' | 'saving' | 'offline'
+
+// AI がサーバーで行った編集（1 回の edit_canvas）。batchId で取り消せる（POST /api/agent-ops/<batchId>/undo）
+export interface AgentChange {
+  batchId: string
+  label: string
+  canvasId: string
+  // 変わったノードの数
+  count: number
+}
+
+// 画面に見えている範囲（ワールド座標）
+export interface Viewport {
+  x: number
+  y: number
+  w: number
+  h: number
+}
 
 export interface SyncOptions {
   baseUrl?: string
@@ -26,10 +45,23 @@ export interface SyncOptions {
   delayMs?: number
   // サーバーが旧データを取り込んだ（その変更は、このあと届く changes と一緒に当たる）
   onImported?: (report: unknown) => void
+  // AI の編集が届いたとき（当てたあとで呼ぶ）
+  onAgentChange?: (change: AgentChange) => void
+  // 見ている範囲を、カメラが止まってから何ミリ秒後に送るか
+  presenceDelayMs?: number
 }
 
 const SEND_DELAY_MS = 100
+const PRESENCE_DELAY_MS = 500
 const RECONNECT_MAX_MS = 10_000
+
+// AI の編集を取り消すようサーバーに頼む。取り消せなければ（そのあと変わった・古すぎる）理由を投げる
+export async function undoAgentChange(batchId: string, baseUrl = ''): Promise<void> {
+  const response = await fetch(`${baseUrl}/api/agent-ops/${encodeURIComponent(batchId)}/undo`, { method: 'POST' })
+  if (response.ok) return
+  const body = (await response.json().catch(() => ({}))) as { error?: string }
+  throw new Error(body.error ?? `undo failed: ${response.status}`)
+}
 
 // ワークスペースのレコードをまとめて読む
 export async function loadRecords(baseUrl = ''): Promise<InitialRecords> {
@@ -57,6 +89,10 @@ export class SyncClient {
   private deferred: { records: WorkspaceRecord[]; deleted: string[] }[] = []
   private status: SyncStatus = 'saved'
   private readonly unlisten: () => void
+  // 見ている所（最後に知らされたもの）と、最後に送ったもの（同じなら送らない）
+  private presence: { canvasId: string; viewport: Viewport } | null = null
+  private presenceSent: string | null = null
+  private presenceTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(workspace: Workspace, initial: InitialRecords, options: SyncOptions = {}) {
     this.workspace = workspace
@@ -66,6 +102,8 @@ export class SyncClient {
       notify: options.notify ?? ((message) => console.warn(message)),
       delayMs: options.delayMs ?? SEND_DELAY_MS,
       onImported: options.onImported ?? (() => {}),
+      onAgentChange: options.onAgentChange ?? (() => {}),
+      presenceDelayMs: options.presenceDelayMs ?? PRESENCE_DELAY_MS,
     }
     this.rev = initial.rev
     this.applyRemote(initial.records, [])
@@ -84,9 +122,10 @@ export class SyncClient {
   }
 
   // あとから知らせる先を決める（画面を作る前に同期を始めるため）
-  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported'>): void {
+  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported' | 'onAgentChange'>): void {
     if (handlers.notify) this.options.notify = handlers.notify
     if (handlers.onImported) this.options.onImported = handlers.onImported
+    if (handlers.onAgentChange) this.options.onAgentChange = handlers.onAgentChange
   }
 
   // まだ保存が済んでいない変更があるか
@@ -101,8 +140,32 @@ export class SyncClient {
     this.send()
   }
 
+  // いま見ている Canvas と範囲を知らせる。Canvas を移ったときはすぐ、カメラが動いている間は止まってから送る。
+  // 変わっていなければ送らない。つなぎ直したら送り直す
+  reportPresence(canvasId: string, viewport: Viewport): void {
+    const moved = this.presence?.canvasId !== canvasId
+    const round = (value: number) => Math.round(value)
+    this.presence = { canvasId, viewport: { x: round(viewport.x), y: round(viewport.y), w: round(viewport.w), h: round(viewport.h) } }
+    if (this.presenceTimer !== null) clearTimeout(this.presenceTimer)
+    this.presenceTimer = null
+    if (moved) return this.sendPresence()
+    this.presenceTimer = setTimeout(() => {
+      this.presenceTimer = null
+      this.sendPresence()
+    }, this.options.presenceDelayMs)
+  }
+
+  private sendPresence(): void {
+    if (!this.presence || !this.open || !this.socket) return
+    const text = JSON.stringify({ type: 'presence', ...this.presence })
+    if (text === this.presenceSent) return
+    this.presenceSent = text
+    this.socket.send(text)
+  }
+
   dispose(): void {
     this.disposed = true
+    if (this.presenceTimer !== null) clearTimeout(this.presenceTimer)
     this.flush()
     this.unlisten()
     this.socket?.close()
@@ -146,6 +209,8 @@ export class SyncClient {
       this.reconnectDelay = 500
       // 切れている間の変更をもらってから、手元の変更を送る
       socket.send(JSON.stringify({ type: 'hello', since: this.rev }))
+      this.presenceSent = null
+      this.sendPresence()
     }
     socket.onmessage = (message) => this.receive(String(message.data))
     socket.onclose = () => {
@@ -165,7 +230,16 @@ export class SyncClient {
   }
 
   private receive(text: string): void {
-    let message: { type: string; seq?: number; rev?: number; records?: WorkspaceRecord[]; deleted?: string[]; message?: string; imported?: unknown }
+    let message: {
+      type: string
+      seq?: number
+      rev?: number
+      records?: WorkspaceRecord[]
+      deleted?: string[]
+      message?: string
+      imported?: unknown
+      origin?: { kind?: unknown; batchId?: unknown; label?: unknown; canvasId?: unknown; count?: unknown }
+    }
     try {
       message = JSON.parse(text)
     } catch {
@@ -175,6 +249,15 @@ export class SyncClient {
       this.rev = Math.max(this.rev, message.rev ?? 0)
       this.applyRemote(message.records ?? [], message.deleted ?? [])
       if (message.imported) this.options.onImported(message.imported)
+      const origin = message.origin
+      if (origin?.kind === 'ai' && typeof origin.batchId === 'string') {
+        this.options.onAgentChange({
+          batchId: origin.batchId,
+          label: typeof origin.label === 'string' ? origin.label : '',
+          canvasId: typeof origin.canvasId === 'string' ? origin.canvasId : '',
+          count: typeof origin.count === 'number' ? origin.count : 0,
+        })
+      }
       // hello への応答のあとで、手元の変更を送る
       this.send()
     } else if (message.type === 'ack' && message.seq !== undefined) {

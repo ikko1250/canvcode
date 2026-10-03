@@ -6,9 +6,11 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterEach, describe, expect, it } from 'vitest'
+import { AgentHost } from './agent/host.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
+import type { Presence } from './sync.ts'
 import { RefImageStore } from './refImages.ts'
 import { SlidesApi } from './slides.ts'
 
@@ -28,6 +30,8 @@ async function setup(): Promise<{
   events: FileEvent[]
   url: URL
   workspace: string
+  // ユーザーが見ている所（ブラウザが知らせるものの代わり）
+  view: { current: Presence | null }
 }> {
   const workspace = mkdtempSync(join(tmpdir(), 'canvcode-mcp-'))
   cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
@@ -40,11 +44,14 @@ async function setup(): Promise<{
   cleanups.push(() => records.close())
   const slides = new SlidesApi(files, workspace, 0, dataDir)
   const refImages = new RefImageStore(dataDir)
+  const agent = new AgentHost({ records, files })
+  cleanups.push(() => agent.dispose())
+  const view: { current: Presence | null } = { current: null }
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     void (async () => {
       if (await slides.handle(req, res, url.pathname, url.searchParams)) return
-      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, slides, refImages }))) res.writeHead(404).end()
+      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, slides, refImages, agent, presence: () => view.current }))) res.writeHead(404).end()
     })()
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -53,7 +60,7 @@ async function setup(): Promise<{
   const client = new Client({ name: 'test', version: '0.0.0' })
   await client.connect(new StreamableHTTPClientTransport(url))
   cleanups.push(() => client.close())
-  return { client, files, records, refImages, dataDir, events, url, workspace }
+  return { client, files, records, refImages, dataDir, events, url, workspace, view }
 }
 
 async function call(client: Client, name: string, args: Record<string, unknown>): Promise<{ data: any; isError: boolean; text: string }> {
@@ -70,13 +77,19 @@ describe('MCP server', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'create_document',
       'create_slide_deck',
+      'edit_canvas',
       'edit_document',
+      'get_canvas_format',
       'get_slide_format',
+      'list_canvases',
       'list_documents',
       'preview_slide_deck',
+      'read_canvas',
       'read_document',
+      'read_nodes',
       'read_slide_deck',
       'resolve_reference',
+      'undo_canvas_edit',
       'update_document',
       'update_slide_deck',
     ])
@@ -129,6 +142,85 @@ describe('MCP server', () => {
     const fresh = await call(client, 'update_document', { id: file.id, content: 'print(3)\n' })
     expect(fresh.isError).toBe(false)
     expect((await files.read(file.id)).text).toBe('print(3)\n')
+  })
+
+  it('reads canvases as compact text through the canvas tools', async () => {
+    const { client, records } = await setup()
+    const root = records.rootCanvasId
+    records.apply([{ typeName: 'node', id: 'node:n', type: 'note', parentId: root, x: 10, y: 20, rotation: 0, index: 'a1', locked: false, props: { text: 'メモ', w: 100, h: 50 } }], [])
+    const { tools } = await client.listTools()
+    // ツールの説明は短く保つ（毎回 AI に渡る）
+    const canvasTools = tools.filter((t) => ['get_canvas_format', 'list_canvases', 'read_canvas', 'read_nodes', 'edit_canvas', 'undo_canvas_edit'].includes(t.name))
+    expect(canvasTools.map((t) => t.description ?? '').join('').length).toBeLessThan(900)
+    // edit_canvas の入力のスキーマも小さく保つ（操作ごとの形は get_canvas_format に書く）
+    expect(JSON.stringify(tools.find((t) => t.name === 'edit_canvas')!.inputSchema).length).toBeLessThan(800)
+
+    expect((await client.callTool({ name: 'list_canvases', arguments: {} })).content).toEqual([{ type: 'text', text: `rev=${records.rev} canvases=1\n${root} "ホーム" nodes=1` }])
+    const outline = (await client.callTool({ name: 'read_canvas', arguments: {} })).content as { text: string }[]
+    expect(outline[0]!.text.split('\n')[1]).toBe('node:n note 10,20 100x50 "メモ"')
+    const nodes = (await client.callTool({ name: 'read_nodes', arguments: { ids: ['node:n'] } })).content as { text: string }[]
+    expect(nodes[0]!.text).not.toContain('\n')
+    expect(JSON.parse(nodes[0]!.text).nodes[0]).toMatchObject({ id: 'node:n', x: 10, y: 20, text: 'メモ' })
+    const unknown = await call(client, 'read_canvas', { canvas_id: 'canvas:nope' })
+    expect(unknown.isError).toBe(true)
+    const guide = (await client.callTool({ name: 'get_canvas_format', arguments: {} })).content as { text: string }[]
+    expect(guide[0]!.text).toContain('read_canvas outline')
+    expect(guide[0]!.text).toContain('## Editing (edit_canvas)')
+  })
+
+  it('edits a canvas and undoes the edit through the canvas tools', async () => {
+    const { client, records, files } = await setup()
+    const doc = await files.create('markdown', 'メモ', '# メモ\n')
+    const edited = await call(client, 'edit_canvas', {
+      canvas_id: records.rootCanvasId,
+      label: '付箋とカード',
+      ops: [
+        { op: 'create', type: 'note', as: 'n', text: 'こんにちは', x: 10, y: 20 },
+        { op: 'create', type: 'card', as: 'c', file: doc.id, place: { rightOf: '$n' } },
+      ],
+    })
+    expect(edited.isError).toBe(false)
+    expect(edited.text).not.toContain('\n')
+    expect(edited.data).toMatchObject({ rev: records.rev, counts: { created: 2, updated: 0, deleted: 0 } })
+    // 外で作った File も、カードにすると持ち主が付く
+    expect(records.get(doc.id)).toMatchObject({ ownerNodeId: edited.data.created.c })
+    const outline = (await client.callTool({ name: 'read_canvas', arguments: {} })).content as { text: string }[]
+    expect(outline[0]!.text).toContain(`${edited.data.created.n} note 10,20`)
+    const failed = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'move', ids: ['node:nope'], dx: 1 }] })
+    expect(failed).toMatchObject({ isError: true })
+    expect(failed.text).toMatch(/^ops\[0\] \(move\): unknown node node:nope/)
+    const undone = await call(client, 'undo_canvas_edit', { batch_id: edited.data.batch })
+    expect(undone.data).toMatchObject({ restored: 3 })
+    expect(records.get(edited.data.created.n)).toBeUndefined()
+  })
+
+  it('defaults the canvas tools to where the user is looking', async () => {
+    const { client, records, view } = await setup()
+    const root = records.rootCanvasId
+    const note = (id: string, x: number, y: number) => ({ typeName: 'node', id, type: 'note', parentId: root, x, y, rotation: 0, index: `a${id.at(-1)}`, locked: false, props: { text: id, w: 100, h: 50, fontSize: 12, color: '#fff3bf', align: 'left' } })
+    records.apply([note('node:1', 10, 20), note('node:2', 1100, 1100)], [])
+    // 見ている所がなければ、edit_canvas は canvas_id が要る。read_canvas はルート
+    const missing = await call(client, 'edit_canvas', { ops: [{ op: 'create', type: 'note' }] })
+    expect(missing.isError).toBe(true)
+    expect(missing.text).toContain('Pass canvas_id')
+    expect((await call(client, 'read_canvas', { view: true })).isError).toBe(true)
+
+    view.current = { canvasId: root, viewport: { x: 1000, y: 1000, w: 800, h: 600 }, at: Date.now() }
+    const listed = (await client.callTool({ name: 'list_canvases', arguments: {} })).content as { text: string }[]
+    expect(listed[0]!.text).toContain(`${root} "ホーム" nodes=2 viewing`)
+    const all = ((await client.callTool({ name: 'read_canvas', arguments: {} })).content as { text: string }[])[0]!.text
+    expect(all.split('\n')[0]).toContain(`${root} "ホーム" viewing=1000,1000,800x600 rev=`)
+    expect(all).toContain('node:1 note')
+    // view=true は画面に見えているものだけ
+    const shown = ((await client.callTool({ name: 'read_canvas', arguments: { view: true } })).content as { text: string }[])[0]!.text
+    expect(shown).toContain('node:2 note')
+    expect(shown).not.toContain('node:1 note')
+    // 位置を決めずに作ると、見ている範囲の中心の近くの空いた所に置く
+    const edited = await call(client, 'edit_canvas', { ops: [{ op: 'create', type: 'note', as: 'n', text: 'ここ', w: 100, h: 100 }] })
+    expect(edited.isError).toBe(false)
+    expect(edited.data.canvas).toBe(root)
+    const created = records.get(edited.data.created.n)!
+    expect(Math.hypot(Number(created.x) + 50 - 1400, Number(created.y) + 50 - 1300)).toBeLessThan(200)
   })
 
   it('reports an unknown id as a tool error', async () => {

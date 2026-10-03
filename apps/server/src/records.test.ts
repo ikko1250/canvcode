@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -114,5 +115,23 @@ describe('RecordStore', () => {
     const path = snapshotWorkspace(dir)
     expect(statSync(path).size).toBeGreaterThan(0)
     store.close()
+  })
+
+  it('migrates a version 1 database to version 2 (agent_ops) after making a copy', () => {
+    const dir = dataDir()
+    const store = new RecordStore(dir)
+    store.apply([node('node:a', store.rootCanvasId)], [])
+    store.close()
+    // 版 1 の db にする（agent_ops がなく、schema が 1）
+    const db = new DatabaseSync(join(dir, 'workspace.db'))
+    db.exec("DROP TABLE agent_ops; UPDATE meta SET value = '1' WHERE key = 'schema'")
+    db.close()
+    const reopened = new RecordStore(dir)
+    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v2-'))).toBe(true)
+    expect(reopened.get('node:a')).toBeDefined()
+    const rev = reopened.applyAgentOp({ id: 'ai-1', canvasId: reopened.rootCanvasId, label: 'x', createdAt: 1, patch: [{ id: 'node:b', before: null, after: node('node:b', reopened.rootCanvasId) }] })
+    expect(reopened.getAgentOp('ai-1')).toMatchObject({ rev, undoneAt: null, patch: [{ id: 'node:b', before: null }] })
+    expect(reopened.revsOf(['node:a', 'node:b', 'node:none'])).toEqual(new Map([['node:a', 1], ['node:b', rev]]))
+    reopened.close()
   })
 })
