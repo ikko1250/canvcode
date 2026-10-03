@@ -206,7 +206,11 @@ export function FileEditor(props: {
     const timer = window.setTimeout(() => setDebounced(previewText), PREVIEW_DELAY_MS)
     return () => window.clearTimeout(timer)
   }, [previewText])
-  const html = useMemo(() => (isCode ? '' : renderMarkdown(debounced, { sourceLines: true }).html), [debounced, isCode])
+  const documentPath = file?.path
+  const html = useMemo(
+    () => (isCode ? '' : renderMarkdown(debounced, { sourceLines: true, documentPath }).html),
+    [debounced, isCode, documentPath],
+  )
 
   // 本文とプレビューのスクロールを合わせる（MAI-44）。
   // 本文が変わった（プレビューを描き直した）ときと、どちらかの大きさが変わったときに、行と要素の高さ位置の対応表を作り直す。

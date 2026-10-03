@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { watch, type FSWatcher } from 'chokidar'
@@ -46,6 +47,18 @@ function extensionOfPath(path: string): string {
   if (lower.endsWith('.slide.md')) return '.slide.md'
   if (lower.endsWith('.slide.json')) return '.slide.json'
   return extname(path)
+}
+// /api/workspace/<パス> で返してよいもの（Markdown の相対パスの画像）。拡張子で決める
+const IMAGE_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
 }
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 // 削除と追加がこの時間内に続き、中身が同じなら、名前が変わったとみなす
@@ -119,9 +132,13 @@ export class FileStore {
     return this.abs(path)
   }
 
-  // /api/files 以下を扱う。扱わないパスなら false を返す
+  // /api/files と /api/workspace 以下を扱う。扱わないパスなら false を返す
   async handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
     const parts = path.split('/').filter(Boolean)
+    if (parts[0] === 'api' && parts[1] === 'workspace') {
+      await this.sendWorkspaceImage(req, res, parts.slice(2).map(safeDecode).join('/'))
+      return true
+    }
     if (parts[0] !== 'api' || parts[1] !== 'files') return false
     // id の「:」は、ブラウザが %3A にして送ってくる
     const id = parts[2] === undefined ? undefined : safeDecode(parts[2])
@@ -167,6 +184,46 @@ export class FileStore {
       }
     }
     return true
+  }
+
+  // ワークスペースの中の画像をそのまま返す（Markdown の相対パスの画像）。画像の拡張子のものだけ
+  private async sendWorkspaceImage(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    try {
+      if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method not allowed')
+      const type = IMAGE_TYPES[extname(path).toLowerCase()]
+      if (!path || !type) throw new HttpError(404, 'not found')
+      const abs = this.abs(path)
+      // シンボリックリンクでワークスペースの外を指していたら断る
+      const [real, root] = await Promise.all([realpath(abs), realpath(this.workspace)]).catch(() => {
+        throw new HttpError(404, 'not found')
+      })
+      if (!real.startsWith(root + sep)) throw new HttpError(403, 'path outside the workspace')
+      const info = await stat(real)
+      if (!info.isFile()) throw new HttpError(404, 'not found')
+      const etag = `"${info.size.toString(36)}-${Math.floor(info.mtimeMs).toString(36)}"`
+      const headers: Record<string, string | number> = {
+        'content-type': type,
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'no-cache',
+        etag,
+      }
+      // SVG を直接開かれても、中のスクリプトは動かさない
+      if (type === 'image/svg+xml') headers['content-security-policy'] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, headers)
+        res.end()
+        return
+      }
+      res.writeHead(200, { ...headers, 'content-length': info.size })
+      if (req.method === 'HEAD') res.end()
+      else createReadStream(real).pipe(res)
+    } catch (error) {
+      if (error instanceof HttpError) sendJson(res, error.status, { error: error.message })
+      else {
+        console.error('workspace file request failed', error)
+        sendJson(res, 500, { error: 'internal error' })
+      }
+    }
   }
 
   // ---- 操作 ----

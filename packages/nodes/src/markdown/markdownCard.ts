@@ -49,13 +49,15 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
     return options.files?.get(props.fileId) ?? null
   }
 
-  // 本文から作った HTML の本体（題名や切り方によらない部分）。本文の版ごとに一度だけ作る
+  // 本文から作った HTML の本体（題名や切り方によらない部分）。本文の版とファイルの場所ごとに一度だけ作る
+  // （相対パスの画像はファイルの場所を基準に解決するので、名前を変えたり動かしたりしたら作り直す）
   const bodyCache = new Map<string, string>()
-  const bodyHtml = (text: string, version: string) => {
-    let html = bodyCache.get(version)
+  const bodyHtml = (content: { text: string; version: string; path?: string }) => {
+    const key = `${content.version}|${content.path ?? ''}`
+    let html = bodyCache.get(key)
     if (html === undefined) {
-      html = renderMarkdown(text).html
-      remember(bodyCache, version, html)
+      html = renderMarkdown(content.text, { documentPath: content.path }).html
+      remember(bodyCache, key, html)
     }
     return html
   }
@@ -65,10 +67,10 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
   const measuredHeight = (props: MarkdownCardProps): number | null => {
     const content = textOf(props)
     if (!content || !canMeasure) return null
-    const key = `${content.version}|${props.w}`
+    const key = `${content.version}|${content.path ?? ''}|${props.w}`
     let height = heightCache.get(key)
     if (height === undefined) {
-      const html = buildMarkdownCardHtml('題名', bodyHtml(content.text, content.version))
+      const html = buildMarkdownCardHtml('題名', bodyHtml(content))
       height = Math.max(MIN_HEIGHT, measureCardHeight({ html, css: options.measureCss, width: props.w }))
       remember(heightCache, key, height)
     }
@@ -104,7 +106,7 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
         return
       }
       const clipped = props.sizing === 'fixed' && (measuredHeight(props) ?? 0) > h
-      const html = buildMarkdownCardHtml(doc.title, bodyHtml(content.text, content.version), {
+      const html = buildMarkdownCardHtml(doc.title, bodyHtml(content), {
         clipped,
         shortcut: props.role === 'shortcut',
       })
@@ -147,10 +149,10 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
       const content = textOf(props)
       if (!content || !canMeasure) return null
       const h = heightOf(props)
-      const key = `${content.version}|${props.w}x${h}`
+      const key = `${content.version}|${content.path ?? ''}|${props.w}x${h}`
       let regions = linkCache.get(key)
       if (!regions) {
-        const html = buildMarkdownCardHtml('題名', bodyHtml(content.text, content.version))
+        const html = buildMarkdownCardHtml('題名', bodyHtml(content))
         regions = measureLinks({ html, css: options.measureCss, width: props.w, height: h })
         remember(linkCache, key, regions)
       }

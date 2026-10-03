@@ -12,6 +12,8 @@ export interface MarkdownRenderOptions {
   // ブロックごとの先頭の要素に、元の Markdown の行（1 から）を data-line で付ける。
   // 全画面のエディタで、本文とプレビューのスクロールを合わせるのに使う（MAI-44）
   sourceLines?: boolean
+  // この Markdown ファイルのワークスペースからのパス。あれば、相対パスの画像をサーバーの /api/workspace/ から読む
+  documentPath?: string
 }
 
 export const SOURCE_LINE_ATTR = 'data-line'
@@ -104,6 +106,35 @@ function isSafeUrl(value: string, allowImageData = false): boolean {
   return allowImageData && /^data:image\//i.test(trimmed)
 }
 
+// ワークスペースのファイルを配る口（apps/server の FileStore）
+export const WORKSPACE_FILE_URL = '/api/workspace/'
+
+// 相対パスの画像（`img/a.png`、`../a.png`、ワークスペースのルートからの `/a.png`）を、
+// Markdown ファイルの場所を基準にサーバーの URL にする。相対パスでない・ワークスペースの外を指すなら null
+export function resolveWorkspaceImageUrl(documentPath: string, href: string): string | null {
+  const trimmed = href.trim()
+  if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//')) return null
+  let path: string
+  try {
+    path = decodeURIComponent(trimmed.replace(/[?#].*$/s, ''))
+  } catch {
+    return null
+  }
+  if (!path) return null
+  const segments = path.startsWith('/') ? [] : documentPath.split('/').slice(0, -1)
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      if (segments.length === 0) return null
+      segments.pop()
+    } else {
+      segments.push(segment)
+    }
+  }
+  if (segments.length === 0) return null
+  return WORKSPACE_FILE_URL + segments.map(encodeURIComponent).join('/')
+}
+
 function renderMath(tex: string, displayMode: boolean): string {
   try {
     return katex.renderToString(tex, {
@@ -191,10 +222,25 @@ function mathExtension() {
   }
 }
 
-function sanitizeHtml(html: string, options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean } = {}): string {
+function sanitizeHtml(
+  html: string,
+  options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean; documentPath?: string } = {},
+): string {
   if (typeof window === 'undefined') return html
 
   const purifier = DOMPurify(window)
+  const documentPath = options.documentPath
+  if (documentPath !== undefined) {
+    // 生 HTML の <img src="相対パス"> を、Markdown ファイルの場所を基準にした URL にする
+    purifier.addHook('uponSanitizeAttribute', (node, data) => {
+      if (data.attrName !== 'src' || node.nodeName !== 'IMG') return
+      const value = data.attrValue.trim()
+      if (isSafeUrl(value, true)) return
+      const resolved = resolveWorkspaceImageUrl(documentPath, value)
+      if (resolved) data.attrValue = resolved
+      else data.keepAttr = false
+    })
+  }
   if (options.allowKaTeXStyles) {
     purifier.addHook('uponSanitizeAttribute', (node, data) => {
       if (data.attrName !== 'style') return
@@ -227,6 +273,7 @@ export function renderMarkdown(
 ): MarkdownRenderResult {
   let renderedImages = 0
   const maxImages = options.maxImages ?? Number.POSITIVE_INFINITY
+  const documentPath = options.documentPath
   const marked = new Marked({ gfm: true, breaks: false })
 
   marked.use({
@@ -240,13 +287,18 @@ export function renderMarkdown(
       html({ text }: Tokens.HTML | Tokens.Tag) {
         // Remove inline styles from user-authored HTML before the final pass
         // selectively preserves KaTeX's generated layout styles.
-        return sanitizeHtml(text)
+        return sanitizeHtml(text, { documentPath })
       },
       image({ href, title, text }: Tokens.Image) {
-        if (!isSafeUrl(href, true) || renderedImages >= maxImages) return escapeHtml(text)
+        const src = isSafeUrl(href, true)
+          ? href
+          : documentPath !== undefined
+            ? resolveWorkspaceImageUrl(documentPath, href)
+            : null
+        if (src === null || renderedImages >= maxImages) return escapeHtml(text)
         renderedImages += 1
         const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
-        return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}" loading="lazy" decoding="async"${titleAttr}>`
+        return `<img src="${escapeHtml(src)}" alt="${escapeHtml(text)}" loading="lazy" decoding="async"${titleAttr}>`
       },
     },
   })
