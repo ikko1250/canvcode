@@ -66,8 +66,8 @@ export function nodeIn(tx: Transaction<WorkspaceRecord>, id: string): NodeRecord
 
 export type { HistoryMeta } from './workspace.ts'
 
-// PDF のページの並べ方（MAI-32：横 4 枚ずつの格子）
-const PDF_COLUMNS = 4
+// PDF のページの並べ方（MAI-32：横 3 枚ずつの格子）
+const PDF_COLUMNS = 3
 export const PDF_PAGE_GAP = 40
 
 // 引用ノートを出典の横に置くときの間隔（MAI-33）
@@ -436,7 +436,7 @@ export class Editor {
 
   // ---- PDF（MAI-7、MAI-10、MAI-32） ----
 
-  // PDF を取り込む：PDF の File、ページを並べた Canvas（横 4 枚ずつの格子。ページは固定する）、
+  // PDF を取り込む：PDF の File、ページを並べた Canvas（横 3 枚ずつの格子。ページは固定する）、
   // その持ち主の Portal（この Canvas の center）を 1 回の操作で作る（1 回の Undo で戻る）
   importPdf(options: {
     title: string

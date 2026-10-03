@@ -31,16 +31,16 @@ describe('importing a PDF', () => {
     expect(workspace.childFiles('canvas:root')).toHaveLength(0)
   })
 
-  it('lays the pages out four to a row, locked', () => {
+  it('lays the pages out three to a row, locked', () => {
     const { pageNodes } = setup()
     const pages = pageNodes()
     expect(pages).toHaveLength(6)
     expect(pages.every((p) => p.locked)).toBe(true)
     const w = 600 * PDF_POINT_SCALE
-    expect(pages.slice(0, 4).map((p) => p.y)).toEqual([0, 0, 0, 0])
+    expect(pages.slice(0, 3).map((p) => p.y)).toEqual([0, 0, 0])
     expect(pages[1].x).toBeCloseTo(w + 40, 6)
     // 2 行目は、1 行目の最も高いページの下
-    expect(pages[4]).toMatchObject({ x: 0, y: 800 * PDF_POINT_SCALE + 40 })
+    expect(pages[3]).toMatchObject({ x: 0, y: 800 * PDF_POINT_SCALE + 40 })
     expect(pages[5].props.h).toBeCloseTo(400 * PDF_POINT_SCALE, 6)
   })
 

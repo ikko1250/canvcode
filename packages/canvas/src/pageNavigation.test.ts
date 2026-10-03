@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { currentPageIndex, pageNavigation, pageNavigationTarget } from './pageNavigation.ts'
 
-// ページの移動（MAI-57）。横 4 枚ずつの格子（PDF の取り込みと同じ並び）で確かめる
+// ページの移動（MAI-57）。横 4 枚ずつの格子で確かめる
 
 const W = 600
 const H = 800
