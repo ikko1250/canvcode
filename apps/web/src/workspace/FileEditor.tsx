@@ -64,11 +64,13 @@ export function FileEditor(props: {
   onQuote?(draft: QuoteDraft): void
   // 選んでいる行を AI に渡す ID をコピーする（Markdown と Python）
   onReference?(lines: { fileId: string; startLine: number; endLine: number; snapshot: string }): void
+  // PDF にしてダウンロードする（Markdown のとき。md2pdf）
+  onExportPdf?(fileId: string): Promise<void>
   // focus の文字列が見つからなかった（位置不明）
   onLost?(): void
   onClose(): void
 }) {
-  const { workspace, files, fileId, focus, onQuote, onReference, onLost, onClose } = props
+  const { workspace, files, fileId, focus, onQuote, onReference, onExportPdf, onLost, onClose } = props
   const file = workspace.getFile(fileId)
   const isCode = file?.kind === 'code'
   const [chosenMode, setMode] = useState<Mode>('both')
@@ -82,6 +84,7 @@ export function FileEditor(props: {
   const previewRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<ReturnType<typeof createCodeEditor> | null>(null)
   const [vimOn, setVimOn] = useState(savedVim)
+  const [exportingPdf, setExportingPdf] = useState(false)
   const [vimMode, setVimMode] = useState<VimMode | null>(null)
   // エディタを作るときの値（切り替えでは作り直さず、setVim で入れ替える）
   const vimOnRef = useRef(vimOn)
@@ -359,6 +362,20 @@ export function FileEditor(props: {
             title="選んでいる行を指す ID をコピーする。AI に貼り付けると、AI がその行を読める"
           >
             AIに渡す
+          </button>
+        )}
+        {!isCode && onExportPdf && (
+          <button
+            className="file-editor-quote"
+            disabled={exportingPdf}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              setExportingPdf(true)
+              void onExportPdf(fileId).finally(() => setExportingPdf(false))
+            }}
+            title="保存してから PDF を作り、ダウンロードする（md2pdf）"
+          >
+            {exportingPdf ? 'PDF を作成中…' : 'PDF'}
           </button>
         )}
         <button

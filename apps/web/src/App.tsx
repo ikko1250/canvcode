@@ -55,6 +55,7 @@ import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
 import { FigureTargetDialog, type FigureTarget } from './workspace/FigureTargetDialog.tsx'
 import { FileEditor } from './workspace/FileEditor.tsx'
+import { exportMarkdownPdf } from './markdownPdf.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab, slideEditorUrl } from './workspace/newTab.ts'
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
@@ -304,6 +305,24 @@ export function App(props: { initial: InitialRecords }) {
     setNotices((list) => [...list, { id, message }])
     window.setTimeout(() => setNotices((list) => list.filter((n) => n.id !== id)), 6000)
   }, [])
+
+  // Markdown の File を PDF にしてダウンロードする（md2pdf）。同じ File を作っている途中なら、重ねて頼まない
+  const exportingPdf = useRef(new Set<string>())
+  const exportPdf = useCallback(
+    async (fileId: string) => {
+      if (exportingPdf.current.has(fileId)) return
+      exportingPdf.current.add(fileId)
+      notify('PDF を作っています…')
+      try {
+        notify(`${await exportMarkdownPdf(files, fileId)} を出力しました`)
+      } catch (error) {
+        notify(error instanceof Error ? error.message : String(error))
+      } finally {
+        exportingPdf.current.delete(fileId)
+      }
+    },
+    [files, notify],
+  )
 
   const ask = useCallback(
     (title: string, message: string, choices: DialogChoice<string>[]) =>
@@ -774,6 +793,7 @@ export function App(props: { initial: InitialRecords }) {
           items.push({ label: '編集', shortcut: 'Enter', onSelect: () => view.editDocument(single.id) })
           items.push({ label: '全画面で開く', shortcut: 'Ctrl+Enter', onSelect: () => openFile(file.id) })
           items.push({ label: '新しいタブで開く', onSelect: () => openNodeInNewTab(single.id) })
+          if (file.kind === 'markdown') items.push({ label: 'PDF で出力', onSelect: () => void exportPdf(file.id) })
           // このファイルを引用しているノート（逆リンク。MAI-33）
           const cited = citationItems(workspace.anchorsOfFile(file.id).map((a) => a.id))
           if (cited.length > 0) {
@@ -975,7 +995,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate, exportPdf],
   )
 
 
@@ -1523,6 +1543,7 @@ export function App(props: { initial: InitialRecords }) {
             focus={fileFocus}
             onQuote={(draft) => void view?.copyQuote(draft)}
             onReference={(lines) => void view?.copyReference({ kind: 'lines', ...lines })}
+            onExportPdf={exportPdf}
             onLost={() => notify('引用した文字列が見つかりません（位置不明）。覚えていた行を開きました')}
             onClose={closeFile}
           />

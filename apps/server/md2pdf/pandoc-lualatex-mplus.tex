@@ -1,0 +1,47 @@
+\usepackage[
+  a4paper,
+  top=25mm,
+  left=25mm,
+  right=25mm,
+  bottom=25mm,
+  footskip=10mm
+]{geometry}
+\usepackage{setspace}
+\setstretch{1.1}
+\usepackage{graphicx}
+\usepackage{float}
+\floatplacement{figure}{H}
+\setkeys{Gin}{width=\linewidth,height=0.42\textheight,keepaspectratio}
+\usepackage{needspace}
+\usepackage{adjustbox}
+\usepackage{etoolbox}
+\AtBeginEnvironment{longtable}{%
+  \small%
+  \setlength{\tabcolsep}{4pt}%
+  \renewcommand{\arraystretch}{1.08}%
+}
+\usepackage{luatexja}
+\usepackage{luatexja-fontspec}
+\usepackage{indentfirst}
+\setlength{\parindent}{1\zw}
+\setlength{\parskip}{0pt}
+% 参考文献: 字下げなし + 全角2字ぶら下げ（Lua フィルタが環境で囲む）
+\newenvironment{refhang}{%
+  \par
+  \setlength{\parindent}{0pt}%
+  \everypar{\setlength{\hangindent}{2\zw}\hangafter=1}%
+}{%
+  \par
+  \everypar{}%
+}
+\setmainjfont{M PLUS 1p}
+\setsansjfont{M PLUS 1p Medium}
+\newfontfamily\titleonefont{M PLUS 1p Black}
+\newjfontfamily\titleonejfont{M PLUS 1p Black}
+\makeatletter
+\renewcommand\section{\@startsection{section}{1}{\z@}%
+  {-3.5ex \@plus -1ex \@minus -.2ex}%
+  {2.3ex \@plus .2ex}%
+  {\normalfont\fontsize{21.6}{28}\selectfont\titleonefont\titleonejfont}}
+\makeatother
+\AtBeginDocument{\hypersetup{colorlinks=true,allcolors=blue,pdfborderstyle={/S/U/W 1}}}

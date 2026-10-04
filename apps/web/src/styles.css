@@ -890,6 +890,11 @@ body,
   background: #fdf6e3;
 }
 
+.file-editor-quote:disabled {
+  color: var(--muted, #8a8a8a);
+  cursor: progress;
+}
+
 .file-editor-vim {
   padding: 4px 10px;
   border: 1px solid var(--panel-border);

@@ -1,0 +1,150 @@
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { HttpError, type FileInfo } from './files.ts'
+import { MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
+
+// Markdown の File を PDF にする口（POST /api/files/<id>/pdf）。
+// 実際に PDF を作るテストは、pandoc と LuaLaTeX がある環境でだけ動かす
+
+const cleanups: (() => void)[] = []
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) cleanup()
+})
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'canvcode-mdpdf-'))
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+  return dir
+}
+
+function hasCommand(command: string, args: string[]): boolean {
+  try {
+    execFileSync(command, args, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+const canBuild = hasCommand('pandoc', ['--version']) && hasCommand('lualatex', ['--version'])
+
+function fileInfo(id: string, path: string): FileInfo {
+  const kind = path.endsWith('.py') ? 'code' : 'markdown'
+  return { id, kind, title: path.replace(/^.*\//, '').replace(/\.\w+$/, ''), path, size: 0, mtime: 0, hash: '', missing: false }
+}
+
+async function serve(workspace: string, paths: Record<string, string>, options: MarkdownPdfOptions = {}): Promise<string> {
+  const infos = new Map(Object.entries(paths).map(([id, path]) => [id, fileInfo(id, path)]))
+  const source = {
+    getInfo(id: string) {
+      const info = infos.get(id)
+      if (!info) throw new HttpError(404, 'no such file')
+      return info
+    },
+    async read(id: string) {
+      return { text: readFileSync(join(workspace, source.getInfo(id).path), 'utf8') }
+    },
+  }
+  const pdf = new MarkdownPdf(source, workspace, join(workspace, '.canvcode'), options)
+  const server: Server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    void pdf.handle(req, res, url.pathname).then((handled) => {
+      if (!handled) res.writeHead(418).end()
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  cleanups.push(() => server.close())
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+}
+
+// PDF の文字と、描いている画像の数
+async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number }> {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const task = pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: false })
+  const doc = await task.promise
+  let text = ''
+  let images = 0
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i)
+    const content = await page.getTextContent()
+    text += content.items.map((item) => ('str' in item ? item.str : '')).join('')
+    images += (await page.getOperatorList()).fnArray.filter((fn) => fn === pdfjs.OPS.paintImageXObject).length
+  }
+  await task.destroy()
+  return { text, images }
+}
+
+// 1×1 の PNG
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64')
+
+describe('MarkdownPdf', () => {
+  it('ignores other paths and refuses non-markdown files', async () => {
+    const workspace = tempDir()
+    writeFileSync(join(workspace, 'a.py'), 'print(1)\n')
+    const base = await serve(workspace, { 'file:py': 'a.py' })
+    expect((await fetch(`${base}/api/files/file%3Apy/content`)).status).toBe(418)
+    expect((await fetch(`${base}/api/files/file%3Apy/pdf`)).status).toBe(405)
+    expect((await fetch(`${base}/api/files/file%3Apy/pdf`, { method: 'POST' })).status).toBe(400)
+    expect((await fetch(`${base}/api/files/file%3Anone/pdf`, { method: 'POST' })).status).toBe(404)
+  })
+
+  it('answers 503 when pandoc is not installed', async () => {
+    const workspace = tempDir()
+    writeFileSync(join(workspace, 'a.md'), '# a\n')
+    const base = await serve(workspace, { 'file:a': 'a.md' }, { pandoc: join(workspace, 'no-pandoc') })
+    const response = await fetch(`${base}/api/files/file%3Aa/pdf`, { method: 'POST' })
+    expect(response.status).toBe(503)
+    expect(((await response.json()) as { error: string }).error).toContain('pandoc')
+  })
+
+  it('picks the LaTeX error out of the pandoc output', () => {
+    const stderr = 'This is LuaHBTeX\n(./input.tex\n! Package fontspec Error: The font "X" cannot be found.\n\nl.12 \\setmainjfont\nmore\n'
+    expect(latexError(stderr)).toBe('! Package fontspec Error: The font "X" cannot be found.\n\nl.12 \\setmainjfont')
+    expect(latexError('a\nb\nc\nd\n')).toBe('b\nc\nd')
+  })
+
+  it.skipIf(!canBuild)(
+    'builds a PDF with images resolved like the preview',
+    async () => {
+      const workspace = tempDir()
+      mkdirSync(join(workspace, 'notes', 'img'), { recursive: true })
+      writeFileSync(join(workspace, 'notes', 'img', 'a.png'), PNG)
+      writeFileSync(join(workspace, 'root.png'), PNG)
+      writeFileSync(join(workspace, 'anim.gif'), 'GIF89a')
+      writeFileSync(
+        join(workspace, 'notes', '報告.md'),
+        [
+          '# 報告書',
+          '',
+          '本文の段落です。',
+          '',
+          '![相対](img/a.png)',
+          '',
+          '![ルート](/root.png)',
+          '',
+          '![動く](../anim.gif)',
+          '',
+          '![外](../../outside.png)',
+          '',
+        ].join('\n'),
+      )
+      const base = await serve(workspace, { 'file:r': 'notes/報告.md' })
+      const response = await fetch(`${base}/api/files/file%3Ar/pdf`, { method: 'POST' })
+      expect(response.status, await response.clone().text()).toBe(200)
+      expect(response.headers.get('content-type')).toBe('application/pdf')
+      expect(decodeURIComponent(response.headers.get('x-canvcode-export-name') ?? '')).toBe('報告.pdf')
+      const data = await response.arrayBuffer()
+      expect(Buffer.from(data).subarray(0, 5).toString()).toBe('%PDF-')
+      const { text, images } = await readPdf(data)
+      expect(images).toBe(2)
+      expect(text).toContain('報告書')
+      expect(text).toContain('［画像：動く］')
+      expect(text).toContain('［画像：外］')
+    },
+    300_000,
+  )
+})

@@ -11,6 +11,7 @@ import { AssetStore } from './assets.ts'
 import { FigureStore } from './figures.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
+import { MarkdownPdf } from './markdownPdf.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
@@ -72,6 +73,8 @@ await figures.init()
 // フレームがあるか（消したノードは records に残らない）。スライドの図の警告と代わりの絵に使う
 const frameExists = (id: string): boolean => records.get(id)?.type === 'frame'
 const slides = new SlidesApi(files, WORKSPACE, PORT, DATA_DIR, { figures, frameExists })
+// Markdown の File を PDF にする（md2pdf）
+const markdownPdf = new MarkdownPdf(files, WORKSPACE, DATA_DIR)
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
 const figureHooks = slides.figureHooks()
@@ -146,6 +149,7 @@ const server = createServer(async (req, res) => {
   if (await figures.handle(req, res, url.pathname, figureHooks)) return
   if (await slides.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
+  if (await markdownPdf.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return
   if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides, refImages, agent, presence: () => sync.latestPresence() })) return
   if (url.pathname.startsWith('/api/')) {
