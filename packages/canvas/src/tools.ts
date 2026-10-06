@@ -232,7 +232,8 @@ type SelectState =
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string }
   // 引用する範囲を選んでいる（Alt+ドラッグ、または「範囲を選んで引用」のあとのドラッグ。MAI-33）。start はページのローカル座標
   | { name: 'selectingQuote'; pageId: string; start: Vec; rect: Box | null }
-  | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean }
+  // excludeId は、Ctrl（⌘）を押してドラッグを始めたノード。範囲に入っても選ばない
+  | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean; excludeId?: string }
   | {
       name: 'translating'
       start: ToolPointer
@@ -532,14 +533,14 @@ export class SelectTool implements Tool {
       }
       case 'pointingCanvas': {
         if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
-        this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey }
+        this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey, excludeId: state.nodeId }
         this.onPointerMove(pointer)
         return
       }
       case 'brushing': {
         // 範囲選択：枠に少しでも触れたノードを選ぶ。Shift なら今の選択に足す（MAI-25）
         const brush = boxFromPoints(state.start.world, pointer.world)
-        const hits = editor.nodesInBrush(brush)
+        const hits = editor.nodesInBrush(brush).filter((id) => id !== state.excludeId)
         editor.session.set({ brush, hoveredId: null })
         editor.setSelection(state.additive ? new Set([...state.initial, ...hits]) : hits)
         return
