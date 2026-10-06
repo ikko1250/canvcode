@@ -288,6 +288,37 @@ describe('SelectTool のドラッグ', () => {
     expect(editor.session.get().snapGuides).toEqual([])
     tool.onPointerUp(pointer(56, 53))
   })
+
+  it.each(['metaKey', 'ctrlKey'] as const)('%s を押してノードの上からドラッグすると、動かさずに範囲選択になる', (key) => {
+    const { editor, rect, tool, pointer } = setup()
+    const a = rect(0, 0)
+    const b = rect(300, 0)
+    tool.onPointerDown(pointer(50, 50, { [key]: true }))
+    tool.onPointerMove(pointer(350, 50, { [key]: true }))
+    expect(editor.getNode(a)).toMatchObject({ x: 0, y: 0 })
+    expect(editor.session.get().brush).not.toBeNull()
+    expect([...editor.session.get().selectedIds].sort()).toEqual([a, b].sort())
+    tool.onPointerUp(pointer(350, 50, { [key]: true }))
+    expect(editor.session.get().brush).toBeNull()
+    expect([...editor.session.get().selectedIds].sort()).toEqual([a, b].sort())
+  })
+
+  it('⌘ を押してノードをクリックする（動かさない）と、そのノードを選ぶ', () => {
+    const { editor, rect, tool, pointer } = setup()
+    const a = rect(0, 0)
+    const b = rect(300, 0)
+    editor.setSelection([b])
+    tool.onPointerDown(pointer(50, 50, { metaKey: true }))
+    tool.onPointerUp(pointer(50, 50, { metaKey: true }))
+    expect([...editor.session.get().selectedIds]).toEqual([a])
+    // Shift も押していれば足し、もう一度で外す
+    tool.onPointerDown(pointer(350, 50, { metaKey: true, shiftKey: true }))
+    tool.onPointerUp(pointer(350, 50, { metaKey: true, shiftKey: true }))
+    expect([...editor.session.get().selectedIds].sort()).toEqual([a, b].sort())
+    tool.onPointerDown(pointer(350, 50, { metaKey: true, shiftKey: true }))
+    tool.onPointerUp(pointer(350, 50, { metaKey: true, shiftKey: true }))
+    expect([...editor.session.get().selectedIds]).toEqual([a])
+  })
 })
 
 describe('SelectTool のリサイズ（MAI-58）', () => {

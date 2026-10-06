@@ -228,7 +228,8 @@ function placeAt(editor: Editor, point: Vec): { parentId: string; local: Vec } {
 type SelectState =
   | { name: 'idle' }
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
-  | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string> }
+  // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック
+  | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string }
   // 引用する範囲を選んでいる（Alt+ドラッグ、または「範囲を選んで引用」のあとのドラッグ。MAI-33）。start はページのローカル座標
   | { name: 'selectingQuote'; pageId: string; start: Vec; rect: Box | null }
   | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean }
@@ -365,7 +366,10 @@ export class SelectTool implements Tool {
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
-    if (hit) {
+    if (hit && (pointer.ctrlKey || pointer.metaKey)) {
+      // Ctrl（⌘）を押しながらなら、ノードの上からでも範囲選択にする。選択は離すまで変えない
+      this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(selected), nodeId: editor.selectableFor(hit.id) }
+    } else if (hit) {
       // group の中のノードは、中に入っていなければ group 全体を選ぶ（MAI-12）
       const target = editor.selectableFor(hit.id)
       const wasSelected = selected.has(target)
@@ -584,6 +588,12 @@ export class SelectTool implements Tool {
     } else if (state.name === 'brushing') {
       const brush = editor.session.get().brush
       editor.session.set({ brush: null, lastBrush: brush ? { rect: brush, ids: editor.session.get().selectedIds } : null })
+    } else if (state.name === 'pointingCanvas' && state.nodeId) {
+      // Ctrl（⌘）+クリック（動かさなかった）は、ふつうのクリックと同じく選ぶ。Shift なら足すか外す
+      const next = new Set(editor.session.get().selectedIds)
+      if (!pointer.shiftKey) editor.setSelection([state.nodeId])
+      else if (next.delete(state.nodeId)) editor.setSelection(next)
+      else editor.setSelection([...next, state.nodeId])
     } else if (state.name === 'pointingCanvas') {
       // PDF のページの上の、引用した範囲をクリックした（MAI-33）
       const anchors = editor.citationsAt(pointer.world)
