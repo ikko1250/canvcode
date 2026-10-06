@@ -16,23 +16,17 @@ export function fileUrl(fileId: string): string {
   return `/f/${encodeURIComponent(fileId)}`
 }
 
-// スライドエディタ。back は閉じたときに戻る先（キャンバスの URL）
-export function slideEditorUrl(deckId: string, back: string): string {
-  return `/slide-editor.html?deck=${encodeURIComponent(deckId)}&back=${encodeURIComponent(back)}`
-}
-
-// ノードを新しいタブで開くときの URL。開けないもの（参照先がゴミ箱の中・見つからない など）は null。
-// canvasId はノードのある Canvas（スライドエディタを閉じたときは、ここに戻る）
-export function newTabUrl(workspace: Workspace, node: NodeRecord, canvasId: string): string | null {
+// ノードを新しいタブで開くときの URL。開けないもの（参照先がゴミ箱の中・見つからない など）は null
+export function newTabUrl(workspace: Workspace, node: NodeRecord): string | null {
   if (node.type === 'portal') {
     const targetId = (node.props as { targetId?: string }).targetId
     return targetId && workspace.targetStatus(targetId) === 'ok' ? canvasUrl(targetId) : null
   }
-  if (node.type !== 'markdown-card' && node.type !== 'code-card' && node.type !== 'slide-deck-card') return null
+  if (node.type !== 'markdown-card' && node.type !== 'code-card') return null
   const fileId = (node.props as { fileId?: string }).fileId
   const file = fileId ? workspace.getFile(fileId) : undefined
   if (!file || workspace.targetStatus(file.id) !== 'ok') return null
-  return file.kind === 'slides' ? slideEditorUrl(file.id, canvasUrl(canvasId)) : fileUrl(file.id)
+  return fileUrl(file.id)
 }
 
 // opener を切って、元のタブと結び付かない、独立したタブにする

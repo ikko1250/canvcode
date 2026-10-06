@@ -23,10 +23,20 @@ import {
   PDF_POINT_SCALE,
   PORTAL_DEFAULT_SIZE,
   QUOTE_CARD_DEFAULT_WIDTH,
+  slideSize,
+  slotsOf,
+  textMetricsGeneration,
   type AnyNodeTypeDef,
+  type ContainerKind,
   type PdfPageProps,
   type QuoteCardProps,
+  type SlideLayoutKind,
+  type SlideLayoutSlots,
+  type SlideNumberResolver,
+  type SlideProps,
+  type SlideRatio,
 } from '@canvcode/nodes'
+import { getMaxRowCount } from '@canvcode/slides'
 import {
   alignBoxes,
   distributeBoxes,
@@ -44,6 +54,19 @@ import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
 import type { QuoteDraft } from './quotes.ts'
 import { reorderSiblings, type ReorderDirection } from './reorder.ts'
 import { Session } from './session.ts'
+import { slideTopLeft, toggledSlideRatio, toggledSlidesHidden } from './slideEdit.ts'
+import { arrangeSlideLayout, presentRows, pruneSlideLayoutRows } from './slideLayoutArrange.ts'
+import {
+  emptiedCellProps,
+  hasSlideLayoutRows,
+  insertSlideLayoutRow,
+  slideLayoutRowOf,
+  slotsWithAutoRowHeight,
+  slotsWithResizedRows,
+} from './slideLayoutRows.ts'
+import { slideOrder, type SlideOrder } from './slideOrder.ts'
+import { slideLayoutOverflow, type SlideOverflow } from './slideOverflow.ts'
+import { slideTemplateChildren } from './slideTemplate.ts'
 import {
   nodeFrame,
   resizeNodes,
@@ -58,6 +81,20 @@ import { Workspace, type HistoryMeta, type OwnerPortalDeletion } from './workspa
 // 1 つの Canvas を編集するための入口（MAI-11）。ストアと履歴はワークスペース（Workspace）が持ち、
 // Editor はその Canvas のセッション（カメラ・選択など）と空間の索引を持って、名前の付いたコマンドを提供する。
 // ツールや React の UI は、ここを通して変更する。Undo はこの Canvas の操作だけを取り消す。
+
+// 2 つのノードのレコードが同じ値か（props は 1 段だけ比べる）
+function sameNode(a: NodeRecord, b: NodeRecord): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof NodeRecord>
+  for (const key of keys) {
+    if (key === 'props') continue
+    if (a[key] !== b[key]) return false
+  }
+  const pa = a.props as Record<string, unknown>
+  const pb = b.props as Record<string, unknown>
+  const propKeys = new Set([...Object.keys(pa), ...Object.keys(pb)])
+  for (const key of propKeys) if (pa[key] !== pb[key]) return false
+  return true
+}
 
 // トランザクションの中での、今のノード（Binding は除く）
 export function nodeIn(tx: Transaction<WorkspaceRecord>, id: string): NodeRecord | undefined {
@@ -78,7 +115,7 @@ const QUOTE_GAP = 24
 const MOVE_TO_CANVAS_GAP = 80
 
 // File の種類ごとの、カードの型（MAI-7）
-const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', slides: 'slide-deck-card' }
+const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
 
 // 選択しているノードをリサイズ・回転するときの対象（MAI-23）
 export interface TransformSelection {
@@ -93,6 +130,18 @@ export interface TransformSelection {
   minSize: { w: number; h: number }
 }
 
+// 今の選択で、slide-layout の行を足す・消すときの状態（スライド v2。メニューの出し分けに使う）
+export interface SlideLayoutRowState {
+  // 行を足せるか（上限に達していれば false）・選んでいるセルの行を消せるか（最後の 1 行は消せない）
+  canAdd: boolean
+  canRemove: boolean
+  // 選んでいるセルの行が、手で決めた高さ（h）を持つか（「行の高さを自動に戻す」を出す）
+  manualHeight: boolean
+  // 今の行の数と、そのレイアウトの行数の上限（getMaxRowCount）
+  rowCount: number
+  maxRows: number
+}
+
 export interface EditorOptions {
   // 渡さなければ、この Canvas をルートにしたワークスペースを作る（テストや、1 枚だけ使うとき）
   workspace?: Workspace
@@ -105,7 +154,21 @@ export class Editor {
   readonly canvasId: string
   readonly session = new Session()
   readonly index: NodeIndex
+  // 描くときにスライドの番号を引く先（スライド v2）。描画と当たり判定に渡す
+  readonly slides: SlideNumberResolver = {
+    number: (id) => this.slideNumbers().numbers.get(id) ?? null,
+    overflows: (id) => this.slideOverflows().has(id),
+  }
+  // この Canvas にあるスライドの id と、計算した順番（ストアが変わってスライドに関わるときだけ捨てる）
+  private readonly slideIds = new Set<string>()
+  private slideOrderCache: SlideOrder | null = null
+  // 計算したスライドのあふれと、そのときのレイアウトの世代（ストアが変わって slide-layout の中に関わるときと、フォントを読み込み終えたときに捨てる）
+  private slideOverflowCache: { generation: number; overflows: ReadonlyMap<string, SlideOverflow> } | null = null
+  // この Editor が始めたトランザクション（終わりに slide-layout を並べ直す対象）。外で始めたもの（サーバーの AI の操作）は
+  // arrangeSlideLayoutsOnCommit で足す
+  private readonly ownTransactions = new WeakSet<Transaction<WorkspaceRecord>>()
   private readonly unlisten: () => void
+  private readonly removeCommitHook: () => void
 
   constructor(options: EditorOptions = {}) {
     this.workspace = options.workspace ?? new Workspace({ rootCanvasId: options.canvasId, types: options.types })
@@ -114,12 +177,22 @@ export class Editor {
     const nodes: NodeRecord[] = []
     for (const record of this.store.values()) if (isNodeRecord(record)) nodes.push(record)
     this.index.load(nodes)
+    for (const node of nodes) if (node.type === 'slide' && this.index.get(node.id)) this.slideIds.add(node.id)
+    // 自分の操作を commit する直前に、変わった slide-layout の子を並べ直す（同じ Undo の 1 歩に入る）
+    this.removeCommitHook = this.workspace.addCommitHook((patch, tx) => {
+      if (this.ownTransactions.has(tx)) this.arrangeSlideLayouts(tx, patch)
+    })
     this.unlisten = this.store.listen((event) => {
       const nodes: Patch<NodeRecord> = new Map()
       for (const [id, change] of event.patch) {
         if (isNodeRecord(change.before) || isNodeRecord(change.after)) nodes.set(id, change as Change<NodeRecord>)
       }
-      if (nodes.size > 0) this.index.applyPatch(nodes)
+      if (nodes.size > 0) {
+        this.index.applyPatch(nodes)
+        // あふれはスライドの id を忘れる前に見る（消したスライドの中の変更も、この Canvas のものと分かる）
+        this.updateSlideOverflows(nodes)
+        this.updateSlides(nodes)
+      }
       // 消えたノードを選択から外す
       const { selectedIds, hoveredId, focusedGroupId } = this.session.get()
       let changed = false
@@ -143,6 +216,7 @@ export class Editor {
   // 使い終わったら呼ぶ（ストアの購読をやめる）
   dispose(): void {
     this.unlisten()
+    this.removeCommitHook()
   }
 
   get store() {
@@ -169,9 +243,23 @@ export class Editor {
     return this.workspace.getType(node)
   }
 
-  isContainer(node: NodeRecord, kind?: 'group' | 'frame'): boolean {
+  isContainer(node: NodeRecord, kind?: ContainerKind): boolean {
     const container = this.types.get(node.type)?.container
     return kind ? container === kind : container !== undefined
+  }
+
+  // ノードを置く先として見たときの親。layout（slide-layout）は落とす先にならないので、その外側の親にする
+  placementParent(parentId: string): string {
+    let id = parentId
+    for (let node = this.getNode(id); node && this.isContainer(node, 'layout'); node = this.getNode(id)) id = node.parentId
+    return id
+  }
+
+  // 親から出ていくノードを、親の props からも外す（slide-layout の slots など）
+  private releaseFromParent(tx: Transaction<WorkspaceRecord>, node: NodeRecord): void {
+    const parent = nodeIn(tx, node.parentId)
+    const type = parent && this.types.get(parent.type)
+    if (parent && type?.releaseChild) tx.put({ ...parent, props: type.releaseChild(parent, node.id) })
   }
 
   // ---- 矢印とつながり（MAI-28） ----
@@ -206,7 +294,15 @@ export class Editor {
   // 長く続く操作（ドラッグなど）用。終えるときは finish か cancel を呼ぶ。履歴はこの Canvas に入る
   begin(label: string, extra: Partial<HistoryMeta> = {}): Transaction<WorkspaceRecord> {
     const meta: HistoryMeta = { selectionBefore: [...this.session.get().selectedIds], ...extra }
-    return this.store.begin(label, { scope: this.canvasId, meta })
+    const tx = this.store.begin(label, { scope: this.canvasId, meta })
+    this.ownTransactions.add(tx)
+    return tx
+  }
+
+  // Editor の外で始めたトランザクション（サーバーの AI の編集が store.begin で開くもの）も、commit の直前に
+  // この Editor の slide-layout の並べ直し（arrangeSlideLayouts）を通す。この Canvas の Editor 1 つだけで呼ぶ（2 回並べ直さない）
+  arrangeSlideLayoutsOnCommit(tx: Transaction<WorkspaceRecord>): void {
+    this.ownTransactions.add(tx)
   }
 
   finish(tx: Transaction<WorkspaceRecord>): void {
@@ -351,6 +447,7 @@ export class Editor {
     const indices = indicesBetween(this.index.topmost(parentId)?.index ?? null, null, ordered.length)
     for (const [i, id] of ordered.entries()) {
       const node = nodeIn(tx, id)!
+      this.releaseFromParent(tx, node)
       tx.put({ ...this.fromWorld(this.toWorld(node), parentId), index: indices[i] })
     }
   }
@@ -563,8 +660,7 @@ export class Editor {
     const role = file.ownerNodeId === null && file.deletedAt === null ? 'owner' : 'shortcut'
     return this.transact(`create ${file.kind} canvas`, (tx) => {
       const canvas = this.workspace.createCanvas(tx, options.title ?? file.title)
-      const cardProps = file.kind === 'slides' ? { fileId, role } : { fileId, role, sizing: 'auto' }
-      const card = this.makeNode(type, { x: 0, y: 0, parentId: canvas.id, props: cardProps })
+      const card = this.makeNode(type, { x: 0, y: 0, parentId: canvas.id, props: { fileId, role, sizing: 'auto' } })
       tx.put(card)
       const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
       this.setSelection([portalId])
@@ -815,6 +911,7 @@ export class Editor {
       // 移す先の最も手前に、今の重なり順のまま並べる（子孫は親のローカル座標のままでよい）
       const indices = indicesBetween(target.topmost()?.index ?? null, null, roots.length)
       for (const [i, id] of roots.entries()) {
+        this.releaseFromParent(tx, nodeIn(tx, id)!)
         const world = this.toWorld(nodeIn(tx, id)!)
         tx.put({ ...world, parentId: canvasId, x: world.x + offset.x, y: world.y + offset.y, index: indices[i] })
       }
@@ -934,14 +1031,14 @@ export class Editor {
 
   // ---- 重なり順 ----
 
-  // 重なり順を変える対象：選んでいるノードのうち、フレームの中にあるもの（親がフレーム）。
+  // 重なり順を変える対象：選んでいるノードのうち、フレームの中にあるもの（親がフレームか slide-layout）。
   // 祖先も選んでいるものは祖先と一緒なので除く。固定したものは選べないので含まれない
   reorderTargets(): string[] {
     const selected = this.session.get().selectedIds
     return [...selected].filter((id) => {
       const node = this.getNode(id)
       const parent = node && this.getNode(node.parentId)
-      return parent !== undefined && this.isContainer(parent, 'frame') && !this.index.ancestorsOf(id).some((a) => selected.has(a))
+      return parent !== undefined && (this.isContainer(parent, 'frame') || this.isContainer(parent, 'layout')) && !this.index.ancestorsOf(id).some((a) => selected.has(a))
     })
   }
 
@@ -961,6 +1058,388 @@ export class Editor {
     if (changes.length === 0) return
     this.transact('reorder', (tx) => {
       for (const [id, index] of changes) tx.put({ ...nodeIn(tx, id)!, index })
+    })
+  }
+
+  // ---- スライド（スライド v2） ----
+
+  // ワールド座標の点を中心に、スライドを置いて選ぶ。フレームやスライドの上でも、中に入れずこの Canvas の直下に置く
+  createSlide(center: Vec, ratio: SlideRatio): string {
+    return this.transact('create slide', (tx) => {
+      const { x, y } = slideTopLeft(center, ratio)
+      const node = this.makeNode('slide', { x, y, props: { ratio } })
+      tx.put(node)
+      this.setSelection([node.id])
+      return node.id
+    })
+  }
+
+  // この Canvas のスライドの順番と番号（1 キャンバス＝1 デッキ）。group・frame の中のスライドも、ワールドでの箱で数える。
+  // 番号は保存せず、ストアが変わってスライドに関わったときだけ計算し直す（描くたびには全ノードを走査しない）。
+  // 描画の番号も PDF に出す順番も、ここから取る
+  slideNumbers(): SlideOrder {
+    if (!this.slideOrderCache) {
+      const slides = [...this.slideIds].flatMap((id) => {
+        const entry = this.index.get(id)
+        return entry ? [{ id, box: entry.worldBounds, hidden: (entry.node.props as SlideProps).hidden === true }] : []
+      })
+      this.slideOrderCache = slideOrder(slides)
+    }
+    return this.slideOrderCache
+  }
+
+  // ストアの変更（索引に入れたあと）がスライドに関わるなら、計算した順番を捨てる。
+  // スライドそのものの変更（置く・動かす・消す・非表示にするなど）と、スライドの祖先（group・frame）の変更が関わる
+  private updateSlides(patch: Patch<NodeRecord>): void {
+    const isSlide = (id: string, change: Change<NodeRecord>) => change.after?.type === 'slide' && this.index.get(id) !== undefined
+    let touched = false
+    for (const [id, change] of patch) {
+      if (isSlide(id, change) || this.slideIds.has(id)) {
+        touched = true
+        break
+      }
+    }
+    if (!touched && this.slideIds.size > 0) {
+      const ancestors = new Set([...this.slideIds].flatMap((slideId) => this.index.ancestorsOf(slideId)))
+      touched = ancestors.size > 0 && [...patch.keys()].some((id) => ancestors.has(id))
+    }
+    if (!touched) return
+    for (const [id, change] of patch) {
+      if (isSlide(id, change)) this.slideIds.add(id)
+      else this.slideIds.delete(id)
+    }
+    this.slideOrderCache = null
+  }
+
+  // この Canvas のスライドごとの、文字があふれている子の id と、上限を超えて並べられなかった行の数（slideOverflow.ts）。
+  // 対象はスライドの直下の slide-layout の slots の子（geo）だけ。あふれも並べられなかった行も無いスライドは入れない（非表示のものも入れる）。
+  // 番号と同じく保存せず、ストアが変わって slide-layout の中に関わったときと、フォントを読み込み終えて測り直すときだけ計算し直す
+  slideOverflows(): ReadonlyMap<string, SlideOverflow> {
+    const generation = textMetricsGeneration()
+    if (this.slideOverflowCache?.generation !== generation) {
+      const overflows = new Map<string, SlideOverflow>()
+      for (const slideId of this.slideIds) {
+        const found: SlideOverflow = { nodes: [], extraRows: 0 }
+        for (const layoutId of this.index.childrenOf(slideId)) {
+          const layout = this.index.get(layoutId)?.node
+          if (layout?.type !== 'slide-layout') continue
+          const children = new Map<string, NodeRecord>()
+          for (const childId of this.index.childrenOf(layoutId)) {
+            const child = this.index.get(childId)?.node
+            if (child) children.set(childId, child)
+          }
+          const { nodes, extraRows } = slideLayoutOverflow(layout, children)
+          found.nodes.push(...nodes)
+          found.extraRows += extraRows
+        }
+        if (found.nodes.length > 0 || found.extraRows > 0) overflows.set(slideId, found)
+      }
+      this.slideOverflowCache = { generation, overflows }
+    }
+    return this.slideOverflowCache.overflows
+  }
+
+  // ストアの変更（索引に入れたあと）が、この Canvas のスライドの中身に関わるなら、計算したあふれを捨てる。
+  // スライド・slide-layout そのものの変更と、slide-layout の子の変更（文字・大きさ・書式・置く・消す）が関わる。
+  // 消えたものは、スライドの id（updateSlides で忘れる前）と索引に残っている親から、この Canvas のものかを見る
+  private updateSlideOverflows(patch: Patch<NodeRecord>): void {
+    if (!this.slideOverflowCache) return
+    const ours = (id: string) => this.index.get(id) !== undefined || this.slideIds.has(id)
+    const touches = (node: NodeRecord | undefined) => {
+      if (!node) return false
+      if (node.type === 'slide') return ours(node.id)
+      if (node.type === 'slide-layout') return ours(node.id) || ours(node.parentId)
+      return this.index.get(node.parentId)?.node.type === 'slide-layout'
+    }
+    for (const change of patch.values()) {
+      if (touches(change.before) || touches(change.after)) {
+        this.slideOverflowCache = null
+        return
+      }
+    }
+  }
+
+  // この Canvas にあるスライドの数（非表示のものも数える）
+  slideCount(): number {
+    return this.slideIds.size
+  }
+
+  // 選んでいるスライド
+  selectedSlides(): NodeRecord<SlideProps>[] {
+    return [...this.session.get().selectedIds].flatMap((id) => {
+      const node = this.getNode(id)
+      return node?.type === 'slide' ? [node as NodeRecord<SlideProps>] : []
+    })
+  }
+
+  // 選んでいるスライドの比率を、それぞれ切り替える（16:9 ⇔ 4:3）。x・y は変えないので、左上が動かない。
+  // 中の slide-layout の大きさも、スライドに合わせる
+  toggleSlideRatio(): void {
+    const slides = this.selectedSlides()
+    if (slides.length === 0) return
+    this.transact('slide ratio', (tx) => {
+      for (const slide of slides) this.putSlideRatio(tx, slide.id, toggledSlideRatio(slide.props.ratio))
+    })
+  }
+
+  // スライドの比率を tx に書く。中の slide-layout の大きさも、スライドに合わせる（子の並べ直しはコミットフックが行う）
+  putSlideRatio(tx: Transaction<WorkspaceRecord>, slideId: string, ratio: SlideRatio): void {
+    const slide = nodeIn(tx, slideId)
+    if (slide?.type !== 'slide') return
+    tx.put({ ...slide, props: { ...slide.props, ratio } })
+    for (const childId of this.index.childrenOf(slideId)) {
+      const child = nodeIn(tx, childId)
+      if (child?.type === 'slide-layout') tx.put({ ...child, props: { ...child.props, ...slideSize(ratio) } })
+    }
+  }
+
+  // スライドにテンプレート（表紙・箇条書き・表・表＋画像）を置く。スライドに子が無いときだけ、slide-layout とその子（slideTemplate.ts）を
+  // 1 つのトランザクションで作る（1 回の Undo で消える）。位置と大きさは並べ直し（arrangeSlideLayout）が決める。
+  // slide-layout の大きさはスライドの比率から取る。スライドでない・子があるときは何もせず false
+  applySlideTemplate(slideId: string, kind: SlideLayoutKind): boolean {
+    const slide = this.getNode(slideId)
+    if (slide?.type !== 'slide' || this.index.childrenOf(slideId).length > 0) return false
+    this.transact('slide template', (tx) => {
+      this.putSlideTemplate(tx, slideId, kind)
+    })
+    return true
+  }
+
+  // 子の無いスライドに、テンプレートの slide-layout とその子を tx に書き、slide-layout の id を返す（applySlideTemplate とサーバーの AI の編集が使う）。
+  // スライドか・子が無いかは呼び出し側が確かめる。位置と大きさは並べ直し（コミットフック）が決める
+  putSlideTemplate(tx: Transaction<WorkspaceRecord>, slideId: string, kind: SlideLayoutKind): string {
+    const slide = nodeIn(tx, slideId)!
+    const ratio: SlideRatio = (slide.props as SlideProps).ratio === '4:3' ? '4:3' : '16:9'
+    const children = slideTemplateChildren(kind)
+    const layout = this.makeNode('slide-layout', { x: 0, y: 0, parentId: slideId, index: indicesBetween(null, null, 1)[0] })
+    const indices = indicesBetween(null, null, children.length)
+    const slots: SlideLayoutSlots = { rows: [] }
+    const nodes = children.map((child, i) => {
+      const node = this.makeNode(child.type, { x: 0, y: 0, parentId: layout.id, index: indices[i], props: child.props })
+      if (child.role === 'label' || child.role === 'body') {
+        const row = (slots.rows[child.row ?? 0] ??= { body: '' })
+        row[child.role] = node.id
+      } else {
+        slots[child.role] = node.id
+      }
+      return node
+    })
+    tx.put({ ...layout, props: { layout: kind, ...slideSize(ratio), slots } })
+    for (const node of nodes) tx.put(node)
+    return layout.id
+  }
+
+  // ---- slide-layout の並べ直し（スライド v2） ----
+
+  // トランザクションの差分のうち、slide-layout の props（slots・w / h・layout）か、その子（slots の子）か、
+  // スライドの props（比率）が変わったものについて、slide-layout の子を並べ直す。
+  // commit の直前（Workspace の CommitHook）に 1 回だけ呼ぶので、ここでの書き込みで再び並べ直しは走らない。
+  // Undo・Redo（source: 'history'）では呼ばれない（元の操作で並べ直した結果が差分に入っている）
+  private arrangeSlideLayouts(tx: Transaction<WorkspaceRecord>, patch: Patch<WorkspaceRecord>): void {
+    const layouts = new Set<string>()
+    for (const [id, { before, after }] of patch) {
+      if (!isNodeRecord(before) && !isNodeRecord(after)) continue
+      if (isNodeRecord(after) && after.type === 'slide-layout' && (!isNodeRecord(before) || before.props !== after.props)) layouts.add(id)
+      // 子を置いた・動かした・大きさや文字を変えた・消した・外へ出した
+      for (const record of [before, after]) {
+        if (!isNodeRecord(record)) continue
+        const parent = nodeIn(tx, record.parentId)
+        if (parent?.type === 'slide-layout') layouts.add(parent.id)
+      }
+      // スライドの比率を変えた
+      if (isNodeRecord(after) && after.type === 'slide' && isNodeRecord(before) && before.props !== after.props) {
+        for (const childId of this.workspace.tree.childrenOf(id)) if (nodeIn(tx, childId)?.type === 'slide-layout') layouts.add(childId)
+      }
+    }
+    for (const id of layouts) this.arrangeSlideLayout(tx, patch, id)
+  }
+
+  // slide-layout の子を並べ直す。本文の子が無くなった行は slots から除き、その行の見出しの子も消す（行が詰まる）。
+  // 位置と大きさの変わる子だけを書く。トランザクションの前と同じ形に戻る子は、前のレコードをそのまま書き戻す
+  // （差分から消えるので、中で動かしただけの操作は履歴に入らない）
+  private arrangeSlideLayout(tx: Transaction<WorkspaceRecord>, patch: Patch<WorkspaceRecord>, layoutId: string): void {
+    let layout = nodeIn(tx, layoutId)
+    if (!layout || layout.type !== 'slide-layout') return
+    const children = new Map<string, NodeRecord>()
+    for (const childId of this.workspace.tree.childrenOf(layoutId)) {
+      const child = nodeIn(tx, childId)
+      if (child) children.set(childId, child)
+    }
+    let props = layout.props as Record<string, unknown>
+    const pruned = pruneSlideLayoutRows(slotsOf(props.slots), (id) => children.has(id))
+    if (pruned) {
+      for (const labelId of pruned.removedLabels) {
+        tx.remove(labelId)
+        children.delete(labelId)
+      }
+      layout = { ...layout, props: { ...props, slots: pruned.slots } }
+      tx.put(layout)
+    }
+    // 行のセルの下端をリサイズした（上端を動かさずに高さを変えた）なら、セルの高さの代わりに、その行の高さ（h）を書く（同じ 1 歩）。
+    // セルの高さは、このあとの並べ直しで行の高さになる
+    props = layout.props as Record<string, unknown>
+    const resized = slotsWithResizedRows(slotsOf(props.slots), (id) => {
+      const change = patch.get(id)
+      const after = children.get(id)
+      return change && isNodeRecord(change.before) && after ? { before: change.before, after } : undefined
+    })
+    if (resized) {
+      layout = { ...layout, props: { ...props, slots: resized } }
+      tx.put(layout)
+    }
+    // 比率は親のスライドから取る（スライドの外にあれば、自分の幅から決める）
+    const parent = nodeIn(tx, layout.parentId)
+    const ratio: SlideRatio =
+      parent?.type === 'slide' ? ((parent.props as SlideProps).ratio === '4:3' ? '4:3' : '16:9') : props.w === slideSize('4:3').w ? '4:3' : '16:9'
+    const { updates } = arrangeSlideLayout({
+      layout,
+      children,
+      ratio,
+      textHeight: (node, w) => this.types.get(node.type)?.getBounds({ ...node, props: { ...node.props, w, autoWidth: false } }).h ?? 0,
+    })
+    for (const update of updates) {
+      const node = children.get(update.id)!
+      const next = { ...node, x: update.x, y: update.y, ...(update.props ? { props: { ...node.props, ...update.props } } : {}) }
+      const before = patch.get(update.id)?.before
+      tx.put(isNodeRecord(before) && sameNode(before, next) ? before : next)
+    }
+  }
+
+  // ---- slide-layout の行を足す・消す（スライド v2） ----
+
+  // 選んでいるノード（1 つ）から、行を足す・消す対象の slide-layout と、選んでいるセルの行（rows の中の番号。セルでなければ null）。
+  // スライドを選んでいればその中の slide-layout、slide-layout の子（行のセル・タイトル・パネルなど）を選んでいればその親を対象にする。
+  // rows は本文の子が今もある行だけ。表紙（title）など行を持たないレイアウトなら null
+  private slideLayoutRowTarget(): { layout: NodeRecord; slots: SlideLayoutSlots; rows: SlideLayoutSlots['rows']; row: number | null } | null {
+    const { selectedIds } = this.session.get()
+    if (selectedIds.size !== 1) return null
+    const node = this.getNode([...selectedIds][0])
+    if (!node) return null
+    let layout: NodeRecord | undefined
+    if (node.type === 'slide') {
+      layout = this.index
+        .childrenOf(node.id)
+        .map((id) => this.getNode(id))
+        .find((child) => child?.type === 'slide-layout')
+    } else if (node.type === 'slide-layout') {
+      layout = node
+    } else {
+      const parent = this.getNode(node.parentId)
+      if (parent?.type === 'slide-layout') layout = parent
+    }
+    if (!layout || layout.locked) return null
+    const props = layout.props as Record<string, unknown>
+    if (!hasSlideLayoutRows(props.layout)) return null
+    const slots = slotsOf(props.slots)
+    const layoutId = layout.id
+    const rows = presentRows(slots, (id) => this.getNode(id)?.parentId === layoutId)
+    const row = slideLayoutRowOf(rows, node.id)
+    return { layout, slots: { ...slots, rows }, rows, row: row >= 0 ? row : null }
+  }
+
+  // 今の選択で行を足す・消すときの状態。行を持つ slide-layout の中（またはそのスライド）を選んでいなければ null
+  slideLayoutRowState(): SlideLayoutRowState | null {
+    const target = this.slideLayoutRowTarget()
+    if (!target) return null
+    const maxRows = getMaxRowCount((target.layout.props as Record<string, unknown>).layout as 'bullets' | 'table' | 'table-image')
+    return {
+      canAdd: target.rows.length > 0 && target.rows.length < maxRows,
+      canRemove: target.row !== null && target.rows.length > 1,
+      manualHeight: target.row !== null && target.rows[target.row].h !== undefined,
+      rowCount: target.rows.length,
+      maxRows,
+    }
+  }
+
+  // slide-layout に行を 1 つ足す。セルを選んでいればその行の下に、そうでなければ最後に足す。
+  // 新しい行のセルは、隣の行（選んでいる行か最後の行）のセルの書式（props）を写し、文字だけを空にする。
+  // 表紙・上限に達しているとき・写す行が無いときは何もせず false。足した行の本文を選ぶ。並べ直し（地の色も）はコミットフックが行う
+  addSlideLayoutRow(): boolean {
+    const target = this.slideLayoutRowTarget()
+    if (!target) return false
+    const { layout, rows, row } = target
+    const max = getMaxRowCount((layout.props as Record<string, unknown>).layout as 'bullets' | 'table' | 'table-image')
+    if (rows.length === 0 || rows.length >= max) return false
+    this.transact('add slide row', (tx) => {
+      const added = this.putSlideLayoutRow(tx, layout.id, row ?? rows.length - 1)
+      this.setSelection([added.body])
+    })
+    return true
+  }
+
+  // slide-layout の行（本文の子が今もある行）の at 番目の下に、行を 1 つ tx に書き、足したセルの id を返す
+  // （addSlideLayoutRow とサーバーの AI の編集が使う）。新しい行のセルは at 番目の行のセルの書式（props）を写し、文字だけを空にする。
+  // 行を持つレイアウトか・上限に達していないか・at 番目の行があるかは呼び出し側が確かめる。並べ直し（地の色も）はコミットフックが行う
+  putSlideLayoutRow(tx: Transaction<WorkspaceRecord>, layoutId: string, at: number): { label?: string; body: string } {
+    const layout = nodeIn(tx, layoutId)!
+    const slots = slotsOf((layout.props as Record<string, unknown>).slots)
+    const rows = presentRows(slots, (id) => nodeIn(tx, id)?.parentId === layoutId)
+    const source = rows[at]
+    const sourceBody = nodeIn(tx, source.body)!
+    const sourceLabel = source.label ? nodeIn(tx, source.label) : undefined
+    // 新しいセルは slide-layout の中の一番手前に置く（見出し、本文の順）。同じ tx で作った子も数える
+    const indices = indicesBetween(this.topmostIndexIn(tx, layoutId), null, sourceLabel ? 2 : 1)
+    const copy = (from: NodeRecord, index: string): NodeRecord => ({
+      ...from,
+      id: createId('node'),
+      index,
+      props: emptiedCellProps(from.props as Record<string, unknown>),
+      meta: {},
+    })
+    const label = sourceLabel ? copy(sourceLabel, indices[0]) : undefined
+    const body = copy(sourceBody, indices.at(-1)!)
+    if (label) tx.put(label)
+    tx.put(body)
+    const next = insertSlideLayoutRow({ ...slots, rows }, at + 1, { ...(label ? { label: label.id } : {}), body: body.id })
+    tx.put({ ...layout, props: { ...layout.props, slots: next } })
+    return { ...(label ? { label: label.id } : {}), body: body.id }
+  }
+
+  // tx の中での、parentId の子のうち一番手前の index（子が無ければ null）。同じ tx で作った子も数える
+  private topmostIndexIn(tx: Transaction<WorkspaceRecord>, parentId: string): string | null {
+    let top: string | null = null
+    for (const id of this.workspace.tree.childrenOf(parentId)) {
+      const index = nodeIn(tx, id)?.index
+      if (index !== undefined && (top === null || index > top)) top = index
+    }
+    return top
+  }
+
+  // 選んでいるセルの行を消す（本文と見出しを消せば、並べ直しが行を詰める）。最後の 1 行は消さない（false）。
+  // 消したあとは、その位置に来た行（最後の行を消したなら、1 つ上の行）の本文を選ぶ
+  removeSlideLayoutRow(): boolean {
+    const target = this.slideLayoutRowTarget()
+    if (!target || target.row === null || target.rows.length <= 1) return false
+    const { rows, row } = target
+    const removed = rows[row]
+    const nextBody = rows[row + 1 < rows.length ? row + 1 : row - 1].body
+    this.transact('remove slide row', (tx) => {
+      tx.remove(removed.body)
+      if (removed.label && nodeIn(tx, removed.label)) tx.remove(removed.label)
+      this.setSelection([nextBody])
+    })
+    return true
+  }
+
+  // 選んでいるセルの行の高さを自動に戻す（手で決めた高さ h を外す。並べ直しはコミットフックが行う）。
+  // セルを選んでいない・その行が高さを持たないときは何もせず false
+  resetSlideLayoutRowHeight(): boolean {
+    const target = this.slideLayoutRowTarget()
+    if (!target || target.row === null || target.rows[target.row].h === undefined) return false
+    const { layout, slots, row } = target
+    this.transact('reset slide row height', (tx) => {
+      tx.put({ ...layout, props: { ...layout.props, slots: slotsWithAutoRowHeight(slots, row) } })
+    })
+    return true
+  }
+
+  // 選んでいるスライドを非表示にする／表示する（1 つでも表示中なら全部を非表示に、全部が非表示なら全部を表示に）
+  toggleSlidesHidden(): void {
+    const slides = this.selectedSlides()
+    if (slides.length === 0) return
+    const hidden = toggledSlidesHidden(slides.map((s) => s.props))
+    this.transact(hidden ? 'hide slides' : 'show slides', (tx) => {
+      for (const slide of slides) if (slide.props.hidden !== hidden) tx.put({ ...slide, props: { ...slide.props, hidden } })
     })
   }
 
@@ -1098,7 +1577,7 @@ export class Editor {
       // フレームの外にはみ出した子は、見えないので当たらない
       if (this.clippedAway(entry, point)) continue
       const local = applyMat(invert(entry.worldMatrix), point)
-      if (this.getType(entry.node).hitTest(entry.node, local, marginWorld, zoom)) return entry.node
+      if (this.getType(entry.node).hitTest(entry.node, local, marginWorld, zoom, { slides: this.slides })) return entry.node
     }
     return this.selectedBoxAt(point, options)
   }
@@ -1148,6 +1627,8 @@ export class Editor {
     for (const id of this.index.search(box)) {
       const entry = this.index.get(id)
       if (!entry || entry.node.locked) continue
+      // slide-layout そのものは選ばない（中の子を選ぶ）
+      if (this.isContainer(entry.node, 'layout')) continue
       // フレームは、枠に丸ごと入ったときだけ選ぶ（フレームの中で範囲選択を始められるように）
       if (this.isContainer(entry.node, 'frame') && !containsBox(box, entry.worldBounds)) continue
       const focus = this.session.get().focusedGroupId

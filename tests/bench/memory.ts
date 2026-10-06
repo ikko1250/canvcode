@@ -492,7 +492,7 @@ async function main(): Promise<void> {
   const server = await startServer(workspace, join(outDir, `memory-${stamp}.server.log`))
   let browser: Browser | null = null
   try {
-    // サーバーと同じく、CANVCODE_CHROMIUM があればその Chromium を使う
+    // CANVCODE_CHROMIUM があればその Chromium を使う
     browser = await chromium.launch({ headless: !args.headed, executablePath: process.env.CANVCODE_CHROMIUM || undefined })
     console.log(`populating ${config.canvases} canvases…`)
     const canvases = await populate(browser)

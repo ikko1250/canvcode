@@ -277,7 +277,7 @@ function nearestLevel(levels: Map<number, RasterImage>, level: number): RasterIm
   return above ?? below
 }
 
-// 書き出し（サムネイル・スライドの図・ref の画像）の前の描画で、filter に合う画像のうち、頼んだ解像度のものが手元になかったものを覚える
+// 書き出し（サムネイル・スライドの画像・ref の画像）の前の描画で、filter に合う画像のうち、頼んだ解像度のものが手元になかったものを覚える
 // ImageRequester（MAI-83）。描いたあとで loadAll で読み込み、描き直す。
 // 読み込めなかった画像（404・壊れた画像など）は諦める：loadAll は失敗しても reject せず、その画像はプレースホルダーのまま書き出す
 export class MissingImageRecorder implements ImageRequester {

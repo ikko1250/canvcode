@@ -2,12 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { builtinNodeTypes } from '@canvcode/nodes'
+import { builtinNodeTypes, richTextFromPlain } from '@canvcode/nodes'
+import { canvasSlideLayout } from '@canvcode/slides'
+import { Editor } from '@canvcode/canvas/editor'
 import { RecordStore, type StoredRecord } from '../records.ts'
 import { SyncHub } from '../sync.ts'
 import { AgentHost } from './host.ts'
 import { EditError, editCanvas, undoCanvasEdit, type EditRequest } from './ops.ts'
-import { readNodes } from './outline.ts'
+import { readCanvas, readNodes } from './outline.ts'
 
 // AI の編集（edit_canvas・undo_canvas_edit）と、サーバーの中のワークスペース（host.ts）
 
@@ -302,6 +304,180 @@ describe('auto placement', () => {
     records.apply([node('node:a', 'note', root, 'a1', { w: 200, h: 200 }, { x: 300, y: 200 })], [])
     const result = edit([{ op: 'create', type: 'note', as: 'p', w: 100, h: 100 }])
     expect(world(records, result.created.p!)).toMatchObject({ x: 580, y: 200 })
+  })
+})
+
+// スライド（スライド v2）：テンプレートと行は画面と同じ Editor の関数で作り、commit の直前に slide-layout の子を並べ直す
+describe('edit_canvas slides', () => {
+  type Slots = { title?: string; panel?: string; rows: { label?: string; body: string; h?: number }[] }
+  const layoutOf = (records: RecordStore, slideId: string) => records.childrenOf(slideId).find((r) => r.type === 'slide-layout')!
+  const slotsOf = (records: RecordStore, slideId: string) => (layoutOf(records, slideId).props as { slots: Slots }).slots
+  // 行のセルのワールドの箱が、v1 の幾何（canvasSlideLayout）の rowCount 行のときの箱をスライドの位置だけずらしたものか
+  const expectRows = (records: RecordStore, slideId: string, kind: 'bullets' | 'table', ratio: '16:9' | '4:3', origin: { x: number; y: number }) => {
+    const rows = slotsOf(records, slideId).rows
+    const boxes = canvasSlideLayout(kind, rows.length, ratio).rows
+    for (const [i, row] of rows.entries()) {
+      for (const role of ['label', 'body'] as const) {
+        const box = boxes[i]![role]
+        if (!row[role] || !box) continue
+        expect(world(records, row[role]!)).toMatchObject({ x: origin.x + box.x, y: origin.y + box.y, w: box.w, h: box.h })
+      }
+    }
+  }
+
+  it('places a slide with a template like the editor, and lays the rows out again when a row is added', () => {
+    const { records, edit } = setup()
+    const result = edit([
+      { op: 'create', type: 'slide', as: 's', x: 100, y: 200, name: '比較', template: 'table' },
+      { op: 'add_row', slide: '$s', text: '四', label: '見出し 4', as: 'r' },
+    ])
+    const slideId = result.created.s!
+    expect(records.get(slideId)).toMatchObject({ x: 100, y: 200, props: { ratio: '16:9', name: '比較', hidden: false } })
+    const slots = slotsOf(records, slideId)
+    expect(slots.rows).toHaveLength(4)
+    expect(slots.rows[3]).toEqual({ label: result.created['r:label'], body: result.created.r })
+    expect(records.get(result.created.r!)!.props).toMatchObject({ label: '四' })
+    expect(records.get(result.created['r:label']!)!.props).toMatchObject({ label: '見出し 4' })
+    // 4 行の幾何どおりに並ぶ（足した行だけでなく、もとの 3 行も詰め直す）
+    expectRows(records, slideId, 'table', '16:9', { x: 100, y: 200 })
+
+    // 画面の applySlideTemplate と同じ子（型・props・位置）を作る
+    const editor = new Editor({ canvasId: 'canvas:client' })
+    const clientSlide = editor.createSlide({ x: 960, y: 540 }, '16:9')
+    editor.applySlideTemplate(clientSlide, 'table')
+    const shape = (nodes: { type: string; x: number; y: number; props: unknown }[]) =>
+      nodes.map((n) => ({ type: n.type, x: n.x, y: n.y, props: JSON.stringify(n.props).replace(/node:[\w-]+/g, 'id') }))
+    const clientLayout = editor.index.childrenOf(clientSlide).map((id) => editor.getNode(id)!)[0]!
+    const clientChildren = editor.index.childrenOf(clientLayout.id).map((id) => editor.getNode(id)!)
+    const serverLayout = layoutOf(records, slideId)
+    const serverChildren = records
+      .childrenOf(serverLayout.id)
+      .filter((r) => r.id !== result.created.r && r.id !== result.created['r:label'])
+      .sort((a, b) => (String(a.index) < String(b.index) ? -1 : 1)) as unknown as { type: string; x: number; y: number; props: unknown }[]
+    // 行を足す前の 3 行の形と比べるため、画面でも同じ行を足す
+    editor.setSelection([clientSlide])
+    editor.addSlideLayoutRow()
+    const clientAfter = editor.index.childrenOf(clientLayout.id).map((id) => editor.getNode(id)!).filter((n) => clientChildren.some((c) => c.id === n.id))
+    // パネル・タイトル・3 行の見出しと本文
+    expect(serverChildren).toHaveLength(8)
+    expect(shape(serverChildren)).toEqual(shape(clientAfter))
+  })
+
+  it('closes the rows up when a row body is deleted, and undoes the edits', () => {
+    const { records, host, edit } = setup()
+    const created = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table' }])
+    const slideId = created.created.s!
+    const added = edit([{ op: 'add_row', after: slotsOf(records, slideId).rows[0]!.body, text: '二番目' }])
+    const rows = slotsOf(records, slideId).rows
+    expect(rows[1]!.body).toBe(added.created['#0'])
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    const positions = () => slotsOf(records, slideId).rows.map((row) => records.get(row.body)!.y)
+
+    // 本文を消すと、その行の見出しも消えて 3 行に詰まる
+    const removed = rows[2]!
+    const deleted = edit([{ op: 'delete', ids: [removed.body] }])
+    expect(slotsOf(records, slideId).rows).toEqual(rows.filter((row) => row !== removed))
+    expect(records.get(removed.label!)).toBeUndefined()
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    const threeRows = positions()
+
+    // Undo で 4 行に戻る（並べ直した位置も戻る）
+    undoCanvasEdit(host, deleted.batch)
+    expect(slotsOf(records, slideId).rows).toEqual(rows)
+    expect(records.get(removed.label!)).toBeDefined()
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    expect(positions()).not.toEqual(threeRows)
+    undoCanvasEdit(host, added.batch)
+    expect(slotsOf(records, slideId).rows).toHaveLength(3)
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    undoCanvasEdit(host, created.batch)
+    expect(records.get(slideId)).toBeUndefined()
+    expect(readCanvas(records, {}).split('\n')).toHaveLength(1)
+  })
+
+  it('changes the ratio, hidden and cell text, and numbers the slides in read_canvas', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'slide', as: 'a', x: 0, y: 0, template: 'bullets' },
+      { op: 'create', type: 'slide', as: 'b', x: 2000, y: 0 },
+      { op: 'create', type: 'slide', as: 'c', x: 4000, y: 0, hidden: true },
+    ]).created
+    const body = slotsOf(records, made.a!).rows[0]!.body
+    // セルの位置を書いても、並べ直しで決まる
+    edit([
+      { op: 'update', id: made.a!, ratio: '4:3', name: '要点' },
+      { op: 'update', id: body, text: '最初の項目', x: 900, y: 900 },
+      { op: 'update', id: made.b!, hidden: true },
+      { op: 'update', id: made.c!, hidden: false },
+    ])
+    expect(layoutOf(records, made.a!).props).toMatchObject({ w: 1440, h: 1080 })
+    expect(records.get(body)!.props).toMatchObject({ label: '最初の項目' })
+    expectRows(records, made.a!, 'bullets', '4:3', { x: 0, y: 0 })
+    const lines = readCanvas(records, {}).split('\n').slice(1)
+    expect(lines).toEqual([
+      `${made.a} slide 0,0 1440x1080 n=1 "要点" [1 children]`,
+      `${made.b} slide 2000,0 1920x1080 hidden`,
+      `${made.c} slide 4000,0 1920x1080 n=2`,
+    ])
+  })
+
+  it('refuses slide ops that do not fit', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'title' },
+      { op: 'create', type: 'slide', as: 'b', x: 2000, y: 0, template: 'bullets' },
+    ]).created
+    const rev = records.rev
+    expect(() => edit([{ op: 'update', id: made.s!, template: 'table' }])).toThrow(/already has contents/)
+    expect(() => edit([{ op: 'add_row', slide: made.s! }])).toThrow(/a title slide has no rows/)
+    expect(() => edit([{ op: 'add_row', slide: made.b!, label: 'x' }])).toThrow(/no row labels/)
+    expect(() => edit([{ op: 'add_row', slide: made.b!, after: made.b! }])).toThrow(/exactly one of slide, after/)
+    expect(() => edit([{ op: 'create', type: 'slide', w: 100 }])).toThrow(/w is not supported for slide/)
+    expect(() => edit([{ op: 'create', type: 'note', template: 'title' }])).toThrow(/template is only for slides/)
+    expect(() => edit([{ op: 'update', id: made.s!, w: 100 }])).toThrow(/slide cannot be resized/)
+    expect(() => edit(Array.from({ length: 10 }, () => ({ op: 'add_row', slide: made.b! })))).toThrow(/ops\[\d\] \(add_row\): a bullets slide has at most \d+ rows/)
+    expect(records.rev).toBe(rev)
+  })
+
+  it('sizes the rows by their text like the editor, and keeps a row height the AI writes on a cell', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table' },
+      { op: 'add_row', slide: '$s' },
+    ]).created
+    const long = Array.from({ length: 5 }, (_, i) => `行${i}`).join('\n')
+    edit([{ op: 'update', id: slotsOf(records, made.s!).rows[1]!.body, text: long }])
+    const heights = () => slotsOf(records, made.s!).rows.map((row) => (records.get(row.body)!.props as { h: number }).h)
+
+    // 画面で同じ操作をしたときと同じ高さ（文字の多い行が高くなる）
+    const editor = new Editor({ canvasId: 'canvas:client' })
+    const slide = editor.createSlide({ x: 960, y: 540 }, '16:9')
+    editor.applySlideTemplate(slide, 'table')
+    const layout = editor.index.childrenOf(slide).map((id) => editor.getNode(id)!)[0]!
+    const clientRows = () => (editor.getNode(layout.id)!.props as { slots: Slots }).slots.rows
+    editor.setSelection([clientRows()[2]!.body])
+    editor.addSlideLayoutRow()
+    editor.transact('edit', (tx) => {
+      const cell = editor.getNode(clientRows()[1]!.body)!
+      tx.put({ ...cell, props: { ...cell.props, label: long, labelParagraphs: richTextFromPlain(long) } })
+    })
+    const clientHeights = clientRows().map((row) => (editor.getNode(row.body)!.props as { h: number }).h)
+    expect(heights()).toEqual(clientHeights)
+    expect(heights()[1]).toBeGreaterThan(canvasSlideLayout('table', 4).rowPx)
+
+    // セルの高さを書くと（上端はそのまま）、その行の高さを手で決めたことになる
+    edit([{ op: 'update', id: slotsOf(records, made.s!).rows[2]!.body, h: 250 }])
+    expect(slotsOf(records, made.s!).rows.map((row) => row.h)).toEqual([undefined, undefined, 250, undefined])
+    expect(heights()[2]).toBe(250)
+  })
+
+  it('warns about a slide whose text overflows', () => {
+    const { records, edit } = setup()
+    const made = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'bullets' }]).created
+    const body = slotsOf(records, made.s!).rows[0]!.body
+    const result = edit([{ op: 'update', id: body, text: 'とても長い本文。'.repeat(80) }])
+    expect(result.warnings).toEqual([`slide ${made.s} overflows: text does not fit in ${body}`])
+    expect(readCanvas(records, {})).toContain(`${made.s} slide 0,0 1920x1080 n=1 overflow`)
   })
 })
 

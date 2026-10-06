@@ -48,6 +48,8 @@ import { paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParag
 // 既定の書式（labelFontFamily など）と一緒に、版は上げずに足した（省略できる値。ないときは今までの見た目。GeoLabelProps）。
 // label にはいつも同じ文字をプレーンテキストで持つ（古いアプリ・文字を見るだけの処理のため）。
 // 古いアプリが label だけを書き換えたら、labelParagraphs と食い違うので、label を正として読む（geoLabelParagraphs）
+// 文字の余白（labelPadding。スライド v2 のテンプレートのセル）も版は上げない（足しただけの省略できる値。ないときは四方 8。
+// 読めない値も 8）
 export type GeoShape = 'rect' | 'ellipse' | BlockArrowShape
 export const GEO_SHAPES: readonly GeoShape[] = ['rect', 'ellipse', 'blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']
 
@@ -65,6 +67,9 @@ export interface GeoLabelProps {
   labelFontWeight?: number
 }
 
+// 図形の箱から文字の箱までの余白（ワールド座標の px）。数値なら四方が同じ
+export type GeoLabelPadding = number | { top: number; right: number; bottom: number; left: number }
+
 export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps, GeoLabelProps {
   shape: GeoShape
   w: number
@@ -73,6 +78,8 @@ export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps, Geo
   // 角の半径（MAI-84。矩形だけ）。ワールド座標の px。数値なら 4 つの角が同じ、配列なら [左上, 右上, 右下, 左下]。
   // リサイズしても値は保ち、描くときに短い辺の半分まで（4 つ別々なら CSS の border-radius と同じ縮小の規則で）に収める
   cornerRadius?: CornerRadius
+  // 文字の余白（スライド v2）。ないときは四方 LABEL_PADDING（8）。描画・編集・あふれの判定（geoLabelBox）に同じく効く
+  labelPadding?: GeoLabelPadding
 }
 
 export type GeoNode = NodeRecord<GeoProps>
@@ -133,7 +140,7 @@ export const geoType = defineNodeType<GeoProps>({
     const hollow = fill === null && (visible || label !== '')
     if (!insideShape(node.props, point, strokeOutset(stroke) + margin)) return false
     if (!hollow) return true
-    if (label !== '' && insideBox(labelBox(node.props), point)) return true
+    if (label !== '' && insideBox(geoLabelBox(node.props), point)) return true
     // 枠の線の内側の縁より内側なら当たらない
     return visible && !insideShape(node.props, point, -(strokeInset(stroke) + margin))
   },
@@ -159,8 +166,8 @@ export const geoType = defineNodeType<GeoProps>({
     if (stroke.width * info.zoom >= 0.5) strokeOutline(ctx, stroke, geoOutline(node.props))
     if (node.props.label && !info.editing) {
       const style = geoLabelStyle(node.props)
-      const layout = labelLayout(node.props)
-      const box = labelBox(node.props)
+      const layout = geoLabelLayout(node.props)
+      const box = geoLabelBox(node.props)
       if (layout.maxFontSize * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, style, box, 'middle')
       else drawTextLayout(ctx, layout, style, box, 'middle')
     }
@@ -207,7 +214,7 @@ export const geoType = defineNodeType<GeoProps>({
   editText: (node) => ({
     text: node.props.label,
     style: geoLabelStyle(node.props),
-    box: labelBox(node.props),
+    box: geoLabelBox(node.props),
     autoWidth: false,
     verticalAlign: 'middle',
     update: (label) => withGeoLabel(node.props, richTextFromPlain(label)),
@@ -342,25 +349,38 @@ export function withGeoLabel<P extends Partial<GeoLabelProps>>(props: P, paragra
   return { ...props, labelParagraphs: paragraphs, label: plainTextOf(paragraphs) }
 }
 
-// 文字の箱。ブロック矢印（MAI-87）は軸の中（両向きなら矢じりの間、シェブロンは切り込みととがりの間）に収める
-function labelBox(props: GeoProps): Box {
+// 文字の箱（余白を除く。描画・編集・あふれの判定（textOverflow.ts）で共通）。ブロック矢印（MAI-87）は軸の中（両向きなら矢じりの間、シェブロンは切り込みととがりの間）に収める
+export function geoLabelBox(props: GeoProps): Box {
+  const padding = geoLabelPadding(props)
   const arrow = blockArrowOf(props)
-  if (arrow) return paddedBox(arrow.textBox, LABEL_PADDING)
+  if (arrow) return paddedBox(arrow.textBox, padding)
   return {
-    x: LABEL_PADDING,
-    y: LABEL_PADDING,
-    w: Math.max(1, props.w - LABEL_PADDING * 2),
-    h: Math.max(1, props.h - LABEL_PADDING * 2),
+    x: padding.left,
+    y: padding.top,
+    w: Math.max(1, props.w - padding.left - padding.right),
+    h: Math.max(1, props.h - padding.top - padding.bottom),
   }
 }
 
+// 文字の余白（四方）。持たないもの・壊れたもの（数でない・負の値）は LABEL_PADDING
+export function geoLabelPadding(props: Pick<GeoProps, 'labelPadding'>): { top: number; right: number; bottom: number; left: number } {
+  const value = props.labelPadding
+  const side = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : LABEL_PADDING)
+  if (typeof value === 'number') {
+    const all = side(value)
+    return { top: all, right: all, bottom: all, left: all }
+  }
+  const sides = (value ?? {}) as Record<string, unknown>
+  return { top: side(sides.top), right: side(sides.right), bottom: side(sides.bottom), left: side(sides.left) }
+}
+
 // 余白を除いた箱。縮めて 1 より小さくなる向きは、真ん中の 1 にする
-function paddedBox(box: Box, padding: number): Box {
-  const w = box.w - padding * 2
-  const h = box.h - padding * 2
+function paddedBox(box: Box, padding: { top: number; right: number; bottom: number; left: number }): Box {
+  const w = box.w - padding.left - padding.right
+  const h = box.h - padding.top - padding.bottom
   return {
-    x: w >= 1 ? box.x + padding : box.x + box.w / 2 - 0.5,
-    y: h >= 1 ? box.y + padding : box.y + box.h / 2 - 0.5,
+    x: w >= 1 ? box.x + padding.left : box.x + box.w / 2 - 0.5,
+    y: h >= 1 ? box.y + padding.top : box.y + box.h / 2 - 0.5,
     w: Math.max(1, w),
     h: Math.max(1, h),
   }
@@ -369,11 +389,12 @@ function paddedBox(box: Box, padding: number): Box {
 // フォントを読み込み終えて測り直すとき（textMetricsGeneration が変わる）は計算し直す（MAI-75）
 const labelCache = new WeakMap<GeoProps, { generation: number; layout: TextLayout }>()
 
-function labelLayout(props: GeoProps): TextLayout {
+// 図形の中の文字のレイアウト（文字の箱の幅で折り返す）。描画とあふれの判定（textOverflow.ts）で同じものを使う
+export function geoLabelLayout(props: GeoProps): TextLayout {
   const generation = textMetricsGeneration()
   let cached = labelCache.get(props)
   if (!cached || cached.generation !== generation) {
-    cached = { generation, layout: layoutRichText(geoLabelParagraphs(props), geoLabelStyle(props), labelBox(props).w) }
+    cached = { generation, layout: layoutRichText(geoLabelParagraphs(props), geoLabelStyle(props), geoLabelBox(props).w) }
     labelCache.set(props, cached)
   }
   return cached.layout

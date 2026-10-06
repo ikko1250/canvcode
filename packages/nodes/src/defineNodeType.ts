@@ -26,7 +26,22 @@ export interface RenderInfo {
   files?: FileContentSource
   // 引用の出典を引く先（MAI-33）
   citations?: CitationResolver
+  // スライドの番号を引く先（スライド v2）
+  slides?: SlideNumberResolver
+  // PDF に出す画像を描いているか（スライド v2）。スライドは名前（番号）と枠の線を描かず、白い地だけを描く
+  print?: boolean
 }
+
+// スライドの番号を引く先（スライド v2）。番号は保存せず、キャンバス上の位置から計算したものを引く
+export interface SlideNumberResolver {
+  // 1 から。非表示のスライドや、今のキャンバスにないスライドは null
+  number(slideId: string): number | null
+  // スライドの中の文字があふれているか・並べられなかった行があるか。名前に警告を付ける（引く先がなければ付けない）
+  overflows?(slideId: string): boolean
+}
+
+// 当たり判定で、描くときと同じものを引くための口。名前の部分の幅をスライドの番号に合わせるのに使う
+export type HitTestInfo = Pick<RenderInfo, 'slides'>
 
 // 引用の出典（SourceAnchor）を引く先（MAI-33）
 export interface CitationResolver {
@@ -38,14 +53,14 @@ export interface CitationResolver {
 
 export interface DocumentInfo {
   title: string
-  kind: 'canvas' | 'markdown' | 'code' | 'slides' | 'pdf'
+  kind: 'canvas' | 'markdown' | 'code' | 'pdf'
   // 'trashed'：ゴミ箱の中 / 'missing'：完全に削除された（リンク切れ）/ 'nofile'：File はあるが実ファイルが見つからない
   status: 'ok' | 'trashed' | 'missing' | 'nofile'
 }
 
 // File の本文（MAI-30）。まだ読み込んでいなければ null を返し、読み込みを始める（読み込めたら描き直される）
 export interface FileContentSource {
-  get(fileId: string): { text: string; version: string; path?: string; kind?: 'markdown' | 'code' | 'slides' } | null
+  get(fileId: string): { text: string; version: string; path?: string; kind?: 'markdown' | 'code' } | null
 }
 
 // ノードが参照している Canvas・File と、その持ち主か（MAI-8）。持ち主は参照先に 1 つだけ
@@ -107,6 +122,9 @@ export function outsetBox(box: Box, outset: Outset): Box {
   return { x: box.x - outset.left, y: box.y - outset.top, w: box.w + outset.left + outset.right, h: box.h + outset.top + outset.bottom }
 }
 
+// 子を持てる型の種類（NodeTypeDef の container）
+export type ContainerKind = 'group' | 'frame' | 'layout'
+
 export interface NodeTypeDef<P extends object> {
   type: string
   // props の形の版。形を変えたら上げて、migrate で前の版から移す（MAI-74）
@@ -121,8 +139,9 @@ export interface NodeTypeDef<P extends object> {
   // 選択枠・吸い付き・整列は getBounds の箱のまま使い、カリング・当たり判定の候補探し・サムネイルの範囲は、この分だけ広げた箱を使う
   renderOutset?(node: NodeRecord<P>): number | Outset
   // ローカル座標の点が当たっているか。margin はローカル座標での余裕（細い線を当てやすくするため）。
-  // zoom は、画面上で大きさが決まる部分（フレームの名前など）の判定に使う
-  hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number): boolean
+  // zoom は、画面上で大きさが決まる部分（フレームの名前など）の判定に使う。
+  // info は描くときと同じ引く先（スライドの番号など）。渡されなければ、引く先がないものとして判定する
+  hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number, info?: HitTestInfo): boolean
   // ctx はノードのローカル座標に合わせてある。1 単位 = ワールド 1 単位。
   render(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
   // ズームアウト時の簡略描画。定義しなければ基盤がバウンディングボックスを塗りつぶす。
@@ -155,8 +174,15 @@ export interface NodeTypeDef<P extends object> {
   citation?(node: NodeRecord<P>): string | null
   // ローカル座標の点にあるリンク（Ctrl（⌘）+クリックで開く。MAI-21）
   linkAt?(node: NodeRecord<P>, point: Vec): string | null
-  // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く
-  container?: 'group' | 'frame'
+  // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く。
+  // layout は子を並べ直すための入れ物（スライド v2 の slide-layout）。自分は選べず、ノードを落とす先にもならない。
+  // 中の子は、group と違って直接選べる（祖先の frame の直下の子と同じ扱い）
+  container?: ContainerKind
+  // props の中に持っているノードの id（slide-layout の slots など）を map で写し替えた props。
+  // 複製・貼り付けで id を振り直すときに通す。map で引けない id（一緒に写さなかったノード）は外す
+  remapIds?(node: NodeRecord<P>, map: (id: string) => string | undefined): P
+  // 子が出ていったときの新しい props（slide-layout は slots から外す）。定義しなければ props は変えない
+  releaseChild?(node: NodeRecord<P>, childId: string): P
   // 文字を編集できる型は、編集のしかたを返す（MAI-24）。編集モードでは、これに合わせて textarea を重ねる
   editText?(node: NodeRecord<P>): TextEditSpec<P>
 }

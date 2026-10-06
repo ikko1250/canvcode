@@ -6,13 +6,13 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterEach, describe, expect, it } from 'vitest'
+import { canvasSlideLayout } from '@canvcode/slides'
 import { AgentHost } from './agent/host.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
 import { RefImageStore } from './refImages.ts'
-import { SlidesApi } from './slides.ts'
 
 // AI から使う MCP サーバー（MAI-59）
 
@@ -42,7 +42,6 @@ async function setup(): Promise<{
   const dataDir = join(workspace, '.canvcode')
   const records = new RecordStore(dataDir)
   cleanups.push(() => records.close())
-  const slides = new SlidesApi(files, workspace, 0, dataDir)
   const refImages = new RefImageStore(dataDir)
   const agent = new AgentHost({ records, files })
   cleanups.push(() => agent.dispose())
@@ -50,8 +49,7 @@ async function setup(): Promise<{
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     void (async () => {
-      if (await slides.handle(req, res, url.pathname, url.searchParams)) return
-      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, slides, refImages, agent, presence: () => view.current }))) res.writeHead(404).end()
+      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, refImages, agent, presence: () => view.current }))) res.writeHead(404).end()
     })()
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -76,23 +74,25 @@ describe('MCP server', () => {
     const { tools } = await client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([
       'create_document',
-      'create_slide_deck',
       'edit_canvas',
       'edit_document',
       'get_canvas_format',
-      'get_slide_format',
       'list_canvases',
       'list_documents',
-      'preview_slide_deck',
       'read_canvas',
       'read_document',
       'read_nodes',
-      'read_slide_deck',
       'resolve_reference',
       'undo_canvas_edit',
       'update_document',
-      'update_slide_deck',
     ])
+  })
+
+  it('points to slides on a canvas, and no longer to slide deck files (v1)', async () => {
+    const { client } = await setup()
+    const instructions = client.getInstructions() ?? ''
+    expect(instructions).toContain('put slides on a canvas')
+    expect(instructions).not.toMatch(/slide deck|\.slide\.md|create_slide_deck/)
   })
 
   it('creates, lists and reads a document, and tells open tabs', async () => {
@@ -192,6 +192,33 @@ describe('MCP server', () => {
     const undone = await call(client, 'undo_canvas_edit', { batch_id: edited.data.batch })
     expect(undone.data).toMatchObject({ restored: 3 })
     expect(records.get(edited.data.created.n)).toBeUndefined()
+  })
+
+  // スライド（スライド v2）を edit_canvas で置き、テンプレートと行を足すと並べ直される。read_canvas に番号が出て、Undo で消える
+  it('makes slides on a canvas through the canvas tools', async () => {
+    const { client, records } = await setup()
+    const guide = ((await client.callTool({ name: 'get_canvas_format', arguments: {} })).content as { text: string }[])[0]!.text
+    expect(guide).toContain('- slide-layout:')
+    expect(guide).toContain('- add_row:')
+    const edited = await call(client, 'edit_canvas', {
+      canvas_id: records.rootCanvasId,
+      ops: [
+        { op: 'create', type: 'slide', as: 's', x: 0, y: 0, name: '要点', template: 'bullets' },
+        { op: 'add_row', slide: '$s', text: '四つ目', as: 'r' },
+      ],
+    })
+    expect(edited.isError).toBe(false)
+    const slideId = edited.data.created.s
+    const outline = ((await client.callTool({ name: 'read_canvas', arguments: { canvas_id: records.rootCanvasId, depth: 2 } })).content as { text: string }[])[0]!.text
+    expect(outline).toContain(`${slideId} slide 0,0 1920x1080 n=1 "要点"`)
+    // 4 行目の本文は、4 行の幾何どおりの位置にある
+    const row = canvasSlideLayout('bullets', 4, '16:9').rows[3]!.body
+    expect(outline).toContain(`${edited.data.created.r} geo/rect ${row.x},${row.y} ${row.w}x${row.h}`)
+    const nodes = await call(client, 'read_nodes', { ids: [slideId] })
+    expect(nodes.data.nodes[0]).toMatchObject({ id: slideId, number: 1, name: '要点' })
+    const undone = await call(client, 'undo_canvas_edit', { batch_id: edited.data.batch })
+    expect(undone.isError).toBe(false)
+    expect(records.get(slideId)).toBeUndefined()
   })
 
   it('defaults the canvas tools to where the user is looking', async () => {
@@ -332,6 +359,47 @@ describe('MCP server', () => {
       expect(result.data.warnings.join()).toContain('deleted')
     })
 
+    // スライド（スライド v2）も frame と同じく、名前と中身を渡す。縦横比と、書き出しから外しているかも
+    it('describes slides with their name, ratio and contents', async () => {
+      const { client, records } = await setup()
+      const root = records.rootCanvasId
+      const node = (id: string, type: string, parentId: string, props: Record<string, unknown>) => ({ typeName: 'node', id, type, parentId, x: 0, y: 0, props })
+      records.apply(
+        [
+          node('node:slide', 'slide', root, { ratio: '4:3', name: '表紙', hidden: true }),
+          node('node:note', 'note', 'node:slide', { text: '題名' }),
+        ],
+        [],
+      )
+      const bounds = { x: 0, y: 0, w: 1440, h: 1080 }
+      records.putRef(ref({ kind: 'canvas', canvasId: root, rect: { x: -5, y: -5, w: 1500, h: 1100 }, nodes: [{ id: 'node:slide', bounds }] }))
+      const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
+      expect(result.data.content.nodes).toEqual([
+        { id: 'node:slide', type: 'slide', name: '表紙', ratio: '4:3', hidden: true, bounds, children: [{ id: 'node:note', type: 'note', parentId: 'node:slide', text: '題名' }] },
+      ])
+    })
+
+    // スライドの中身を並べる入れ物（slide-layout）も、並べ方と中身を渡す
+    it('describes a slide-layout with its layout and contents', async () => {
+      const { client, records } = await setup()
+      const root = records.rootCanvasId
+      const node = (id: string, type: string, parentId: string, props: Record<string, unknown>) => ({ typeName: 'node', id, type, parentId, x: 0, y: 0, props })
+      records.apply(
+        [
+          node('node:slide', 'slide', root, { ratio: '16:9', name: '', hidden: false }),
+          node('node:layout', 'slide-layout', 'node:slide', { layout: 'bullets', w: 1920, h: 1080, slots: { rows: [{ body: 'node:note' }] } }),
+          node('node:note', 'note', 'node:layout', { text: '項目' }),
+        ],
+        [],
+      )
+      const bounds = { x: 0, y: 0, w: 1920, h: 1080 }
+      records.putRef(ref({ kind: 'canvas', canvasId: root, rect: { x: -5, y: -5, w: 2000, h: 1100 }, nodes: [{ id: 'node:slide', bounds }] }))
+      const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
+      expect(result.data.content.nodes[0].children).toEqual([
+        { id: 'node:layout', type: 'slide-layout', parentId: 'node:slide', layout: 'bullets', children: [{ id: 'node:note', type: 'note', parentId: 'node:layout', text: '項目' }] },
+      ])
+    })
+
     it('returns the text of a PDF region and of its page', async () => {
       const { client, records, dataDir } = await setup()
       const hash = 'a'.repeat(64)
@@ -465,109 +533,5 @@ describe('MCP server', () => {
       expect(result.text).toContain('copy it again')
       expect(result.text).toContain('deleted 3 days after')
     })
-  })
-})
-
-describe('MCP slide decks', () => {
-  const deck = '# 表紙 {#cover}\n## 副題\n\n# 要点\n\n- 一つ目\n  - 子\n- 二つ目\n'
-
-  it('explains the format with examples that are valid decks', async () => {
-    const { client } = await setup()
-    const guide = (await client.callTool({ name: 'get_slide_format', arguments: {} })).content as { text: string }[]
-    const text = guide[0]!.text
-    const markdown = text.match(/~~~markdown\n([\s\S]*?)\n~~~/)?.[1]
-    const json = text.match(/~~~json\n([\s\S]*?)\n~~~/)?.[1]
-    expect(markdown).toBeTruthy()
-    expect(json).toBeTruthy()
-    // 例の画像は無いが、作るときには画像を読まないので、デッキとしては受け付ける
-    const fromMarkdown = await call(client, 'create_slide_deck', { title: 'md', content: markdown })
-    expect(fromMarkdown.isError, fromMarkdown.text).toBe(false)
-    expect(fromMarkdown.data.slides.map((s: { layout: string }) => s.layout)).toEqual(['title', 'bullets', 'table', 'table-image', 'table-image', 'table-images'])
-    const fromJson = await call(client, 'create_slide_deck', { title: 'json', content: json, format: 'json' })
-    expect(fromJson.isError, fromJson.text).toBe(false)
-    expect(fromJson.data.document.path).toBe('json.slide.json')
-  })
-
-  it('creates a deck, gives slides ids, and reads it back with an outline', async () => {
-    const { client, events, workspace } = await setup()
-    const created = await call(client, 'create_slide_deck', { title: '発表', content: deck })
-    expect(created.data.document).toMatchObject({ kind: 'slides', title: '発表', path: '発表.slide.md' })
-    expect(events).toContainEqual(expect.objectContaining({ type: 'file-added' }))
-    const saved = readFileSync(join(workspace, '発表.slide.md'), 'utf8')
-    expect(saved).toContain('# 表紙 {#cover}')
-    expect(saved).toMatch(/^# 要点 \{#s-[a-z0-9]{6}\}$/m)
-
-    const listed = await call(client, 'list_documents', { kind: 'slides' })
-    expect(listed.data.documents).toEqual([created.data.document])
-
-    const read = await call(client, 'read_slide_deck', { id: created.data.document.id })
-    expect(read.data).toMatchObject({ format: 'md', hash: created.data.hash, text: saved, warnings: [] })
-    expect(read.data.slides).toEqual([
-      { number: 1, id: 'cover', layout: 'title', title: '表紙' },
-      { number: 2, id: expect.stringMatching(/^s-/), layout: 'bullets', title: '要点' },
-    ])
-  })
-
-  it('refuses decks that cannot be read, and reports the line', async () => {
-    const { client, files } = await setup()
-    const bad = await call(client, 'create_slide_deck', { title: 'bad', content: '# 表\n\n| a | b | c |\n' })
-    expect(bad.isError).toBe(true)
-    expect(bad.text).toContain(':3:')
-    expect(files.list()).toEqual([])
-
-    const created = await call(client, 'create_slide_deck', { title: 'deck', content: deck })
-    const id = created.data.document.id
-    const edit = await call(client, 'edit_document', { id, old_string: '- 二つ目', new_string: '段落' })
-    expect(edit.isError).toBe(true)
-    const replace = await call(client, 'update_slide_deck', { id, content: 'no heading' })
-    expect(replace.isError).toBe(true)
-    expect((await files.read(id)).hash).toBe(created.data.hash)
-  })
-
-  it('replaces a deck, keeping ids, and detects a stale hash', async () => {
-    const { client, files, events } = await setup()
-    const created = await call(client, 'create_slide_deck', { title: 'deck', content: deck })
-    const id = created.data.document.id
-    const next = '# 表紙 {#cover}\n\n# 指標 {#metrics}\n\n| 売上 | 1.2 億円 |\n'
-    const updated = await call(client, 'update_slide_deck', { id, content: next, expected_hash: created.data.hash })
-    expect(updated.data.slides.map((s: { id: string }) => s.id)).toEqual(['cover', 'metrics'])
-    expect((await files.read(id)).text).toBe(next)
-    expect(events.at(-1)).toMatchObject({ type: 'file-changed', file: { id } })
-
-    const stale = await call(client, 'update_slide_deck', { id, content: deck, expected_hash: created.data.hash })
-    expect(stale.isError).toBe(true)
-    expect(stale.text).toContain('changed since you read it')
-  })
-
-  it('returns lint warnings for overflowing slides', async () => {
-    const { client } = await setup()
-    const long = 'とても長い本文'.repeat(40)
-    const created = await call(client, 'create_slide_deck', { title: 'long', content: `# 長い\n\n| 項目 | ${long} |\n` })
-    expect(created.isError).toBe(false)
-    expect(created.data.warnings.length).toBeGreaterThan(0)
-  })
-
-  it('returns the slide images, and a tool error while they cannot be made', async () => {
-    const { client, url, workspace } = await setup()
-    const created = await call(client, 'create_slide_deck', { title: 'deck', content: deck })
-    const id = created.data.document.id
-    // テストの環境ではプレビューの画面が無く、画像は作れない
-    const failed = await client.callTool({ name: 'preview_slide_deck', arguments: { id, slides: [2] } })
-    expect(failed.isError).toBe(true)
-    const outOfRange = await call(client, 'preview_slide_deck', { id, slides: [3] })
-    expect(outOfRange.isError).toBe(true)
-    expect(outOfRange.text).toContain('全 2 枚')
-
-    // 撮った画像があれば、それを返す
-    const pages = await (await fetch(new URL(`/api/slides/${encodeURIComponent(id)}/pages`, url))).json() as { pages: { hash: string }[] }
-    const png = Buffer.from('\x89PNG\r\n\x1a\n', 'binary')
-    mkdirSync(join(workspace, '.canvcode', 'slide-pages'), { recursive: true })
-    for (const page of pages.pages) writeFileSync(join(workspace, '.canvcode', 'slide-pages', `${page.hash}.png`), png)
-    const result = await client.callTool({ name: 'preview_slide_deck', arguments: { id } })
-    expect(result.isError).toBeFalsy()
-    const content = result.content as { type: string; text?: string; data?: string; mimeType?: string }[]
-    expect(content.filter((c) => c.type === 'image')).toHaveLength(2)
-    expect(content[0]).toMatchObject({ type: 'text', text: 'Slide 1 {#cover}: 表紙' })
-    expect(content[1]).toMatchObject({ type: 'image', mimeType: 'image/png', data: png.toString('base64') })
   })
 })

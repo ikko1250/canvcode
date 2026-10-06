@@ -5,14 +5,15 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
-const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, frame: false }
+const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false }
 
-function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}): PieMenuContext {
+function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false): PieMenuContext {
   return {
     toolId: 'select',
     setTool: vi.fn(),
     importPdf: vi.fn(),
     createFileCanvas: vi.fn(),
+    placeSlide: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     showStats: false,
@@ -38,8 +39,14 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     reorderSelection: vi.fn(),
     lockSelection: vi.fn(),
     duplicateSelection: vi.fn(),
-    makeSlideFigure: vi.fn(),
-    copyFigureReference: vi.fn(),
+    toggleSlideRatio: vi.fn(),
+    toggleSlidesHidden: vi.fn(),
+    addSlideRow: vi.fn(),
+    removeSlideRow: vi.fn(),
+    resetSlideRowHeight: vi.fn(),
+    applySlideTemplate: vi.fn(),
+    hasSlides,
+    exportSlidesPdf: vi.fn(),
   }
 }
 
@@ -139,14 +146,32 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(ctx.duplicateSelection).toHaveBeenCalledTimes(1)
   })
 
-  it('offers to use a single selected frame as a slide figure', () => {
-    const ctx = context({}, { count: 1, frame: true })
+  it('shows the slide items when slides are selected (slides v2)', () => {
+    const ctx = context({}, { count: 2, arrangeCount: 2, slideCount: 2 })
     const menu = actionsOf(ctx)
-    expect(labels(menu?.items)).toEqual(['固定する', '複製', 'スライドの図にする…', '図の参照をコピー'])
-    run(menu?.items, 'スライドの図にする…')
-    expect(ctx.makeSlideFigure).toHaveBeenCalledTimes(1)
-    run(menu?.items, '図の参照をコピー')
-    expect(ctx.copyFigureReference).toHaveBeenCalledTimes(1)
+    expect(labels(menu?.items)).toEqual(['整列', '固定する', '複製', '比率を切り替え', '非表示にする'])
+    run(menu?.items, '比率を切り替え')
+    expect(ctx.toggleSlideRatio).toHaveBeenCalledTimes(1)
+    run(menu?.items, '非表示にする')
+    expect(ctx.toggleSlidesHidden).toHaveBeenCalledTimes(1)
+
+    // 全部が非表示なら「表示する」
+    const hidden = context({}, { count: 1, slideCount: 1, slidesHidden: true })
+    expect(labels(actionsOf(hidden)?.items)).toEqual(['固定する', '複製', '比率を切り替え', '表示する'])
+    run(actionsOf(hidden)?.items, '表示する')
+    expect(hidden.toggleSlidesHidden).toHaveBeenCalledTimes(1)
+  })
+
+  it('folds the text items into a submenu when the slide items would push the ring over 8', () => {
+    const ctx = context({}, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, slideCount: 1 })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['文字', '整列', '等間隔', '重なり順', '固定する', '複製', '比率を切り替え', '非表示にする'])
+    expect(labels(sub(menu, '文字'))).toEqual(['文字を大きく', '文字を小さく', '揃え'])
+    run(sub(menu, '文字'), '文字を大きく')
+    expect(ctx.stepFontSize).toHaveBeenCalledWith(1)
+    // 8 つに収まるなら、文字の項目もそのまま並べる
+    const fits = actionsOf(context({}, { count: 2, hasText: true, slideCount: 1 }))
+    expect(labels(fits?.items)).toEqual(['文字を大きく', '文字を小さく', '揃え', '固定する', '複製', '比率を切り替え', '非表示にする'])
   })
 
   it('folds the page items into a submenu when the ring would exceed 8 items', () => {
@@ -158,5 +183,107 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     const fits = actionsOf(context(pdf, { count: 2, arrangeCount: 2, hasText: false }))
     expect(fits?.items).toHaveLength(7)
     expect(labels(fits?.items)[0]).toBe('次のページ')
+  })
+
+  it('offers to export the slides to PDF when the canvas has slides, even with nothing selected (slides v2)', () => {
+    expect(actionsOf(context({}, {}, false))).toBeUndefined()
+    const ctx = context({}, {}, true)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['スライドを PDF に出力'])
+    run(menu?.items, 'スライドを PDF に出力')
+    expect(ctx.exportSlidesPdf).toHaveBeenCalledTimes(1)
+    // スライドを選んでいれば、スライドの項目のあとに並べる
+    expect(labels(actionsOf(context({}, { count: 1, slideCount: 1 }, true))?.items)).toEqual([
+      '固定する',
+      '複製',
+      '比率を切り替え',
+      '非表示にする',
+      'スライドを PDF に出力',
+    ])
+    // PDF のページの項目と一緒でも出る
+    const pdf = { hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false }
+    expect(labels(actionsOf(context(pdf, {}, true))?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', 'スライドを PDF に出力'])
+  })
+
+  it('folds the slide items into a submenu when they would still push the ring over 8 after folding the text items', () => {
+    const ctx = context({}, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, slideCount: 1 }, true)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['文字', '整列', '等間隔', '重なり順', '固定する', '複製', 'スライド'])
+    expect(labels(sub(menu, 'スライド'))).toEqual(['比率を切り替え', '非表示にする', 'スライドを PDF に出力'])
+    run(sub(menu, 'スライド'), 'スライドを PDF に出力')
+    expect(ctx.exportSlidesPdf).toHaveBeenCalledTimes(1)
+    // 文字の項目をまとめれば 8 つに収まるなら、スライドの項目はそのまま並べる
+    const fits = actionsOf(context({}, { count: 2, arrangeCount: 2, hasText: true, slideCount: 1 }, true))
+    expect(labels(fits?.items)).toEqual(['文字', '整列', '固定する', '複製', '比率を切り替え', '非表示にする', 'スライドを PDF に出力'])
+    // 8 項目以下に収まる
+    const full = actionsOf(context({ hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false }, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, slideCount: 2 }, true))
+    expect(full?.items).toHaveLength(8)
+    expect(labels(full?.items)[0]).toBe('ページ')
+  })
+
+  it('adds and removes a row of the slide contents when a cell or its slide is selected (slides v2)', () => {
+    // 行のセルを選んでいれば「行を足す」「行を消す」を、スライドの項目の並びに出す
+    const ctx = context({}, { count: 1, reorderCount: 1, slideRows: { canRemove: true } }, true)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製', '行を足す', '行を消す', 'スライドを PDF に出力'])
+    run(menu?.items, '行を足す')
+    expect(ctx.addSlideRow).toHaveBeenCalledTimes(1)
+    run(menu?.items, '行を消す')
+    expect(ctx.removeSlideRow).toHaveBeenCalledTimes(1)
+    // 消せないとき（最後の 1 行・スライドを選んでいる）は「行を足す」だけ
+    const slide = actionsOf(context({}, { count: 1, slideCount: 1, slideRows: { canRemove: false } }, true))
+    expect(labels(slide?.items)).toEqual(['固定する', '複製', '比率を切り替え', '非表示にする', '行を足す', 'スライドを PDF に出力'])
+    // 8 つを超えるなら、文字の項目に続いてスライドの項目を「スライド ›」にまとめる
+    const full = actionsOf(context({}, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, slideCount: 1, slideRows: { canRemove: true } }, true))
+    expect(labels(full?.items)).toEqual(['文字', '整列', '等間隔', '重なり順', '固定する', '複製', 'スライド'])
+    expect(labels(sub(full, 'スライド'))).toEqual(['比率を切り替え', '非表示にする', '行を足す', '行を消す', 'スライドを PDF に出力'])
+    // スライドを選んでいて 8 つちょうどなら、まとめずに並べる
+    const fits = actionsOf(context({}, { count: 1, reorderCount: 1, slideCount: 1, slideRows: { canRemove: false } }, true))
+    expect(labels(fits?.items)).toEqual(['重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', '行を足す', 'スライドを PDF に出力'])
+  })
+
+  it('resets the row height to auto when the row of the selected cell has a manual height (slides v2)', () => {
+    // 手で高さを決めた行のセルを選んでいれば「行の高さを自動に戻す」を、行の項目に続けて出す
+    const ctx = context({}, { count: 1, reorderCount: 1, slideRows: { canRemove: true, manualHeight: true } }, true)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製', '行を足す', '行を消す', '行の高さを自動に戻す', 'スライドを PDF に出力'])
+    run(menu?.items, '行の高さを自動に戻す')
+    expect(ctx.resetSlideRowHeight).toHaveBeenCalledTimes(1)
+    // 自動の行（manualHeight が無い・false）なら出さない
+    expect(labels(actionsOf(context({}, { count: 1, reorderCount: 1, slideRows: { canRemove: true, manualHeight: false } }, true))?.items)).not.toContain(
+      '行の高さを自動に戻す',
+    )
+    // 8 つを超えるなら「スライド ›」にまとめた中に出す
+    const full = actionsOf(
+      context({}, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, slideCount: 1, slideRows: { canRemove: true, manualHeight: true } }, true),
+    )
+    expect(labels(sub(full, 'スライド'))).toEqual(['比率を切り替え', '非表示にする', '行を足す', '行を消す', '行の高さを自動に戻す', 'スライドを PDF に出力'])
+  })
+
+  it('applies a template to the only selected slide when it has no children (slides v2)', () => {
+    // 子の無いスライドを 1 つだけ選んでいれば「テンプレート ›」を、スライドの項目の並びに出す
+    const ctx = context({}, { count: 1, reorderCount: 1, slideCount: 1, slideTemplate: true }, true)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
+    expect(labels(sub(menu, 'テンプレート'))).toEqual(['表紙', '箇条書き', '表', '表＋画像'])
+    run(sub(menu, 'テンプレート'), '表')
+    expect(ctx.applySlideTemplate).toHaveBeenLastCalledWith('table')
+    run(sub(menu, 'テンプレート'), '表＋画像')
+    expect(ctx.applySlideTemplate).toHaveBeenLastCalledWith('table-image')
+    run(sub(menu, 'テンプレート'), '表紙')
+    expect(ctx.applySlideTemplate).toHaveBeenLastCalledWith('title')
+    run(sub(menu, 'テンプレート'), '箇条書き')
+    expect(ctx.applySlideTemplate).toHaveBeenLastCalledWith('bullets')
+    // 子のあるスライド・スライドを 2 つ以上選んでいるとき（slideTemplate が false）は出さない
+    expect(labels(actionsOf(context({}, { count: 1, slideCount: 1 }, true))?.items)).not.toContain('テンプレート')
+    expect(labels(actionsOf(context({}, { count: 2, arrangeCount: 2, slideCount: 2 }, true))?.items)).not.toContain('テンプレート')
+    // 8 つを超えるなら「スライド ›」にまとめ、テンプレートはその中のサブメニューになる
+    const pdf = { hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false }
+    const full = actionsOf(context(pdf, { count: 1, reorderCount: 1, slideCount: 1, slideTemplate: true }, true))
+    expect(labels(full?.items)).toEqual(['ページ', '重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
+    const folded = actionsOf(context({}, { count: 1, reorderCount: 1, hasText: true, slideCount: 1, slideTemplate: true }, true))
+    expect(labels(folded?.items)).toEqual(['文字', '重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
+    const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
+    for (const ring of [menu, full, folded]) for (const size of rings(ring!.items)) expect(size).toBeLessThanOrEqual(8)
   })
 })

@@ -206,11 +206,17 @@ export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayloa
     : (options.offset ?? { x: 0, y: 0 })
   const idMap = new Map(payload.nodes.map((node) => [node.id, createId('node')]))
   const rootSet = new Set(payload.roots)
+  // props の中のノードの id（slide-layout の slots など）も、新しい id に写す
+  const withIds = (node: NodeRecord): NodeRecord => {
+    const type = editor.types.get(node.type)
+    return type?.remapIds ? { ...node, props: type.remapIds(node, (id) => idMap.get(id)) } : node
+  }
 
-  // 選んだノードの新しい親を決める（元の親がもうなければ Canvas 直下）
+  // 選んだノードの新しい親を決める（元の親がもうなければ Canvas 直下）。
+  // slide-layout の中のノードの複製は、slots に入らないので、slide-layout ではなくその外側（スライド）に置く
   const parentOf = (root: NodeRecord): string => {
     if (options.parentId === 'original') {
-      return root.parentId === editor.canvasId || editor.getNode(root.parentId) ? root.parentId : editor.canvasId
+      return root.parentId === editor.canvasId || editor.getNode(root.parentId) ? editor.placementParent(root.parentId) : editor.canvasId
     }
     return options.parentId ?? editor.canvasId
   }
@@ -228,7 +234,7 @@ export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayloa
     for (const [parentId, roots] of rootsByParent) {
       const indices = indicesBetween(editor.index.topmost(parentId)?.index ?? null, null, roots.length)
       for (const [i, root] of roots.entries()) {
-        const world = { ...withRole(root), id: idMap.get(root.id)!, x: root.x + offset.x, y: root.y + offset.y }
+        const world = { ...withIds(withRole(root)), id: idMap.get(root.id)!, x: root.x + offset.x, y: root.y + offset.y }
         tx.put({ ...editor.fromWorld(world, parentId), index: indices[i] })
         inserted.push(world.id)
       }
@@ -238,7 +244,7 @@ export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayloa
       const parentId = idMap.get(node.parentId)
       // 親がコピーに入っていない子孫はない（copySelection が子孫ごと入れる）が、念のため飛ばす
       if (!parentId) continue
-      tx.put({ ...withRole(node), id: idMap.get(node.id)!, parentId })
+      tx.put({ ...withIds(withRole(node)), id: idMap.get(node.id)!, parentId })
     }
     // 引用ノートの SourceAnchor（同じワークスペースにあれば、それを共有する）
     for (const anchor of payload.anchors) {

@@ -947,8 +947,8 @@ function textSectionTab(nodes: readonly NodeRecord[]): string | undefined {
 
 // 不透明度はノードのレコードの opacity（0〜1）。パネルでは 0〜100 % で見せる。
 // どのタブを開いていても、パネルの一番下に出す（footer）
-// group と frame は子に効かない（描画はノードごと）ので出さない
-const CONTAINER_TYPES = new Set(['group', 'frame'])
+// group・frame・slide・slide-layout は子に効かない（描画はノードごと）ので出さない
+const CONTAINER_TYPES = new Set(['group', 'frame', 'slide', 'slide-layout'])
 
 export const opacityField: DesignField<number> = {
   id: 'layer.opacity',

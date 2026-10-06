@@ -21,7 +21,7 @@ export interface FileManagerOptions {
 
 interface ServerFile {
   id: string
-  kind: 'markdown' | 'code' | 'slides'
+  kind: 'markdown' | 'code'
   title: string
   path: string
   size: number
@@ -104,7 +104,7 @@ export class FileManager implements FileContentSource {
   }
 
   // 描画から呼ばれる。まだ読んでいなければ読み込みを始めて null を返す
-  get(fileId: string): { text: string; version: string; path?: string; kind?: 'markdown' | 'code' | 'slides' } | null {
+  get(fileId: string): { text: string; version: string; path?: string; kind?: 'markdown' | 'code' } | null {
     const entry = this.entries.get(fileId)
     if (entry) {
       const file = this.workspace.getFile(fileId)
@@ -145,17 +145,16 @@ export class FileManager implements FileContentSource {
     await Promise.all(ids.map((id) => this.save(id)))
   }
 
-  async create(kind: 'markdown' | 'code' | 'slides', title: string, content = ''): Promise<FileRecord> {
-    const initialContent = kind === 'slides' && content === '' ? '# タイトル\n' : content
+  async create(kind: 'markdown' | 'code', title: string, content = ''): Promise<FileRecord> {
     const response = await fetch(this.baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kind, title, content: initialContent }),
+      body: JSON.stringify({ kind, title, content }),
     })
     if (!response.ok) throw new Error(`Failed to create a file: ${response.status}`)
     const { file } = (await response.json()) as { file: ServerFile }
     this.workspace.applyServerFile(file)
-    this.entries.set(file.id, makeEntry(initialContent, file.hash))
+    this.entries.set(file.id, makeEntry(content, file.hash))
     return this.workspace.getFile(file.id)!
   }
 

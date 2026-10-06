@@ -99,8 +99,6 @@ export interface ToolContext {
   startEditing(nodeId: string, options?: { tx?: Transaction<WorkspaceRecord>; selectAll?: boolean }): boolean
   // Portal の参照先に入る（MAI-29）
   openPortal(portalId: string): void
-  // スライドなど専用エディタがある File を開く
-  openFile?(fileId: string): void
   // カードの本文をその場で編集する。編集できるノードなら true（MAI-30）
   editDocument(nodeId: string): boolean
   // 新しい File（Markdown・Python）とカードを作り、その場で編集する（MAI-30、MAI-31）
@@ -696,11 +694,6 @@ export class SelectTool implements Tool {
       this.ctx.openPortal(hit.id)
       return
     }
-    const reference = editor.workspace.referenceOf(hit)
-    if (reference && editor.workspace.getFile(reference.targetId)?.kind === 'slides') {
-      this.ctx.openFile?.(reference.targetId)
-      return
-    }
     // 本文を持つカードは、その場で編集する（MAI-30）
     if (this.ctx.editDocument(hit.id)) return
     if (editor.getType(hit).editText) this.ctx.startEditing(hit.id, { selectAll: true })
@@ -852,7 +845,8 @@ export class SelectTool implements Tool {
   }
 
   // 動かし終えたノードを、中心の下にあるフレームの子にする（フレームの外に出したら Canvas に戻す）。
-  // group の中のノードは、group から勝手に出さない
+  // group の中のノードは、group から勝手に出さない。
+  // slide-layout の中のノードは、同じスライドの中で動かしただけなら、そのまま slide-layout に残す
   private dropIntoFrames(tx: Transaction<WorkspaceRecord>, ids: string[]): void {
     const editor = this.ctx.editor
     const moving = new Set(ids)
@@ -865,7 +859,7 @@ export class SelectTool implements Tool {
       if (parent && editor.isContainer(parent, 'group')) continue
       const center = { x: entry.worldBounds.x + entry.worldBounds.w / 2, y: entry.worldBounds.y + entry.worldBounds.h / 2 }
       const target = editor.frameAt(center, moving) ?? editor.canvasId
-      if (target === node.parentId) continue
+      if (target === editor.placementParent(node.parentId)) continue
       byParent.set(target, [...(byParent.get(target) ?? []), id])
     }
     for (const [parentId, members] of byParent) editor.reparent(tx, members, parentId)
@@ -1117,6 +1111,8 @@ export class FrameTool implements Tool {
       const inside = editor.index.childrenOf(creating.parentId).filter((id) => {
         if (id === creating.node.id) return false
         const entry = editor.index.get(id)
+        // slide-layout はスライドから離さない
+        if (entry && editor.isContainer(entry.node, 'layout')) return false
         return entry && !entry.node.locked && containsBox(frameEntry.worldBounds, entry.worldBounds)
       })
       editor.reparent(creating.tx, inside, creating.node.id)

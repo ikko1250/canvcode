@@ -1,9 +1,8 @@
 /**
- * スライド幾何の単一ソース。
+ * スライド幾何の単一ソース（v1 のスライドエンジンから残したもの）。
  *
- * - CSS（styles/slide.css）はここから生成したカスタムプロパティ（cssTokens）を参照する。
- * - ブラウザ描画（src/browser/renderer.ts）は computeSlideGeometry の結果をインラインスタイルで適用する。
- * - 行容量 lint（slide-row-capacity.ts）は getLayoutProfile から寸法を得る。
+ * - スライド v2 の幾何（canvas/canvas-slide-layout.ts）とテーマ（canvas/canvas-slide-theme.ts）は、ここの値と computeSlideGeometry から作る。
+ * - 行の容量の規則（slide-row-capacity.ts）は getLayoutProfile から寸法を得る。
  *
  * 行数は列挙ではなく計算で扱う。承認済みのピクセル値（rows=2/3/4、table-images rows=1/2）は
  * 計算式と compactOverrides で再現し、それ以外の行数は同じ式から導出する。
@@ -512,79 +511,5 @@ export function getLayoutProfile(
     budgetPx: grid.budgetPx,
     labelTypography: LABEL_TYPOGRAPHY,
     bodyTypography: BODY_TYPOGRAPHY,
-  };
-}
-
-function px(value: number): string {
-  return `${value}px`;
-}
-
-/** styles/slide.css が参照する CSS カスタムプロパティ */
-export function cssTokens(): Record<string, string> {
-  return {
-    "--slide-width": px(SLIDE_WIDTH),
-    "--slide-height": px(SLIDE_HEIGHT),
-    "--font-family": FONT_FAMILY,
-    "--code-font-family": CODE_FONT_FAMILY,
-    "--panel": COLORS.panel,
-    "--paper": COLORS.paper,
-    "--cream-a": COLORS.creamA,
-    "--cream-b": COLORS.creamB,
-    "--ink": COLORS.ink,
-    "--figure-border": COLORS.figureBorder,
-    "--title-font-size": px(TITLE_TYPOGRAPHY.fontSize),
-    "--title-line-height": String(TITLE_TYPOGRAPHY.lineHeight),
-    "--title-letter-spacing": `${TITLE_TYPOGRAPHY.letterSpacingEm}em`,
-    "--label-font-size": px(LABEL_TYPOGRAPHY.fontSize),
-    "--label-line-height": String(LABEL_TYPOGRAPHY.lineHeight),
-    "--label-padding": `${px(LABEL_TYPOGRAPHY.padV)} ${px(LABEL_TYPOGRAPHY.padH)}`,
-    "--label-letter-spacing": `${LABEL_TYPOGRAPHY.letterSpacingEm}em`,
-    "--body-font-size": px(BODY_TYPOGRAPHY.fontSize),
-    "--body-line-height": String(BODY_TYPOGRAPHY.lineHeight),
-    "--body-padding": `${px(BODY_TYPOGRAPHY.padV)} ${px(BODY_TYPOGRAPHY.padH)}`,
-    "--body-letter-spacing": `${BODY_TYPOGRAPHY.letterSpacingEm}em`,
-    "--code-font-size": px(CODE_TYPOGRAPHY.fontSize),
-    "--code-line-height": String(CODE_TYPOGRAPHY.lineHeight),
-    "--content-left": px(TABLE_SPEC.left),
-    "--content-width": px(TABLE_SPEC.width),
-    "--table-panel-padding": `${px(TABLE_SPEC.padding.top)} ${px(TABLE_SPEC.padding.x)} ${px(TABLE_SPEC.padding.bottom)}`,
-    "--table-label-width": px(TABLE_SPEC.labelWidthPx),
-    "--table-column-gap": px(TABLE_SPEC.columnGapPx),
-    "--mixed-top": px(TABLE_IMAGE_SPEC.top),
-    "--mixed-height": px(TABLE_IMAGE_SPEC.height),
-    "--mixed-table-width": px(TABLE_IMAGE_SPEC.tableWidth),
-    "--mixed-column-gap": px(TABLE_IMAGE_SPEC.columnGap),
-    "--mixed-figure-width": px(TABLE_IMAGE_SPEC.figureWidth),
-    "--mixed-panel-padding": px(TABLE_IMAGE_SPEC.panelPadding),
-    "--mixed-label-width": px(TABLE_IMAGE_SPEC.labelWidthPx),
-    "--mixed-row-column-gap": px(TABLE_IMAGE_SPEC.rowColumnGapPx),
-    "--figure-padding": px(TABLE_IMAGE_SPEC.figurePadding),
-    "--figure-radius": px(TABLE_IMAGE_SPEC.figureBorderRadius),
-    "--table-images-top": px(TABLE_IMAGES_SPEC.top),
-    "--table-images-height": px(TABLE_IMAGES_SPEC.height),
-    "--table-images-panel-padding": `${px(TABLE_IMAGES_SPEC.padding.top)} ${px(TABLE_IMAGES_SPEC.padding.x)} ${px(TABLE_IMAGES_SPEC.padding.bottom)}`,
-    "--table-images-figures-gap": px(TABLE_IMAGES_SPEC.figuresGap),
-    "--table-images-figure-column-width": px(TABLE_IMAGES_SPEC.figureColumnWidth),
-    "--table-images-figure-title-font-size": px(TABLE_IMAGES_SPEC.figureTitle.fontSize),
-    "--table-images-figure-title-line-height": String(TABLE_IMAGES_SPEC.figureTitle.lineHeight),
-    "--table-images-figure-title-gap": px(TABLE_IMAGES_SPEC.figureTitle.gap),
-    "--cover-text-padding-x": px(TITLE_SPEC.textPaddingX),
-    "--cover-title-font-size": px(TITLE_SPEC.title.fontSize),
-    "--cover-title-line-height": String(TITLE_SPEC.title.lineHeight),
-    "--cover-title-letter-spacing": `${TITLE_SPEC.title.letterSpacingEm}em`,
-    "--cover-subtitle-font-size": px(TITLE_SPEC.subtitle.fontSize),
-    "--cover-subtitle-line-height": String(TITLE_SPEC.subtitle.lineHeight),
-    "--cover-subtitle-gap": px(TITLE_SPEC.subtitle.gap),
-    "--cover-credits-font-size": px(TITLE_SPEC.credits.fontSize),
-    "--cover-credits-line-height": String(TITLE_SPEC.credits.lineHeight),
-    "--cover-credits-padding-x": px(TITLE_SPEC.credits.paddingX),
-    "--bullet-l2-font-size": px(bulletLevelSpec(1).fontSize),
-    "--bullet-l2-line-height": String(bulletLevelSpec(1).lineHeight),
-    "--bullet-l2-indent": px(bulletLevelSpec(1).indentPx),
-    "--bullet-l2-marker": JSON.stringify(bulletLevelSpec(1).marker),
-    "--bullet-l3-font-size": px(bulletLevelSpec(2).fontSize),
-    "--bullet-l3-line-height": String(bulletLevelSpec(2).lineHeight),
-    "--bullet-l3-indent": px(bulletLevelSpec(2).indentPx),
-    "--bullet-l3-marker": JSON.stringify(bulletLevelSpec(2).marker),
   };
 }

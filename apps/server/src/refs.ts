@@ -148,12 +148,16 @@ export interface DescribedNode {
   text?: string
   label?: string
   name?: string
+  // スライド（スライド v2）の縦横比と、書き出しから外しているか
+  ratio?: string
+  hidden?: true
+  // スライドの中身の並べ方（slide-layout）
+  layout?: string
   memo?: string
   quote?: string
   file?: FileSummary & { id: string }
   target?: { id: string; title?: string }
   page?: number
-  slide?: number
   assetId?: string
   color?: string
   size?: number
@@ -388,12 +392,20 @@ async function describeNode(
     case 'frame':
       out.name = str('name')
       break
+    case 'slide':
+      out.name = str('name')
+      out.ratio = str('ratio')
+      if (props.hidden === true) out.hidden = true
+      break
+    // スライドの中身を並べる入れ物（スライド v2）。並べ方の種類だけを渡す（子は children で渡す）
+    case 'slide-layout':
+      out.layout = str('layout')
+      break
     case 'markdown-card':
       out.file = await file()
       if (!out.file) out.text = str('inlineText')
       break
     case 'code-card':
-    case 'slide-deck-card':
       out.file = await file()
       break
     case 'quote-card':
@@ -404,10 +416,6 @@ async function describeNode(
     case 'pdf-page':
       out.file = await file()
       if (typeof props.pageIndex === 'number') out.page = props.pageIndex + 1
-      break
-    case 'slide-page':
-      out.file = await file()
-      if (typeof props.slideIndex === 'number') out.slide = props.slideIndex + 1
       break
     case 'portal': {
       const id = props.targetId
@@ -428,7 +436,7 @@ async function describeNode(
       out.note = hasImage ? DRAW_NOTE : DRAW_NOTE_NO_IMAGE
       break
   }
-  if (type === 'group' || type === 'frame') {
+  if (type === 'group' || type === 'frame' || type === 'slide' || type === 'slide-layout') {
     const children: DescribedNode[] = []
     for (const child of deps.records.childrenOf(record.id)) {
       if (child.typeName !== 'node') continue

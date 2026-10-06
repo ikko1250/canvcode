@@ -5,6 +5,7 @@
   "dependencies": {
     "@canvcode/core": "*",
     "@canvcode/nodes": "*",
+    "@canvcode/slides": "*",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/lang-python": "^6.2.1",

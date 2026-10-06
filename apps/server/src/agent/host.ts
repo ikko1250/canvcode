@@ -1,5 +1,5 @@
 import type { Patch, WorkspaceRecord } from '@canvcode/core'
-import { builtinNodeTypes, createCodeCardType, createSlideDeckCardType, createSlidePageType, type AnyNodeTypeDef } from '@canvcode/nodes'
+import { builtinNodeTypes, createCodeCardType, type AnyNodeTypeDef } from '@canvcode/nodes'
 import { createMarkdownCardType } from '@canvcode/nodes/markdown'
 import { Editor } from '@canvcode/canvas/editor'
 import { Workspace } from '@canvcode/canvas/workspace'
@@ -12,7 +12,7 @@ import type { ChangeListener, SyncHub } from '../sync.ts'
 // - 最初に編集を頼まれたときに RecordStore から作り、使っている間は SyncHub の変更（ブラウザからの保存など）を当て続ける
 // - しばらく（既定 10 分）使わなければ捨てる（次に頼まれたら作り直す）
 // - 文字は測れない（OffscreenCanvas がない）ので、テキストの幅は見積もりになる。AI が作るテキストは幅を決めて折り返す
-// - カード（Markdown・コード・スライドデッキ）の高さは本文を読まないので、レコードに残っている高さを使う
+// - カード（Markdown・コード）の高さは本文を読まないので、レコードに残っている高さを使う
 
 export const HOST_IDLE_MS = 10 * 60_000
 // 同時に持っておく Canvas ごとの Editor の数（空間の索引を持つので、多くは持たない）
@@ -31,15 +31,13 @@ interface HostState {
   unlisten: () => void
 }
 
-// サーバーで使うノードの型。描画と計測に使うものは、何もしないものを渡す
-function serverNodeTypes(): AnyNodeTypeDef[] {
+// サーバーで使うノードの型。描画と計測に使うものは、何もしないものを渡す（v1 のスライドの片付け（slidesV1Cleanup.ts）でも使う）
+export function serverNodeTypes(): AnyNodeTypeDef[] {
   const noFiles = { get: () => null }
   return [
     ...builtinNodeTypes,
     createMarkdownCardType({ embedCss: async () => '', measureCss: '', files: noFiles }) as AnyNodeTypeDef,
     createCodeCardType({ files: noFiles }) as AnyNodeTypeDef,
-    createSlideDeckCardType(noFiles) as AnyNodeTypeDef,
-    createSlidePageType({ load: () => Promise.reject(new Error('no images on the server')) }) as AnyNodeTypeDef,
   ]
 }
 
@@ -70,11 +68,11 @@ export class AgentHost {
     if (this.state) return this.state.workspace
     const loaded = this.records.load()
     const workspace = new Workspace({ rootCanvasId: loaded.rootCanvasId, types: serverNodeTypes() })
-    // ブラウザの SyncClient と同じく、履歴に入れず、フックも通さずに当てる。古い版のノードは今の形にする
+    // ブラウザの SyncClient と同じく、履歴に入れず、フックも通さずに当てる。古い版のノードは今の形にし、知らない型のノードは入れない
     workspace.store.transact(
       'load',
       (tx) => {
-        for (const record of loaded.records as unknown as WorkspaceRecord[]) tx.put(workspace.upgrade(record))
+        for (const record of loaded.records as unknown as WorkspaceRecord[]) if (workspace.accepts(record)) tx.put(workspace.upgrade(record))
       },
       { history: 'ignore', source: 'remote' },
     )
@@ -109,7 +107,7 @@ export class AgentHost {
     workspace.store.transact(
       'remote',
       (tx) => {
-        for (const record of records) tx.put(workspace.upgrade(record))
+        for (const record of records) if (workspace.accepts(record)) tx.put(workspace.upgrade(record))
         for (const id of deleted) tx.remove(id)
       },
       { history: 'ignore', source: 'remote' },

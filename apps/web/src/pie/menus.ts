@@ -1,11 +1,14 @@
 import type { AlignEdge, Axis, PageDirection, ReorderDirection, ToolId } from '@canvcode/canvas'
-import type { TextAlign } from '@canvcode/nodes'
+import type { SlideLayoutKind, SlideRatio, TextAlign } from '@canvcode/nodes'
 import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 
 // パイメニューの中身（MAI-39。以前は画面の下端のツールバーに並べていたもの）。
 // 項目を足すときは、ここに足す。1 つの輪は 8 項目くらいまでにして、多ければサブメニューにまとめる。
-// ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 ›（矩形・楕円・ブロック矢印 ›・円グラフ・フレーム・矢印）/ 文字 › テキスト・タイトル・付箋 / Portal › 空・PDF・Python・Markdown・スライド / Card › Python・Markdown
-// 操作（MAI-57、キー o）：今の選択とキャンバスに応じた項目。項目が 1 つもなければ、メニューそのものを出さない
+// ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 ›（矩形・楕円・ブロック矢印 ›・円グラフ・フレーム・スライド 16:9・スライド 4:3・矢印）/ 文字 › テキスト・タイトル・付箋 / Portal › 空・PDF・Python・Markdown / Card › Python・Markdown
+// 操作（MAI-57、キー o）：今の選択とキャンバスに応じた項目（スライドがあれば「スライドを PDF に出力」も、スライドの表・箇条書きの中なら「行を足す」「行を消す」も、
+// 手で高さを決めた行のセルを選んでいれば「行の高さを自動に戻す」も、
+// 子の無いスライドを 1 つだけ選んでいれば「テンプレート ›」も）。
+// 項目が 1 つもなければ、メニューそのものを出さない
 
 // ツールの名前（並びは以前のツールバーと同じ）
 export const TOOL_LABELS: Record<ToolId, string> = {
@@ -43,7 +46,8 @@ export interface PieMenuContext {
   importPdf(): void
   // Portal › Markdown / Python：新しい File を置いたキャンバスとその Portal を作る（MAI-42）
   createFileCanvas(kind: 'markdown' | 'code'): void
-  createSlideCanvas?(): void
+  // 図形 › スライド 16:9 / 4:3：パイメニューを開いた位置を中心にスライドを置いて選ぶ（スライド v2）
+  placeSlide(ratio: SlideRatio): void
   undo(): void
   redo(): void
   showStats: boolean
@@ -73,9 +77,19 @@ export interface PieMenuContext {
   reorderSelection(direction: ReorderDirection): void
   lockSelection(): void
   duplicateSelection(): void
-  // 選んでいるフレームを、スライドの図にする・その参照（canvas:<id>）をコピーする（提案 B）
-  makeSlideFigure(): void
-  copyFigureReference(): void
+  // 選んでいるスライドの比率を切り替える・非表示にする／表示する（スライド v2）
+  toggleSlideRatio(): void
+  toggleSlidesHidden(): void
+  // 選んでいるスライドの中身（表・箇条書き・表＋画像）に行を足す・選んでいるセルの行を消す（スライド v2）
+  addSlideRow(): void
+  removeSlideRow(): void
+  // 選んでいるセルの行の高さを自動に戻す（手で決めた高さを外す。スライド v2）
+  resetSlideRowHeight(): void
+  // 選んでいるスライド（子が無いもの）にテンプレート（表紙・箇条書き・表・表＋画像）を置く（スライド v2）
+  applySlideTemplate(kind: SlideLayoutKind): void
+  // 今のキャンバスにスライドがあるか（非表示のものも数える）と、スライドを PDF に出力する（スライド v2）
+  hasSlides: boolean
+  exportSlidesPdf(): void
 }
 
 export interface PdfMenuContext {
@@ -97,8 +111,14 @@ export interface SelectionMenuContext {
   reorderCount: number
   // テキストか付箋を選んでいるか
   hasText: boolean
-  // フレームを 1 つだけ選んでいるか
-  frame: boolean
+  // 選んでいるスライドの数と、それが全部非表示か（スライド v2）
+  slideCount: number
+  slidesHidden: boolean
+  // 表・箇条書き・表＋画像の slide-layout の中（またはそのスライド）を選んでいれば、選んでいるセルの行を消せるか・
+  // その行が手で決めた高さを持つか。そうでなければ null（スライド v2）
+  slideRows: { canRemove: boolean; manualHeight?: boolean } | null
+  // スライドを 1 つだけ選んでいて、そのスライドに子が無いか。テンプレートを置ける（スライド v2）
+  slideTemplate: boolean
 }
 
 const ALIGN_EDGES: [AlignEdge, string][] = [
@@ -117,6 +137,13 @@ const REORDERS: [ReorderDirection, string][] = [
   ['back', '最背面'],
 ]
 
+const SLIDE_TEMPLATES: [SlideLayoutKind, string][] = [
+  ['title', '表紙'],
+  ['bullets', '箇条書き'],
+  ['table', '表'],
+  ['table-image', '表＋画像'],
+]
+
 const TEXT_ALIGNS: [TextAlign, string][] = [
   ['left', '左'],
   ['center', '中央'],
@@ -124,7 +151,11 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 ]
 
 // 操作のメニューの項目（MAI-57）。出す必要のないものは入れない。
-// ページの項目（最大 4 つ）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる
+// ページの項目（最大 4 つ）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる。
+// スライドの項目（選んでいるスライドの 2 つと、子の無いスライドを 1 つだけ選んでいるときの「テンプレート ›」、
+// 行を持つスライドの中身を選んでいるときの「行を足す」「行を消す」「行の高さを自動に戻す」、キャンバスにスライドがあるときの「スライドを PDF に出力」）を足して
+// 8 つを超えるときは、まず文字の項目（3 つ）を「文字 ›」にまとめ、まだ超えるならスライドの項目を「スライド ›」にまとめる
+// （まとめれば選択の項目は 8 つに収まる）
 function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   const { pdf, selection } = ctx
   const pages: PieEntry[] = []
@@ -134,12 +165,13 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
     if (!pdf.noneLocked) pages.push({ label: 'ページをすべて選ぶ（固定を外す）', onSelect: ctx.unlockAndSelectPdfPages })
     if (!pdf.allLocked) pages.push({ label: 'ページを固定する', onSelect: ctx.lockPdfPages })
   }
-  const items: PieEntry[] = []
+  const text: PieEntry[] = []
   if (selection.hasText) {
-    items.push({ label: '文字を大きく', onSelect: () => ctx.stepFontSize(1) })
-    items.push({ label: '文字を小さく', onSelect: () => ctx.stepFontSize(-1) })
-    items.push({ label: '揃え', items: TEXT_ALIGNS.map(([align, label]) => ({ label, onSelect: () => ctx.setTextAlign(align) })) })
+    text.push({ label: '文字を大きく', onSelect: () => ctx.stepFontSize(1) })
+    text.push({ label: '文字を小さく', onSelect: () => ctx.stepFontSize(-1) })
+    text.push({ label: '揃え', items: TEXT_ALIGNS.map(([align, label]) => ({ label, onSelect: () => ctx.setTextAlign(align) })) })
   }
+  const items: PieEntry[] = []
   if (selection.arrangeCount >= 2) {
     items.push({ label: '整列', items: ALIGN_EDGES.map(([edge, label]) => ({ label, onSelect: () => ctx.alignSelection(edge) })) })
   }
@@ -159,10 +191,25 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
     items.push({ label: '固定する', onSelect: ctx.lockSelection })
     items.push({ label: '複製', onSelect: ctx.duplicateSelection })
   }
-  if (selection.frame) {
-    items.push({ label: 'スライドの図にする…', onSelect: ctx.makeSlideFigure })
-    items.push({ label: '図の参照をコピー', onSelect: ctx.copyFigureReference })
+  const slides: PieEntry[] = []
+  if (selection.slideCount >= 1) {
+    slides.push({ label: '比率を切り替え', onSelect: ctx.toggleSlideRatio })
+    slides.push({ label: selection.slidesHidden ? '表示する' : '非表示にする', onSelect: ctx.toggleSlidesHidden })
   }
+  // テンプレートは子の無いスライドにだけ置けるので、行の項目（中身のあるスライド）とは一緒に出ない
+  if (selection.slideTemplate) {
+    slides.push({ label: 'テンプレート', items: SLIDE_TEMPLATES.map(([kind, label]) => ({ label, onSelect: () => ctx.applySlideTemplate(kind) })) })
+  }
+  if (selection.slideRows) {
+    slides.push({ label: '行を足す', onSelect: ctx.addSlideRow })
+    if (selection.slideRows.canRemove) slides.push({ label: '行を消す', onSelect: ctx.removeSlideRow })
+    if (selection.slideRows.manualHeight) slides.push({ label: '行の高さを自動に戻す', onSelect: ctx.resetSlideRowHeight })
+  }
+  if (ctx.hasSlides) slides.push({ label: 'スライドを PDF に出力', onSelect: ctx.exportSlidesPdf })
+  const foldText = text.length > 0 && text.length + items.length + slides.length > 8
+  const foldSlides = slides.length > 1 && (foldText ? 1 : text.length) + items.length + slides.length > 8
+  items.unshift(...(foldText ? [{ label: '文字', items: text }] : text))
+  items.push(...(foldSlides ? [{ label: 'スライド', items: slides }] : slides))
   if (pages.length === 0) return items
   return pages.length + items.length <= 8 ? [...pages, ...items] : [{ label: 'ページ', items: pages }, ...items]
 }
@@ -183,7 +230,16 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
         tool('eraser'),
         {
           label: '図形',
-          items: [tool('rect'), tool('ellipse'), group('ブロック矢印', ['blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']), tool('pieChart'), tool('frame'), tool('arrow')],
+          items: [
+            tool('rect'),
+            tool('ellipse'),
+            group('ブロック矢印', ['blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']),
+            tool('pieChart'),
+            tool('frame'),
+            { label: 'スライド 16:9', onSelect: () => ctx.placeSlide('16:9') },
+            { label: 'スライド 4:3', onSelect: () => ctx.placeSlide('4:3') },
+            tool('arrow'),
+          ],
         },
         group('文字', ['text', 'title', 'note']),
         {
@@ -193,7 +249,6 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
             { label: 'PDF', onSelect: ctx.importPdf },
             { label: 'Python', onSelect: () => ctx.createFileCanvas('code') },
             { label: 'Markdown', onSelect: () => ctx.createFileCanvas('markdown') },
-            ...(ctx.createSlideCanvas ? [{ label: 'スライド', onSelect: ctx.createSlideCanvas }] : []),
           ],
         },
         group('Card', ['code', 'markdown']),

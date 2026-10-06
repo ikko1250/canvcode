@@ -2,7 +2,7 @@ import { ARROW_COLORS, GEO_DEFAULT_FILL, NOTE_TEXT_COLOR } from '@canvcode/nodes
 import { COLORS as SLIDE_COLORS } from '@canvcode/slides/core/slide-layout-spec'
 
 // カラーピッカーの「テンプレートの色」（MAI-81）。
-// - スライド：スライドのテーマ色（packages/slides の slide-layout-spec.ts の COLORS。スライドの図にするフレームの色をそろえるため）
+// - スライド：スライドのテーマ色（packages/slides の slide-layout-spec.ts の COLORS。スライドに置く図の色をそろえるため）
 // - キャンバス：アプリの標準の色（ペン・矢印の 5 色と、図形・付箋の既定の色、それに合う淡い色）
 
 export interface ColorPreset {

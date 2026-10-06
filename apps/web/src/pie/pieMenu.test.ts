@@ -189,6 +189,7 @@ describe('buildPieMenus', () => {
     setTool: vi.fn(),
     importPdf: vi.fn(),
     createFileCanvas: vi.fn(),
+    placeSlide: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     showStats: true,
@@ -204,7 +205,7 @@ describe('buildPieMenus', () => {
     markdownCardCount: 20,
     // 操作のメニュー（MAI-57）は menus.test.ts で確かめる。ここでは出さない
     pdf: { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true },
-    selection: { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, frame: false },
+    selection: { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false },
     panToPage: vi.fn(),
     unlockAndSelectPdfPages: vi.fn(),
     lockPdfPages: vi.fn(),
@@ -215,14 +216,62 @@ describe('buildPieMenus', () => {
     reorderSelection: vi.fn(),
     lockSelection: vi.fn(),
     duplicateSelection: vi.fn(),
-    makeSlideFigure: vi.fn(),
-    copyFigureReference: vi.fn(),
+    toggleSlideRatio: vi.fn(),
+    toggleSlidesHidden: vi.fn(),
+    addSlideRow: vi.fn(),
+    removeSlideRow: vi.fn(),
+    resetSlideRowHeight: vi.fn(),
+    applySlideTemplate: vi.fn(),
+    hasSlides: false,
+    exportSlidesPdf: vi.fn(),
   })
   const flatten = (items: PieEntry[]): PieEntry[] => items.flatMap((e) => (isSubmenu(e) ? flatten(e.items) : [e]))
 
   it('opens the tools menu with "a" and the others with ".", and has no actions menu when nothing applies', () => {
     const menus = buildPieMenus(context())
     expect(menus.map((m) => m.key)).toEqual(['a', '.'])
+  })
+
+  it('adds the actions menu with "o" to export the slides to PDF when the canvas has slides (slides v2)', () => {
+    const ctx = { ...context(), hasSlides: true }
+    const menus = buildPieMenus(ctx)
+    expect(menus.map((m) => m.key)).toEqual(['a', '.', 'o'])
+    const leaf = menus[2].items.find((e) => e.label === 'スライドを PDF に出力')
+    expect(leaf && !isSubmenu(leaf)).toBe(true)
+    if (leaf && !isSubmenu(leaf)) leaf.onSelect()
+    expect(ctx.exportSlidesPdf).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds the actions menu with "o" to add and remove a row of the slide contents (slides v2)', () => {
+    const base = context()
+    const ctx = { ...base, selection: { ...base.selection, count: 1, slideRows: { canRemove: true } } }
+    const menus = buildPieMenus(ctx)
+    expect(menus.map((m) => m.key)).toEqual(['a', '.', 'o'])
+    const leaves = flatten(menus[2].items)
+    for (const label of ['行を足す', '行を消す']) {
+      const leaf = leaves.find((e) => e.label === label)
+      if (leaf && !isSubmenu(leaf)) leaf.onSelect()
+    }
+    expect(ctx.addSlideRow).toHaveBeenCalledTimes(1)
+    expect(ctx.removeSlideRow).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds the actions menu with "o" to apply a template to an empty slide (slides v2)', () => {
+    const base = context()
+    const ctx = { ...base, selection: { ...base.selection, count: 1, slideCount: 1, slideTemplate: true } }
+    const menus = buildPieMenus(ctx)
+    expect(menus.map((m) => m.key)).toEqual(['a', '.', 'o'])
+    const templates = menus[2].items.find((e) => e.label === 'テンプレート')
+    expect(templates && isSubmenu(templates) ? templates.items.map((e) => e.label) : []).toEqual(['表紙', '箇条書き', '表', '表＋画像'])
+    const table = flatten(menus[2].items).find((e) => e.label === '表')
+    if (table && !isSubmenu(table)) table.onSelect()
+    expect(ctx.applySlideTemplate).toHaveBeenCalledWith('table')
+    // 子のあるスライドを選んでいれば出さない
+    const filled = buildPieMenus({ ...base, selection: { ...base.selection, count: 1, slideCount: 1 } })
+    expect(flatten(filled[2].items).map((e) => e.label)).not.toContain('表')
+    // どの輪も 8 項目以下
+    const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
+    for (const menu of menus) for (const size of rings(menu.items)) expect(size).toBeLessThanOrEqual(8)
   })
 
   it('has every tool once in the tools menu, and no ring with more than 8 items', () => {
@@ -243,7 +292,7 @@ describe('buildPieMenus', () => {
       const entry = tools.items.find((e) => e.label === label)!
       return isSubmenu(entry) ? entry.items : []
     }
-    expect(labels(sub('図形'))).toEqual(['矩形', '楕円', 'ブロック矢印', '円グラフ', 'フレーム', '矢印'])
+    expect(labels(sub('図形'))).toEqual(['矩形', '楕円', 'ブロック矢印', '円グラフ', 'フレーム', 'スライド 16:9', 'スライド 4:3', '矢印'])
     // ブロック矢印（MAI-87）は 図形 › ブロック矢印 › の中
     const blockArrows = sub('図形').find((e) => e.label === 'ブロック矢印')!
     expect(isSubmenu(blockArrows) ? labels(blockArrows.items) : []).toEqual(['右向き', '両向き', '曲がった矢印', 'シェブロン'])
@@ -273,6 +322,22 @@ describe('buildPieMenus', () => {
     leafIn('Card', 'Markdown')!.onSelect()
     expect(ctx.setTool).toHaveBeenLastCalledWith('markdown')
     expect(ctx.createFileCanvas).toHaveBeenCalledTimes(2)
+  })
+
+  it('places a 16:9 or 4:3 slide from the shapes group (slides v2)', () => {
+    const ctx = context()
+    const [tools] = buildPieMenus(ctx)
+    const shapes = tools.items.find((e) => e.label === '図形')!
+    const leafIn = (label: string) => {
+      const leaf = isSubmenu(shapes) ? shapes.items.find((e) => e.label === label) : undefined
+      return leaf && !isSubmenu(leaf) ? leaf : undefined
+    }
+    leafIn('スライド 16:9')!.onSelect()
+    expect(ctx.placeSlide).toHaveBeenLastCalledWith('16:9')
+    leafIn('スライド 4:3')!.onSelect()
+    expect(ctx.placeSlide).toHaveBeenLastCalledWith('4:3')
+    // ツールは変えない
+    expect(ctx.setTool).not.toHaveBeenCalled()
   })
 
   it('marks the current tool and switches tools', () => {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NodeRecord, WorkspaceRecord } from '@canvcode/core'
 import { richTextFromPlain, type TextProps } from '@canvcode/nodes'
+import { Editor } from './editor.ts'
 import { SyncClient } from './sync.ts'
 import { Workspace } from './workspace.ts'
 
@@ -24,6 +25,21 @@ describe('sync', () => {
     expect((workspace.store.get('node:note') as NodeRecord<TextProps>).props.paragraphs).toEqual(richTextFromPlain('memo'))
     // 読み込んだだけでは送り返さない（次に変えたときに新しい版で保存される）
     expect(sync.pending).toBe(false)
+    sync.dispose()
+  })
+
+  it('skips nodes of types it does not know (removed types, such as the v1 slides), and still builds the index', () => {
+    vi.stubGlobal('WebSocket', undefined)
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const base = { typeName: 'node' as const, parentId: 'canvas:root', x: 0, y: 0, rotation: 0, index: 'a0', opacity: 1, locked: false, meta: {} }
+    const records: WorkspaceRecord[] = [
+      { ...base, id: 'node:old', type: 'slide-page', props: { fileId: 'file:deck', w: 640, h: 360 } },
+      { ...base, id: 'node:note', type: 'note', index: 'a1', version: 2, props: { paragraphs: richTextFromPlain('memo'), w: 220, h: 200, color: '#fff3bf', fontSize: 12, align: 'left' } },
+    ]
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records })
+    expect(workspace.getNode('node:old')).toBeUndefined()
+    expect(workspace.getNode('node:note')).toBeDefined()
+    expect(new Editor({ workspace, canvasId: 'canvas:root' }).index.allIds()).toEqual(['node:note'])
     sync.dispose()
   })
 

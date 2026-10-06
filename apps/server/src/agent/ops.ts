@@ -13,10 +13,13 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { GEO_SHAPES, richTextFromPlain, solidPaint } from '@canvcode/nodes'
+import { GEO_SHAPES, richTextFromPlain, slotsOf, solidPaint, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { nodeIn, type Editor } from '@canvcode/canvas/editor'
+import { presentRows } from '@canvcode/canvas/slideLayoutArrange'
+import { hasSlideLayoutRows, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
 import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspace'
 import { z } from 'zod'
 import type { AgentOpEntry, StoredRecord } from '../records.ts'
@@ -32,6 +35,8 @@ import type { AgentHost } from './host.ts'
 // - 座標はワールド座標（read_canvas と同じ）。group / frame の中のノードは、親のローカル座標に直して書く
 // - ツールの入力のスキーマは小さく保ち（毎回 AI に渡る）、操作ごとの細かい形はここで確かめる
 // - 位置を決めずに作ったノードは、ユーザーが見ている範囲（viewport）があれば、その中心の近くの空いた所に置く
+// - スライド（スライド v2）のテンプレート・行は、画面の操作と同じ Editor の関数（putSlideTemplate・putSlideLayoutRow）で書き、
+//   commit の直前に Editor のコミットフックで slide-layout の子を並べ直す（arrangeSlideLayoutsOnCommit）。文字の高さは見積もり
 
 export const MAX_OPS = 500
 // 位置を決めずに作ったノードを、Canvas の中身の右に置くときの間隔
@@ -45,9 +50,10 @@ const TEXT_DEFAULT_WIDTH = 240
 const MAX_LABEL = 80
 const MAX_LISTED_IDS = 10
 
-// 作れる型（矢印は connect で作る）。card は File の種類から型を決める
-const CREATABLE = ['text', 'note', 'geo', 'frame', 'card', 'markdown-card', 'code-card', 'slide-deck-card'] as const
-const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', slides: 'slide-deck-card' }
+// 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る
+const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card'] as const
+const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image'] as const satisfies readonly SlideLayoutKind[]
+const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
 
 export class EditError extends Error {}
 
@@ -77,6 +83,8 @@ const style = {
   cornerRadius: finite.min(0).optional(),
   w: finite.positive().optional(),
   h: finite.positive().optional(),
+  ratio: z.enum(['16:9', '4:3']).optional(),
+  hidden: z.boolean().optional(),
   props: z.record(z.string(), z.unknown()).optional(),
 }
 const position = { x: finite.optional(), y: finite.optional(), place: place.optional() }
@@ -89,10 +97,21 @@ const opSchemas = {
     parent: id.optional(),
     file: id.optional(),
     rotation: finite.optional(),
+    template: z.enum(SLIDE_TEMPLATES).optional(),
     ...position,
     ...style,
   }),
-  update: z.strictObject({ op: z.literal('update'), id, rotation: finite.optional(), locked: z.boolean().optional(), opacity: finite.min(0).max(1).optional(), x: finite.optional(), y: finite.optional(), ...style }),
+  update: z.strictObject({
+    op: z.literal('update'),
+    id,
+    rotation: finite.optional(),
+    locked: z.boolean().optional(),
+    opacity: finite.min(0).max(1).optional(),
+    x: finite.optional(),
+    y: finite.optional(),
+    template: z.enum(SLIDE_TEMPLATES).optional(),
+    ...style,
+  }),
   move: z.strictObject({ op: z.literal('move'), ids, dx: finite.optional(), dy: finite.optional(), ...position }),
   delete: z.strictObject({ op: z.literal('delete'), ids, documents: z.enum(['trash', 'unplace']).optional() }),
   group: z.strictObject({ op: z.literal('group'), ids: z.array(id).min(2), as: z.string().optional() }),
@@ -110,6 +129,10 @@ const opSchemas = {
   align: z.strictObject({ op: z.literal('align'), ids: z.array(id).min(2), edge: z.enum(['left', 'hcenter', 'right', 'top', 'vcenter', 'bottom']) }),
   distribute: z.strictObject({ op: z.literal('distribute'), ids: z.array(id).min(2), axis: z.enum(['x', 'y']), gap: finite.min(0).optional() }),
   reparent: z.strictObject({ op: z.literal('reparent'), ids, parent: id }),
+  // スライドの slide-layout に行を足す。slide（スライドか slide-layout）なら最後に、after（行のセル）ならその行の下に足す
+  add_row: z
+    .strictObject({ op: z.literal('add_row'), slide: id.optional(), after: id.optional(), text: z.string().optional(), label: z.string().optional(), as: z.string().optional() })
+    .refine((o) => (o.slide === undefined) !== (o.after === undefined), 'add_row needs exactly one of slide, after'),
 }
 
 type OpName = keyof typeof opSchemas
@@ -166,6 +189,8 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const label = request.label?.trim() || summarize(request.ops)
   const meta: HistoryMeta = { selectionBefore: [] }
   const tx = workspace.store.begin(label, { scope: canvas.id, history: 'ignore', source: 'user', meta })
+  // 画面の操作と同じく、commit の直前に slide-layout の子を並べ直す
+  editor.arrangeSlideLayoutsOnCommit(tx)
   const run = new EditRun(host, editor, tx, meta, request.viewport)
   let patch: Patch<WorkspaceRecord>
   try {
@@ -185,6 +210,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
     if (!tx.isDone) tx.cancel()
     throw error
   }
+  run.warnings.push(...overflowWarnings(editor, patch))
 
   // 保存するのは、db の今の値から本当に変わったものだけ（前の値は db のものを残す。Undo で戻す値）
   const records = host.records
@@ -247,6 +273,23 @@ export function undoCanvasEdit(host: AgentHost, batchId: string): { rev: number;
   if (host.sync) host.sync.broadcast(rev, puts, { origin: { kind: 'ai-undo', batchId: op.id, label: op.label, canvasId: op.canvasId } }, { deleted })
   else host.applyRemote(puts as unknown as WorkspaceRecord[], deleted)
   return { rev, restored: op.patch.length }
+}
+
+// 変えたスライド（中身を変えたものも）のうち、文字があふれている・並べられなかった行があるものの警告
+function overflowWarnings(editor: Editor, patch: Patch<WorkspaceRecord>): string[] {
+  const overflows = editor.slideOverflows()
+  if (overflows.size === 0) return []
+  const touched = new Set<string>()
+  for (const id of patch.keys()) {
+    if (!editor.index.get(id)) continue
+    touched.add(id)
+    for (const ancestor of editor.index.ancestorsOf(id)) touched.add(ancestor)
+  }
+  return [...overflows].flatMap(([slideId, { nodes, extraRows }]) => {
+    if (!touched.has(slideId)) return []
+    const parts = [nodes.length ? `text does not fit in ${listIds(nodes)}` : '', extraRows ? `${extraRows} row(s) over the limit are not placed` : '']
+    return [`slide ${slideId} overflows: ${parts.filter(Boolean).join('; ')}`]
+  })
 }
 
 function countNodes(entries: AgentOpEntry[]): EditResult['counts'] {
@@ -322,6 +365,8 @@ class EditRun {
         return this.arrange(op.ids, (boxes) => (op.gap === undefined ? distributeBoxes(boxes, op.axis) : spaceBoxes(boxes, op.axis, op.gap)))
       case 'reparent':
         return this.reparent(op)
+      case 'add_row':
+        return this.addRow(op, i)
     }
   }
 
@@ -345,12 +390,15 @@ class EditRun {
     let props = applyStyle(type, def.defaultProps() as Record<string, unknown>, op, true)
     if (file) props = { ...props, fileId: file.id, role: file.ownerNodeId === null ? 'owner' : 'shortcut' }
     if (op.as !== undefined && this.refs.has(op.as)) throw new EditError(`"as": "${op.as}" is already used`)
+    if (op.template !== undefined && type !== 'slide') throw new EditError('template is only for slides')
+    if (op.rotation && (def.canRotate === false || def.container === 'group')) throw new EditError(`${type} cannot be rotated`)
     const node = this.editor.makeNode(type, { x: 0, y: 0, parentId, props })
     this.tx.put(node)
     this.tx.flush()
     if (op.rotation) this.rotate(node.id, op.rotation)
     const target = this.targetTopLeft(node.id, op, parentId)
     this.translateTo(node.id, target.point, target.aabb)
+    if (op.template !== undefined) this.applyTemplate(node.id, op.template)
     this.remember(node.id, op.as, i)
   }
 
@@ -374,7 +422,13 @@ class EditRun {
     if (op.opacity !== undefined) next.opacity = op.opacity
     if (op.locked === true) next.locked = true
     this.tx.put(next)
+    // スライドの比率を変えたら、中の slide-layout の大きさも合わせる（画面の比率の切り替えと同じ）
+    if (node.type === 'slide' && op.ratio !== undefined) this.editor.putSlideRatio(this.tx, nodeId, op.ratio as SlideRatio)
     this.tx.flush()
+    if (op.template !== undefined) {
+      if (node.type !== 'slide') throw new EditError('template is only for slides')
+      this.applyTemplate(nodeId, op.template)
+    }
     if (op.rotation !== undefined) {
       if (def.canRotate === false || def.container === 'group') throw new EditError(`${node.type} cannot be rotated`)
       this.rotate(nodeId, op.rotation)
@@ -493,6 +547,57 @@ class EditRun {
       if (this.editor.isAncestorOrSelf(nodeId, parentId)) throw new EditError(`cannot put ${nodeId} inside itself`)
     }
     this.editor.reparent(this.tx, list, parentId)
+  }
+
+  // ---- スライド ----
+
+  // 子の無いスライドに、テンプレートの slide-layout と子を置く（画面の applySlideTemplate と同じ。並べ直しは commit の直前）
+  private applyTemplate(slideId: string, kind: SlideLayoutKind): void {
+    if (this.editor.index.childrenOf(slideId).length > 0) throw new EditError(`${slideId} already has contents; a template needs an empty slide`)
+    this.editor.putSlideTemplate(this.tx, slideId, kind)
+    this.tx.flush()
+  }
+
+  // slide-layout に行を足す（画面の addSlideLayoutRow と同じく、隣の行のセルの書式を写す）。text / label で文字も書く。
+  // as は本文の子の名前（見出しの子は created の "<as>:label"）
+  private addRow(op: Extract<Op, { op: 'add_row' }>, i: number): void {
+    const ref = this.node((op.slide ?? op.after)!)
+    let layout = nodeIn(this.tx, ref)!
+    if (op.after !== undefined || layout.type === 'slide') {
+      const parentId = op.after !== undefined ? layout.parentId : layout.id
+      const found =
+        op.after !== undefined
+          ? nodeIn(this.tx, parentId)
+          : this.editor.index.childrenOf(parentId).map((id) => nodeIn(this.tx, id)).find((child) => child?.type === 'slide-layout')
+      if (found?.type !== 'slide-layout') {
+        throw new EditError(op.after !== undefined ? `${ref} is not a cell of a slide layout` : `${ref} has no template (apply one with "template")`)
+      }
+      layout = found
+    } else if (layout.type !== 'slide-layout') {
+      throw new EditError(`${ref} is not a slide`)
+    }
+    if (layout.locked) throw new EditError(`${layout.id} is locked`)
+    const props = layout.props as Record<string, unknown>
+    if (!hasSlideLayoutRows(props.layout)) throw new EditError(`a ${String(props.layout)} slide has no rows`)
+    const rows = presentRows(slotsOf(props.slots), (id) => nodeIn(this.tx, id)?.parentId === layout.id)
+    const max = getMaxRowCount(props.layout)
+    if (rows.length >= max) throw new EditError(`a ${props.layout} slide has at most ${max} rows`)
+    if (rows.length === 0) throw new EditError(`${layout.id} has no row to copy`)
+    let at = rows.length - 1
+    if (op.after !== undefined) {
+      at = slideLayoutRowOf(rows, ref)
+      if (at < 0) throw new EditError(`${ref} is not a cell of a row`)
+    }
+    const added = this.editor.putSlideLayoutRow(this.tx, layout.id, at)
+    if (op.label !== undefined && !added.label) throw new EditError(`a ${props.layout} slide has no row labels`)
+    const write = (cellId: string, text: string) => {
+      const cell = nodeIn(this.tx, cellId)!
+      this.tx.put({ ...cell, props: applyStyle(cell.type, cell.props as Record<string, unknown>, { text }, false) })
+    }
+    if (op.text !== undefined) write(added.body, op.text)
+    if (op.label !== undefined) write(added.label!, op.label)
+    this.remember(added.body, op.as, i)
+    if (added.label) this.created[`${op.as ?? `#${i}`}:label`] = added.label
   }
 
   // ---- 位置 ----
@@ -694,6 +799,8 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
   const align = take<string>('align')
   const shape = take<string>('shape')
   const cornerRadius = take<number>('cornerRadius')
+  const ratio = take<string>('ratio')
+  const hidden = take<boolean>('hidden')
   const w = creating ? take<number>('w') : undefined
   const h = creating ? take<number>('h') : undefined
   const raw = take<Record<string, unknown>>('props')
@@ -750,6 +857,13 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       set('w', w, 'w')
       set('h', h, 'h')
       break
+    // スライドの大きさは比率から決まる（w / h は持たない）
+    case 'slide':
+      if (text !== undefined && name !== undefined) throw new EditError('give either text or name')
+      set('name', text ?? name, text !== undefined ? 'text' : 'name')
+      set('ratio', ratio, 'ratio')
+      set('hidden', hidden, 'hidden')
+      break
     case 'arrow':
       if (text !== undefined && label !== undefined) throw new EditError('give either text or label')
       set('label', text ?? label, text !== undefined ? 'text' : 'label')
@@ -757,7 +871,6 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       break
     case 'markdown-card':
     case 'code-card':
-    case 'slide-deck-card':
       set('w', w, 'w')
       if (h !== undefined) {
         props.sizing = 'fixed'

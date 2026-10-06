@@ -1,14 +1,19 @@
-import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type Vec } from '@canvcode/core'
+import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
+import { slideSize, type SlideRatio } from '@canvcode/nodes'
+import { slideOrder } from '@canvcode/canvas/slideOrder'
+import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
+import { getMaxRowCount } from '@canvcode/slides'
 import type { RecordStore, StoredRecord } from '../records.ts'
 import { describeChart, plainTextOfProps } from '../refs.ts'
 
 // AI に Canvas の上のものを読ませる（MCP の list_canvases・read_canvas・read_nodes）。
 // - 軽さを優先する：1 行 1 ノードの短い文字の一覧（outline）を返し、詳しい props は read_nodes で必要なノードだけ読む
 // - Canvas 1 つを読むときは、parent_id の索引で Canvas の下だけをたどる（ワークスペース全体は読まない）
-// - 座標はワールド座標（親の group / frame の位置と回転を合成する）。整数に丸める
-// - 並びは重なり順（親ごとの fractional index の順。奥から手前）。group / frame の子は親のすぐ後に続く
-// - サーバーはノードの型（@canvcode/nodes）を読み込まないので、props を構造的に読む（refs.ts と同じ）。
+// - 座標はワールド座標（親の group / frame / slide の位置と回転を合成する）。整数に丸める
+// - 並びは重なり順（親ごとの fractional index の順。奥から手前）。group / frame / slide の子は親のすぐ後に続く
+// - サーバーはノードの型の描画や文字の配置を使わないので、props を構造的に読む（refs.ts と同じ。スライドの大きさだけは slideSize を使う）。
 //   文字の配置を測れないので、テキストの幅（autoWidth）と高さ、引用ノートの高さは見積もり（outline では ~ を付ける）
+// - スライドの番号とあふれは、画面と同じ関数（slideOrder・slideLayoutOverflow）で計算する。あふれの文字の幅は Node では概算
 
 export const DEFAULT_LIMIT = 200
 export const MAX_LIMIT = 1000
@@ -172,12 +177,17 @@ function loadItem(
   }
   byId.set(record.id, item)
   flat.push(item)
-  if (type === 'group' || type === 'frame') item.children = loadChildren(records, record.id, item, item.world, depth + 1, byId, flat)
+  if (isContainer(type)) item.children = loadChildren(records, record.id, item, item.world, depth + 1, byId, flat)
   const { box, estimated } = localBox(item)
   item.box = box
   item.estimated = estimated
   item.aabb = boundsOf(item.world, box)
   return item
+}
+
+// 子を持つ型（group・frame・スライド・スライドの中身を並べる slide-layout）
+function isContainer(type: string): boolean {
+  return type === 'group' || type === 'frame' || type === 'slide' || type === 'slide-layout'
 }
 
 function localMatrix(record: StoredRecord): Mat {
@@ -208,6 +218,9 @@ function localBox(item: Item): { box: Box; estimated: boolean } {
       const w = p.autoWidth === false ? num(p.w) : Math.max(fontSize, ...lines.map((line) => textWidth(line, fontSize)))
       return { box: { x: 0, y: 0, w, h: lines.length * fontSize * 1.35 }, estimated: true }
     }
+    // スライドは大きさを props に持たず、縦横比から決める
+    case 'slide':
+      return { box: { x: 0, y: 0, ...slideSize(p.ratio as SlideRatio) }, estimated: false }
     case 'quote-card': {
       const w = num(p.w, 280)
       const chars = typeof p.quote === 'string' ? p.quote.length : 0
@@ -236,8 +249,8 @@ export interface ReadCanvasOptions {
 export class OutlineError extends Error {}
 
 // Canvas のノードを 1 行ずつの一覧にする。
-// - depth（既定 0）までの group / frame の子を字下げして並べ、それより深いものは [N children] にまとめる
-// - query・types・since は depth によらず group / frame の中も探す。親の行がないノードには in=<親の id> を付ける
+// - depth（既定 0）までの group / frame / slide の子を字下げして並べ、それより深いものは [N children] にまとめる
+// - query・types・since は depth によらず group / frame / slide の中も探す。親の行がないノードには in=<親の id> を付ける
 // - rect はワールド座標の外接の箱が重なるもの
 // - since は、その rev より後に変わったノード（矢印のつながりが変わったものも）と、その後に消えたノードの id（deleted=。
 //   消えたものはどの Canvas にあったか分からないので、ワークスペース全体のもの）
@@ -252,6 +265,7 @@ export function readCanvas(records: RecordStore, options: ReadCanvasOptions): st
   const depth = Math.max(0, options.depth ?? 0)
   const tree = loadTree(records, canvas.id)
   const bindings = bindingsByArrow(records, tree)
+  const slides = slideInfos(tree)
   const needle = options.query?.trim().toLowerCase() || undefined
   const types = options.types?.length ? new Set(options.types) : undefined
   const changes = options.since === undefined ? undefined : records.idsChangedSince(options.since)
@@ -292,7 +306,7 @@ export function readCanvas(records: RecordStore, options: ReadCanvasOptions): st
   const printed = new Set<string>()
   for (const item of page) {
     const expanded = !searching && item.depth < depth
-    lines.push(outlineLine(item, { bindings, recordOf, expanded, parentShown: !item.parent || printed.has(item.parent.record.id) }))
+    lines.push(outlineLine(item, { bindings, recordOf, slides, expanded, parentShown: !item.parent || printed.has(item.parent.record.id) }))
     printed.add(item.record.id)
   }
   return lines.join('\n')
@@ -311,6 +325,7 @@ function bindingsByArrow(records: RecordStore, tree: Tree): Map<string, StoredRe
 interface LineContext {
   bindings: Map<string, StoredRecord[]>
   recordOf: (id: string) => StoredRecord | undefined
+  slides: Map<string, SlideInfo>
   expanded: boolean
   parentShown: boolean
 }
@@ -338,24 +353,28 @@ function outlineLine(item: Item, ctx: LineContext): string {
       break
     case 'markdown-card':
     case 'code-card':
-    case 'slide-deck-card':
     case 'quote-card':
     case 'pdf-page':
-    case 'slide-page':
       if (typeof p.fileId === 'string' && p.fileId) parts.push(p.fileId)
       if (type === 'pdf-page' && typeof p.pageIndex === 'number') parts.push(`p=${p.pageIndex + 1}`)
-      if (type === 'slide-page' && typeof p.slideIndex === 'number') parts.push(`s=${p.slideIndex + 1}`)
       break
     case 'chart':
       if (typeof p.kind === 'string') parts.push(p.kind)
       break
+    // 番号（非表示なら hidden）と、文字があふれている・並べられなかった行があるときの overflow
+    case 'slide': {
+      const info = ctx.slides.get(record.id)
+      parts.push(info?.number ? `n=${info.number}` : p.hidden === true ? 'hidden' : '')
+      if (info?.overflow) parts.push('overflow')
+      break
+    }
   }
   const text = lineText(item, ctx.recordOf)
   if (text) parts.push(JSON.stringify(text.length > MAX_LINE_TEXT ? `${text.slice(0, MAX_LINE_TEXT)}…` : text))
   if (record.locked === true) parts.push('locked')
   if (item.parent && !ctx.parentShown) parts.push(`in=${item.parent.record.id}`)
-  if ((type === 'group' || type === 'frame') && !ctx.expanded && item.children.length) parts.push(`[${item.children.length} children]`)
-  return parts.join(' ')
+  if (isContainer(type) && !ctx.expanded && item.children.length) parts.push(`[${item.children.length} children]`)
+  return parts.filter(Boolean).join(' ')
 }
 
 function typeLabel(item: Item): string {
@@ -374,7 +393,10 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
     case 'arrow':
       return str(p.label)
     case 'frame':
+    case 'slide':
       return str(p.name)
+    case 'slide-layout':
+      return str(p.layout)
     case 'quote-card':
       return str(p.quote) || str(p.memo)
     case 'chart':
@@ -385,9 +407,7 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
       if (typeof p.fileId !== 'string' || !p.fileId) return str(p.inlineText)
       return str(recordOf(p.fileId)?.title)
     case 'code-card':
-    case 'slide-deck-card':
     case 'pdf-page':
-    case 'slide-page':
       return typeof p.fileId === 'string' ? str(recordOf(p.fileId)?.title) : ''
     default:
       return ''
@@ -406,6 +426,8 @@ function searchText(item: Item, recordOf: (id: string) => StoredRecord | undefin
 export function readNodes(records: RecordStore, ids: string[]): { nodes: Record<string, unknown>[]; missing?: string[] } {
   const nodes: Record<string, unknown>[] = []
   const missing: string[] = []
+  // スライドの番号とあふれは Canvas ごとに 1 回だけ計算する（スライドを読むときだけ、その Canvas を読む）
+  const slidesOf = new Map<string, Map<string, SlideInfo>>()
   for (const id of ids) {
     const record = records.get(id)
     if (!record || record.typeName !== 'node') {
@@ -427,12 +449,17 @@ export function readNodes(records: RecordStore, ids: string[]): { nodes: Record<
     }
     const item = loadItem(records, record, undefined, world, 0, new Map(), [])
     const bindings = item.type === 'arrow' ? records.bindingsFrom([id]) : []
-    nodes.push(detail(item, canvasId, bindings, records))
+    let slide: SlideInfo | undefined
+    if (item.type === 'slide' && canvasId) {
+      if (!slidesOf.has(canvasId)) slidesOf.set(canvasId, slideInfos(loadTree(records, canvasId)))
+      slide = slidesOf.get(canvasId)!.get(id)
+    }
+    nodes.push(detail(item, canvasId, bindings, records, slide))
   }
   return missing.length ? { nodes, missing } : { nodes }
 }
 
-function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord[], records: RecordStore): Record<string, unknown> {
+function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord[], records: RecordStore, slide?: SlideInfo): Record<string, unknown> {
   const { record, props: p, type } = item
   const origin = applyMat(item.world, { x: item.box.x, y: item.box.y })
   const out: Record<string, unknown> = { id: record.id, type, canvas: canvasId }
@@ -482,7 +509,18 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
     }
     case 'frame':
     case 'group':
+    case 'slide':
+    case 'slide-layout':
       copy('name')
+      if (type === 'slide') {
+        copy('ratio')
+        if (p.hidden === true) out.hidden = true
+        // 番号（非表示なら無い）と、あふれ（文字があふれている子の id・並べられなかった行の数）
+        if (slide?.number) out.number = slide.number
+        if (slide?.overflow) out.overflow = slide.overflow
+      }
+      // 並べる子の役割（子の id）
+      if (type === 'slide-layout') copy('layout', 'slots')
       out.children = item.children.slice(0, MAX_CHILD_IDS).map((child) => child.record.id)
       if (item.children.length > MAX_CHILD_IDS) out.childCount = item.children.length
       break
@@ -496,7 +534,6 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
     }
     case 'markdown-card':
     case 'code-card':
-    case 'slide-deck-card':
       file()
       copy('role', 'sizing')
       if (type === 'markdown-card' && !p.fileId && typeof p.inlineText === 'string') out.text = clip(p.inlineText)
@@ -508,11 +545,6 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
     case 'pdf-page':
       file()
       if (typeof p.pageIndex === 'number') out.page = p.pageIndex + 1
-      break
-    case 'slide-page':
-      file()
-      if (typeof p.slideIndex === 'number') out.slide = p.slideIndex + 1
-      if (p.removed === true) out.removed = true
       break
     case 'image':
       copy('assetId', 'crop')
@@ -531,6 +563,36 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       }
   }
   for (const key of Object.keys(out)) if (out[key] === undefined || out[key] === null) delete out[key]
+  return out
+}
+
+// ---- スライド ----
+
+interface SlideInfo {
+  // 番号（1 から。非表示なら null）
+  number: number | null
+  // 文字があふれている子・並べられなかった行（無ければ null）
+  overflow: SlideOverflow | null
+}
+
+// Canvas のスライドの番号とあふれ（Editor.slideNumbers・slideOverflows と同じ計算）。
+// 番号は group・frame の中のスライドも、ワールドでの外接の箱で数える。あふれはスライドの直下の slide-layout の slots の子を測る
+function slideInfos(tree: Tree): Map<string, SlideInfo> {
+  const slides = tree.filter((item) => item.type === 'slide')
+  const { numbers } = slideOrder(slides.map((item) => ({ id: item.record.id, box: item.aabb, hidden: item.props.hidden === true })))
+  const out = new Map<string, SlideInfo>()
+  for (const item of slides) {
+    const found: SlideOverflow = { nodes: [], extraRows: 0 }
+    for (const layout of item.children) {
+      if (layout.type !== 'slide-layout') continue
+      const children = new Map(layout.children.map((child) => [child.record.id, child.record as unknown as NodeRecord]))
+      const { nodes, extraRows } = slideLayoutOverflow(layout.record as unknown as NodeRecord, children)
+      found.nodes.push(...nodes)
+      found.extraRows += extraRows
+    }
+    const overflow = found.nodes.length > 0 || found.extraRows > 0 ? found : null
+    out.set(item.record.id, { number: numbers.get(item.record.id) ?? null, overflow })
+  }
   return out
 }
 
@@ -636,7 +698,7 @@ export function canvasFormatGuide(options: { editable?: boolean } = {}): string 
 ## Structure
 - A workspace has a tree of canvases. A canvas's child canvases are opened through portal nodes placed on it. list_canvases shows the tree; "unplaced" canvases have no portal yet.
 - A PDF is shown as a canvas of locked pdf-page nodes (pdf=<file id> in list_canvases).
-- Markdown / Python documents and slide decks are files (file:...), shown on canvases as cards. Read their text with read_document.
+- Markdown / Python documents are files (file:...), shown on canvases as cards. Read their text with read_document.
 
 ## Coordinates
 - World coordinates: x grows right, y grows down, 1 unit = 1 CSS px at 100% zoom. Rotation is in degrees, clockwise.
@@ -649,7 +711,7 @@ First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revis
 Then one line per node, back-to-front (z-order); children of a group/frame follow their parent, indented by depth:
   <id> <type> <x>,<y> <W>x<H> [rot=<deg>] [extra] ["text"] [locked] [in=<parent id>] [[N children]]
 Arrows: <id> arrow <start>→<end> ["label"], where each end is a node id (bound) or x,y (free).
-Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; portal: target canvas id; cards and pages: file id, p=<pdf page>, s=<slide>; chart: kind.
+Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
 Text is truncated to ${MAX_LINE_TEXT} characters. Group/frame contents are collapsed as [N children] unless depth > 0.
 Filters: rect (world box intersection), query (case-insensitive text), types (e.g. note, geo, geo/ellipse) and since search inside groups/frames too; nodes whose parent line is not shown get in=<parent id>.
 since=<rev> returns only nodes changed after that revision (including arrows whose connections changed) and deleted=<ids> (node ids deleted anywhere in the workspace after it). Pass the rev from a previous result to see what the user changed.
@@ -669,13 +731,16 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - frame: named container that clips its children (name, w, h)
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
-- markdown-card / code-card / slide-deck-card: a document file on the canvas
+- markdown-card / code-card: a document file on the canvas
 - quote-card: quotation from a PDF or Markdown file with a memo
-- pdf-page / slide-page: one page of a PDF / slide deck (p= / s= are 1-based)
+- pdf-page: one page of a PDF (p= is 1-based)
 - chart: pie or donut chart (rows of label and value)
+- slide: a 16:9 (1920x1080) or 4:3 (1440x1080) page of the canvas's slide deck (name, ratio, hidden). One canvas = one deck; slides are exported to PDF in reading order: rows from top to bottom (slides overlapping vertically by half or more form a row), left to right in a row. n= is that number; hidden slides get none. Slides cannot be resized or rotated.
+- slide-layout: the single child of a slide made by a template; it lays out the slide's contents. layout = title | bullets | table | table-image; slots = the ids of its children by role: title, subtitle, credits (title layout), panel, figure (table-image), rows [{label?, body}] (label: table layouts only). Its children are text (title, subtitle) and geo rects (cells).
 
 ## Details
-read_nodes returns compact JSON per node: world x, y, w, h, rotation, z-order index, parent, locked, plain text, fill/stroke colours, file, arrow ends, children ids, chart rows.
+read_nodes returns compact JSON per node: world x, y, w, h, rotation, z-order index, parent, locked, plain text, fill/stroke colours, file, arrow ends, children ids, chart rows,
+slide number and overflow ({nodes: ids of cells whose text does not fit, extraRows: rows over the limit}), slide-layout layout and slots.
 ${options.editable ? EDIT_GUIDE : '\nEditing canvas nodes is not available; these tools are read-only.\n'}`
 }
 
@@ -692,12 +757,13 @@ Position (create/move): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40}
 Colours are hex (#rrggbb); fill/stroke also accept "none".
 
 Ops:
-- create: type (text | note | geo | frame | card), as?, parent? (frame/group id), position, w?, h?, rotation? (deg) and style:
+- create: type (text | note | geo | frame | slide | card), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
   text: text, fontSize, color, align (left|center|right), w (wraps; default 240)
   note: text, color (background), fontSize, align, w, h
   geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label), fill, stroke, strokeWidth, color (label), fontSize, align, cornerRadius, w, h
   frame: name, w, h
-  card: file (document id from list_documents; markdown, code or slide deck), w, h (fixes the height)
+  slide: name, ratio, hidden, template (see Slides below)
+  card: file (document id from list_documents; markdown or code), w, h (fixes the height)
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
@@ -706,7 +772,15 @@ Ops:
 - align: ids, edge (left | hcenter | right | top | vcenter | bottom)
 - distribute: ids, axis (x | y), gap? (without gap: 3+ ids, equal spacing between the outer ones)
 - reparent: ids, parent (frame/group id, or "canvas")
+- add_row: slide (slide or slide-layout id; adds the last row) or after (a cell id; adds below its row), text? (body), label? (table layouts), as? (names the body; created also gets "<as>:label"). New cells copy the format of the neighbouring row.
 Text size is estimated on the server (it cannot measure fonts); give text a width.
+
+Slides (presentations):
+- create type "slide": ratio? ("16:9" default | "4:3"), name?, hidden?, template? and position (no w/h: the size comes from the ratio). update: name, ratio, hidden, template.
+- template (title | bullets | table | table-image) fills an empty slide with a slide-layout and placeholder children (3 rows). Then read_nodes the slide-layout for its slots and write the text with update {id, text} on each child.
+- Rows: at most ${getMaxRowCount('bullets')} (bullets), ${getMaxRowCount('table')} (table), ${getMaxRowCount('table-image')} (table-image). Add with add_row; remove a row by deleting its body cell (its label goes with it and the rows close up).
+- The children of a slide-layout are laid out again at the end of every edit (positions, sizes and body colours follow the layout and row order): x, y, w, h you write for them are replaced. Long text wraps and may overflow its cell (read_canvas shows overflow on the slide); shorten it or use fewer rows.
+- Other nodes may be put inside a slide (parent = the slide id) and keep their positions.
 
 Example:
 {"canvas_id":"canvas:…","label":"Login flow","ops":[

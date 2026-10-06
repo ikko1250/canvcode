@@ -1,4 +1,4 @@
-import type { NodeRecord } from '@canvcode/core'
+import type { NodeRecord, Vec } from '@canvcode/core'
 import { defineNodeType } from './defineNodeType.ts'
 import { TEXT_FONT_FAMILY } from './text/fonts.ts'
 
@@ -35,6 +35,38 @@ export type FrameNode = NodeRecord<FrameProps>
 const LABEL_FONT_PX = 12
 const LABEL_GAP_PX = 4
 
+// 以下の 3 つは、frame と同じ枠を持つ型（スライド）でも使う。name には名前の部分に描く文字列を渡す（スライドは番号を付けたもの）
+
+// 名前の部分と枠の線の近くで当たる。枠の中の空いている所では当たらない
+export function frameHitTest(w: number, h: number, name: string, point: Vec, margin: number, zoom: number): boolean {
+  // 名前の部分（枠の左上の上）
+  const labelH = (LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom
+  const labelW = Math.min(w, (name.length * LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom)
+  if (point.x >= 0 && point.x <= labelW && point.y >= -labelH && point.y <= 0) return true
+  // 枠の線の近く
+  const inOuter = point.x >= -margin && point.y >= -margin && point.x <= w + margin && point.y <= h + margin
+  const inInner = point.x > margin && point.y > margin && point.x < w - margin && point.y < h - margin
+  return inOuter && !inInner
+}
+
+// 白い地と細い枠の線を描く。線の太さは倍率によらず画面上で 1 ピクセル
+export function drawFrameBox(ctx: CanvasRenderingContext2D, w: number, h: number, zoom: number): void {
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
+  ctx.lineWidth = 1 / zoom
+  ctx.strokeStyle = '#c9ced6'
+  ctx.strokeRect(0, 0, w, h)
+}
+
+// 名前は、倍率によらず画面上で同じ大きさで、枠の左上の上に描く。color は文字の色（スライドの警告で変える）
+export function drawFrameLabel(ctx: CanvasRenderingContext2D, name: string, zoom: number, color = '#656d76'): void {
+  ctx.font = `500 ${LABEL_FONT_PX / zoom}px ${TEXT_FONT_FAMILY}`
+  ctx.fillStyle = color
+  ctx.textBaseline = 'bottom'
+  ctx.textAlign = 'left'
+  ctx.fillText(name, 0, -LABEL_GAP_PX / zoom)
+}
+
 export const frameType = defineNodeType<FrameProps>({
   type: 'frame',
   version: 1,
@@ -43,31 +75,11 @@ export const frameType = defineNodeType<FrameProps>({
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: node.props.h }),
 
-  hitTest(node, point, margin, zoom) {
-    const { w, h, name } = node.props
-    // 名前の部分（枠の左上の上）
-    const labelH = (LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom
-    const labelW = Math.min(w, (name.length * LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom)
-    if (point.x >= 0 && point.x <= labelW && point.y >= -labelH && point.y <= 0) return true
-    // 枠の線の近く
-    const inOuter = point.x >= -margin && point.y >= -margin && point.x <= w + margin && point.y <= h + margin
-    const inInner = point.x > margin && point.y > margin && point.x < w - margin && point.y < h - margin
-    return inOuter && !inInner
-  },
+  hitTest: (node, point, margin, zoom) => frameHitTest(node.props.w, node.props.h, node.props.name, point, margin, zoom),
 
   render(ctx, node, info) {
-    const { w, h, name } = node.props
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, w, h)
-    ctx.lineWidth = 1 / info.zoom
-    ctx.strokeStyle = '#c9ced6'
-    ctx.strokeRect(0, 0, w, h)
-    // 名前は、倍率によらず画面上で同じ大きさで、枠の左上の上に描く
-    ctx.font = `500 ${LABEL_FONT_PX / info.zoom}px ${TEXT_FONT_FAMILY}`
-    ctx.fillStyle = '#656d76'
-    ctx.textBaseline = 'bottom'
-    ctx.textAlign = 'left'
-    ctx.fillText(name, 0, -LABEL_GAP_PX / info.zoom)
+    drawFrameBox(ctx, node.props.w, node.props.h, info.zoom)
+    drawFrameLabel(ctx, node.props.name, info.zoom)
   },
 
   roughColor: () => '#ffffff',

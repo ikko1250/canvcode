@@ -1,6 +1,8 @@
-import { expandBox, viewportBounds, type Box, type Camera, type Mat } from '@canvcode/core'
+import { expandBox, viewportBounds, type Box, type Camera, type Mat, type NodeRecord } from '@canvcode/core'
 import {
   arrowPolyline,
+  HIDDEN_SLIDE_OPACITY,
+  isHiddenSlide,
   type ArrowProps,
   type AssetResolver,
   type CitationResolver,
@@ -44,6 +46,9 @@ const SPACING_LABEL_FONT_PX = 12
 const GRADIENT_END_RADIUS_PX = 5
 const GRADIENT_STOP_RADIUS_PX = 6
 const GRADIENT_SELECTED_STOP_RADIUS_PX = 7.5
+// 文字があふれているセルの印（スライド v2）：赤い枠線。倍率によらず 2 CSS ピクセル
+const OVERFLOW_COLOR = '#e03131'
+const OVERFLOW_LINE_PX = 2
 
 export interface Viewport {
   camera: Camera
@@ -55,6 +60,8 @@ export interface Viewport {
   documents?: DocumentResolver
   files?: FileContentSource
   citations?: CitationResolver
+  // PDF に出す画像を描くか（スライド v2）。型に RenderInfo.print で渡し、非表示のスライドも薄くしない
+  print?: boolean
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
 }
@@ -108,6 +115,9 @@ export function drawNodes(
     documents: view.documents,
     files: view.files,
     citations: view.citations,
+    // スライドの番号は Editor が計算する（スライド v2）
+    slides: editor.slides,
+    print: view.print,
     noEffects: ids.length > EFFECTS_NODE_LIMIT,
   }
   let drawn = 0
@@ -118,7 +128,9 @@ export function drawNodes(
     if (!entry) continue
     const { node, worldBounds, worldMatrix } = entry
     const type = editor.getType(node)
-    ctx.globalAlpha = node.opacity
+    const ancestors = editor.index.ancestorsOf(id)
+    // 非表示のスライドは、枠と中身（子孫）をまとめて薄く描く（スライド v2）。PDF に出す画像では薄くしない
+    ctx.globalAlpha = !view.print && inHiddenSlide(editor, node, ancestors) ? node.opacity * HIDDEN_SLIDE_OPACITY : node.opacity
     const screenSize = Math.max(worldBounds.w, worldBounds.h) * view.camera.zoom
     if (screenSize < ROUGH_THRESHOLD_PX) {
       if (type.renderRough) {
@@ -136,7 +148,7 @@ export function drawNodes(
       }
     } else {
       // フレームの中のノードは、フレームの枠で切り抜いて描く（MAI-25）
-      const clipped = clipToFrames(ctx, editor, id, view)
+      const clipped = clipToFrames(ctx, editor, ancestors, view)
       setNodeTransform(ctx, worldMatrix, view)
       type.render(ctx, node, id === view.editingId ? { ...info, editing: true } : info)
       if (clipped) ctx.restore()
@@ -148,9 +160,17 @@ export function drawNodes(
   return drawn
 }
 
-// 祖先のフレームの枠で切り抜く。切り抜いたら true を返す（呼び出し側で restore する）
-function clipToFrames(ctx: CanvasRenderingContext2D, editor: Editor, id: string, view: Viewport): boolean {
-  const ancestors = editor.index.ancestorsOf(id)
+// ノードそのものか祖先（近い順の ancestors）が、非表示のスライドか
+function inHiddenSlide(editor: Editor, node: NodeRecord, ancestors: readonly string[]): boolean {
+  if (isHiddenSlide(node)) return true
+  return ancestors.some((ancestorId) => {
+    const ancestor = editor.index.get(ancestorId)?.node
+    return ancestor !== undefined && isHiddenSlide(ancestor)
+  })
+}
+
+// 祖先（近い順の ancestors）のフレームの枠で切り抜く。切り抜いたら true を返す（呼び出し側で restore する）
+function clipToFrames(ctx: CanvasRenderingContext2D, editor: Editor, ancestors: readonly string[], view: Viewport): boolean {
   if (ancestors.length === 0) return false
   let saved = false
   // 外側のフレームから順に切り抜く
@@ -213,6 +233,9 @@ export function drawOverlay(
   if (state.lifted.size > 0) {
     drawn = drawNodes(ctx, editor, editor.index.sortByOrder([...state.lifted]), view)
   }
+
+  // 文字があふれているセル（スライド v2）。選択の枠より下に描く。PDF に出す画像には描かない
+  if (!view.print) drawSlideOverflows(ctx, editor, view)
 
   ctx.lineWidth = 1.5 * view.dpr
   ctx.strokeStyle = SELECTION_COLOR
@@ -308,6 +331,15 @@ export function drawOverlay(
     ctx.stroke()
   }
   return drawn
+}
+
+// スライドの中の、文字があふれているセルの箱を赤い枠線でなぞる（Editor.slideOverflows）
+function drawSlideOverflows(ctx: CanvasRenderingContext2D, editor: Editor, view: Viewport): void {
+  const overflows = editor.slideOverflows()
+  if (overflows.size === 0) return
+  ctx.strokeStyle = OVERFLOW_COLOR
+  ctx.lineWidth = OVERFLOW_LINE_PX * view.dpr
+  for (const { nodes } of overflows.values()) for (const id of nodes) outlineNode(ctx, editor, id, view)
 }
 
 // shape なら、型の outline（角丸・楕円の縁）があればそれをなぞる。なければ箱の枠

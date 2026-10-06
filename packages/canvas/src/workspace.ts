@@ -132,6 +132,10 @@ function remove(map: Map<string, Set<string>>, key: string, id: string): void {
   if (set && set.size === 0) map.delete(key)
 }
 
+// commit の直前に、トランザクション全体の差分を受け取るもの（Editor が自分の操作の終わりに整えるのに使う）。
+// ここで変えたものも、同じトランザクション（1 回の Undo）に入る
+export type CommitHook = (patch: Patch<WorkspaceRecord>, tx: Transaction<WorkspaceRecord>) => void
+
 export class Workspace implements NodeLookup {
   readonly store = new Store<WorkspaceRecord>()
   // 消すレコードに、差分に入っていない子（あとで別の操作で入れたもの。子の Canvas の中身など）が残るなら、取り消さない
@@ -141,11 +145,18 @@ export class Workspace implements NodeLookup {
   readonly tree = new NodeTree()
   readonly citations: CitationIndex
   readonly rootCanvasId: string
+  private readonly commitHooks = new Set<CommitHook>()
 
   // 外から入ってくるレコード（サーバー・ほかのタブ・貼り付け）を、今の形にする。
   // 古い版のノードは、型の今の版へ移す（MAI-74）。それ以外はそのまま
   upgrade<R extends WorkspaceRecord>(record: R): R {
     return isNodeRecord(record) ? (upgradeNode(this.types.get(record.type), record) as R) : record
+  }
+
+  // 外から入ってくるレコードを入れてよいか。知らない型のノード（消した型のもの。v1 のスライドのデッキのカード・スライドの画像など）は
+  // 描けず、空間の索引も作れないので入れない（サーバーは起動時に片付ける。片付ける前のサーバーから届いても壊れないように）
+  accepts(record: WorkspaceRecord): boolean {
+    return !isNodeRecord(record) || this.types.has(record.type)
   }
 
   constructor(options: WorkspaceOptions = {}) {
@@ -171,9 +182,10 @@ export class Workspace implements NodeLookup {
           for (const childId of this.tree.childrenOf(record.id)) tx.remove(childId)
         }
       },
-      // 子がいなくなった group は消す（MAI-25）
+      // 足したもの（Editor の slide-layout の並べ直しなど）を先に呼び、子がいなくなった group は消す（MAI-25）
       beforeCommit: (patch, tx) => {
         if (tx.options.source !== 'user') return
+        for (const hook of this.commitHooks) hook(patch, tx)
         const groups = new Set<string>()
         for (const change of patch.values()) {
           if (!isNodeRecord(change.before)) continue
@@ -199,6 +211,12 @@ export class Workspace implements NodeLookup {
       (tx) => tx.put(makeCanvas(this.rootCanvasId, options.rootTitle ?? 'ホーム')),
       { history: 'ignore' },
     )
+  }
+
+  // この画面での操作（source: 'user'）を commit する直前に呼ぶものを足す。返す関数で外す
+  addCommitHook(hook: CommitHook): () => void {
+    this.commitHooks.add(hook)
+    return () => this.commitHooks.delete(hook)
   }
 
   private leavesNoOrphans(patch: Patch<WorkspaceRecord>): boolean {

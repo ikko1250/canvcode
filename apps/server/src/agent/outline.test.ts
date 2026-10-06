@@ -151,4 +151,84 @@ describe('canvas outline', () => {
     expect(nodes[2]).toMatchObject({ start: { x: 200, y: 60, node: 'node:note' }, end: { x: 280, y: 40, node: 'node:rect' }, label: '原因' })
     expect(nodes[3]).toMatchObject({ canvas: 'canvas:child', text: 'こんにちは', sizeEstimated: true })
   })
+  // スライド（スライド v2）は大きさを props に持たず、縦横比から決める。frame と同じく子を持つ
+  it('reads slides with their size from the ratio, and their children', () => {
+    const records = setup()
+    const root = records.rootCanvasId
+    records.apply(
+      [
+        node('node:s1', 'slide', root, 'a1', { ratio: '16:9', name: '表紙', hidden: false }, { x: 100, y: 200 }),
+        node('node:s2', 'slide', root, 'a2', { ratio: '4:3', name: '', hidden: true }, { x: 2200, y: 200 }),
+        node('node:title', 'text', 'node:s1', 'a1', { text: '題名', fontSize: 20, autoWidth: true }, { x: 10, y: 20 }),
+      ],
+      [],
+    )
+    expect(listCanvases(records).split('\n')[1]).toBe(`${root} "ホーム" nodes=3`)
+    const lines = readCanvas(records, {}).split('\n')
+    expect(lines.slice(1)).toEqual(['node:s1 slide 100,200 1920x1080 n=1 "表紙" [1 children]', 'node:s2 slide 2200,200 1440x1080 hidden'])
+    expect(readCanvas(records, { depth: 1 }).split('\n')).toContain('  node:title text 110,220 ~40x27 "題名"')
+    const { nodes } = readNodes(records, ['node:s1', 'node:s2', 'node:title'])
+    expect(nodes[0]).toMatchObject({ id: 'node:s1', type: 'slide', x: 100, y: 200, w: 1920, h: 1080, name: '表紙', ratio: '16:9', number: 1, children: ['node:title'] })
+    expect(nodes[0]!.hidden).toBeUndefined()
+    expect(nodes[1]).toMatchObject({ id: 'node:s2', w: 1440, h: 1080, ratio: '4:3', hidden: true })
+    expect(nodes[1]!.number).toBeUndefined()
+    expect(nodes[2]).toMatchObject({ id: 'node:title', parent: 'node:s1', x: 110, y: 220 })
+  })
+
+  // スライドの中身を並べる入れ物（slide-layout）も子を持つ。並べ方と役割（slots）を渡す
+  it('reads a slide-layout with its children and slots', () => {
+    const records = setup()
+    const root = records.rootCanvasId
+    const slots = { title: 'node:t', rows: [] }
+    records.apply(
+      [
+        node('node:s1', 'slide', root, 'a1', { ratio: '16:9', name: '', hidden: false }, { x: 100, y: 200 }),
+        node('node:l', 'slide-layout', 'node:s1', 'a1', { layout: 'title', w: 1920, h: 1080, slots }),
+        node('node:t', 'text', 'node:l', 'a1', { text: '題名', fontSize: 20, autoWidth: true }, { x: 10, y: 20 }),
+      ],
+      [],
+    )
+    expect(listCanvases(records).split('\n')[1]).toBe(`${root} "ホーム" nodes=3`)
+    expect(readCanvas(records, { depth: 2 }).split('\n').slice(1)).toEqual([
+      'node:s1 slide 100,200 1920x1080 n=1',
+      '  node:l slide-layout 100,200 1920x1080 "title"',
+      '    node:t text 110,220 ~40x27 "題名"',
+    ])
+    const { nodes } = readNodes(records, ['node:l', 'node:t'])
+    expect(nodes[0]).toMatchObject({ id: 'node:l', parent: 'node:s1', w: 1920, h: 1080, layout: 'title', slots, children: ['node:t'] })
+    expect(nodes[1]).toMatchObject({ parent: 'node:l', x: 110, y: 220 })
+  })
+
+  // スライドの番号は位置から（画面と同じ slideOrder。行ごとに上から、行の中は左から。非表示は番号なし）。
+  // あふれは slide-layout の slots の子（geo）の文字がセルに収まらないもの
+  it('numbers slides by position and reports overflowing slides', () => {
+    const records = setup()
+    const root = records.rootCanvasId
+    const cell = (id: string, label: string) =>
+      node(id, 'geo', 'node:l', 'a1', { shape: 'rect', w: 300, h: 120, label, labelFontSize: 40, labelParagraphs: [{ runs: [{ text: label }] }] })
+    records.apply(
+      [
+        // 2 行目の左、1 行目の右、1 行目の左（行の中は x の順）、非表示
+        node('node:c', 'slide', root, 'a1', { ratio: '16:9', name: '', hidden: false }, { x: 0, y: 1300 }),
+        node('node:b', 'slide', root, 'a2', { ratio: '16:9', name: '', hidden: false }, { x: 2100, y: 100 }),
+        node('node:a', 'slide', root, 'a3', { ratio: '4:3', name: '', hidden: false }, { x: 0, y: 0 }),
+        node('node:h', 'slide', root, 'a4', { ratio: '16:9', name: '', hidden: true }, { x: -2100, y: 0 }),
+        node('node:l', 'slide-layout', 'node:b', 'a1', { layout: 'bullets', w: 1920, h: 1080, slots: { rows: [{ body: 'node:long' }, { body: 'node:short' }] } }),
+        cell('node:long', '長い本文が三百の幅のセルには収まらずに何行にも折り返してあふれる'),
+        cell('node:short', '短い'),
+      ],
+      [],
+    )
+    const lines = readCanvas(records, {}).split('\n').slice(1)
+    expect(lines).toEqual([
+      'node:c slide 0,1300 1920x1080 n=3',
+      'node:b slide 2100,100 1920x1080 n=2 overflow [1 children]',
+      'node:a slide 0,0 1440x1080 n=1',
+      'node:h slide -2100,0 1920x1080 hidden',
+    ])
+    const { nodes } = readNodes(records, ['node:a', 'node:b', 'node:h'])
+    expect(nodes.map((n) => n.number)).toEqual([1, 2, undefined])
+    expect(nodes[1]!.overflow).toEqual({ nodes: ['node:long'], extraRows: 0 })
+    expect(nodes[0]!.overflow).toBeUndefined()
+  })
 })

@@ -1,29 +1,19 @@
+/**
+ * 行の容量の規則（v1 のスライドエンジンから残したもの）。スライド v2 の行の高さの配分（canvas/canvas-slide-rows.ts）が使う。
+ *
+ * - 行ごとの必要高さを ok / partial / uniform / over_budget に分類し、partial なら予算の中で行の高さを配り直す。
+ * - compact パネルに収まらなければ、全高パネルで分類し直す。
+ * - 必要高さは呼び出し側（v2 は描画と同じ配置で測った高さ）が渡す。
+ */
+
 import {
-  bulletLevelSpec,
   getLayoutProfile,
-  lineBoxHeight,
   minRowPx,
-  textWidthPx,
-  TITLE_SPEC,
   type LayoutProfile,
   type SlideLayout,
-  type TypographySpec,
 } from "./slide-layout-spec.ts";
-import { stripInlineMarkup } from "./inline-markup.ts";
-import type { BulletItem } from "./slide-schema.ts";
-
-export type SlideRowInput = {
-  labelLines: string[];
-  bodyLines: string[];
-};
 
 export type RowCapacityClassification = "ok" | "partial" | "uniform" | "over_budget";
-
-export type AnalyzeSlideRowsInput = {
-  layout: SlideLayout;
-  rows: SlideRowInput[];
-  slideName?: string;
-};
 
 export type AnalyzeSlideRowsResult = {
   classification: RowCapacityClassification;
@@ -38,54 +28,6 @@ export type AnalyzeSlideRowsResult = {
 };
 
 const EPSILON_PX = 1;
-
-function countVisualLines(text: string, charsPerLine: number): number {
-  const charCount = [...stripInlineMarkup(text)].length;
-  if (charCount === 0) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil(charCount / charsPerLine));
-}
-
-/** 1 文字の送り幅。全角文字は fontSize 幅に letter-spacing が加わる（負なら詰まる） */
-function charAdvancePx(typography: Pick<TypographySpec, "fontSize" | "letterSpacingEm">): number {
-  return typography.fontSize * (1 + typography.letterSpacingEm);
-}
-
-function estimateColumnVisualLines(
-  lines: string[],
-  typography: TypographySpec,
-  columnWidthPx: number,
-): number {
-  const charsPerLine = Math.max(
-    1,
-    Math.floor(textWidthPx(typography, columnWidthPx) / charAdvancePx(typography)),
-  );
-
-  return lines.reduce((total, line) => total + countVisualLines(line, charsPerLine), 0);
-}
-
-function estimateColumnRequiredPx(visualLines: number, typography: TypographySpec): number {
-  return typography.padV * 2 + visualLines * lineBoxHeight(typography);
-}
-
-function estimateRowRequiredPx(row: SlideRowInput, profile: LayoutProfile): number {
-  const labelVisualLines = estimateColumnVisualLines(
-    row.labelLines,
-    profile.labelTypography,
-    profile.labelWidthPx,
-  );
-  const bodyVisualLines = estimateColumnVisualLines(
-    row.bodyLines,
-    profile.bodyTypography,
-    profile.bodyWidthPx,
-  );
-
-  const labelRequiredPx = estimateColumnRequiredPx(labelVisualLines, profile.labelTypography);
-  const bodyRequiredPx = estimateColumnRequiredPx(bodyVisualLines, profile.bodyTypography);
-
-  return Math.ceil(Math.max(labelRequiredPx, bodyRequiredPx));
-}
 
 function totalGapsPx(profile: LayoutProfile): number {
   return (profile.rowCount - 1) * profile.gapPx;
@@ -294,113 +236,16 @@ function classifyWithFullPanelFallback(
   };
 }
 
-export function analyzeSlideRows(input: AnalyzeSlideRowsInput): AnalyzeSlideRowsResult {
-  return classifyWithFullPanelFallback(
-    input.layout,
-    input.rows.length,
-    (profile) => input.rows.map((row) => estimateRowRequiredPx(row, profile)),
-    input.slideName,
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 箇条書き（bullets レイアウト）: 項目ごとの必要高を階層別フォントで見積もる
-// ---------------------------------------------------------------------------
-
-export type AnalyzeBulletItemsInput = {
-  items: BulletItem[];
-  slideName?: string;
-};
-
-function estimateBulletItemRequiredPx(item: BulletItem, profile: LayoutProfile): number {
-  const textWidth = textWidthPx(profile.bodyTypography, profile.bodyWidthPx);
-  let total = 0;
-
-  const walk = (node: BulletItem, depth: number): void => {
-    const level = bulletLevelSpec(depth);
-    const charsPerLine = Math.max(
-      1,
-      Math.floor(
-        (textWidth - level.indentPx) /
-          charAdvancePx({ fontSize: level.fontSize, letterSpacingEm: profile.bodyTypography.letterSpacingEm }),
-      ),
-    );
-    const text = typeof node === "string" ? node : node.text;
-    total += countVisualLines(text, charsPerLine) * level.fontSize * level.lineHeight;
-    if (typeof node !== "string") {
-      for (const child of node.children) {
-        walk(child, depth + 1);
-      }
-    }
-  };
-
-  walk(item, 0);
-  return Math.ceil(profile.bodyTypography.padV * 2 + total);
-}
-
-export function analyzeBulletItems(input: AnalyzeBulletItemsInput): AnalyzeSlideRowsResult {
-  return classifyWithFullPanelFallback(
-    "bullets",
-    input.items.length,
-    (profile) => input.items.map((item) => estimateBulletItemRequiredPx(item, profile)),
-    input.slideName,
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 表紙（title レイアウト）の文字数 lint
-// ---------------------------------------------------------------------------
-
-export type AnalyzeTitleSlideInput = {
-  title: string;
-  subtitle?: string[];
-  credits?: string[];
-  slideName?: string;
-};
-
-export type AnalyzeTitleSlideResult = {
-  titleLines: number;
-  subtitleLines: number;
-  creditLines: number;
-  warnings: string[];
-};
-
-function estimateVisualLines(lines: string[], fontSize: number, widthPx: number): number {
-  const charsPerLine = Math.max(1, Math.floor(widthPx / fontSize));
-  return lines.reduce((total, line) => total + countVisualLines(line, charsPerLine), 0);
-}
-
-/** 表紙のタイトル・副題・credits が推奨行数に収まるか推定し、超過を警告する（出力は継続） */
-export function analyzeTitleSlide(input: AnalyzeTitleSlideInput): AnalyzeTitleSlideResult {
-  const s = TITLE_SPEC;
-  const ref = formatSlideRef(input.slideName);
-  const textWidth = s.width - s.textPaddingX * 2;
-  const creditsWidth = s.width - s.credits.paddingX * 2;
-
-  const titleLines = estimateVisualLines([input.title], s.title.fontSize, textWidth);
-  const subtitleLines = input.subtitle
-    ? estimateVisualLines(input.subtitle, s.subtitle.fontSize, textWidth)
-    : 0;
-  const creditLines = input.credits
-    ? estimateVisualLines(input.credits, s.credits.fontSize, creditsWidth)
-    : 0;
-
-  const warnings: string[] = [];
-  if (titleLines > s.title.maxLines) {
-    warnings.push(
-      `警告: スライド${ref} — 表紙タイトルが約 ${titleLines} 行になります（推奨 ${s.title.maxLines} 行以内）。短縮を検討してください。`,
-    );
-  }
-  if (subtitleLines > s.subtitle.maxLines) {
-    warnings.push(
-      `警告: スライド${ref} — 表紙の副題が約 ${subtitleLines} 行になります（推奨 ${s.subtitle.maxLines} 行以内）。短縮を検討してください。`,
-    );
-  }
-  if (creditLines > s.credits.maxLines) {
-    warnings.push(
-      `警告: スライド${ref} — 表紙の credits が約 ${creditLines} 行あり、灰帯（${s.credits.maxLines} 行分）に収まらない可能性があります。`,
-    );
-  }
-
-  return { titleLines, subtitleLines, creditLines, warnings };
+/**
+ * 行ごとの必要高さを呼び出し側が測って渡し、分類・partial の再配分・全高パネルへの切り替えの規則を通す。
+ * スライド v2（キャンバスのスライド）が、描画と同じ配置で測った高さで使う。
+ * measure は幾何（compact / 全高）ごとに呼ばれる。行の幅はどちらも同じなので、同じ値を返してよい
+ */
+export function analyzeMeasuredRows(
+  layout: SlideLayout,
+  rowCount: number,
+  measure: (profile: LayoutProfile) => number[],
+  slideName?: string,
+): AnalyzeSlideRowsResult {
+  return classifyWithFullPanelFallback(layout, rowCount, measure, slideName);
 }

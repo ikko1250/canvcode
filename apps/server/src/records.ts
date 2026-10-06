@@ -222,17 +222,40 @@ export class RecordStore {
     return rows.map((row) => JSON.parse(row.body) as StoredRecord)
   }
 
-  // ノードの数を親ごとに数える。group / frame の親も返す（Canvas ごとの数を、中身を読まずに足し上げるため）
+  // ノードの数を親ごとに数える。group / frame / slide / slide-layout の親も返す（Canvas ごとの数を、中身を読まずに足し上げるため）
   nodeCounts(): { counts: Map<string, number>; containers: Map<string, string> } {
     const counts = new Map<string, number>()
     for (const row of this.db.prepare("SELECT parent_id, COUNT(*) AS n FROM records WHERE type_name = 'node' GROUP BY parent_id").all() as { parent_id: string | null; n: number }[]) {
       if (row.parent_id !== null) counts.set(row.parent_id, Number(row.n))
     }
     const containers = new Map<string, string>()
-    for (const row of this.db.prepare("SELECT id, parent_id FROM records WHERE type_name = 'node' AND type IN ('group', 'frame')").all() as { id: string; parent_id: string | null }[]) {
+    for (const row of this.db.prepare("SELECT id, parent_id FROM records WHERE type_name = 'node' AND type IN ('group', 'frame', 'slide', 'slide-layout')").all() as { id: string; parent_id: string | null }[]) {
       if (row.parent_id !== null) containers.set(row.id, row.parent_id)
     }
     return { counts, containers }
+  }
+
+  // この型（type）のノードの id（起動時の片付けで、消した型のノードを探す）
+  nodeIdsOfTypes(types: readonly string[]): string[] {
+    if (types.length === 0) return []
+    const rows = this.db
+      .prepare("SELECT id FROM records WHERE type_name = 'node' AND type IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(types)) as { id: string }[]
+    return rows.map((row) => row.id)
+  }
+
+  // AI の編集の記録のうち、この型のノードを含むものを消し、消した数を返す（取り消しで、消した型のノードを戻さないように）
+  deleteAgentOpsWithNodeTypes(types: readonly string[]): number {
+    let removed = 0
+    const remove = this.db.prepare('DELETE FROM agent_ops WHERE id = ?')
+    for (const row of this.db.prepare('SELECT id, patch FROM agent_ops').all() as { id: string; patch: string }[]) {
+      const patch = JSON.parse(row.patch) as AgentOpEntry[]
+      const touches = patch.some((entry) => [entry.before, entry.after].some((record) => record?.typeName === 'node' && types.includes(String(record.type))))
+      if (!touches) continue
+      remove.run(row.id)
+      removed++
+    }
+    return removed
   }
 
   // 矢印（fromId）のつながり（Binding）

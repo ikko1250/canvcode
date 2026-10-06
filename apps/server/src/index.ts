@@ -8,7 +8,6 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { AgentHost } from './agent/host.ts'
 import { handleAgentOps } from './agent/ops.ts'
 import { AssetStore } from './assets.ts'
-import { FigureStore } from './figures.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { MarkdownPdf } from './markdownPdf.ts'
@@ -17,17 +16,18 @@ import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
 import { RefImageStore } from './refImages.ts'
 import { handleRefs } from './refs.ts'
+import { cleanupSlidesV1, describeSlidesV1Cleanup } from './slidesV1Cleanup.ts'
 import { SyncHub } from './sync.ts'
 import { ThumbnailStore } from './thumbnails.ts'
-import { SlidesApi } from './slides.ts'
 
 // CanvCode のサーバー（MAI-4）。
 // - VPS 上で 127.0.0.1 でのみ待ち受け、ローカル PC からは SSH のポートフォワードで開く
 // - 本番では、ビルドした画面（apps/web/dist）も同じサーバーから配信する
 // - ワークスペースのフォルダ（MAI-13）の .canvcode/ に、画像の Asset を保存する（MAI-26）
 // - レコードは .canvcode/workspace.db（SQLite）に保存し、/api/sync の WebSocket で同期する（MAI-11、MAI-13）
-// - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きし、スライドデッキを作れる（MAI-59）。
-//   Canvas のノードの書き換えは、サーバーの中のワークスペース（agent/host.ts）で行い、画面から取り消せる（/api/agent-ops）
+// - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きする（MAI-59）。
+//   Canvas のノードの書き換え（スライドもここで作る）は、サーバーの中のワークスペース（agent/host.ts）で行い、画面から取り消せる（/api/agent-ops）
+// - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
 const HOST = '127.0.0.1'
 const PORT = Number(process.env.CANVCODE_PORT ?? 8787)
@@ -49,6 +49,14 @@ void assets.reextractEmptyPdfTexts()
 const thumbnails = new ThumbnailStore(DATA_DIR)
 await thumbnails.init()
 const records = new RecordStore(DATA_DIR)
+// v1 のスライド（デッキのカードとスライドの画像のノード、kind が slides の File、キャッシュ）を片付ける。
+// 失敗してもサーバーは止めない（画面とサーバーの中のワークスペースは、知らない型のノードを読まずに飛ばす）
+try {
+  const cleaned = await cleanupSlidesV1(records, DATA_DIR)
+  if (cleaned) console.log(describeSlidesV1Cleanup(cleaned))
+} catch (error) {
+  console.error('v1 のスライドを片付けられませんでした', error)
+}
 const refImages = new RefImageStore(DATA_DIR)
 // 3 日経った ref を消す（MAI-65）。起動したときと、そのあと 1 時間ごと
 await sweepRefs(records, refImages)
@@ -68,16 +76,10 @@ function broadcast(event: FileEvent): void {
 }
 const files = new FileStore(WORKSPACE, DATA_DIR, broadcast)
 await files.init()
-const figures = new FigureStore(DATA_DIR)
-await figures.init()
-// フレームがあるか（消したノードは records に残らない）。スライドの図の警告と代わりの絵に使う
-const frameExists = (id: string): boolean => records.get(id)?.type === 'frame'
-const slides = new SlidesApi(files, WORKSPACE, PORT, DATA_DIR, { figures, frameExists })
 // Markdown の File を PDF にする（md2pdf）
 const markdownPdf = new MarkdownPdf(files, WORKSPACE, DATA_DIR)
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
-const figureHooks = slides.figureHooks()
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
@@ -146,12 +148,10 @@ const server = createServer(async (req, res) => {
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname)) return
-  if (await figures.handle(req, res, url.pathname, figureHooks)) return
-  if (await slides.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await markdownPdf.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return
-  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, slides, refImages, agent, presence: () => sync.latestPresence() })) return
+  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, refImages, agent, presence: () => sync.latestPresence() })) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return

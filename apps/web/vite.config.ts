@@ -3,7 +3,6 @@ import { defineConfig, type Plugin } from 'vite'
 import { readFile, readdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 // PDF.js が PDF を読むのに使うファイル（フォントを埋め込んでいない PDF の CMap と標準フォント）を /pdfjs/ から配る。
 // 開発時は node_modules から返し、ビルドでは dist/pdfjs/ に出す（本番はサーバーが dist をそのまま配信する）
@@ -43,17 +42,7 @@ function pdfjsData(): Plugin {
 const API_TARGET = process.env.CANVCODE_API_TARGET ?? 'http://127.0.0.1:8787'
 
 export default defineConfig({
-  // スライドエディタは Preact を使うため、React Fast Refresh の変換対象から外す。
-  plugins: [react({ exclude: /src\/slides\// }), pdfjsData()],
-  build: {
-    rollupOptions: {
-      input: {
-        main: fileURLToPath(new URL('./index.html', import.meta.url)),
-        slideEditor: fileURLToPath(new URL('./slide-editor.html', import.meta.url)),
-        slidesPreview: fileURLToPath(new URL('./slides-preview.html', import.meta.url)),
-      },
-    },
-  },
+  plugins: [react(), pdfjsData()],
   server: {
     host: '127.0.0.1',
     port: 5173,

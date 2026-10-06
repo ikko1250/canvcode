@@ -11,14 +11,11 @@ import {
   createRefId,
   linesOfSelection,
   quoteRange,
-  isNodeRecord,
   type AssetRecord,
   type Box,
   type Camera,
   type CanvasRefTarget,
   type LinesRefTarget,
-  type NodeRecord,
-  type Patch,
   type PdfRegion,
   type RefTarget,
   type Vec,
@@ -63,8 +60,7 @@ import {
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
-import { reconcileSlidePages, type SlidePageService } from './slidePages.ts'
-import { FIGURE_RENDER_DELAY_MS, figureFramesTouched, figureRenderBox, type FigureService } from './figures.ts'
+import { slideImageRegion, type SlideImage } from './slideImage.ts'
 import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
@@ -122,10 +118,6 @@ export interface CanvasViewOptions {
   files?: FileManager
   // File を全画面のエディタで開く（Ctrl+Enter）
   onOpenFile?: (fileId: string) => void
-  // スライドデッキの画像の一覧。渡すと、デッキのカードの横にスライドの画像を並べる
-  slidePages?: SlidePageService
-  // スライドの図にするフレーム。渡すと、図のフレームの中が変わったら描き直してサーバーへ送る
-  figures?: FigureService
   // 引用（MAI-33）：PDF のページの上で引用する範囲を決めた / カードの上の編集で文字を選んで「引用」を押した。
   // 呼び出し側は、「横に引用ノート」か「引用をコピー」かを選ばせる
   onQuote?: (request: QuoteRequest) => void
@@ -167,7 +159,7 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf' | 'slidePages' | 'figures'>>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf'>>
   // 引用の出典（MAI-33）
   private readonly citations: CitationResolver
   // 「出典へ」で移ってきた範囲（しばらく強調して見せる）
@@ -177,12 +169,6 @@ export class CanvasView {
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
   readonly files: FileManager | null
-  readonly slidePages: SlidePageService | null
-  readonly figures: FigureService | null
-  // 描き直しを待っている図のフレーム（フレームの id → タイマーと、そのフレームのある Canvas の Editor）
-  private readonly figureTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; editor: Editor }>()
-  // 知らせたスライドの画像のエラー（同じものを何度も知らせない）
-  private readonly slidePageErrors = new Map<string, string>()
   // カードの上での本文の編集（MAI-30）
   readonly documentEditor: DocumentEditor | null
   readonly assets: AssetManager
@@ -248,8 +234,6 @@ export class CanvasView {
       onImportBackup: options.onImportBackup ?? (() => {}),
     }
     this.files = options.files ?? null
-    this.slidePages = options.slidePages ?? null
-    this.figures = options.figures ?? null
     this.documents = {
       get: (id) => {
         const workspace = this.editor.workspace
@@ -349,12 +333,6 @@ export class CanvasView {
         }),
       )
     }
-    if (this.slidePages) {
-      this.disposers.push(this.slidePages.onChange((fileId) => this.syncSlidePages(fileId)))
-    }
-    if (this.figures) {
-      this.disposers.push(this.figures.onChange(() => this.renderMissingFigures()))
-    }
     // フォント（Web フォント）を読み込み終えたら、測った文字の幅を捨ててレイアウトし直す（MAI-75）
     const fonts = typeof document !== 'undefined' ? document.fonts : undefined
     if (fonts && typeof fonts.addEventListener === 'function') {
@@ -363,7 +341,6 @@ export class CanvasView {
       this.disposers.push(() => fonts.removeEventListener('loadingdone', onFontsLoaded))
     }
     this.attachEditor()
-    this.syncSlidePages()
 
     this.listen(this.root, 'pointerdown', (e) => this.onPointerDown(e))
     this.listen(this.root, 'pointermove', (e) => this.onPointerMove(e))
@@ -424,8 +401,6 @@ export class CanvasView {
     for (const dispose of this.editorDisposers) dispose()
     for (const dispose of this.disposers) dispose()
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
-    for (const { timer } of this.figureTimers.values()) clearTimeout(timer)
-    this.figureTimers.clear()
     this.root.remove()
   }
 
@@ -464,31 +439,8 @@ export class CanvasView {
     this.attachEditor()
     // 離れている間にフォントを読み込んでいたら、この Canvas のノードの形も測り直す（MAI-75）
     this.refreshTextLayout(editor, false)
-    this.syncSlidePages()
-    this.renderMissingFigures()
     this.updateCursor()
     this.invalidate('all')
-  }
-
-  // この Canvas にあるデッキのカード（持ち主）の横に、スライドの画像を並べる（fileId を渡せば、そのデッキだけ）
-  private syncSlidePages(fileId?: string): void {
-    const service = this.slidePages
-    if (!service) return
-    const editor = this.editor
-    for (const id of editor.index.allIds()) {
-      const node = editor.getNode(id)
-      if (node?.type !== 'slide-deck-card') continue
-      const props = node.props as { fileId: string; role: 'owner' | 'shortcut' }
-      if (props.role !== 'owner' || (fileId && props.fileId !== fileId)) continue
-      const state = service.get(props.fileId)
-      if (!state) continue
-      reconcileSlidePages(editor, id, state.pages)
-      if (state.error && this.slidePageErrors.get(props.fileId) !== state.error) {
-        this.options.notify(`スライドの画像を作れませんでした：${state.error}`)
-      }
-      if (state.error) this.slidePageErrors.set(props.fileId, state.error)
-      else this.slidePageErrors.delete(props.fileId)
-    }
   }
 
   private attachEditor(): void {
@@ -505,7 +457,6 @@ export class CanvasView {
       },
       startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
       openPortal: (portalId) => this.options.onOpenPortal(portalId),
-      openFile: (fileId) => this.options.onOpenFile(fileId),
       editDocument: (nodeId) => this.editDocument(nodeId),
       createDocumentAt: (kind, center, width) => void this.createDocumentAt(kind, center, width),
       quoteRegion: (pageId, rect, screen) => {
@@ -562,12 +513,6 @@ export class CanvasView {
         }
         if (sceneChanged) this.invalidate('scene')
         this.invalidate('overlay')
-        // 図のフレームの中が確定して変わったら、描き直す（別のタブからの変更は、そのタブが描く）
-        const figures = this.figures
-        if (figures && event.phase === 'commit' && event.options.source !== 'remote') {
-          const nodes = new Map([...event.patch].filter(([, change]) => isNodeRecord(change.before) || isNodeRecord(change.after))) as Patch<NodeRecord>
-          for (const frameId of figureFramesTouched(editor, nodes, (id) => figures.isFigure(id))) this.scheduleFigure(editor, frameId)
-        }
       }),
     ]
   }
@@ -624,69 +569,49 @@ export class CanvasView {
     this.invalidate('all')
   }
 
-  // 画像に描く前に、頼んだフォントの読み込みを待ち、読み込めたら測り直す（スライドの図・PNG・サムネイル）
+  // 画像に描く前に、頼んだフォントの読み込みを待ち、読み込めたら測り直す（PDF に出すスライドの画像・PNG・サムネイル）
   private async settleFonts(editor: Editor): Promise<void> {
     if (await fontsSettled()) this.relayoutForFonts()
     this.refreshTextLayout(editor, false)
   }
 
-  // ---- スライドの図にするフレーム（提案 B） ----
+  // ---- PDF に出すスライドの画像（スライド v2） ----
 
-  // この Canvas にある図のフレームのうち、サーバーにまだ画像のないものを描く
-  private renderMissingFigures(): void {
-    const figures = this.figures
-    if (!figures) return
-    const editor = this.editor
-    for (const id of editor.index.allIds()) {
-      if (editor.getNode(id)?.type === 'frame' && figures.isFigure(id) && !figures.hasImage(id)) this.scheduleFigure(editor, id, 0)
-    }
+  // スライド 1 枚を、PDF の 1 ページ用の PNG に描く（範囲・倍率・描くノードは slideImageRegion）。
+  // 印刷用に描くので、スライドの名前（番号）と枠の線は描かず、非表示のスライドも薄くしない。
+  // width / height はページの大きさ（ワールド単位）。スライドが見つからない・slide でなければ null
+  async renderSlideImage(slideId: string, editor: Editor = this.editor): Promise<SlideImage | null> {
+    await this.settleFonts(editor)
+    const region = slideImageRegion(editor, slideId)
+    if (!region) return null
+    const { box, scale, width, height, only, size } = region
+    const png = await this.renderNodesPng(editor, box, scale, width, height, only, true)
+    return png ? { png, width: size.w, height: size.h } : null
   }
 
-  private scheduleFigure(editor: Editor, frameId: string, delay = FIGURE_RENDER_DELAY_MS): void {
-    const pending = this.figureTimers.get(frameId)
-    if (pending) clearTimeout(pending.timer)
-    const timer = setTimeout(() => {
-      this.figureTimers.delete(frameId)
-      void this.renderFigure(frameId, editor).catch((error: unknown) => console.warn('Failed to render a figure', frameId, error))
-    }, delay)
-    this.figureTimers.set(frameId, { timer, editor })
-  }
-
-  // フレームを図の PNG に描いて、サーバーへ送る。フレームが見つからなければ false
-  async renderFigure(frameId: string, editor: Editor = this.editor): Promise<boolean> {
-    const figures = this.figures
-    if (figures) await this.settleFonts(editor)
-    const bounds = editor.index.get(frameId)?.worldBounds
-    if (!figures || !bounds || editor.getNode(frameId)?.type !== 'frame' || bounds.w <= 0 || bounds.h <= 0) return false
-    const { box, maxEdge } = figureRenderBox(bounds)
-    const scale = maxEdge / Math.max(box.w, box.h)
-    const width = Math.max(1, Math.round(box.w * scale))
-    const height = Math.max(1, Math.round(box.h * scale))
+  // 範囲のうち only のノードだけを、PDF のページを読んでから描き、PNG にする（PDF に出すスライドの画像）
+  private async renderNodesPng(editor: Editor, box: Box, scale: number, width: number, height: number, only: ReadonlySet<string>, print = false): Promise<Blob | null> {
     await this.loadPdfPages(editor, box, scale)
-    // フレームとその中だけを描く（上に重なった別のノードは写さない）
-    const only = new Set([frameId, ...editor.index.descendantsOf(frameId)])
-    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height, only)
-    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-    if (!png) return false
-    await figures.upload(frameId, png)
-    return true
+    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height, only, print)
+    return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
   }
 
   // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）のうち、
   // 頼んだ解像度のものが手元になかったものを読み込んでから、描き直す（読み込み中のプレースホルダーや粗い画像を写さない）。
   // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
   // （上限を超えれば、いつもどおり古いものから捨てる）
-  private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>): Promise<HTMLCanvasElement> {
+  private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>, print = false): Promise<HTMLCanvasElement> {
     const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:'))
-    const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder)
+    const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
     if (recorder.size === 0) return canvas
     // 読み込めなかった画像は諦め、プレースホルダーのまま書き出す（1 つの失敗で書き出し全体を失敗させない）
     if ((await recorder.loadAll()) === 0) return canvas
-    return this.renderRegion(editor, box, scale, width, height, only)
+    return this.renderRegion(editor, box, scale, width, height, only, this.images, print)
   }
 
-  // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像、スライドの図）。
-  // only を渡すと、そのノードだけを描く
+  // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像、PDF に出すスライドの画像）。
+  // only を渡すと、そのノードだけを描く。print なら印刷用に描く（Viewport.print）。
+  // ノードだけを描き、選択の枠などのオーバーレイは描かない
   private renderRegion(
     editor: Editor,
     box: Box,
@@ -695,6 +620,7 @@ export class CanvasView {
     height: number,
     only?: ReadonlySet<string>,
     images: ImageRequester = this.images,
+    print = false,
   ): HTMLCanvasElement {
     const canvas = document.createElement('canvas')
     canvas.width = width
@@ -712,6 +638,7 @@ export class CanvasView {
       documents: this.documents,
       files: this.files ?? undefined,
       citations: this.citations,
+      print,
     }
     const ids = visibleIds(editor, viewport)
     drawNodes(ctx, editor, only ? ids.filter((id) => only.has(id)) : ids, viewport)
@@ -1646,12 +1573,6 @@ export class CanvasView {
         this.options.onOpenPortal(node.id)
         return
       }
-      const fileRef = node && editor.workspace.referenceOf(node)
-      if (fileRef && editor.workspace.getFile(fileRef.targetId)?.kind === 'slides') {
-        e.preventDefault()
-        this.options.onOpenFile(fileRef.targetId)
-        return
-      }
       // 本文を持つカードなら、その場で編集する
       if (node && this.editDocument(node.id)) {
         e.preventDefault()
@@ -1916,8 +1837,8 @@ export class CanvasView {
   }
 
   // 新しい File を作り、そのカードを置いた Canvas と Portal を center（省略なら画面の中央）に作る。
-  // パイメニューの Portal › Markdown / Python / スライド（MAI-42）
-  async createFileCanvas(kind: 'markdown' | 'code' | 'slides', options: { title?: string; content?: string; center?: Vec } = {}): Promise<string | null> {
+  // パイメニューの Portal › Markdown / Python（MAI-42）
+  async createFileCanvas(kind: 'markdown' | 'code', options: { title?: string; content?: string; center?: Vec } = {}): Promise<string | null> {
     if (!this.files) return null
     const editor = this.editor
     const title = options.title || '無題'
@@ -1927,7 +1848,7 @@ export class CanvasView {
       return editor.createFileCanvas(file.id, options.center ?? this.viewportCenter())?.portalId ?? null
     } catch (error) {
       console.error(`Failed to create a ${kind} canvas`, error)
-      this.options.notify(`${kind === 'markdown' ? 'Markdown' : kind === 'slides' ? 'スライド' : 'Python'} のファイルを作れませんでした：${title}`)
+      this.options.notify(`${kind === 'markdown' ? 'Markdown' : 'Python'} のファイルを作れませんでした：${title}`)
       return null
     }
   }

@@ -8,6 +8,8 @@ import { imageType } from './image.ts'
 import { pdfPageType } from './pdfPage.ts'
 import { portalType } from './portal.ts'
 import { quoteCardType } from './quoteCard.ts'
+import { slideType } from './slide.ts'
+import { slideLayoutType } from './slideLayout.ts'
 import { noteType } from './text/noteNode.ts'
 import { textType } from './text/textNode.ts'
 
@@ -27,8 +29,8 @@ export * from './pdfPage.ts'
 export * from './portal.ts'
 export * from './quoteCard.ts'
 export * from './shadow.ts'
-export * from './slideDeckCard.ts'
-export * from './slidePage.ts'
+export * from './slide.ts'
+export * from './slideLayout.ts'
 export * from './stroke.ts'
 export * from './text/fonts.ts'
 export * from './text/layout.ts'
@@ -36,6 +38,7 @@ export * from './text/noteNode.ts'
 export * from './text/richText.ts'
 export * from './text/richTextTargets.ts'
 export * from './text/textNode.ts'
+export * from './textOverflow.ts'
 
 // ビルド時に組み込むノードの型の一覧（MAI-9）
-export const builtinNodeTypes: AnyNodeTypeDef[] = [geoType, textType, noteType, imageType, drawType, arrowType, portalType, pdfPageType, quoteCardType, groupType, frameType, chartType]
+export const builtinNodeTypes: AnyNodeTypeDef[] = [geoType, textType, noteType, imageType, drawType, arrowType, portalType, pdfPageType, quoteCardType, groupType, frameType, slideType, slideLayoutType, chartType]

@@ -21,16 +21,20 @@ import {
 const RADIUS = 100
 const EDGE_MARGIN = RADIUS + 60
 
-export function PieMenus(props: { menus: PieMenuDef[]; enabled: boolean }) {
+// onOpen：出すときに、開いた位置（ポインタの位置。画面の端に寄せる前の、ウィンドウの座標）を知らせる。
+// その位置にものを置く項目（図形 › スライドなど）が使う
+export function PieMenus(props: { menus: PieMenuDef[]; enabled: boolean; onOpen?: (at: { x: number; y: number }) => void }) {
   const [state, setState] = useState<PieState>(PIE_IDLE)
   // キーのハンドラから今の値を読むために、ref にも持つ
   const stateRef = useRef(state)
   const menusRef = useRef(props.menus)
   const enabledRef = useRef(props.enabled)
+  const onOpenRef = useRef(props.onOpen)
   useEffect(() => {
     menusRef.current = props.menus
     enabledRef.current = props.enabled
-  }, [props.menus, props.enabled])
+    onOpenRef.current = props.onOpen
+  }, [props.menus, props.enabled, props.onOpen])
 
   useEffect(() => {
     const update = (next: PieState) => {
@@ -69,6 +73,7 @@ export function PieMenus(props: { menus: PieMenuDef[]; enabled: boolean }) {
       if (e.repeat || pressed !== null) return
       pressed = e.code
       const at = pointer ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+      if (!stateRef.current.open) onOpenRef.current?.(at)
       update(pressPie(stateRef.current, menu.id, clampToViewport(at)))
     }
     const onKeyUp = (e: KeyboardEvent) => {

@@ -204,7 +204,7 @@ export function requestFontLoad(family: string | undefined, font: string, text: 
   }
 }
 
-// 頼んだ読み込みがすべて終わるのを待つ（スライドの図・PNG・サムネイルを描く前）。
+// 頼んだ読み込みがすべて終わるのを待つ（PDF に出すスライドの画像・PNG・サムネイルを描く前）。
 // 読み込んだフォントがあって、まだ測り直していなければ true（呼んだ側で resetTextMetrics とレイアウトのやり直しをする）
 // （document.fonts.ready は待たない。ほかの用途のフォント（数式など）の読み込みで、Canvas の移動を待たせないように）
 export async function fontsSettled(): Promise<boolean> {
