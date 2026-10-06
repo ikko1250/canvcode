@@ -42,6 +42,7 @@ import {
 import { unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
 import type { QuoteDraft } from './quotes.ts'
+import { reorderSiblings, type ReorderDirection } from './reorder.ts'
 import { Session } from './session.ts'
 import {
   nodeFrame,
@@ -929,6 +930,38 @@ export class Editor {
   // 間隔のハンドル：選んでいるものが等間隔に並んでいる軸と、その隙間（ワールド座標）
   spacingHandlesWorld(): Spacing[] {
     return spacingOf(this.arrangeTargets())
+  }
+
+  // ---- 重なり順 ----
+
+  // 重なり順を変える対象：選んでいるノードのうち、フレームの中にあるもの（親がフレーム）。
+  // 祖先も選んでいるものは祖先と一緒なので除く。固定したものは選べないので含まれない
+  reorderTargets(): string[] {
+    const selected = this.session.get().selectedIds
+    return [...selected].filter((id) => {
+      const node = this.getNode(id)
+      const parent = node && this.getNode(node.parentId)
+      return parent !== undefined && this.isContainer(parent, 'frame') && !this.index.ancestorsOf(id).some((a) => selected.has(a))
+    })
+  }
+
+  // 最前面へ・前面へ・背面へ・最背面へ。親の中の兄弟どうしで並べ替える（親は変えない）
+  reorderSelection(direction: ReorderDirection): void {
+    const byParent = new Map<string, Set<string>>()
+    for (const id of this.reorderTargets()) {
+      const parentId = this.getNode(id)!.parentId
+      const set = byParent.get(parentId) ?? new Set<string>()
+      set.add(id)
+      byParent.set(parentId, set)
+    }
+    const changes = [...byParent].flatMap(([parentId, moving]) => {
+      const siblings = this.index.childrenOf(parentId).map((id) => ({ id, index: this.getNode(id)!.index }))
+      return [...reorderSiblings(siblings, moving, direction)]
+    })
+    if (changes.length === 0) return
+    this.transact('reorder', (tx) => {
+      for (const [id, index] of changes) tx.put({ ...nodeIn(tx, id)!, index })
+    })
   }
 
   // ワールドでの移動量を、親のローカル座標に戻して 1 回の操作で書き込む。

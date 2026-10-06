@@ -1,4 +1,4 @@
-import type { AlignEdge, Axis, PageDirection, ToolId } from '@canvcode/canvas'
+import type { AlignEdge, Axis, PageDirection, ReorderDirection, ToolId } from '@canvcode/canvas'
 import type { TextAlign } from '@canvcode/nodes'
 import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 
@@ -70,6 +70,7 @@ export interface PieMenuContext {
   setTextAlign(align: TextAlign): void
   alignSelection(edge: AlignEdge): void
   distributeSelection(axis: Axis): void
+  reorderSelection(direction: ReorderDirection): void
   lockSelection(): void
   duplicateSelection(): void
   // 選んでいるフレームを、スライドの図にする・その参照（canvas:<id>）をコピーする（提案 B）
@@ -92,6 +93,8 @@ export interface SelectionMenuContext {
   count: number
   // 整列・等間隔の対象の数（固定していないもの。group は 1 つ）
   arrangeCount: number
+  // 重なり順を変える対象の数（フレームの中のもの）
+  reorderCount: number
   // テキストか付箋を選んでいるか
   hasText: boolean
   // フレームを 1 つだけ選んでいるか
@@ -107,6 +110,13 @@ const ALIGN_EDGES: [AlignEdge, string][] = [
   ['bottom', '下'],
 ]
 
+const REORDERS: [ReorderDirection, string][] = [
+  ['front', '最前面'],
+  ['forward', '前面'],
+  ['backward', '背面'],
+  ['back', '最背面'],
+]
+
 const TEXT_ALIGNS: [TextAlign, string][] = [
   ['left', '左'],
   ['center', '中央'],
@@ -114,7 +124,7 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 ]
 
 // 操作のメニューの項目（MAI-57）。出す必要のないものは入れない。
-// ページの項目（最大 4 つ）と選択の項目（最大 7 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる
+// ページの項目（最大 4 つ）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる
 function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   const { pdf, selection } = ctx
   const pages: PieEntry[] = []
@@ -141,6 +151,9 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
         { label: '縦', onSelect: () => ctx.distributeSelection('y') },
       ],
     })
+  }
+  if (selection.reorderCount >= 1) {
+    items.push({ label: '重なり順', items: REORDERS.map(([direction, label]) => ({ label, onSelect: () => ctx.reorderSelection(direction) })) })
   }
   if (selection.count >= 1) {
     items.push({ label: '固定する', onSelect: ctx.lockSelection })

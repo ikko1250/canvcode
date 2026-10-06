@@ -1571,6 +1571,14 @@ export class CanvasView {
       else editor.groupSelected()
       return
     }
+    // 重なり順：Ctrl+] で前面へ、Ctrl+[ で背面へ。Shift 付きで最前面・最背面（Shift で { } になる配列もある）
+    if (mod && ['[', ']', '{', '}'].includes(e.key)) {
+      e.preventDefault()
+      this.tool.cancel()
+      const forward = e.key === ']' || e.key === '}'
+      editor.reorderSelection(forward ? (e.shiftKey ? 'front' : 'forward') : e.shiftKey ? 'back' : 'backward')
+      return
+    }
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       this.tool.cancel()

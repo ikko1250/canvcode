@@ -18,6 +18,7 @@ import {
   type OwnerPortalDeletion,
   type QuoteDraft,
   type QuoteRequest,
+  type ReorderDirection,
   type StatsSummary,
   type SyncStatus,
 } from '@canvcode/canvas'
@@ -75,6 +76,14 @@ const ARROWHEADS: { label: string; title: string; start: ArrowStyle['arrowheadSt
   { label: '—', title: '矢じりなし', start: 'none', end: 'none' },
   { label: '→', title: '終点に矢じり', start: 'none', end: 'arrow' },
   { label: '↔', title: '両端に矢じり', start: 'arrow', end: 'arrow' },
+]
+
+// 右クリックメニューの「重なり順 ›」の項目
+const REORDER_ITEMS: [ReorderDirection, string, string][] = [
+  ['front', '最前面へ', 'Ctrl+Shift+]'],
+  ['forward', '前面へ', 'Ctrl+]'],
+  ['backward', '背面へ', 'Ctrl+['],
+  ['back', '最背面へ', 'Ctrl+Shift+['],
 ]
 
 const BENCH_NODE_COUNT = 10_000
@@ -924,6 +933,22 @@ export function App(props: { initial: InitialRecords }) {
               }),
           })
         }
+        // 重なり順：フレームの中のものを選んでいるとき、次の階層で向きを選ばせる
+        if (editor.reorderTargets().length > 0) {
+          items.push({
+            label: '重なり順 ›',
+            onSelect: () =>
+              setMenu({
+                x: at.x,
+                y: at.y,
+                items: REORDER_ITEMS.map(([direction, label, shortcut]) => ({
+                  label,
+                  shortcut,
+                  onSelect: () => editor.reorderSelection(direction),
+                })),
+              }),
+          })
+        }
         if (selected.length > 1) items.push({ label: 'グループにする', shortcut: 'Ctrl+G', onSelect: () => editor.groupSelected() })
         if (selected.some((n) => n.type === 'group')) {
           items.push({ label: 'グループを解除', shortcut: 'Ctrl+Shift+G', onSelect: () => editor.ungroupSelected() })
@@ -1312,6 +1337,7 @@ export function App(props: { initial: InitialRecords }) {
             selection: {
               count: session.selectedIds.size,
               arrangeCount: arrangeTargets.length,
+              reorderCount: editor.reorderTargets().length,
               hasText: selectedTextNodes.length > 0,
               frame: session.selectedIds.size === 1 && editor.getNode([...session.selectedIds][0])?.type === 'frame',
             },
@@ -1322,6 +1348,7 @@ export function App(props: { initial: InitialRecords }) {
             setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
             alignSelection: (edge) => editor.alignSelection(edge),
             distributeSelection: (axis) => editor.distributeSelection(axis),
+            reorderSelection: (direction) => editor.reorderSelection(direction),
             lockSelection: () => editor.setLocked([...editor.session.get().selectedIds], true),
             duplicateSelection: () => view?.duplicateSelection(),
             makeSlideFigure: () => view && void makeSlideFigure(view),

@@ -204,7 +204,7 @@ describe('buildPieMenus', () => {
     markdownCardCount: 20,
     // 操作のメニュー（MAI-57）は menus.test.ts で確かめる。ここでは出さない
     pdf: { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true },
-    selection: { count: 0, arrangeCount: 0, hasText: false, frame: false },
+    selection: { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, frame: false },
     panToPage: vi.fn(),
     unlockAndSelectPdfPages: vi.fn(),
     lockPdfPages: vi.fn(),
@@ -212,6 +212,7 @@ describe('buildPieMenus', () => {
     setTextAlign: vi.fn(),
     alignSelection: vi.fn(),
     distributeSelection: vi.fn(),
+    reorderSelection: vi.fn(),
     lockSelection: vi.fn(),
     duplicateSelection: vi.fn(),
     makeSlideFigure: vi.fn(),

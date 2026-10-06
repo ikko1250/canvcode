@@ -8,6 +8,7 @@ export { OWN_KEYS_ATTRIBUTE, isEditableKeyboardTarget, isImeEvent } from './imeG
 export * from './imageCache.ts'
 export * from './transform.ts'
 export * from './arrange.ts'
+export * from './reorder.ts'
 export * from './propertyEdit.ts'
 export * from './usedColors.ts'
 export * from './gradientHandles.ts'

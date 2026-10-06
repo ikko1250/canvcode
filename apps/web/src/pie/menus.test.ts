@@ -5,7 +5,7 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
-const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, hasText: false, frame: false }
+const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, frame: false }
 
 function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}): PieMenuContext {
   return {
@@ -35,6 +35,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     setTextAlign: vi.fn(),
     alignSelection: vi.fn(),
     distributeSelection: vi.fn(),
+    reorderSelection: vi.fn(),
     lockSelection: vi.fn(),
     duplicateSelection: vi.fn(),
     makeSlideFigure: vi.fn(),
@@ -117,6 +118,16 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(labels(sub(menu3, '等間隔'))).toEqual(['横', '縦'])
     run(sub(menu3, '等間隔'), '縦')
     expect(three.distributeSelection).toHaveBeenCalledWith('y')
+  })
+
+  it('shows 重なり順 when something inside a frame is selected', () => {
+    expect(labels(actionsOf(context({}, { count: 1, reorderCount: 0 }))?.items)).not.toContain('重なり順')
+    const ctx = context({}, { count: 1, reorderCount: 1 })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製'])
+    expect(labels(sub(menu, '重なり順'))).toEqual(['最前面', '前面', '背面', '最背面'])
+    run(sub(menu, '重なり順'), '背面')
+    expect(ctx.reorderSelection).toHaveBeenCalledWith('backward')
   })
 
   it('locks and duplicates the selection', () => {
