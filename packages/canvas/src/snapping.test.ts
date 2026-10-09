@@ -330,6 +330,34 @@ describe('SelectTool のドラッグ', () => {
     tool.onPointerUp(pointer(350, 50, { metaKey: true, shiftKey: true }))
     expect([...editor.session.get().selectedIds]).toEqual([a])
   })
+
+  it('フレームの中では、辺までの余白をほかの箱の余白にそろえて吸い付き、距離の線を出す。離すと消える', () => {
+    const { editor, tool, pointer } = setup()
+    const frame = editor.makeNode('frame', { x: 0, y: 0, props: { w: 1000, h: 600, name: 'F' } })
+    editor.createNodes([frame])
+    const child = (x: number, y: number, w: number, h: number) => {
+      const node = editor.makeNode('geo', { x, y, parentId: frame.id, props: { shape: 'rect', w, h } })
+      editor.createNodes([node])
+      return node.id
+    }
+    child(100, 100, 300, 300)
+    const image = child(550, 150, 300, 300)
+    tool.onPointerDown(pointer(700, 300))
+    // 生の移動量なら x=594。右の余白が、左の箱の左の余白と同じ 100 になる x=600 に吸い付く
+    tool.onPointerMove(pointer(744, 300))
+    expect(editor.getNode(image)).toMatchObject({ x: 600, y: 150 })
+    const gaps = editor.session.get().gapGuides
+    expect(gaps).toContainEqual({ axis: 'x', from: 900, to: 1000, at: 300, equal: true })
+    expect(gaps).toContainEqual({ axis: 'x', from: 0, to: 100, at: 250, equal: true })
+    // Ctrl（⌘）を押している間は、吸い付かず、距離の線も出さない
+    tool.onPointerMove(pointer(744, 300, { ctrlKey: true }))
+    expect(editor.getNode(image)).toMatchObject({ x: 594 })
+    expect(editor.session.get().gapGuides).toEqual([])
+    tool.onPointerMove(pointer(744, 300))
+    tool.onPointerUp(pointer(744, 300))
+    expect(editor.getNode(image)).toMatchObject({ x: 600, y: 150 })
+    expect(editor.session.get().gapGuides).toEqual([])
+  })
 })
 
 describe('SelectTool のリサイズ（MAI-58）', () => {

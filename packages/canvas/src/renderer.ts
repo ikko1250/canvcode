@@ -13,6 +13,7 @@ import {
 } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
 import type { SnapGuide } from './snapping.ts'
+import type { GapGuide } from './gapSnapping.ts'
 import type { Axis } from './arrange.ts'
 import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
@@ -42,6 +43,9 @@ const SPACING_COLOR = '#e64980'
 const SPACING_BAR_PX = 2
 const SPACING_BAR_HOVER_PX = 4
 const SPACING_LABEL_FONT_PX = 12
+// 移動中の距離の線：ほかの間隔と同じでない距離は薄く描く。両端の印の長さ（CSS ピクセル、片側）
+const GAP_GUIDE_FAINT_COLOR = 'rgba(230, 73, 128, 0.45)'
+const GAP_GUIDE_CAP_PX = 4
 // グラデーションのハンドル（MAI-82）：始点・終点（中心・半径）は白い丸、止め色はその色の丸（選んでいるものは大きく、青い縁）
 const GRADIENT_END_RADIUS_PX = 5
 const GRADIENT_STOP_RADIUS_PX = 6
@@ -217,6 +221,8 @@ export interface OverlayState {
   quoteRegion?: Box | null
   // 移動中に吸い付いた線（MAI-53）
   snapGuides?: readonly SnapGuide[]
+  // 移動中の、隣・フレームの辺までの距離の線
+  gapGuides?: readonly GapGuide[]
   // 間隔のハンドル（MAI-54）：ホバー中の隙間と、ドラッグ中の間隔
   hoveredSpacing?: { axis: Axis; gapIndex: number } | null
   spacingDrag?: { axis: Axis; gap: number } | null
@@ -330,7 +336,71 @@ export function drawOverlay(
     }
     ctx.stroke()
   }
+  if (state.gapGuides && state.gapGuides.length > 0) drawGapGuides(ctx, state.gapGuides, view)
   return drawn
+}
+
+// 距離の線：両端に軸と直角の短い印を付けた 1 CSS ピクセルの線と、真ん中に距離（整数）のラベル。
+// ほかの間隔と同じ距離は濃く、それ以外は薄く描く
+function drawGapGuides(ctx: CanvasRenderingContext2D, guides: readonly GapGuide[], view: Viewport): void {
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.lineWidth = view.dpr
+  const cap = GAP_GUIDE_CAP_PX * view.dpr
+  // 薄いものを先に描き、濃いものを上に重ねる
+  const ordered = [...guides].sort((a, b) => Number(a.equal) - Number(b.equal))
+  for (const guide of ordered) {
+    const color = guide.equal ? SNAP_GUIDE_COLOR : GAP_GUIDE_FAINT_COLOR
+    const span =
+      guide.axis === 'x'
+        ? { x: guide.from, y: guide.at, w: guide.to - guide.from, h: 0 }
+        : { x: guide.at, y: guide.from, w: 0, h: guide.to - guide.from }
+    const r = deviceRect(span, view)
+    // 半ピクセルに寄せて、にじまないようにする
+    const x = Math.round(r.x) + 0.5
+    const y = Math.round(r.y) + 0.5
+    const w = Math.round(r.w)
+    const h = Math.round(r.h)
+    ctx.strokeStyle = color
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+    ctx.lineTo(x + w, y + h)
+    if (guide.axis === 'x') {
+      for (const end of [x, x + w]) {
+        ctx.moveTo(end, y - cap)
+        ctx.lineTo(end, y + cap)
+      }
+    } else {
+      for (const end of [y, y + h]) {
+        ctx.moveTo(x - cap, end)
+        ctx.lineTo(x + cap, end)
+      }
+    }
+    ctx.stroke()
+    drawValueLabel(ctx, String(Math.round(guide.to - guide.from)), x + w / 2, y + h / 2, view.dpr, 'center', color)
+  }
+}
+
+// 数値のラベル：色の付いた四角に白い文字。x・y は縦の真ん中で、align の基準（左端か真ん中）。デバイスピクセル
+function drawValueLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  dpr: number,
+  align: 'left' | 'center',
+  color: string,
+): void {
+  ctx.font = `${SPACING_LABEL_FONT_PX * dpr}px system-ui, sans-serif`
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
+  const width = ctx.measureText(text).width
+  const pad = 4 * dpr
+  const h = (SPACING_LABEL_FONT_PX + 6) * dpr
+  const left = align === 'center' ? x - width / 2 : x
+  ctx.fillStyle = color
+  ctx.fillRect(left - pad, y - h / 2, width + pad * 2, h)
+  ctx.fillStyle = '#ffffff'
+  ctx.fillText(text, left, y)
 }
 
 // スライドの中の、文字があふれているセルの箱を赤い枠線でなぞる（Editor.slideOverflows）
@@ -469,21 +539,11 @@ function drawSpacingHandles(
     ctx.lineTo(handle.b.x * dpr, handle.b.y * dpr)
     ctx.stroke()
     if (active && drag && drag.axis === handle.axis) {
-      const text = String(Math.round(drag.gap))
-      ctx.font = `${SPACING_LABEL_FONT_PX * dpr}px system-ui, sans-serif`
-      ctx.textBaseline = 'middle'
-      ctx.textAlign = 'left'
-      const width = ctx.measureText(text).width
-      const pad = 4 * dpr
       const mid = { x: ((handle.a.x + handle.b.x) / 2) * dpr, y: ((handle.a.y + handle.b.y) / 2) * dpr }
       // 棒の真ん中の右に出す（縦の間隔の横棒なら、少し下にずらして棒に重ねない）
       const x = mid.x + 8 * dpr
       const y = handle.axis === 'x' ? mid.y : mid.y + 12 * dpr
-      const h = (SPACING_LABEL_FONT_PX + 6) * dpr
-      ctx.fillStyle = SPACING_COLOR
-      ctx.fillRect(x - pad, y - h / 2, width + pad * 2, h)
-      ctx.fillStyle = '#ffffff'
-      ctx.fillText(text, x, y)
+      drawValueLabel(ctx, String(Math.round(drag.gap)), x, y, dpr, 'left', SPACING_COLOR)
     }
   }
   ctx.lineCap = 'butt'

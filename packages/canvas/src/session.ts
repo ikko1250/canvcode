@@ -1,6 +1,7 @@
 import type { Box, Camera } from '@canvcode/core'
 import type { BlockArrowShape } from '@canvcode/nodes'
 import type { SnapGuide } from './snapping.ts'
+import type { GapGuide } from './gapSnapping.ts'
 import type { Axis } from './arrange.ts'
 import type { PaintEditing } from './gradientHandles.ts'
 
@@ -49,6 +50,8 @@ export interface SessionState {
   arrowStyle: ArrowStyle
   // 移動中に吸い付いた線（ワールド座標。MAI-53）。ドラッグを終えると空になる
   snapGuides: readonly SnapGuide[]
+  // 移動中の、隣・フレームの辺までの距離の線（ワールド座標）。ドラッグを終えると空になる
+  gapGuides: readonly GapGuide[]
   // 間隔のハンドル（MAI-54）：ポインタの下にある（またはドラッグ中の）隙間。gapIndex はその軸の隙間の通し番号
   hoveredSpacing: { axis: Axis; gapIndex: number } | null
   // 間隔のハンドルをドラッグしている間の、今の間隔（棒の横に数字で出す）
@@ -93,6 +96,7 @@ export class Session {
       drawStyle: { color: '#e03131', size: 4, opacity: 0.5 },
       arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },
       snapGuides: [],
+      gapGuides: [],
       hoveredSpacing: null,
       spacingDrag: null,
       paintEditing: null,

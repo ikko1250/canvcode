@@ -49,9 +49,9 @@ import {
   nearestBoxes,
   sameGuides,
   snapResize,
-  snapTranslation,
   type SnapGuide,
 } from './snapping.ts'
+import { buildGapIndex, sameGapGuides, snapMove, type GapGuide, type GapIndex } from './gapSnapping.ts'
 import {
   distanceToSegment,
   frameCenter,
@@ -246,6 +246,8 @@ type SelectState =
       // 吸い付き（MAI-53）：動かし始めの選択全体のワールドの外接矩形と、吸い付く相手の箱（動かし始めに一度だけ集める）
       bounds: Box | null
       snapCandidates: Box[]
+      // 間隔の吸い付きと距離の線の相手（同じフレームの中の箱と、そのフレームの内側の辺）
+      gapIndex: GapIndex
     }
   | {
       name: 'resizing'
@@ -554,15 +556,20 @@ export class SelectTool implements Tool {
         let dx = pointer.world.x - state.start.world.x
         let dy = pointer.world.y - state.start.world.y
         // ほかのノードの辺・中心に吸い付く（MAI-53）。Ctrl（⌘）を押している間は自由（矢印のつながりと同じ）
+        // 隣・フレームの辺までの距離を出し、その距離がほかの間隔とそろう所にも吸い付く
         let guides: SnapGuide[] = []
+        let gaps: GapGuide[] = []
         if (state.bounds && !(pointer.ctrlKey || pointer.metaKey)) {
           const moving = { ...state.bounds, x: state.bounds.x + dx, y: state.bounds.y + dy }
-          const snap = snapTranslation(moving, state.snapCandidates, SNAP_THRESHOLD_PX / editor.session.get().camera.zoom)
+          const threshold = SNAP_THRESHOLD_PX / editor.session.get().camera.zoom
+          const snap = snapMove(moving, state.snapCandidates, state.gapIndex, threshold)
           dx += snap.dx
           dy += snap.dy
           guides = snap.guides
+          gaps = snap.gaps
         }
         if (!sameGuides(guides, editor.session.get().snapGuides)) editor.session.set({ snapGuides: guides })
+        if (!sameGapGuides(gaps, editor.session.get().gapGuides)) editor.session.set({ gapGuides: gaps })
         for (const world of state.initial.values()) {
           state.tx.put(editor.fromWorld({ ...world, x: world.x + dx, y: world.y + dy }))
         }
@@ -583,6 +590,7 @@ export class SelectTool implements Tool {
     if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().snapGuides.length > 0) {
       editor.session.set({ snapGuides: [] })
     }
+    if (state.name === 'translating' && editor.session.get().gapGuides.length > 0) editor.session.set({ gapGuides: [] })
     if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
       const next = new Set(editor.session.get().selectedIds)
@@ -676,6 +684,7 @@ export class SelectTool implements Tool {
       if ((state.name === 'translating' || state.name === 'resizing') && session.get().snapGuides.length > 0) {
         session.set({ snapGuides: [] })
       }
+      if (state.name === 'translating' && session.get().gapGuides.length > 0) session.set({ gapGuides: [] })
       if (state.name === 'spacing') session.set({ spacingDrag: null, hoveredSpacing: null })
       return true
     }
@@ -828,7 +837,32 @@ export class SelectTool implements Tool {
     editor.session.set({ hoveredId: null })
     const bounds = unionBoxes(ids.flatMap((id) => editor.index.get(id)?.worldBounds ?? []))
     const snapCandidates = bounds ? this.snapCandidates(ids, bounds) : []
-    this.state = { name: 'translating', start, tx, initial, dropTarget: null, bounds, snapCandidates }
+    const gapIndex = this.gapIndex(ids, snapCandidates)
+    this.state = { name: 'translating', start, tx, initial, dropTarget: null, bounds, snapCandidates, gapIndex }
+  }
+
+  // 間隔の相手：動かすものがみな同じフレーム（スライドを含む。slide-layout はその外側の親で見る）の中なら、
+  // そのフレームの中の箱と、フレームの内側の辺。そうでなければ吸い付く相手の箱のすべて。
+  // 動かすものの祖先（フレームや slide-layout）の箱は、動かすものを含んでいるので相手にしない
+  private gapIndex(ids: string[], candidates: readonly Box[]): GapIndex {
+    const editor = this.ctx.editor
+    const ancestors = new Set(ids.flatMap((id) => editor.index.ancestorsOf(id)).map((id) => editor.index.get(id)?.worldBounds))
+    const parents = new Set(
+      ids.map((id) => {
+        const node = editor.getNode(id)
+        return node ? editor.placementParent(node.parentId) : null
+      }),
+    )
+    const [parentId] = parents
+    const parent = parents.size === 1 && parentId ? editor.getNode(parentId) : undefined
+    const container = parent && editor.isContainer(parent, 'frame') ? (editor.index.get(parent.id)?.worldBounds ?? null) : null
+    const inside = (b: Box) =>
+      !container ||
+      (b.x >= container.x && b.y >= container.y && b.x + b.w <= container.x + container.w && b.y + b.h <= container.y + container.h)
+    return buildGapIndex(
+      candidates.filter((b) => !ancestors.has(b) && inside(b)),
+      container,
+    )
   }
 
   // 吸い付く相手の箱（MAI-53）：画面に見えているノードのうち、動かすもの（とその子孫）と矢印を除いたもの。

@@ -1254,7 +1254,8 @@ export class CanvasView {
       this.images.endFrame()
     }
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides, hoveredSpacing, spacingDrag } = this.editor.session.get()
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides, gapGuides, hoveredSpacing, spacingDrag } =
+        this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
         selectedIds,
@@ -1263,6 +1264,7 @@ export class CanvasView {
         focusedGroupId,
         quoteRegion,
         snapGuides,
+        gapGuides,
         hoveredSpacing,
         spacingDrag,
       })
@@ -1337,6 +1339,7 @@ export class CanvasView {
       state.quoteRegion !== prev.quoteRegion ||
       state.focusedGroupId !== prev.focusedGroupId ||
       state.snapGuides !== prev.snapGuides ||
+      state.gapGuides !== prev.gapGuides ||
       state.hoveredSpacing !== prev.hoveredSpacing ||
       state.spacingDrag !== prev.spacingDrag ||
       state.paintEditing !== prev.paintEditing ||
