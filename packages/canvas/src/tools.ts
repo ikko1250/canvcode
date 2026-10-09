@@ -820,9 +820,12 @@ export class SelectTool implements Tool {
 
   private startTranslating(start: ToolPointer): void {
     const editor = this.ctx.editor
-    const ids = [...editor.session.get().selectedIds].filter((id) => {
+    // 祖先も選ばれているノード（範囲選択でスライドと中の子を一緒に選んだときなど）は、祖先と一緒に動くので除く。
+    // 除かないと、二重に動いたうえ、離したときに動いている祖先を落とし先にできず、祖先から外れてしまう
+    const selected = new Set(editor.session.get().selectedIds)
+    const ids = [...selected].filter((id) => {
       const node = editor.getNode(id)
-      return node && !node.locked
+      return node && !node.locked && !editor.index.ancestorsOf(id).some((a) => selected.has(a))
     })
     if (ids.length === 0) {
       this.state = { name: 'idle' }

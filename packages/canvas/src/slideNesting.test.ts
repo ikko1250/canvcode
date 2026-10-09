@@ -73,6 +73,19 @@ describe('slides in the editor', () => {
     expect(worldOf(a)).toEqual({ x: 2600, y: 500, w: 100, h: 100 })
   })
 
+  it('keeps its children when it is moved together with them', () => {
+    const { editor, slide, rect, drag, worldOf } = setup()
+    const a = rect(100, 100, 100, 100, slide.id)
+    // 外から範囲選択でスライドを丸ごと囲むと、スライドと中の子が選ばれる
+    drag({ x: -100, y: -100 }, { x: 2100, y: 1200 })
+    expect(new Set(editor.session.get().selectedIds)).toEqual(new Set([slide.id, a]))
+    // そのまま（子をつかんで）動かしても、子はスライドから外れず、スライドと同じだけ動く
+    drag({ x: 150, y: 150 }, { x: 250, y: 200 })
+    expect(editor.getNode(a)!.parentId).toBe(slide.id)
+    expect(worldOf(slide.id)).toMatchObject({ x: 100, y: 50 })
+    expect(worldOf(a)).toMatchObject({ x: 200, y: 150 })
+  })
+
   it('clips its children to its box, which follows the ratio', () => {
     const { editor, slide, rect } = setup()
     expect(editor.index.get(slide.id)!.localBounds).toEqual({ x: 0, y: 0, w: 1920, h: 1080 })
