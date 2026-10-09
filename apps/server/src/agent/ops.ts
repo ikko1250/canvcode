@@ -13,11 +13,12 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { GEO_SHAPES, richTextFromPlain, slotsOf, solidPaint, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, GEO_SHAPES, richTextFromPlain, slotsOf, solidPaint, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
 import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { nodeIn, type Editor } from '@canvcode/canvas/editor'
+import { patchAdjust } from '@canvcode/canvas/slideLayoutAdjust'
 import { presentRows } from '@canvcode/canvas/slideLayoutArrange'
 import { hasSlideLayoutRows, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
 import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspace'
@@ -88,6 +89,12 @@ const style = {
   props: z.record(z.string(), z.unknown()).optional(),
 }
 const position = { x: finite.optional(), y: finite.optional(), place: place.optional() }
+// スライドの表パネル・右図枠の手で直した配置（slide-layout の adjust。1920 幅の px）。null はその値を既定に戻す
+const offsetValue = finite.nullable().optional()
+const slideAdjust = z.strictObject({
+  table: z.strictObject({ dx: offsetValue, dy: offsetValue, w: offsetValue }).optional(),
+  figure: z.strictObject({ dx: offsetValue, dy: offsetValue }).optional(),
+})
 
 const opSchemas = {
   create: z.strictObject({
@@ -110,6 +117,7 @@ const opSchemas = {
     x: finite.optional(),
     y: finite.optional(),
     template: z.enum(SLIDE_TEMPLATES).optional(),
+    adjust: slideAdjust.optional(),
     ...style,
   }),
   move: z.strictObject({ op: z.literal('move'), ids, dx: finite.optional(), dy: finite.optional(), ...position }),
@@ -429,6 +437,7 @@ class EditRun {
       if (node.type !== 'slide') throw new EditError('template is only for slides')
       this.applyTemplate(nodeId, op.template)
     }
+    if (op.adjust !== undefined) this.adjustSlideLayout(nodeId, op.adjust)
     if (op.rotation !== undefined) {
       if (def.canRotate === false || def.container === 'group') throw new EditError(`${node.type} cannot be rotated`)
       this.rotate(nodeId, op.rotation)
@@ -437,6 +446,29 @@ class EditRun {
       const current = this.topLeft(nodeId)
       this.translateTo(nodeId, { x: op.x ?? current.x, y: op.y ?? current.y }, false)
     }
+  }
+
+  // スライド（か slide-layout・その子）の slide-layout の配置（adjust）を変える（画面のデザインパネルの「配置」と同じ）。並べ直しは commit の直前
+  private adjustSlideLayout(nodeId: string, adjust: z.infer<typeof slideAdjust>): void {
+    const node = nodeIn(this.tx, nodeId)!
+    const parent = nodeIn(this.tx, node.parentId)
+    const layout =
+      node.type === 'slide-layout'
+        ? node
+        : node.type === 'slide'
+          ? this.editor.index.childrenOf(nodeId).map((id) => nodeIn(this.tx, id)).find((child) => child?.type === 'slide-layout')
+          : parent?.type === 'slide-layout'
+            ? parent
+            : undefined
+    if (!layout) throw new EditError(`${nodeId} is not a slide with a template`)
+    const props = layout.props as Record<string, unknown>
+    if (!hasSlideLayoutRows(props.layout)) throw new EditError('adjust is not for the title template')
+    if ((adjust.table?.w != null || adjust.figure) && props.layout !== 'table-image') throw new EditError('table.w and figure are only for the table-image template')
+    const orUndefined = (group: Record<string, number | null | undefined> | undefined) =>
+      group && Object.fromEntries(Object.entries(group).filter(([, v]) => v !== undefined).map(([k, v]) => [k, v ?? undefined]))
+    const next = patchAdjust(adjustOf(props.adjust), { table: orUndefined(adjust.table), figure: orUndefined(adjust.figure) })
+    this.tx.put({ ...layout, props: { ...props, adjust: next } })
+    this.tx.flush()
   }
 
   private move(op: Extract<Op, { op: 'move' }>): void {

@@ -2,7 +2,7 @@ import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, ty
 import { slideSize, type SlideRatio } from '@canvcode/nodes'
 import { slideOrder } from '@canvcode/canvas/slideOrder'
 import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
-import { getMaxRowCount } from '@canvcode/slides'
+import { getMaxRowCount, TABLE_IMAGE_SPEC, TABLE_IMAGE_WIDTH_RANGE } from '@canvcode/slides'
 import type { RecordStore, StoredRecord } from '../records.ts'
 import { describeChart, plainTextOfProps } from '../refs.ts'
 
@@ -520,7 +520,7 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
         if (slide?.overflow) out.overflow = slide.overflow
       }
       // 並べる子の役割（子の id）
-      if (type === 'slide-layout') copy('layout', 'slots')
+      if (type === 'slide-layout') copy('layout', 'slots', 'adjust')
       out.children = item.children.slice(0, MAX_CHILD_IDS).map((child) => child.record.id)
       if (item.children.length > MAX_CHILD_IDS) out.childCount = item.children.length
       break
@@ -740,7 +740,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 
 ## Details
 read_nodes returns compact JSON per node: world x, y, w, h, rotation, z-order index, parent, locked, plain text, fill/stroke colours, file, arrow ends, children ids, chart rows,
-slide number and overflow ({nodes: ids of cells whose text does not fit, extraRows: rows over the limit}), slide-layout layout and slots.
+slide number and overflow ({nodes: ids of cells whose text does not fit, extraRows: rows over the limit}), slide-layout layout, slots and adjust.
 ${options.editable ? EDIT_GUIDE : '\nEditing canvas nodes is not available; these tools are read-only.\n'}`
 }
 
@@ -776,10 +776,11 @@ Ops:
 Text size is estimated on the server (it cannot measure fonts); give text a width.
 
 Slides (presentations):
-- create type "slide": ratio? ("16:9" default | "4:3"), name?, hidden?, template? and position (no w/h: the size comes from the ratio). update: name, ratio, hidden, template.
+- create type "slide": ratio? ("16:9" default | "4:3"), name?, hidden?, template? and position (no w/h: the size comes from the ratio). update: name, ratio, hidden, template, adjust.
 - template (title | bullets | table | table-image) fills an empty slide with a slide-layout and placeholder children (3 rows). Then read_nodes the slide-layout for its slots and write the text with update {id, text} on each child.
 - Rows: at most ${getMaxRowCount('bullets')} (bullets), ${getMaxRowCount('table')} (table), ${getMaxRowCount('table-image')} (table-image). Add with add_row; remove a row by deleting its body cell (its label goes with it and the rows close up).
 - The children of a slide-layout are laid out again at the end of every edit (positions, sizes and body colours follow the layout and row order): x, y, w, h you write for them are replaced. Long text wraps and may overflow its cell (read_canvas shows overflow on the slide); shorten it or use fewer rows.
+- adjust (update on the slide, its slide-layout or a child; not for the title template) moves the table panel with its rows and, for table-image, the figure frame, and sets the table-image table width: {"table":{"dx":0,"dy":-60,"w":800},"figure":{"dx":0,"dy":0}} in px of a 1920-wide slide (4:3 shrinks x). w is ${TABLE_IMAGE_WIDTH_RANGE.min}–${TABLE_IMAGE_WIDTH_RANGE.max} (default ${TABLE_IMAGE_SPEC.tableWidth}); the figure keeps its right edge and gets narrower. null resets a value. The title does not move.
 - Other nodes may be put inside a slide (parent = the slide id) and keep their positions.
 
 Example:

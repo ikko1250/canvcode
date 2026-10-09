@@ -129,6 +129,15 @@ export const TABLE_IMAGE_SPEC = {
   figureBorderRadius: 16,
 } as const;
 
+/** table-image の左表パネルの幅の範囲。下限は本文の列が 100px 残る幅、上限は右図枠が 240px 残る幅 */
+export const TABLE_IMAGE_WIDTH_RANGE = { min: 400, max: 1400 } as const;
+
+/** table-image の左表パネルの幅。数でなければ既定の幅、範囲外なら範囲に収める */
+export function clampTableImageWidth(width: number | undefined): number {
+  if (typeof width !== "number" || !Number.isFinite(width)) return TABLE_IMAGE_SPEC.tableWidth;
+  return Math.min(TABLE_IMAGE_WIDTH_RANGE.max, Math.max(TABLE_IMAGE_WIDTH_RANGE.min, width));
+}
+
 /** 上表・下2図（layout: "table-images"） */
 export const TABLE_IMAGES_SPEC = {
   left: 150,
@@ -235,6 +244,8 @@ export type RowGridSpec = {
 export type GeometryOptions = {
   /** compact 幾何に収まる行数でも、全高パネル（fullPanelHeight / height）を使う。行容量 lint が内容量から決める */
   forceFull?: boolean;
+  /** table-image の左表パネルの幅（手で決めた幅）。無ければ TABLE_IMAGE_SPEC.tableWidth。範囲は clampTableImageWidth で収める */
+  tableWidth?: number;
 };
 
 export type SlideGeometry = {
@@ -344,7 +355,7 @@ function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): Sl
     rowPx = Math.round((budgetPx - (rowCount - 1) * gapPx) / rowCount);
   }
 
-  const contentWidthPx = s.tableWidth - s.panelPadding * 2;
+  const contentWidthPx = clampTableImageWidth(options.tableWidth) - s.panelPadding * 2;
   return {
     layout: "table-image",
     rowCount,

@@ -23,6 +23,7 @@ import {
   PDF_POINT_SCALE,
   PORTAL_DEFAULT_SIZE,
   QUOTE_CARD_DEFAULT_WIDTH,
+  adjustOf,
   slideSize,
   slotsOf,
   textMetricsGeneration,
@@ -55,6 +56,7 @@ import type { QuoteDraft } from './quotes.ts'
 import { reorderSiblings, type ReorderDirection } from './reorder.ts'
 import { Session } from './session.ts'
 import { slideTopLeft, toggledSlideRatio, toggledSlidesHidden } from './slideEdit.ts'
+import { adjustWithMovedChildren } from './slideLayoutAdjust.ts'
 import { arrangeSlideLayout, presentRows, pruneSlideLayoutRows } from './slideLayoutArrange.ts'
 import {
   emptiedCellProps,
@@ -1278,11 +1280,12 @@ export class Editor {
     // 行のセルの下端をリサイズした（上端を動かさずに高さを変えた）なら、セルの高さの代わりに、その行の高さ（h）を書く（同じ 1 歩）。
     // セルの高さは、このあとの並べ直しで行の高さになる
     props = layout.props as Record<string, unknown>
-    const resized = slotsWithResizedRows(slotsOf(props.slots), (id) => {
+    const changed = (id: string) => {
       const change = patch.get(id)
       const after = children.get(id)
       return change && isNodeRecord(change.before) && after ? { before: change.before, after } : undefined
-    })
+    }
+    const resized = slotsWithResizedRows(slotsOf(props.slots), changed)
     if (resized) {
       layout = { ...layout, props: { ...props, slots: resized } }
       tx.put(layout)
@@ -1291,6 +1294,13 @@ export class Editor {
     const parent = nodeIn(tx, layout.parentId)
     const ratio: SlideRatio =
       parent?.type === 'slide' ? ((parent.props as SlideProps).ratio === '4:3' ? '4:3' : '16:9') : props.w === slideSize('4:3').w ? '4:3' : '16:9'
+    // 表パネル・右図枠を動かした（table-image の表パネルの幅を変えた）なら、元に戻す代わりに、手で直した配置（adjust）として書く（同じ 1 歩）
+    props = layout.props as Record<string, unknown>
+    const adjusted = adjustWithMovedChildren(props.layout, slotsOf(props.slots), adjustOf(props.adjust), changed, slideSize(ratio).w / slideSize('16:9').w)
+    if (adjusted) {
+      layout = { ...layout, props: { ...props, adjust: adjusted } }
+      tx.put(layout)
+    }
     const { updates } = arrangeSlideLayout({
       layout,
       children,
@@ -1315,18 +1325,7 @@ export class Editor {
     if (selectedIds.size !== 1) return null
     const node = this.getNode([...selectedIds][0])
     if (!node) return null
-    let layout: NodeRecord | undefined
-    if (node.type === 'slide') {
-      layout = this.index
-        .childrenOf(node.id)
-        .map((id) => this.getNode(id))
-        .find((child) => child?.type === 'slide-layout')
-    } else if (node.type === 'slide-layout') {
-      layout = node
-    } else {
-      const parent = this.getNode(node.parentId)
-      if (parent?.type === 'slide-layout') layout = parent
-    }
+    const layout = this.slideLayoutFor(node.id)
     if (!layout || layout.locked) return null
     const props = layout.props as Record<string, unknown>
     if (!hasSlideLayoutRows(props.layout)) return null
@@ -1335,6 +1334,23 @@ export class Editor {
     const rows = presentRows(slots, (id) => this.getNode(id)?.parentId === layoutId)
     const row = slideLayoutRowOf(rows, node.id)
     return { layout, slots: { ...slots, rows }, rows, row: row >= 0 ? row : null }
+  }
+
+  // ノード（スライド・slide-layout・slide-layout の子）が属する slide-layout。どれでもなければ null
+  slideLayoutFor(nodeId: string): NodeRecord | null {
+    const node = this.getNode(nodeId)
+    if (!node) return null
+    if (node.type === 'slide-layout') return node
+    if (node.type === 'slide') {
+      return (
+        this.index
+          .childrenOf(node.id)
+          .map((id) => this.getNode(id))
+          .find((child) => child?.type === 'slide-layout') ?? null
+      )
+    }
+    const parent = this.getNode(node.parentId)
+    return parent?.type === 'slide-layout' ? parent : null
   }
 
   // 今の選択で行を足す・消すときの状態。行を持つ slide-layout の中（またはそのスライド）を選んでいなければ null

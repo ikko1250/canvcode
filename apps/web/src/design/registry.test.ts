@@ -733,3 +733,22 @@ describe('chart section', () => {
     expect(applyChartRowsChange([], [{ label: 'a', value: 1 }, null as never])).toEqual([{ label: 'a', value: 1 }])
   })
 })
+
+describe('slide layout adjust section', () => {
+  it('shows for a slide with a table template and its children, but not for a cover or a loose shape', () => {
+    const { editor, geo } = setup()
+    const slide = editor.createSlide({ x: 960, y: 540 }, '16:9')
+    editor.applySlideTemplate(slide, 'table-image')
+    const cover = editor.createSlide({ x: 3960, y: 540 }, '16:9')
+    editor.applySlideTemplate(cover, 'title')
+    const layoutOf = (id: string) => editor.getNode(editor.index.childrenOf(id)[0]!)!
+    const cell = editor.getNode(editor.index.childrenOf(layoutOf(slide).id).at(-1)!)!
+    const ids = (nodes: NodeRecord[]) => visibleSections(nodes, undefined, null, editor).map((s) => s.section.id)
+    expect(ids([editor.getNode(slide)!])).toContain('slide-layout-adjust')
+    expect(ids([cell])).toContain('slide-layout-adjust')
+    expect(ids([editor.getNode(cover)!])).not.toContain('slide-layout-adjust')
+    expect(ids([editor.getNode(geo.id)!])).not.toContain('slide-layout-adjust')
+    // editor を渡さなければ、周りを見られないので出さない
+    expect(visibleSections([cell]).map((s) => s.section.id)).not.toContain('slide-layout-adjust')
+  })
+})

@@ -421,6 +421,30 @@ describe('edit_canvas slides', () => {
     ])
   })
 
+  it('moves the table and the figure and widens the table with adjust', () => {
+    const { records, edit } = setup()
+    const made = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table-image' }]).created
+    const slideId = made.s!
+    const slots = slotsOf(records, slideId) as Slots & { panel: string; figure: string }
+    edit([{ op: 'update', id: slots.rows[0]!.body, adjust: { table: { dy: -60, w: 800 }, figure: { dx: 10 } } }])
+    expect((layoutOf(records, slideId).props as { adjust: unknown }).adjust).toEqual({ table: { dy: -60, w: 800 }, figure: { dx: 10 } })
+    const boxes = canvasSlideLayout('table-image', 3, '16:9', { tableWidth: 800, tableOffset: { dx: 0, dy: -60 }, figureOffset: { dx: 10, dy: 0 } })
+    expect(world(records, slots.panel)).toMatchObject(boxes.panel)
+    expect(world(records, slots.figure)).toMatchObject(boxes.figure!)
+    expect(readNodes(records, [layoutOf(records, slideId).id]).nodes[0]).toMatchObject({ adjust: { table: { dy: -60, w: 800 } } })
+    // null は既定に戻す
+    edit([{ op: 'update', id: slideId, adjust: { table: { w: null }, figure: { dx: null } } }])
+    expect((layoutOf(records, slideId).props as { adjust: unknown }).adjust).toEqual({ table: { dy: -60 } })
+    // 表紙・全幅の表には使えない値
+    const other = edit([
+      { op: 'create', type: 'slide', as: 't', x: 3000, y: 0, template: 'title' },
+      { op: 'create', type: 'slide', as: 'b', x: 6000, y: 0, template: 'table' },
+    ]).created
+    expect(() => edit([{ op: 'update', id: other.t!, adjust: { table: { dy: 10 } } }])).toThrow(/not for the title template/)
+    expect(() => edit([{ op: 'update', id: other.b!, adjust: { table: { w: 900 } } }])).toThrow(/only for the table-image template/)
+    expect(() => edit([{ op: 'update', id: made.s!, adjust: { table: { z: 1 } } }])).toThrow()
+  })
+
   it('refuses slide ops that do not fit', () => {
     const { records, edit } = setup()
     const made = edit([

@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { geoFitHeight, slotsOf, type GeoProps, type SlideLayoutSlots, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, geoFitHeight, slotsOf, type GeoProps, type SlideLayoutSlots, type SlideRatio } from '@canvcode/nodes'
 import {
   CANVAS_SLIDE_LAYOUTS,
   canvasSlideBodyFill,
@@ -10,6 +10,7 @@ import {
   type CanvasBox,
   type CanvasSlideLayout,
 } from '@canvcode/slides'
+import { adjustLayoutOptions } from './slideLayoutAdjust.ts'
 
 // slide-layout（スライド v2）の子を、レイアウトの幾何（canvasSlideLayout）どおりに並べ直す計算。DOM に依存しない純粋な関数だけを置く。
 // 書き込むのは呼び出し側（Editor）で、変更を起こしたトランザクションの終わりに同じ 1 歩として書く。
@@ -19,6 +20,7 @@ import {
 // - 本文の地の色は行の順で決まる（v1 の canvasSlideBodyFill）ので、行の順に合わせて直す（slideBodyFillFor）
 // - 行の高さは canvasSlideRowHeights（v1 の行容量の規則）で配分する。自動の行の必要高さは、見出しと本文のセルのうち大きい方の
 //   文字の高さ＋上下の余白（geoFitHeight。あふれの判定と同じ配置で、並べたあとの幅で測る）。手で決めた行（slots の行の h）はその高さを優先する
+// - 手で直した配置（props.adjust。表パネルと右図枠のずらす量、table-image の表の幅）は幾何に渡す（slideLayoutAdjust.ts）
 
 export interface SlideLayoutArrangeInput {
   // slide-layout のレコード（props は SlideLayoutProps。壊れた値も読む）
@@ -115,14 +117,15 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   const rows = presentRows(slots, (id) => children.has(id))
   const max = getMaxRowCount(kind)
   const rowCount = Math.min(rows.length, max)
-  const sized = canvasSlideLayout(kind, Math.max(1, rowCount), ratio)
+  const adjusted = adjustLayoutOptions(adjustOf(props.adjust))
+  const sized = canvasSlideLayout(kind, Math.max(1, rowCount), ratio, adjusted)
   const placed = rows.slice(0, rowCount)
   // 行の幅は compact でも全高でも同じなので、一律の幾何の箱の幅で測る
   const required = placed.map((row, i) =>
     Math.max(cellFitHeight(child(row.label), sized.rows[i].label?.w), cellFitHeight(child(row.body), sized.rows[i].body.w)),
   )
   const heights = rowCount > 0 ? canvasSlideRowHeights(kind, required, placed.map((row) => row.h)) : null
-  const boxes = heights ? canvasSlideLayout(kind, rowCount, ratio, { forceFull: heights.forceFull, rowHeights: heights.rowHeights }) : sized
+  const boxes = heights ? canvasSlideLayout(kind, rowCount, ratio, { ...adjusted, forceFull: heights.forceFull, rowHeights: heights.rowHeights }) : sized
   place(slots.title, boxes.title)
   place(slots.panel, boxes.panel)
   place(slots.figure, boxes.figure)

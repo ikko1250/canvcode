@@ -264,10 +264,10 @@ describe('editor arranges slide-layouts', () => {
     expect(editor.getNode(panel.id)).toBeUndefined()
   })
 
-  it('puts a child moved within the layout back in place', () => {
+  it('puts a cell moved within the layout back in place', () => {
     const { editor, panel, rows, box } = setup(2)
     const placed = box(rows[0].body.id)
-    editor.moveNodes([rows[0].body.id, panel.id], 120, 40)
+    editor.moveNodes([rows[0].body.id, rows[1].label.id], 120, 40)
     expect(box(rows[0].body.id)).toEqual(placed)
     expect(box(panel.id)).toEqual(geoBox(canvasSlideLayout('table', 2).panel))
     // 何も変わらなかった操作は、履歴に入らない
@@ -287,13 +287,13 @@ describe('editor arranges slide-layouts', () => {
   })
 
   it('runs once per transaction and does not touch unrelated changes', () => {
-    const { editor, layout, panel } = setup(2)
+    const { editor, layout, rows } = setup(2)
     const commits: number[] = []
     editor.store.listen((event) => {
       if (event.phase === 'commit') commits.push(event.patch.size)
     })
     // 並べ直した結果を書いても、再び並べ直しは走らない（1 回の操作が 1 回の commit で終わる）
-    editor.transact('nudge', (tx) => tx.put({ ...editor.getNode(panel.id)!, x: 0 }))
+    editor.transact('nudge', (tx) => tx.put({ ...editor.getNode(rows[0].body.id)!, x: 0 }))
     expect(commits).toEqual([])
     const other = editor.makeNode('geo', { x: 3000, y: 0, props: { shape: 'rect', w: 10, h: 10 } })
     editor.createNodes([other])

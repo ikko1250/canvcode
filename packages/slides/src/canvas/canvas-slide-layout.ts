@@ -10,6 +10,7 @@
  */
 
 import {
+  clampTableImageWidth,
   computeCoverGeometry,
   computeSlideGeometry,
   lineBoxHeight,
@@ -109,7 +110,16 @@ export type CanvasSlideLayoutOptions = {
   forceFull?: boolean;
   /** 行ごとの高さ（v1 の computedRowHeights）。行数と数が合わなければ使わず、一律（defaultRowPx）にする */
   rowHeights?: readonly number[];
+  /** table-image の左表パネルの幅（1920 幅の px）。右図枠は右端を変えずに、その分だけ狭く（広く）なる */
+  tableWidth?: number;
+  /** 表パネル（中の行を含む）をずらす量（1920 幅の px）。4:3 では横を縮める */
+  tableOffset?: CanvasSlideOffset;
+  /** table-image の右図枠をずらす量（1920 幅の px） */
+  figureOffset?: CanvasSlideOffset;
 };
+
+/** 手でずらした量（右・下が正） */
+export type CanvasSlideOffset = { dx: number; dy: number };
 
 /** 横の寸法の倍率（16:9 は 1、4:3 は 1440/1920） */
 export function canvasSlideScaleX(ratio: CanvasSlideRatio): number {
@@ -125,20 +135,24 @@ function gridBoxes(
   layout: CanvasGridSlideLayout,
   geometry: SlideGeometry,
   ratio: CanvasSlideRatio,
-  rowHeights?: readonly number[],
+  options: CanvasSlideLayoutOptions,
 ): CanvasGridSlideBoxes {
   const sx = canvasSlideScaleX(ratio);
   const { grid } = geometry;
+  const { rowHeights } = options;
   const isTableImage = layout === "table-image";
+  const tableWidth = clampTableImageWidth(options.tableWidth);
+  const table = options.tableOffset ?? { dx: 0, dy: 0 };
 
   // パネルの横位置・幅と padding。table-image は左表パネル（右図枠の左）
-  const panelLeft = isTableImage ? TABLE_IMAGE_SPEC.left : TABLE_SPEC.left;
-  const panelWidth = isTableImage ? TABLE_IMAGE_SPEC.tableWidth : TABLE_SPEC.width;
+  const panelLeft = (isTableImage ? TABLE_IMAGE_SPEC.left : TABLE_SPEC.left) + table.dx;
+  const panelTop = geometry.panelTop + table.dy;
+  const panelWidth = isTableImage ? tableWidth : TABLE_SPEC.width;
   const padLeft = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : TABLE_SPEC.padding.x;
   const padTop = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : TABLE_SPEC.padding.top;
 
   const gridLeft = panelLeft + padLeft;
-  const gridTop = geometry.panelTop + padTop;
+  const gridTop = panelTop + padTop;
   const rowPx = grid.defaultRowPx;
   const gapPx = grid.gapPx;
 
@@ -165,14 +179,18 @@ function gridBoxes(
   let figureContent: CanvasBox | null = null;
   if (isTableImage) {
     const s = TABLE_IMAGE_SPEC;
-    const figureLeft = s.left + s.tableWidth + s.columnGap;
+    const offset = options.figureOffset ?? { dx: 0, dy: 0 };
+    // 表を広げた分だけ右図枠を狭くする（ずらす前の右端は変えない）
+    const figureWidth = s.figureWidth - (tableWidth - s.tableWidth);
+    const figureLeft = s.left + tableWidth + s.columnGap + offset.dx;
+    const figureTop = s.top + offset.dy;
     // 枠線と padding は border-box の内側に入る
     const inset = s.figurePadding + FIGURE_BORDER_WIDTH;
-    figure = box(figureLeft, s.top, s.figureWidth, s.height, sx);
+    figure = box(figureLeft, figureTop, figureWidth, s.height, sx);
     figureContent = box(
       figureLeft + inset,
-      s.top + inset,
-      s.figureWidth - inset * 2,
+      figureTop + inset,
+      figureWidth - inset * 2,
       s.height - inset * 2,
       sx,
     );
@@ -193,7 +211,7 @@ function gridBoxes(
       lineBoxHeight(TITLE_TYPOGRAPHY),
       sx,
     ),
-    panel: box(panelLeft, geometry.panelTop, panelWidth, geometry.panelHeight, sx),
+    panel: box(panelLeft, panelTop, panelWidth, geometry.panelHeight, sx),
     grid: box(gridLeft, gridTop, grid.contentWidthPx, grid.budgetPx, sx),
     rows,
     rowPx,
@@ -278,6 +296,9 @@ export function canvasSlideLayout(
   if (layout === "title") {
     return canvasCoverLayout(options.hasCredits === true, ratio);
   }
-  const geometry = computeSlideGeometry(layout, rowCount, { forceFull: options.forceFull });
-  return gridBoxes(layout, geometry, ratio, options.rowHeights);
+  const geometry = computeSlideGeometry(layout, rowCount, {
+    forceFull: options.forceFull,
+    tableWidth: options.tableWidth,
+  });
+  return gridBoxes(layout, geometry, ratio, options);
 }

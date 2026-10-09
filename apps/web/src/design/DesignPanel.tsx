@@ -129,7 +129,7 @@ export function DesignPanel(props: {
   const [chosenTab, setChosenTab] = useState<string | null>(null)
   const editingId = useSyncExternalStore(editor.session.subscribe, () => editor.session.get().editingId)
 
-  const allSections = visibleSections(nodes, undefined, textSelection)
+  const allSections = visibleSections(nodes, undefined, textSelection, editor)
   if (allSections.length === 0) return null
   const footerSections = allSections.filter(({ section }) => section.footer)
   const tabSections = allSections.filter(({ section }) => !section.footer)
@@ -207,7 +207,7 @@ export function DesignPanel(props: {
     <section key={section.id} className={section.joinPrevious ? 'design-section joined' : 'design-section'} data-section={section.id}>
       {!section.hideTitle && <h3>{section.title}</h3>}
       {fieldRows(fields).map(rowView)}
-      {showComponent && section.Component && <section.Component nodes={nodes} />}
+      {showComponent && section.Component && <section.Component nodes={nodes} editor={editor} />}
     </section>
   )
 

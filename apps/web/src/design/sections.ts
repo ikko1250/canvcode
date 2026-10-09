@@ -111,6 +111,8 @@ import {
 } from '@canvcode/nodes'
 import { sameValue, type SharedValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
+import { SlideLayoutAdjustSection } from './SlideLayoutAdjustSection.tsx'
+import { slideLayoutAdjustTarget } from './slideLayoutAdjustTarget.ts'
 
 // デザインパネルに最初から出すセクション（MAI-73）。
 // 塗り・線・文字・レイヤーの 4 つ。後の課題は、ここに項目を足すか、別のファイルで registerDesignSection する
@@ -970,6 +972,15 @@ export const opacityField: DesignField<number> = {
 }
 
 export const builtinDesignSections: DesignSection[] = [
+  // スライド（v2）の表パネル・右図枠の位置と表の幅（slide-layout の props.adjust）。スライドかその中のノードを選んでいるとき
+  {
+    id: 'slide-layout-adjust',
+    title: '配置',
+    order: 20,
+    fields: [],
+    appliesTo: (node, editor) => slideLayoutAdjustTarget(editor, node) !== null,
+    Component: SlideLayoutAdjustSection,
+  },
   { id: 'chart', title: 'グラフ', order: 40, hideTitle: true, fields: [chartDataField, chartInnerRadiusField, chartStartAngleField, chartShowLabelsField, chartShowPercentField] },
   { id: 'shape', title: '形', order: 50, hideTitle: true, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
   // 角丸は形のすぐ下に、区切り線なしで続ける

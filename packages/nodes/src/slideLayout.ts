@@ -31,6 +31,33 @@ export interface SlideLayoutProps {
   w: number
   h: number
   slots: SlideLayoutSlots
+  // 手で直した配置（デザインパネルの「配置」、表パネル・右図枠のドラッグとリサイズで書く）。足しただけの省略できる値なので版は上げない
+  adjust?: SlideLayoutAdjust
+}
+
+// 手で直した配置。値はスライドの幾何の単位（16:9 の 1920 幅の px。4:3 では横を縮めて使う）。
+// table は表パネル（中の行を含む）のずらす量と、table-image の左表パネルの幅（w）。figure は table-image の右図枠のずらす量。
+// 0 や無い値は既定の配置
+export interface SlideLayoutAdjust {
+  table?: { dx?: number; dy?: number; w?: number }
+  figure?: { dx?: number; dy?: number }
+}
+
+// 壊れたデータ（数でない値・NaN など）を捨てて読む。0 の値と空になった組は省く
+export function adjustOf(value: unknown): SlideLayoutAdjust {
+  const v = (value ?? {}) as Record<string, unknown>
+  const pick = (group: unknown, keys: readonly string[]): Record<string, number> | undefined => {
+    if (!group || typeof group !== 'object') return undefined
+    const out: Record<string, number> = {}
+    for (const key of keys) {
+      const n = (group as Record<string, unknown>)[key]
+      if (typeof n === 'number' && Number.isFinite(n) && n !== 0) out[key] = n
+    }
+    return Object.keys(out).length > 0 ? out : undefined
+  }
+  const table = pick(v.table, ['dx', 'dy', 'w'])
+  const figure = pick(v.figure, ['dx', 'dy'])
+  return { ...(table ? { table } : {}), ...(figure ? { figure } : {}) }
 }
 
 export type SlideLayoutNode = NodeRecord<SlideLayoutProps>

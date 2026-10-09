@@ -135,6 +135,31 @@ describe('canvasSlideLayout table-image', () => {
     expect(four.figure).toEqual({ x: 850, y: 197, w: 960, h: 772 })
     expect(four.figureContent).toEqual({ x: 871, y: 218, w: 918, h: 730 })
   })
+  it('widens the table and narrows the figure with its right edge kept', () => {
+    const wide = canvasSlideLayout('table-image', 4, '16:9', { tableWidth: 800 })
+    expect(wide.panel).toEqual({ x: 150, y: 197, w: 800, h: 772 })
+    expect(wide.grid.w).toBe(720)
+    expect(wide.rows[0]!.body.w).toBe(500)
+    expect(wide.figure).toEqual({ x: 970, y: 197, w: 840, h: 772 })
+    expect(wide.figureContent).toEqual({ x: 991, y: 218, w: 798, h: 730 })
+    // 範囲の外は範囲に収める
+    expect(canvasSlideLayout('table-image', 4, '16:9', { tableWidth: 10 }).panel.w).toBe(400)
+    expect(canvasSlideLayout('table-image', 4, '16:9', { tableWidth: 5000 }).panel.w).toBe(1400)
+  })
+
+  it('moves the table with its rows, and the figure on its own', () => {
+    const plain = canvasSlideLayout('table-image', 2)
+    const moved = canvasSlideLayout('table-image', 2, '16:9', { tableOffset: { dx: 10, dy: -50 }, figureOffset: { dx: 0, dy: 30 } })
+    expect(moved.panel).toEqual({ ...plain.panel, x: 160, y: 300 })
+    expect(moved.rows[1]!.body).toEqual({ ...plain.rows[1]!.body, x: plain.rows[1]!.body.x + 10, y: plain.rows[1]!.body.y - 50 })
+    expect(moved.figure).toEqual({ ...plain.figure!, y: plain.figure!.y + 30 })
+    expect(moved.title).toEqual(plain.title)
+  })
+
+  it('scales the width and the offset in 4:3', () => {
+    const narrow = canvasSlideLayout('table-image', 4, '4:3', { tableWidth: 800, tableOffset: { dx: 40, dy: 0 } })
+    expect(narrow.panel).toEqual({ x: 142.5, y: 197, w: 600, h: 772 })
+  })
 })
 
 describe('canvasSlideLayout title', () => {

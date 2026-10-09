@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { sameValue, sharedOf, sharedValue, type SharedValue, type TextSelection } from '@canvcode/canvas'
+import { sameValue, sharedOf, sharedValue, type Editor, type SharedValue, type TextSelection } from '@canvcode/canvas'
 import type { TextRange } from '@canvcode/nodes'
 import type { ComponentType } from 'react'
 
@@ -99,6 +99,7 @@ export interface DesignField<T = unknown> {
 
 export interface DesignSectionProps {
   nodes: readonly NodeRecord[]
+  editor: Editor
 }
 
 export interface DesignSection {
@@ -116,8 +117,9 @@ export interface DesignSection {
   // 出すセクションのタブが 2 つ以上あれば、パネルの上にタブを並べ、選んだタブのセクションだけを出す（図形の中の文字は「文字」のタブ）
   tab?: string | ((nodes: readonly NodeRecord[]) => string | undefined)
   fields: readonly DesignField<any>[]
-  // 項目のほかに、このセクションを出すノードか（Component だけのセクション用）。項目があれば、項目で決める
-  appliesTo?(node: NodeRecord): boolean
+  // 項目のほかに、このセクションを出すノードか（Component だけのセクション用）。項目があれば、項目で決める。
+  // editor はノードの周り（親など）を見るときに使う（無ければ、周りを見ないと決められないセクションは出さない）
+  appliesTo?(node: NodeRecord, editor?: Editor): boolean
   // 項目の下に描く、そのセクション専用の UI（グラデーションの編集など、共通の部品で表せないもの）
   Component?: ComponentType<DesignSectionProps>
 }
@@ -150,6 +152,7 @@ export function visibleSections(
   nodes: readonly NodeRecord[],
   all: readonly DesignSection[] = sections,
   textSelection: TextSelection | null = null,
+  editor?: Editor,
 ): VisibleSection[] {
   if (nodes.length === 0) return []
   const result: VisibleSection[] = []
@@ -157,7 +160,7 @@ export function visibleSections(
     const fields = section.fields
       .filter((field) => nodes.every((node) => field.appliesTo(node)))
       .map((field) => ({ field, value: fieldValue(field, nodes, textSelection) }))
-    const showComponent = Boolean(section.Component && (section.appliesTo ? nodes.every((node) => section.appliesTo!(node)) : fields.length > 0))
+    const showComponent = Boolean(section.Component && (section.appliesTo ? nodes.every((node) => section.appliesTo!(node, editor)) : fields.length > 0))
     const tab = typeof section.tab === 'function' ? section.tab(nodes) : section.tab
     if (fields.length > 0 || showComponent) result.push({ section, fields, showComponent, tab })
   }

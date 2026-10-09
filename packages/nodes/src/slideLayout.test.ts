@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
 import { builtinNodeTypes } from './index.ts'
-import { remapSlots, slideLayoutType, slotIds, slotsOf, type SlideLayoutProps } from './slideLayout.ts'
+import { adjustOf, remapSlots, slideLayoutType, slotIds, slotsOf, type SlideLayoutProps } from './slideLayout.ts'
 
 // スライドの中身を並べる入れ物（slide-layout、スライド v2）
 
@@ -56,5 +56,14 @@ describe('slide-layout', () => {
     expect(slideLayoutType.remapIds!(node, (id) => map.get(id)).slots.title).toBe('A')
     expect(slideLayoutType.releaseChild!(node, 'l1')).toEqual({ ...node.props, slots: { title: 'a', panel: 'p', rows: [{ body: 'b1' }, { body: 'b2' }] } })
     expect(slideLayoutType.releaseChild!(node, 'a').slots.title).toBeUndefined()
+  })
+})
+
+describe('adjustOf', () => {
+  it('reads broken data as the default and drops zeros', () => {
+    expect(adjustOf(undefined)).toEqual({})
+    expect(adjustOf('x')).toEqual({})
+    expect(adjustOf({ table: { dx: 'a', dy: Number.NaN, w: 0 }, figure: null })).toEqual({})
+    expect(adjustOf({ table: { dx: 10, dy: -20, w: 800, z: 1 }, figure: { dy: 5 } })).toEqual({ table: { dx: 10, dy: -20, w: 800 }, figure: { dy: 5 } })
   })
 })
