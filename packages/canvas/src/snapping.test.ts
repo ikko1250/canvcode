@@ -303,6 +303,17 @@ describe('SelectTool のドラッグ', () => {
     expect([...editor.session.get().selectedIds]).toEqual([b])
   })
 
+  it('⌘ を押して塗りなしの図形の中の空白からドラッグしても、その図形は選ばない', () => {
+    const { editor, rect, tool, pointer } = setup()
+    const hollow = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 200, h: 200, fill: null, strokeWidth: 2 } })
+    editor.createNodes([hollow])
+    const inner = rect(120, 120, 40, 40)
+    tool.onPointerDown(pointer(50, 50, { metaKey: true }))
+    tool.onPointerMove(pointer(170, 170, { metaKey: true }))
+    tool.onPointerUp(pointer(170, 170, { metaKey: true }))
+    expect([...editor.session.get().selectedIds]).toEqual([inner])
+  })
+
   it('⌘ を押してノードをクリックする（動かさない）と、そのノードを選ぶ', () => {
     const { editor, rect, tool, pointer } = setup()
     const a = rect(0, 0)

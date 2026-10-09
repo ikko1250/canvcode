@@ -228,8 +228,9 @@ function placeAt(editor: Editor, point: Vec): { parentId: string; local: Vec } {
 type SelectState =
   | { name: 'idle' }
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
-  // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック
-  | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string }
+  // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック。
+  // excludeId は、Ctrl（⌘）を押して押したノード（塗りなしの図形の中の空白も含む）。範囲選択で選ばない
+  | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string; excludeId?: string }
   // 引用する範囲を選んでいる（Alt+ドラッグ、または「範囲を選んで引用」のあとのドラッグ。MAI-33）。start はページのローカル座標
   | { name: 'selectingQuote'; pageId: string; start: Vec; rect: Box | null }
   // excludeId は、Ctrl（⌘）を押してドラッグを始めたノード。範囲に入っても選ばない
@@ -369,7 +370,8 @@ export class SelectTool implements Tool {
     const selected = editor.session.get().selectedIds
     if (hit && (pointer.ctrlKey || pointer.metaKey)) {
       // Ctrl（⌘）を押しながらなら、ノードの上からでも範囲選択にする。選択は離すまで変えない
-      this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(selected), nodeId: editor.selectableFor(hit.id) }
+      const nodeId = editor.selectableFor(hit.id)
+      this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(selected), nodeId, excludeId: nodeId }
     } else if (hit) {
       // group の中のノードは、中に入っていなければ group 全体を選ぶ（MAI-12）
       const target = editor.selectableFor(hit.id)
@@ -385,7 +387,10 @@ export class SelectTool implements Tool {
         editor.setSelection([])
         editor.focusGroup(null)
       }
-      this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(editor.session.get().selectedIds) }
+      // 塗りなしの図形は枠の線にしか当たらないので、Ctrl（⌘）なら箱の中の空白から始めても、その図形は選ばない
+      const under = pointer.ctrlKey || pointer.metaKey ? editor.nodeBoxAt(pointer.world) : null
+      const excludeId = under ? editor.selectableFor(under.id) : undefined
+      this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(editor.session.get().selectedIds), excludeId }
     }
   }
 
@@ -533,7 +538,7 @@ export class SelectTool implements Tool {
       }
       case 'pointingCanvas': {
         if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
-        this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey, excludeId: state.nodeId }
+        this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey, excludeId: state.excludeId }
         this.onPointerMove(pointer)
         return
       }

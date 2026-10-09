@@ -1586,14 +1586,27 @@ export class Editor {
   // 塗りなしの図形（MAI-81）は枠の線にしか当たらないが、選んだあとは Figma と同じく中を押しても掴める
   private selectedBoxAt(point: Vec, options: { includeLocked?: boolean }): NodeRecord | null {
     for (const id of this.session.get().selectedIds) {
-      const entry = this.index.get(id)
-      if (!entry || this.isContainer(entry.node) || (entry.node.locked && !options.includeLocked)) continue
-      if (this.clippedAway(entry, point)) continue
-      const local = applyMat(invert(entry.worldMatrix), point)
-      const box = this.getType(entry.node).getBounds(entry.node)
-      if (local.x >= box.x && local.y >= box.y && local.x <= box.x + box.w && local.y <= box.y + box.h) return entry.node
+      if (this.boxHit(id, point, options)) return this.getNode(id)!
     }
     return null
+  }
+
+  // 点を箱の中に含む、最も手前のノード（group・frame 以外、固定したものも除く）。塗りなしの図形の中の空白も当たる
+  nodeBoxAt(point: Vec): NodeRecord | null {
+    const ordered = this.index.sortByOrder(this.index.search({ x: point.x, y: point.y, w: 0, h: 0 }))
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      if (this.boxHit(ordered[i], point, {})) return this.getNode(ordered[i])!
+    }
+    return null
+  }
+
+  private boxHit(id: string, point: Vec, options: { includeLocked?: boolean }): boolean {
+    const entry = this.index.get(id)
+    if (!entry || this.isContainer(entry.node) || (entry.node.locked && !options.includeLocked)) return false
+    if (this.clippedAway(entry, point)) return false
+    const local = applyMat(invert(entry.worldMatrix), point)
+    const box = this.getType(entry.node).getBounds(entry.node)
+    return local.x >= box.x && local.y >= box.y && local.x <= box.x + box.w && local.y <= box.y + box.h
   }
 
   // ワールド座標の点を含む、最も奥の（入れ子の深い）フレーム。exclude とその子孫は除く
