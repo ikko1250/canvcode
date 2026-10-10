@@ -162,6 +162,32 @@ describe('canvasSlideLayout table-image', () => {
   })
 })
 
+describe('canvasSlideLayout table-images', () => {
+  it('places the full-width table at the v1 geometry and the two figures below it', () => {
+    const one = canvasSlideLayout('table-images', 1)
+    expect(one.title.y).toBe(96)
+    expect(one.panel).toEqual({ x: 150, y: 165, w: 1660, h: 213 })
+    expect(one.rows[0]).toEqual({
+      label: { x: 220, y: 197, w: 394, h: 150 },
+      body: { x: 635, y: 197, w: 1105, h: 150 },
+    })
+    // 2 列（820px・間隔 20px）。上端はパネルの下から 20px、下端は表＋画像の図の枠の下端（969）
+    expect(one.figure).toEqual({ x: 150, y: 398, w: 820, h: 571 })
+    expect(one.figure2).toEqual({ x: 990, y: 398, w: 820, h: 571 })
+    expect(one.figureContent).toBeNull()
+    // 行を足すと、パネルが伸びて図が低くなる
+    const two = canvasSlideLayout('table-images', 2)
+    expect(two.panel.h).toBe(403)
+    expect(two.figure).toEqual({ x: 150, y: 588, w: 820, h: 381 })
+    expect(canvasSlideLayout('table', 2).figure2).toBeNull()
+  })
+
+  it('scales the figures in 4:3', () => {
+    const narrow = canvasSlideLayout('table-images', 1, '4:3')
+    expect(narrow.figure2).toEqual({ x: 742.5, y: 398, w: 615, h: 571 })
+  })
+})
+
 describe('canvasSlideLayout title', () => {
   it('returns the heading area and the credits band with credits', () => {
     const cover = canvasSlideLayout('title', 0, '16:9', { hasCredits: true })

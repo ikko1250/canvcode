@@ -265,7 +265,7 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     const ctx = context({}, { count: 1, reorderCount: 1, slideCount: 1, slideTemplate: true }, true)
     const menu = actionsOf(ctx)
     expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
-    expect(labels(sub(menu, 'テンプレート'))).toEqual(['表紙', '箇条書き', '表', '表＋画像'])
+    expect(labels(sub(menu, 'テンプレート'))).toEqual(['表紙', '箇条書き', '表', '表＋画像', '表＋2画像'])
     run(sub(menu, 'テンプレート'), '表')
     expect(ctx.applySlideTemplate).toHaveBeenLastCalledWith('table')
     run(sub(menu, 'テンプレート'), '表＋画像')

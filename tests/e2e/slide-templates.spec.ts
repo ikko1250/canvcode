@@ -2,12 +2,12 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
-// スライドのテンプレート（スライド v2）の見た目：4 種のテンプレートを置いたスライドを、PDF に出す画像（renderSlideImage）で撮る。
+// スライドのテンプレート（スライド v2）の見た目：5 種のテンプレートを置いたスライドを、PDF に出す画像（renderSlideImage）で撮る。
 // 見比べるための画像は SLIDE_TEMPLATE_SHOTS のディレクトリ（なければテストの出力先）に書く。テストは画像の大きさと、描けたことだけを確かめる
 // （v1 のプレビューで撮った画像との見比べは、v1 のスライドとともに消した）
 
 const CANVAS_ID = 'canvas:slide-template-test'
-const KINDS = ['title', 'bullets', 'table', 'table-image'] as const
+const KINDS = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const
 type Kind = (typeof KINDS)[number]
 
 function slide(id: string, x: number, ratio: string) {
@@ -47,7 +47,7 @@ async function templateImage(page: Page, slideId: string, kind: Kind): Promise<{
   }, { slideId, kind })
 }
 
-test('renders the four slide templates', async ({ page, browserName }, testInfo) => {
+test('renders the five slide templates', async ({ page, browserName }, testInfo) => {
   test.skip(browserName !== 'chromium', '見た目の比較は chromium だけで撮る')
   test.setTimeout(120_000)
   const dir = process.env.SLIDE_TEMPLATE_SHOTS ?? testInfo.outputPath('slide-templates')

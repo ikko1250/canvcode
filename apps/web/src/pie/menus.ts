@@ -142,6 +142,7 @@ const SLIDE_TEMPLATES: [SlideLayoutKind, string][] = [
   ['bullets', '箇条書き'],
   ['table', '表'],
   ['table-image', '表＋画像'],
+  ['table-images', '表＋2画像'],
 ]
 
 const TEXT_ALIGNS: [TextAlign, string][] = [

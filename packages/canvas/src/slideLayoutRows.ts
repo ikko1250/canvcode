@@ -8,7 +8,7 @@ import type { SlideLayoutKind, SlideLayoutSlots } from '@canvcode/nodes'
 export type SlideLayoutRowKind = Exclude<SlideLayoutKind, 'title'>
 
 export function hasSlideLayoutRows(kind: unknown): kind is SlideLayoutRowKind {
-  return kind === 'bullets' || kind === 'table' || kind === 'table-image'
+  return kind === 'bullets' || kind === 'table' || kind === 'table-image' || kind === 'table-images'
 }
 
 // 行の見出しか本文の id から、その行の番号（rows の中で）。どの行のセルでもなければ -1

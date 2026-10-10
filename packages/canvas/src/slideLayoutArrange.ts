@@ -129,6 +129,7 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   place(slots.title, boxes.title)
   place(slots.panel, boxes.panel)
   place(slots.figure, boxes.figure)
+  place(slots.figure2, boxes.figure2)
   for (let i = 0; i < rowCount; i += 1) {
     place(rows[i].label, boxes.rows[i].label)
     place(rows[i].body, boxes.rows[i].body, i)

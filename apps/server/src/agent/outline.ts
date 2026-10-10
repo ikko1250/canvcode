@@ -736,7 +736,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - pdf-page: one page of a PDF (p= is 1-based)
 - chart: pie or donut chart (rows of label and value)
 - slide: a 16:9 (1920x1080) or 4:3 (1440x1080) page of the canvas's slide deck (name, ratio, hidden). One canvas = one deck; slides are exported to PDF in reading order: rows from top to bottom (slides overlapping vertically by half or more form a row), left to right in a row. n= is that number; hidden slides get none. Slides cannot be resized or rotated.
-- slide-layout: the single child of a slide made by a template; it lays out the slide's contents. layout = title | bullets | table | table-image; slots = the ids of its children by role: title, subtitle, credits (title layout), panel, figure (table-image), rows [{label?, body}] (label: table layouts only). Its children are text (title, subtitle) and geo rects (cells).
+- slide-layout: the single child of a slide made by a template; it lays out the slide's contents. layout = title | bullets | table | table-image | table-images; slots = the ids of its children by role: title, subtitle, credits (title layout), panel, figure (table-image: the right frame; table-images: the lower left frame), figure2 (table-images: the lower right frame), rows [{label?, body}] (label: table layouts only). Its children are text (title, subtitle) and geo rects (cells).
 
 ## Details
 read_nodes returns compact JSON per node: world x, y, w, h, rotation, z-order index, parent, locked, plain text, fill/stroke colours, file, arrow ends, children ids, chart rows,
@@ -777,8 +777,8 @@ Text size is estimated on the server (it cannot measure fonts); give text a widt
 
 Slides (presentations):
 - create type "slide": ratio? ("16:9" default | "4:3"), name?, hidden?, template? and position (no w/h: the size comes from the ratio). update: name, ratio, hidden, template, adjust.
-- template (title | bullets | table | table-image) fills an empty slide with a slide-layout and placeholder children (3 rows). Then read_nodes the slide-layout for its slots and write the text with update {id, text} on each child.
-- Rows: at most ${getMaxRowCount('bullets')} (bullets), ${getMaxRowCount('table')} (table), ${getMaxRowCount('table-image')} (table-image). Add with add_row; remove a row by deleting its body cell (its label goes with it and the rows close up).
+- template (title | bullets | table | table-image | table-images) fills an empty slide with a slide-layout and placeholder children (3 rows; table-images: 1 row of a full-width table above two image frames side by side). Then read_nodes the slide-layout for its slots and write the text with update {id, text} on each child.
+- Rows: at most ${getMaxRowCount('bullets')} (bullets), ${getMaxRowCount('table')} (table), ${getMaxRowCount('table-image')} (table-image), ${getMaxRowCount('table-images')} (table-images). Add with add_row; remove a row by deleting its body cell (its label goes with it and the rows close up).
 - The children of a slide-layout are laid out again at the end of every edit (positions, sizes and body colours follow the layout and row order): x, y, w, h you write for them are replaced. Long text wraps and may overflow its cell (read_canvas shows overflow on the slide); shorten it or use fewer rows.
 - adjust (update on the slide, its slide-layout or a child; not for the title template) moves the table panel with its rows and, for table-image, the figure frame, and sets the table-image table width: {"table":{"dx":0,"dy":-60,"w":800},"figure":{"dx":0,"dy":0}} in px of a 1920-wide slide (4:3 shrinks x). w is ${TABLE_IMAGE_WIDTH_RANGE.min}–${TABLE_IMAGE_WIDTH_RANGE.max} (default ${TABLE_IMAGE_SPEC.tableWidth}); the figure keeps its right edge and gets narrower. null resets a value. The title does not move.
 - Other nodes may be put inside a slide (parent = the slide id) and keep their positions.

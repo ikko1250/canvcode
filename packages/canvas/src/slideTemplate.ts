@@ -14,7 +14,7 @@ import {
 } from '@canvcode/slides'
 import { richTextFromPlain, solidPaint, type GeoProps, type SlideLayoutKind, type TextProps } from '@canvcode/nodes'
 
-// スライド v2 のテンプレート（表紙・箇条書き・表・表＋画像）が置く子の props。DOM に依存しない純粋な関数だけを置く
+// スライド v2 のテンプレート（表紙・箇条書き・表・表＋画像・表＋2画像）が置く子の props。DOM に依存しない純粋な関数だけを置く
 // （置くのは Editor.applySlideTemplate）。
 // - 見た目はテーマ（canvas-slide-theme.ts）の中立の形から作る。位置と大きさは決めない（並べ直し（slideLayoutArrange.ts）が決める）
 // - title / subtitle は text、それ以外（パネル・行の見出しと本文・図の枠・credits）は geo の矩形
@@ -27,7 +27,7 @@ import { richTextFromPlain, solidPaint, type GeoProps, type SlideLayoutKind, typ
 
 // テンプレートの子の役割と、その子の型・props
 export interface SlideTemplateChild {
-  role: 'title' | 'subtitle' | 'credits' | 'panel' | 'figure' | 'label' | 'body'
+  role: 'title' | 'subtitle' | 'credits' | 'panel' | 'figure' | 'figure2' | 'label' | 'body'
   // 行の子（label / body）の行の番号（0 始まり）
   row?: number
   type: 'text' | 'geo'
@@ -36,6 +36,11 @@ export interface SlideTemplateChild {
 
 // テンプレートの行の数（v1 の新しいスライドと同じく 3 行）
 export const SLIDE_TEMPLATE_ROWS = 3
+
+// テンプレートが置く行の数。表＋2画像は下の図の高さを残すため 1 行（行は add_row・メニューで足せる）
+export function slideTemplateRowCount(kind: SlideLayoutKind): number {
+  return kind === 'table-images' ? 1 : SLIDE_TEMPLATE_ROWS
+}
 
 // 仮の文字
 export const SLIDE_TEMPLATE_TEXT = {
@@ -123,11 +128,14 @@ export function slideTemplateChildren(kind: SlideLayoutKind): SlideTemplateChild
     ]
   }
   const children: SlideTemplateChild[] = [{ role: 'panel', type: 'geo', props: slideRectProps(CANVAS_SLIDE_PANEL_STYLE) }]
-  if (kind === 'table-image') {
+  if (kind === 'table-image' || kind === 'table-images') {
     children.push({ role: 'figure', type: 'geo', props: slideFigureProps(SLIDE_TEMPLATE_TEXT.figure) })
   }
+  if (kind === 'table-images') {
+    children.push({ role: 'figure2', type: 'geo', props: slideFigureProps(SLIDE_TEMPLATE_TEXT.figure) })
+  }
   children.push({ role: 'title', type: 'text', props: slideTextProps(CANVAS_SLIDE_TITLE_STYLE, t.title) })
-  for (let row = 0; row < SLIDE_TEMPLATE_ROWS; row += 1) {
+  for (let row = 0; row < slideTemplateRowCount(kind); row += 1) {
     if (kind !== 'bullets') children.push({ role: 'label', row, type: 'geo', props: slideCellProps(CANVAS_SLIDE_LABEL_STYLE, t.label) })
     children.push({ role: 'body', row, type: 'geo', props: slideCellProps(canvasSlideBodyStyle(row), t.body) })
   }

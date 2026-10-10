@@ -2,13 +2,13 @@ import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType } from './defineNodeType.ts'
 
 // スライドの中身を並べ直すための入れ物（スライド v2）。スライドの子として 1 つ置き、スライドと同じ大きさ（左上 0,0）にする。
-// テンプレート（表紙・箇条書き・表・表＋画像）が並べた子（文字・矩形・画像）の役割を、子の id で slots に持つ。
+// テンプレート（表紙・箇条書き・表・表＋画像・表＋2画像）が並べた子（文字・矩形・画像）の役割を、子の id で slots に持つ。
 // 自分は何も描かず、当たらない。子はスライドの直下の子と同じように選べる（container: 'layout'）。
 // slots の id の子が消されていても壊さない（並べ直すときに無視する）
 
-export type SlideLayoutKind = 'title' | 'bullets' | 'table' | 'table-image'
+export type SlideLayoutKind = 'title' | 'bullets' | 'table' | 'table-image' | 'table-images'
 
-// 行。table / table-image は見出し（label）と本文（body）、bullets は本文だけ。
+// 行。table / table-image / table-images は見出し（label）と本文（body）、bullets は本文だけ。
 // h は手で決めた行の高さ（セルの下端のリサイズで書く。足しただけの省略できる値なので版は上げない）。無ければ内容から自動で決める
 export interface SlideLayoutRow {
   label?: string
@@ -22,7 +22,9 @@ export interface SlideLayoutSlots {
   subtitle?: string
   credits?: string
   panel?: string
+  // figure は table-image の右の図の枠・table-images の下の左の図の枠。figure2 は table-images の下の右の図の枠
   figure?: string
+  figure2?: string
   rows: SlideLayoutRow[]
 }
 
@@ -62,7 +64,7 @@ export function adjustOf(value: unknown): SlideLayoutAdjust {
 
 export type SlideLayoutNode = NodeRecord<SlideLayoutProps>
 
-const SINGLE_SLOTS = ['title', 'subtitle', 'credits', 'panel', 'figure'] as const
+const SINGLE_SLOTS = ['title', 'subtitle', 'credits', 'panel', 'figure', 'figure2'] as const
 
 // 壊れたデータ（rows が配列でない、id が文字列でないなど）も読める形にする
 export function slotsOf(value: unknown): SlideLayoutSlots {

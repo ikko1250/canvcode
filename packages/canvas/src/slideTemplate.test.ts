@@ -13,7 +13,7 @@ import {
   type CanvasBox,
 } from '@canvcode/slides'
 import { Editor } from './editor.ts'
-import { SLIDE_TEMPLATE_ROWS, slideCellProps, slideTemplateChildren } from './slideTemplate.ts'
+import { SLIDE_TEMPLATE_ROWS, slideCellProps, slideTemplateChildren, slideTemplateRowCount } from './slideTemplate.ts'
 
 // スライドのテンプレート（スライド v2）：子の無いスライドに slide-layout とその子を 1 歩で作り、並べ直しが v1 の幾何どおりに置く
 
@@ -71,6 +71,30 @@ describe('slide templates', () => {
         if (row.label) near(boxOf(editor, row.label), boxes.rows[i].label!)
         near(boxOf(editor, row.body), boxes.rows[i].body)
       })
+    }
+  })
+
+  it('lays out table-images with one row of a full-width table and two figure frames below it', () => {
+    for (const ratio of ['16:9', '4:3'] as const) {
+      const { editor, slide } = setup(ratio)
+      expect(editor.applySlideTemplate(slide.id, 'table-images')).toBe(true)
+      const { layout, props } = layoutOf(editor, slide.id)
+      const { slots } = props
+      expect(props.layout).toBe('table-images')
+      expect(slots.rows).toHaveLength(slideTemplateRowCount('table-images'))
+      expect(slots.rows).toHaveLength(1)
+      const ids = [slots.title!, slots.panel!, slots.figure!, slots.figure2!, slots.rows[0].label!, slots.rows[0].body]
+      expect(new Set(editor.index.childrenOf(layout.id))).toEqual(new Set(ids))
+      const boxes = canvasSlideLayout('table-images', 1, ratio)
+      near(boxOf(editor, slots.panel!), boxes.panel)
+      near(boxOf(editor, slots.figure!), boxes.figure!)
+      near(boxOf(editor, slots.figure2!), boxes.figure2!)
+      near(boxOf(editor, slots.rows[0].label!), boxes.rows[0].label!)
+      near(boxOf(editor, slots.rows[0].body), boxes.rows[0].body)
+      // 行を足すと表が伸び、図の枠が低くなる
+      editor.setSelection([slide.id])
+      expect(editor.addSlideLayoutRow()).toBe(true)
+      near(boxOf(editor, slots.figure2!), canvasSlideLayout('table-images', 2, ratio).figure2!)
     }
   })
 
@@ -165,6 +189,7 @@ describe('slide templates', () => {
     expect(roles('bullets')).toEqual(['panel', 'title', 'body', 'body', 'body'])
     expect(roles('table')).toEqual(['panel', 'title', 'label', 'body', 'label', 'body', 'label', 'body'])
     expect(roles('table-image')).toEqual(['panel', 'figure', 'title', 'label', 'body', 'label', 'body', 'label', 'body'])
+    expect(roles('table-images')).toEqual(['panel', 'figure', 'figure2', 'title', 'label', 'body'])
     // 本文のセルは上下中央（geo の文字はいつも上下中央）で、テーマも middle
     expect(canvasSlideBodyStyle(0).verticalAlign).toBe('middle')
     expect(slideCellProps(canvasSlideBodyStyle(0), 'x').labelPadding).toEqual({ top: 12, right: 38, bottom: 12, left: 38 })

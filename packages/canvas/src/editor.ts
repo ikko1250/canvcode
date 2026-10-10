@@ -61,6 +61,7 @@ import { arrangeSlideLayout, presentRows, pruneSlideLayoutRows } from './slideLa
 import {
   emptiedCellProps,
   hasSlideLayoutRows,
+  type SlideLayoutRowKind,
   insertSlideLayoutRow,
   slideLayoutRowOf,
   slotsWithAutoRowHeight,
@@ -1357,7 +1358,7 @@ export class Editor {
   slideLayoutRowState(): SlideLayoutRowState | null {
     const target = this.slideLayoutRowTarget()
     if (!target) return null
-    const maxRows = getMaxRowCount((target.layout.props as Record<string, unknown>).layout as 'bullets' | 'table' | 'table-image')
+    const maxRows = getMaxRowCount((target.layout.props as Record<string, unknown>).layout as SlideLayoutRowKind)
     return {
       canAdd: target.rows.length > 0 && target.rows.length < maxRows,
       canRemove: target.row !== null && target.rows.length > 1,
@@ -1374,7 +1375,7 @@ export class Editor {
     const target = this.slideLayoutRowTarget()
     if (!target) return false
     const { layout, rows, row } = target
-    const max = getMaxRowCount((layout.props as Record<string, unknown>).layout as 'bullets' | 'table' | 'table-image')
+    const max = getMaxRowCount((layout.props as Record<string, unknown>).layout as SlideLayoutRowKind)
     if (rows.length === 0 || rows.length >= max) return false
     this.transact('add slide row', (tx) => {
       const added = this.putSlideLayoutRow(tx, layout.id, row ?? rows.length - 1)

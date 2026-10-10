@@ -17,6 +17,7 @@ import {
   SLIDE_HEIGHT,
   SLIDE_WIDTH,
   TABLE_IMAGE_SPEC,
+  TABLE_IMAGES_SPEC,
   TABLE_SPEC,
   TITLE_SPEC,
   TITLE_TYPOGRAPHY,
@@ -27,7 +28,7 @@ import {
 export type CanvasSlideRatio = "16:9" | "4:3";
 
 /** スライド v2 のテンプレートが扱うレイアウト */
-export type CanvasSlideLayout = "title" | "bullets" | "table" | "table-image";
+export type CanvasSlideLayout = "title" | "bullets" | "table" | "table-image" | "table-images";
 
 /** 行グリッドを持つレイアウト */
 export type CanvasGridSlideLayout = Exclude<CanvasSlideLayout, "title">;
@@ -37,6 +38,7 @@ export const CANVAS_SLIDE_LAYOUTS: readonly CanvasSlideLayout[] = [
   "bullets",
   "table",
   "table-image",
+  "table-images",
 ];
 
 /** 縦横比ごとのスライドの大きさ。高さはどちらも v1 と同じ */
@@ -51,13 +53,13 @@ export const FIGURE_BORDER_WIDTH = 1;
 /** スライドのローカル座標の箱 */
 export type CanvasBox = { x: number; y: number; w: number; h: number };
 
-/** 1 行の箱。label は table / table-image だけ（bullets は null） */
+/** 1 行の箱。label は table / table-image / table-images だけ（bullets は null） */
 export type CanvasSlideRowBoxes = {
   label: CanvasBox | null;
   body: CanvasBox;
 };
 
-/** table / bullets / table-image の箱 */
+/** table / bullets / table-image / table-images の箱 */
 export type CanvasGridSlideBoxes = {
   layout: CanvasGridSlideLayout;
   ratio: CanvasSlideRatio;
@@ -76,8 +78,10 @@ export type CanvasGridSlideBoxes = {
   /** 一律の行の高さ（v1 の defaultRowPx。rowHeights を渡したときも、この幾何の既定の値）と行の間隔 */
   rowPx: number;
   gapPx: number;
-  /** table-image の図の枠（枠線を含む外形）。他のレイアウトは null */
+  /** table-image の図の枠（枠線を含む外形）。table-images は下の左の図の枠。他のレイアウトは null */
   figure: CanvasBox | null;
+  /** table-images の下の右の図の枠。他のレイアウトは null */
+  figure2: CanvasBox | null;
   /** table-image の図の中身を置く範囲（枠線と padding の内側）。他のレイアウトは null */
   figureContent: CanvasBox | null;
 };
@@ -141,15 +145,17 @@ function gridBoxes(
   const { grid } = geometry;
   const { rowHeights } = options;
   const isTableImage = layout === "table-image";
+  const isTableImages = layout === "table-images";
   const tableWidth = clampTableImageWidth(options.tableWidth);
   const table = options.tableOffset ?? { dx: 0, dy: 0 };
 
   // パネルの横位置・幅と padding。table-image は左表パネル（右図枠の左）
-  const panelLeft = (isTableImage ? TABLE_IMAGE_SPEC.left : TABLE_SPEC.left) + table.dx;
+  // table-images は上の表（全幅）。padding は v1 の table-images-panel
+  const panelLeft = (isTableImage ? TABLE_IMAGE_SPEC.left : isTableImages ? TABLE_IMAGES_SPEC.left : TABLE_SPEC.left) + table.dx;
   const panelTop = geometry.panelTop + table.dy;
-  const panelWidth = isTableImage ? tableWidth : TABLE_SPEC.width;
-  const padLeft = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : TABLE_SPEC.padding.x;
-  const padTop = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : TABLE_SPEC.padding.top;
+  const panelWidth = isTableImage ? tableWidth : isTableImages ? TABLE_IMAGES_SPEC.width : TABLE_SPEC.width;
+  const padLeft = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : isTableImages ? TABLE_IMAGES_SPEC.padding.x : TABLE_SPEC.padding.x;
+  const padTop = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : isTableImages ? TABLE_IMAGES_SPEC.padding.top : TABLE_SPEC.padding.top;
 
   const gridLeft = panelLeft + padLeft;
   const gridTop = panelTop + padTop;
@@ -176,7 +182,18 @@ function gridBoxes(
   }
 
   let figure: CanvasBox | null = null;
+  let figure2: CanvasBox | null = null;
   let figureContent: CanvasBox | null = null;
+  if (isTableImages) {
+    // 下の 2 つの図の枠（v1 の figures-row：2 列・列の間隔 figuresGap）。上端は表パネル（ずらす前）の下から figuresGap 空け、
+    // 下端はほかのレイアウトのパネル・図の枠の下端（table-image の図の枠の下端）にそろえる
+    const s = TABLE_IMAGES_SPEC;
+    const top = geometry.panelTop + geometry.panelHeight + s.figuresGap;
+    const bottom = TABLE_IMAGE_SPEC.top + TABLE_IMAGE_SPEC.height;
+    const h = Math.max(0, bottom - top);
+    figure = box(s.left, top, s.figureColumnWidth, h, sx);
+    figure2 = box(s.left + s.figureColumnWidth + s.figuresGap, top, s.figureColumnWidth, h, sx);
+  }
   if (isTableImage) {
     const s = TABLE_IMAGE_SPEC;
     const offset = options.figureOffset ?? { dx: 0, dy: 0 };
@@ -217,6 +234,7 @@ function gridBoxes(
     rowPx,
     gapPx,
     figure,
+    figure2,
     figureContent,
   };
 }

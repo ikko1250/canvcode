@@ -421,6 +421,17 @@ describe('edit_canvas slides', () => {
     ])
   })
 
+  it('places a table-images slide with one row and two figure frames', () => {
+    const { records, edit } = setup()
+    const slideId = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table-images' }]).created.s!
+    const slots = slotsOf(records, slideId) as Slots & { figure: string; figure2: string }
+    expect(slots.rows).toHaveLength(1)
+    const boxes = canvasSlideLayout('table-images', 1)
+    expect(world(records, slots.figure)).toMatchObject(boxes.figure!)
+    expect(world(records, slots.figure2)).toMatchObject(boxes.figure2!)
+    expect(world(records, slots.rows[0]!.body)).toMatchObject(boxes.rows[0]!.body)
+  })
+
   it('moves the table and the figure and widens the table with adjust', () => {
     const { records, edit } = setup()
     const made = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table-image' }]).created

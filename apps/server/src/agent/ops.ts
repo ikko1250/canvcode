@@ -53,7 +53,7 @@ const MAX_LISTED_IDS = 10
 
 // 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る
 const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card'] as const
-const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image'] as const satisfies readonly SlideLayoutKind[]
+const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
 const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
 
 export class EditError extends Error {}

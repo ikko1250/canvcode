@@ -262,7 +262,7 @@ describe('buildPieMenus', () => {
     const menus = buildPieMenus(ctx)
     expect(menus.map((m) => m.key)).toEqual(['a', '.', 'o'])
     const templates = menus[2].items.find((e) => e.label === 'テンプレート')
-    expect(templates && isSubmenu(templates) ? templates.items.map((e) => e.label) : []).toEqual(['表紙', '箇条書き', '表', '表＋画像'])
+    expect(templates && isSubmenu(templates) ? templates.items.map((e) => e.label) : []).toEqual(['表紙', '箇条書き', '表', '表＋画像', '表＋2画像'])
     const table = flatten(menus[2].items).find((e) => e.label === '表')
     if (table && !isSubmenu(table)) table.onSelect()
     expect(ctx.applySlideTemplate).toHaveBeenCalledWith('table')
