@@ -7,10 +7,14 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 // Vite の機能（?url）で Worker を読み込むので、packages/canvas ではなくここに置いている。
 GlobalWorkerOptions.workerSrc = workerUrl
 
-// フォントを埋め込んでいない PDF（日本語の CID フォントなど）を読むための CMap と標準フォント。
+// フォントを埋め込んでいない PDF（日本語の CID フォントなど）を読むための CMap と標準フォント、
+// スキャンした PDF の画像（CCITT / JBIG2 / JPEG2000）のデコーダ（wasm。ないと画像が捨てられ白紙になる）。
 // vite.config.ts が /pdfjs/ から配る。字の形は OS のフォントで描く
 const PDFJS_DATA = `${import.meta.env.BASE_URL}pdfjs/`
-const DATA_OPTIONS = { cMapUrl: `${PDFJS_DATA}cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS_DATA}standard_fonts/` }
+const DATA_OPTIONS = {
+  cMapUrl: `${PDFJS_DATA}cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS_DATA}standard_fonts/`,
+  wasmUrl: `${PDFJS_DATA}wasm/`,
+}
 
 class PdfJsDocument implements PdfDocument {
   private readonly doc: PDFDocumentProxy

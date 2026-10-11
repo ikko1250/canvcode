@@ -2,12 +2,15 @@ import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
 import { readFile, readdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, extname, join } from 'node:path'
 
-// PDF.js が PDF を読むのに使うファイル（フォントを埋め込んでいない PDF の CMap と標準フォント）を /pdfjs/ から配る。
+// PDF.js が PDF を読むのに使うファイル（フォントを埋め込んでいない PDF の CMap と標準フォント、
+// スキャン画像（CCITT / JBIG2 / JPEG2000）のデコーダの wasm）を /pdfjs/ から配る。
 // 開発時は node_modules から返し、ビルドでは dist/pdfjs/ に出す（本番はサーバーが dist をそのまま配信する）
 const PDFJS_DIR = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
-const PDFJS_DATA = ['cmaps', 'standard_fonts']
+const PDFJS_DATA = ['cmaps', 'standard_fonts', 'wasm']
+// wasm は application/wasm で返さないと、PDF.js が WebAssembly.instantiateStreaming を使えず遅い経路に落ちる
+const PDFJS_TYPES: Record<string, string> = { '.wasm': 'application/wasm', '.js': 'text/javascript; charset=utf-8' }
 
 function pdfjsData(): Plugin {
   return {
@@ -18,7 +21,7 @@ function pdfjsData(): Plugin {
         if (!match || !PDFJS_DATA.includes(match[1])) return next()
         try {
           const data = await readFile(join(PDFJS_DIR, match[1], match[2]))
-          res.setHeader('content-type', 'application/octet-stream')
+          res.setHeader('content-type', PDFJS_TYPES[extname(match[2])] ?? 'application/octet-stream')
           res.end(data)
         } catch {
           next()

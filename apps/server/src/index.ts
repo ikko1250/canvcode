@@ -109,6 +109,8 @@ const MIME_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  // PDF.js のスキャン画像のデコーダ（/pdfjs/wasm/）
+  '.wasm': 'application/wasm',
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
