@@ -82,10 +82,11 @@ const selected = (editor: Editor) => [...editor.session.get().selectedIds]
 
 describe('slide-layout in the editor', () => {
   it('never hits nor selects itself, and lets its children be clicked and edited directly', () => {
-    const { editor, layout, title, panel, click, doubleClick, editing } = setup()
+    const { editor, slide, layout, title, panel, click, doubleClick, editing } = setup()
     expect(editor.isContainer(editor.getNode(layout.id)!, 'layout')).toBe(true)
     expect(editor.hitTest({ x: 200, y: 380 }, 1)?.id).toBe(title)
-    expect(editor.hitTest({ x: 1000, y: 1000 }, 1)).toBeNull()
+    // 子のない所では、slide-layout ではなくスライドに当たる
+    expect(editor.hitTest({ x: 1000, y: 1000 }, 1)?.id).toBe(slide.id)
     click(200, 380)
     expect(selected(editor)).toEqual([title])
     click(1000, 690)

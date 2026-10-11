@@ -44,7 +44,7 @@ describe('slide', () => {
     expect(slideType.resize).toBeUndefined()
   })
 
-  it('hits only the name and the border, like a frame', () => {
+  it('hits the name and anywhere inside the border, like a frame', () => {
     const node = slide({ ratio: '4:3', name: 'はじめに' })
     const hit = (x: number, y: number, zoom = 1) => slideType.hitTest(node, { x, y }, 4, zoom)
     // 枠の線の近く
@@ -53,8 +53,8 @@ describe('slide', () => {
     expect(hit(1443, 1083)).toBe(true)
     // 4:3 の右の線より外（16:9 なら中）
     expect(hit(1600, 500)).toBe(false)
-    // 枠の中の空いている所・外
-    expect(hit(700, 500)).toBe(false)
+    // 枠の中の空いている所（当たる）・外（当たらない）
+    expect(hit(700, 500)).toBe(true)
     expect(hit(-20, 500)).toBe(false)
     // 名前の部分（枠の左上の上）。倍率を下げると、ワールド単位では広くなる
     expect(hit(10, -10)).toBe(true)

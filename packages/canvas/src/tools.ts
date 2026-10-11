@@ -699,12 +699,12 @@ export class SelectTool implements Tool {
   // ダブルクリック：
   // - group の中のノードなら、その group の中に入って、中のノードを選ぶ（入れ子なら 1 段ずつ）
   // - 文字を持つノードなら、編集モードに入る
-  // - 何もない所なら、そこにテキストを作って編集する
+  // - 何もない所（フレーム・スライドの中の空いている所も）なら、そこにテキストを作って編集する
   onDoubleClick(pointer: ToolPointer): void {
     const editor = this.ctx.editor
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
-    if (!hit) {
+    if (!hit || editor.isContainer(hit, 'frame')) {
       createTextAt(this.ctx, pointer.world)
       return
     }

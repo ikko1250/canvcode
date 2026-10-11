@@ -16,13 +16,18 @@ function setup() {
     editor.createNodes([node])
     return node.id
   }
+  // 編集に入ったテキストと、それを作っている途中の変更
+  const editing: { id: string; tx?: { get(id: string): unknown } }[] = []
   const ctx: ToolContext = {
     editor,
     setTool: () => {},
     lift: () => {},
     drop: () => {},
     setCursor: () => {},
-    startEditing: () => false,
+    startEditing: (id, options) => {
+      editing.push({ id, tx: options?.tx })
+      return true
+    },
     openPortal: () => {},
     editDocument: () => false,
     createDocumentAt: () => {},
@@ -31,27 +36,28 @@ function setup() {
     moveToCanvas: () => {},
     viewportBox: () => ({ x: -1000, y: -1000, w: 5000, h: 3000 }),
   }
-  const pointer = (px: number, py: number): ToolPointer => ({
+  const pointer = (px: number, py: number, ctrlKey = false): ToolPointer => ({
     screen: { x: px, y: py },
     world: { x: px, y: py },
     button: 0,
     shiftKey: false,
     altKey: false,
-    ctrlKey: false,
+    ctrlKey,
     metaKey: false,
   })
-  // ドラッグして離す
-  const drag = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+  // ドラッグして離す。ctrlKey なら Ctrl を押しながら
+  const drag = (from: { x: number; y: number }, to: { x: number; y: number }, ctrlKey = false) => {
     const tool = new SelectTool(ctx)
-    tool.onPointerDown(pointer(from.x, from.y))
-    tool.onPointerMove(pointer(to.x, to.y))
-    tool.onPointerUp(pointer(to.x, to.y))
+    tool.onPointerDown(pointer(from.x, from.y, ctrlKey))
+    tool.onPointerMove(pointer(to.x, to.y, ctrlKey))
+    tool.onPointerUp(pointer(to.x, to.y, ctrlKey))
   }
+  const doubleClick = (x: number, y: number) => new SelectTool(ctx).onDoubleClick(pointer(x, y))
   const worldOf = (id: string) => {
     const e = editor.index.get(id)!
     return { x: e.worldBounds.x, y: e.worldBounds.y, w: e.worldBounds.w, h: e.worldBounds.h }
   }
-  return { editor, slide, rect, drag, worldOf }
+  return { editor, slide, rect, drag, doubleClick, editing, worldOf }
 }
 
 const withRatio = (ratio: SlideProps['ratio']) => (node: NodeRecord) => ({ ...node, props: { ...node.props, ratio } })
@@ -84,6 +90,27 @@ describe('slides in the editor', () => {
     expect(editor.getNode(a)!.parentId).toBe(slide.id)
     expect(worldOf(slide.id)).toMatchObject({ x: 100, y: 50 })
     expect(worldOf(a)).toMatchObject({ x: 200, y: 150 })
+  })
+
+  it('is grabbed anywhere inside, and Ctrl+drag inside selects its children with a brush', () => {
+    const { editor, slide, rect, drag, doubleClick, editing, worldOf } = setup()
+    const a = rect(100, 100, 100, 100, slide.id)
+    // 子のない所をつかんで動かす。子も一緒に動く
+    drag({ x: 1000, y: 500 }, { x: 1100, y: 550 })
+    expect([...editor.session.get().selectedIds]).toEqual([slide.id])
+    expect(worldOf(slide.id)).toMatchObject({ x: 100, y: 50 })
+    expect(worldOf(a)).toMatchObject({ x: 200, y: 150 })
+    // 子の上なら子をつかむ
+    drag({ x: 250, y: 200 }, { x: 260, y: 200 })
+    expect([...editor.session.get().selectedIds]).toEqual([a])
+    // Ctrl+ドラッグなら範囲選択で、スライドは動かない
+    drag({ x: 150, y: 100 }, { x: 400, y: 400 }, true)
+    expect([...editor.session.get().selectedIds]).toEqual([a])
+    expect(worldOf(slide.id)).toMatchObject({ x: 100, y: 50 })
+    // 中の空いている所のダブルクリックは、スライドの中にテキストを作る
+    doubleClick(1000, 600)
+    expect(editing).toHaveLength(1)
+    expect(editing[0].tx?.get(editing[0].id)).toMatchObject({ type: 'text', parentId: slide.id })
   })
 
   it('clips its children to its box, which follows the ratio', () => {

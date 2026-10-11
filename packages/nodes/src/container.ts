@@ -21,8 +21,8 @@ export const groupType = defineNodeType<GroupProps>({
 })
 
 // ---- frame ----
-// 名前を持ち、子を枠で切り抜いて描く。枠の中の空いている所では当たらず（範囲選択を始められる）、
-// 名前の部分と枠の線で当たる
+// 名前を持ち、子を枠で切り抜いて描く。名前の部分と、枠の中のどこでも当たる
+// （子は手前にあるので子が先に当たる。枠の中で範囲選択するときは Ctrl（⌘）+ドラッグ）
 export interface FrameProps {
   w: number
   h: number
@@ -37,16 +37,13 @@ const LABEL_GAP_PX = 4
 
 // 以下の 3 つは、frame と同じ枠を持つ型（スライド）でも使う。name には名前の部分に描く文字列を渡す（スライドは番号を付けたもの）
 
-// 名前の部分と枠の線の近くで当たる。枠の中の空いている所では当たらない
+// 名前の部分と、枠の中（枠の線の近くを含む）で当たる
 export function frameHitTest(w: number, h: number, name: string, point: Vec, margin: number, zoom: number): boolean {
   // 名前の部分（枠の左上の上）
   const labelH = (LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom
   const labelW = Math.min(w, (name.length * LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom)
   if (point.x >= 0 && point.x <= labelW && point.y >= -labelH && point.y <= 0) return true
-  // 枠の線の近く
-  const inOuter = point.x >= -margin && point.y >= -margin && point.x <= w + margin && point.y <= h + margin
-  const inInner = point.x > margin && point.y > margin && point.x < w - margin && point.y < h - margin
-  return inOuter && !inInner
+  return point.x >= -margin && point.y >= -margin && point.x <= w + margin && point.y <= h + margin
 }
 
 // 白い地と細い枠の線を描く。線の太さは倍率によらず画面上で 1 ピクセル
