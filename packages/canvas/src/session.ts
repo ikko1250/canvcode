@@ -4,6 +4,7 @@ import type { SnapGuide } from './snapping.ts'
 import type { GapGuide } from './gapSnapping.ts'
 import type { Axis } from './arrange.ts'
 import type { PaintEditing } from './gradientHandles.ts'
+import type { CropEditing } from './cropHandles.ts'
 
 // セッションストア（MAI-11）。カメラ・選択・ホバー・ツールなど、保存も Undo もしない一時的な状態。
 
@@ -59,6 +60,8 @@ export interface SessionState {
   // 塗りを編集している図形と、選んでいる止め色（MAI-82）。デザインパネルでグラデーションの塗りを開いている間だけ。
   // その図形を 1 つだけ選んでいれば、図形の上にグラデーションのハンドルを出す（gradientHandles.ts）
   paintEditing: PaintEditing | null
+  // 画像の切り抜きモードのノード（cropHandles.ts）。画像ノード・画像の塗りの図形をダブルクリックして入る。そのノードを 1 つだけ選んでいる間だけ効く
+  cropEditing: CropEditing | null
   // 角丸のハンドルを出している図形（MAI-84）。角丸を持てる図形を 1 つだけ選び、ポインタがその上にあるとき（cornerHandles.ts）
   cornerHandlesId: string | null
 }
@@ -100,6 +103,7 @@ export class Session {
       hoveredSpacing: null,
       spacingDrag: null,
       paintEditing: null,
+      cropEditing: null,
       cornerHandlesId: null,
       ...initial,
     }

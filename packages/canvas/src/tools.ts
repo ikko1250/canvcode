@@ -41,6 +41,7 @@ import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
 import { BlockArrowHandleDrag, hitBlockArrowHandle } from './blockArrowHandles.ts'
 import { CornerRadiusDrag, hitCornerHandle, updateCornerHandles } from './cornerHandles.ts'
 import { GradientHandleDrag, hitGradientHandle, paintEditingTarget } from './gradientHandles.ts'
+import { CropDrag, cropEditingTarget, cropHandleCursor, cropKindOf, hitCropHandle } from './cropHandles.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
 import type { ToolId } from './session.ts'
 import {
@@ -97,6 +98,8 @@ export interface ToolContext {
   setCursor(cursor: string | null): void
   // 文字の編集モードに入る（MAI-24）。tx を渡すと、作成と編集が 1 回の Undo になる
   startEditing(nodeId: string, options?: { tx?: Transaction<WorkspaceRecord>; selectAll?: boolean }): boolean
+  // 画像の切り抜きモードに入る（cropHandles.ts）。入れたら true
+  startCrop?(nodeId: string): boolean
   // Portal の参照先に入る（MAI-29）
   openPortal(portalId: string): void
   // カードの本文をその場で編集する。編集できるノードなら true（MAI-30）
@@ -119,6 +122,8 @@ export function selectionHandles(editor: Editor): { selection: TransformSelectio
   if (arrowHandles(editor)) return null
   // 塗りのグラデーションを編集している間は、そのハンドルだけを出す（MAI-82）
   if (paintEditingTarget(editor)) return null
+  // 画像の切り抜きモードの間は、切り抜きのハンドルだけを出す（cropHandles.ts）
+  if (cropEditingTarget(editor)) return null
   const selection = editor.transformSelection()
   if (!selection) return null
   const camera = editor.session.get().camera
@@ -277,6 +282,8 @@ type SelectState =
   | { name: 'draggingCorner'; tx: Transaction<WorkspaceRecord>; drag: CornerRadiusDrag }
   // ブロック矢印の形のハンドルをドラッグしている（MAI-87）
   | { name: 'draggingBlockArrow'; tx: Transaction<WorkspaceRecord>; drag: BlockArrowHandleDrag }
+  // 画像の切り抜きのハンドル・画像をドラッグしている
+  | { name: 'draggingCrop'; tx: Transaction<WorkspaceRecord>; drag: CropDrag }
   | {
       name: 'rotating'
       tx: Transaction<WorkspaceRecord>
@@ -317,6 +324,18 @@ export class SelectTool implements Tool {
         editor.session.set({ quoteArmed: false })
         this.ctx.setCursor(null)
       }
+    }
+    // 画像の切り抜きモード：窓・画像のハンドルと画像の上ならドラッグ、画像の外を押したらモードを抜けて、いつもの操作に進む
+    if (editor.session.get().cropEditing) {
+      const cropHit = hitCropHandle(editor, pointer.screen, pointer.world)
+      if (cropHit) {
+        const nodeId = cropHit.handles.target.node.id
+        const tx = editor.begin('crop image')
+        this.ctx.lift([nodeId])
+        this.state = { name: 'draggingCrop', tx, drag: new CropDrag(editor, tx, cropHit.handles, cropHit.hit, pointer.world) }
+        return
+      }
+      editor.session.set({ cropEditing: null })
     }
     // 塗りのグラデーションのハンドル（MAI-82）。編集している間は、ほかのハンドルより先に調べる
     const gradientHit = hitGradientHandle(editor, pointer.screen)
@@ -403,6 +422,13 @@ export class SelectTool implements Tool {
       case 'idle': {
         // 角丸のハンドルは、選んだ図形の上にポインタがあるときだけ出す（MAI-84）
         updateCornerHandles(editor, pointer.world)
+        const cropHit = hitCropHandle(editor, pointer.screen, pointer.world)
+        if (cropHit) {
+          this.ctx.setCursor(cropHandleCursor(cropHit.hit, cropHit.handles.window.frame.rotation))
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          this.setHoveredSpacing(null)
+          return
+        }
         const gradientHit = hitGradientHandle(editor, pointer.screen)
         if (gradientHit) {
           this.ctx.setCursor(gradientHit.hit.handle === 'line' ? 'copy' : 'pointer')
@@ -455,6 +481,10 @@ export class SelectTool implements Tool {
       }
       case 'draggingCorner': {
         state.drag.move(pointer.world, pointer.altKey)
+        return
+      }
+      case 'draggingCrop': {
+        state.drag.move(pointer.world)
         return
       }
       case 'draggingBlockArrow': {
@@ -647,7 +677,7 @@ export class SelectTool implements Tool {
       if (state.name === 'draggingArrowEnd') state.drag.end()
       editor.finish(state.tx)
       this.ctx.drop()
-    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner' || state.name === 'draggingBlockArrow') {
+    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner' || state.name === 'draggingBlockArrow' || state.name === 'draggingCrop') {
       editor.finish(state.tx)
       this.ctx.drop()
     }
@@ -673,7 +703,8 @@ export class SelectTool implements Tool {
       state.name === 'bendingArrow' ||
       state.name === 'draggingGradient' ||
       state.name === 'draggingCorner' ||
-      state.name === 'draggingBlockArrow'
+      state.name === 'draggingBlockArrow' ||
+      state.name === 'draggingCrop'
     ) {
       state.tx.cancel()
       this.ctx.drop()
@@ -698,6 +729,7 @@ export class SelectTool implements Tool {
 
   // ダブルクリック：
   // - group の中のノードなら、その group の中に入って、中のノードを選ぶ（入れ子なら 1 段ずつ）
+  // - 画像ノード・画像の塗りを持つ図形なら、切り抜きモードに入る
   // - 文字を持つノードなら、編集モードに入る
   // - 何もない所（フレーム・スライドの中の空いている所も）なら、そこにテキストを作って編集する
   onDoubleClick(pointer: ToolPointer): void {
@@ -721,6 +753,8 @@ export class SelectTool implements Tool {
     }
     // 本文を持つカードは、その場で編集する（MAI-30）
     if (this.ctx.editDocument(hit.id)) return
+    // 画像は切り抜きモードに入る（画像の塗りの図形も、文字の編集より先に。文字は Enter で編集できる）
+    if (cropKindOf(hit) && this.ctx.startCrop?.(hit.id)) return
     if (editor.getType(hit).editText) this.ctx.startEditing(hit.id, { selectAll: true })
   }
 

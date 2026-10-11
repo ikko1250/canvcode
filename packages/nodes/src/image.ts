@@ -7,8 +7,8 @@ export interface ImageProps {
   assetId: string
   w: number
   h: number
-  // 切り抜き範囲（画像全体を 0〜1 とした割合）。null なら切り抜かない。
-  // 旧データの取り込み用に持っておく。切り抜きの操作は初版では作らない
+  // 切り抜き範囲（画像全体を 0〜1 とした割合）。null なら切り抜かない。この範囲を w×h に描く。
+  // キャンバスの切り抜きモード（packages/canvas の cropHandles.ts）・MCP の edit_canvas で変える
   crop: { x: number; y: number; w: number; h: number } | null
 }
 

@@ -180,6 +180,32 @@ describe('edit_canvas', () => {
     expect(records.get('node:t')).toMatchObject({ locked: false })
   })
 
+  it('crops an image (keeping its width) and the image fill of a shape, and shows the crop in read_nodes', () => {
+    const { records, edit, root } = setup()
+    records.apply(
+      [
+        node('node:img', 'image', root, 'a1', { assetId: 'asset:a', w: 200, h: 100 }),
+        node('node:frame', 'geo', root, 'a2', { w: 300, h: 200, fill: { type: 'image', assetId: 'asset:a', scaleMode: 'fill', crop: { x: 0, y: 0, w: 1, h: 1 }, tileScale: 1, opacity: 1 } }),
+        node('node:plain', 'geo', root, 'a3'),
+      ],
+      [],
+    )
+    // 左半分だけ：200×100 の画像の左半分は 100×100 なので、幅 200 なら高さ 200
+    edit([{ op: 'update', id: 'node:img', crop: { x: 0, y: 0, w: 0.5, h: 1 } }])
+    expect(records.get('node:img')!.props).toMatchObject({ w: 200, h: 200, crop: { x: 0, y: 0, w: 0.5, h: 1 } })
+    expect(readNodes(records, ['node:img']).nodes[0]).toMatchObject({ crop: { x: 0, y: 0, w: 0.5, h: 1 } })
+    edit([{ op: 'update', id: 'node:img', crop: null }])
+    expect(records.get('node:img')!.props).toMatchObject({ w: 200, h: 100, crop: null })
+
+    edit([{ op: 'update', id: 'node:frame', crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }])
+    expect(records.get('node:frame')!.props).toMatchObject({ w: 300, h: 200, fill: { scaleMode: 'crop', crop: { x: 0.25, y: 0, w: 0.5, h: 1 } } })
+    expect(readNodes(records, ['node:frame']).nodes[0]).toMatchObject({ fill: 'image', scaleMode: 'crop', crop: { x: 0.25, w: 0.5 } })
+    edit([{ op: 'update', id: 'node:frame', crop: null }])
+    expect(records.get('node:frame')!.props).toMatchObject({ fill: { scaleMode: 'fill' } })
+
+    expect(() => edit([{ op: 'update', id: 'node:plain', crop: { x: 0, y: 0, w: 1, h: 1 } }])).toThrow(/crop is only for an image/)
+  })
+
   it('groups, ungroups, aligns and distributes', () => {
     const { records, edit } = setup()
     const made = edit([

@@ -13,7 +13,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, GEO_SHAPES, richTextFromPlain, slotsOf, solidPaint, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, GEO_SHAPES, normalizeCrop, richTextFromPlain, slotsOf, solidPaint, toFill, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
 import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
@@ -95,6 +95,9 @@ const slideAdjust = z.strictObject({
   table: z.strictObject({ dx: offsetValue, dy: offsetValue, w: offsetValue }).optional(),
   figure: z.strictObject({ dx: offsetValue, dy: offsetValue }).optional(),
 })
+// 画像の切り抜く範囲（画像全体を 0〜1 とした割合）。null は切り抜きをやめる
+const unit = finite.min(0).max(1)
+const crop = z.strictObject({ x: unit, y: unit, w: unit.positive(), h: unit.positive() }).nullable()
 
 const opSchemas = {
   create: z.strictObject({
@@ -118,6 +121,7 @@ const opSchemas = {
     y: finite.optional(),
     template: z.enum(SLIDE_TEMPLATES).optional(),
     adjust: slideAdjust.optional(),
+    crop: crop.optional(),
     ...style,
   }),
   move: z.strictObject({ op: z.literal('move'), ids, dx: finite.optional(), dy: finite.optional(), ...position }),
@@ -421,6 +425,7 @@ class EditRun {
     if (node.locked && changesOtherThanLock) throw new EditError(`${nodeId} is locked. Add "locked": false to change it`)
     const def = this.editor.getType(node)
     let props = applyStyle(node.type, node.props as Record<string, unknown>, op, false)
+    if (op.crop !== undefined) props = cropProps(nodeId, node.type, props, op.crop)
     if (op.w !== undefined || op.h !== undefined) {
       if (!def.resize) throw new EditError(`${node.type} cannot be resized`)
       const bounds = def.getBounds({ ...node, props })
@@ -935,4 +940,25 @@ export function handleAgentOps(req: IncomingMessage, res: ServerResponse, path: 
     send(error.message.startsWith('Unknown') ? 404 : 409, { error: error.message })
   }
   return true
+}
+
+// 画像の切り抜き（画面の切り抜きモードと同じ値）。
+// - image：props.crop。幅はそのままにして、高さを切り抜いた範囲の縦横比に合わせる（今の箱と crop から画像の縦横比が分かる）
+// - 画像の塗りの geo（スライドの画像枠など）：塗りを切り抜き（scaleMode: crop）にする。null なら塗りつぶし（fill）に戻す
+function cropProps(nodeId: string, type: string, props: Record<string, unknown>, value: ImageCrop | null): Record<string, unknown> {
+  if (type === 'image') {
+    const w = props.w as number
+    const h = props.h as number
+    const current = props.crop ? normalizeCrop(props.crop) : { x: 0, y: 0, w: 1, h: 1 }
+    const next = value ? normalizeCrop(value) : { x: 0, y: 0, w: 1, h: 1 }
+    // 画像全体を今の倍率で描いたときの大きさ
+    const fullW = w / current.w
+    const fullH = h / current.h
+    return { ...props, crop: value ? next : null, h: (w * (next.h * fullH)) / (next.w * fullW) }
+  }
+  const fill = toFill(props.fill)
+  if (type === 'geo' && fill?.type === 'image') {
+    return { ...props, fill: value ? { ...fill, scaleMode: 'crop', crop: normalizeCrop(value) } : { ...fill, scaleMode: 'fill' } }
+  }
+  throw new EditError(`crop is only for an image or a shape with an image fill (${nodeId})`)
 }

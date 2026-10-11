@@ -494,8 +494,12 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       const stroke = p.stroke as { color?: unknown } | string | null | undefined
       out.stroke = typeof stroke === 'string' ? stroke : typeof stroke?.color === 'string' ? stroke.color : 'none'
       copy('strokeWidth', 'strokeDash', 'cornerRadius', 'labelFontSize', 'labelColor')
-      const fill = p.fill as { type?: unknown; assetId?: unknown } | null | undefined
-      if (fill?.type === 'image' && typeof fill.assetId === 'string') out.assetId = fill.assetId
+      const fill = p.fill as { type?: unknown; assetId?: unknown; scaleMode?: unknown; crop?: unknown } | null | undefined
+      if (fill?.type === 'image' && typeof fill.assetId === 'string') {
+        out.assetId = fill.assetId
+        out.scaleMode = fill.scaleMode
+        if (fill.scaleMode === 'crop') out.crop = fill.crop
+      }
       break
     }
     case 'arrow': {
@@ -724,10 +728,10 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 ## Node types
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - note: sticky note (text, w, h, color = background)
-- geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, cornerRadius)
+- geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - arrow: line or arc between two points (start, end, bend, label, color, size, arrowheads); ends may be bound to nodes
 - draw: freehand stroke (color, size; points are not returned)
-- image: bitmap (assetId, w, h)
+- image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null)
 - frame: named container that clips its children (name, w, h)
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
@@ -765,6 +769,7 @@ Ops:
   slide: name, ratio, hidden, template (see Slides below)
   card: file (document id from list_documents; markdown or code), w, h (fixes the height)
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
+  crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
 - group: ids (2+, same parent), as?   ungroup: ids

@@ -19,6 +19,8 @@ export interface PaintEditingLink {
   selectStop(stop: number): void
   // ポインタがキャンバスのグラデーションのハンドルの上か（そこを押してもピッカーを閉じない）
   ownsPointer(e: PointerEvent): boolean
+  // 画像の塗りを、キャンバスの上の切り抜きモードで切り抜く（packages/canvas の cropHandles.ts）
+  startCrop(): void
 }
 
 export type { PaintEditing }

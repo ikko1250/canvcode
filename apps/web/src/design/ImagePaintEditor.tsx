@@ -7,7 +7,7 @@ import type { FillChange } from './sections.ts'
 // 画像の塗りの編集（MAI-83）。塗りの項目（ColorPicker.tsx の PaintField）で種類を「画像」にしたとき、ピッカーの代わりに出す。
 // - 表示のしかた：塗りつぶし（fill）・全体を収める（fit）・切り抜き（crop）・タイル（tile）
 // - 切り抜きは、画像のどの範囲を図形の箱に合わせるかを数値（画像に対する %：左・上・幅・高さ）で決める。
-//   図形の上でハンドルを動かす操作は作らない（Figma の切り抜きのハンドルは操作が多く、数値で足りるため）
+//   「キャンバスで切り抜く」（または図形のダブルクリック）で、図形の上で画像を動かし・大きさを変えて切り抜くこともできる（packages/canvas の cropHandles.ts）
 // - タイルは、画像の元の大きさに対する倍率（%）
 // - 画像の選び方：ファイルから、クリップボードから貼り付け、ワークスペースの画像の一覧から
 //   （キャンバスでは、Alt を押しながら図形へドロップ・Ctrl（⌘）+Alt+V でも入れられる。packages/canvas の imageFill.ts）
@@ -40,9 +40,11 @@ export function ImagePaintEditor(props: {
   paints: readonly ImagePaint[]
   images: PaintImageSource | null
   editor: ValueEditor<FillChange>
+  // キャンバスの上の切り抜きモードに入る（1 つの図形を選んでいるときだけ）
+  onCrop?: () => void
   onDone?: () => void
 }) {
-  const { label, paints, images, editor, onDone } = props
+  const { label, paints, images, editor, onCrop, onDone } = props
   const fileInput = useRef<HTMLInputElement>(null)
   const first = paints[0]
   const same = <T,>(read: (paint: ImagePaint) => T): T | null => (first && paints.every((paint) => read(paint) === read(first)) ? read(first) : null)
@@ -94,6 +96,13 @@ export function ImagePaintEditor(props: {
               </button>
             )
           })}
+        </div>
+      )}
+      {onCrop && paints.length === 1 && (scaleMode === 'fill' || scaleMode === 'crop') && (
+        <div className="design-image-actions">
+          <button title="図形の上で画像を動かし、大きさを変えて切り抜く（図形のダブルクリックでも入れる）" onPointerDown={(e) => e.preventDefault()} onClick={onCrop}>
+            キャンバスで切り抜く
+          </button>
         </div>
       )}
       {scaleMode === 'crop' && (

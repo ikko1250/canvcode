@@ -1,6 +1,7 @@
 import { applyMat, dist, invert, worldToScreen, type NodeRecord, type Transaction, type Vec, type WorkspaceRecord } from '@canvcode/core'
 import { canRoundCorners, cornerRadii, effectiveCornerRadii, toCornerRadius, type CornerRadii, type GeoProps } from '@canvcode/nodes'
 import { nodeIn, type Editor } from './editor.ts'
+import { cropEditingTarget } from './cropHandles.ts'
 import { paintEditingTarget } from './gradientHandles.ts'
 
 // 角丸のハンドル（MAI-84）。角丸を持てる図形（矩形）を 1 つだけ選び、ポインタがその図形の上にあるとき（Figma と同じ。
@@ -41,7 +42,7 @@ export interface CornerHandles {
 // 角丸のハンドルを出せる図形（ポインタの位置は見ない）。出せないときは null
 export function cornerRadiusTarget(editor: Editor): NodeRecord<GeoProps> | null {
   const { selectedIds, editingId, camera } = editor.session.get()
-  if (editingId || selectedIds.size !== 1 || paintEditingTarget(editor)) return null
+  if (editingId || selectedIds.size !== 1 || paintEditingTarget(editor) || cropEditingTarget(editor)) return null
   const [id] = selectedIds
   const entry = editor.index.get(id)
   if (!entry || entry.node.locked || !canRoundCorners(entry.node)) return null

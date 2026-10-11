@@ -3,6 +3,7 @@ import {
   arrowPolyline,
   HIDDEN_SLIDE_OPACITY,
   isHiddenSlide,
+  requestAssetImage,
   type ArrowProps,
   type AssetResolver,
   type CitationResolver,
@@ -18,6 +19,7 @@ import type { Axis } from './arrange.ts'
 import { arrowHandles, selectionHandles, spacingHandles, type SpacingHandle } from './tools.ts'
 import type { ScreenHandles } from './transform.ts'
 import { gradientHandles, type GradientHandles } from './gradientHandles.ts'
+import { cropHandles, type CropHandles } from './cropHandles.ts'
 import { CORNER_HANDLE_RADIUS_PX, cornerHandles, type CornerHandles } from './cornerHandles.ts'
 import { BLOCK_ARROW_HANDLE_SIZE_PX, blockArrowHandles, type BlockArrowHandles } from './blockArrowHandles.ts'
 
@@ -48,6 +50,9 @@ const GAP_GUIDE_FAINT_COLOR = 'rgba(230, 73, 128, 0.45)'
 const GAP_GUIDE_CAP_PX = 4
 // グラデーションのハンドル（MAI-82）：始点・終点（中心・半径）は白い丸、止め色はその色の丸（選んでいるものは大きく、青い縁）
 const GRADIENT_END_RADIUS_PX = 5
+// 切り抜きモードの、窓の外の画像の不透明度と、画像全体の角の丸の半径（CSS ピクセル）
+const CROP_OUTSIDE_OPACITY = 0.35
+const CROP_CORNER_RADIUS_PX = 5
 const GRADIENT_STOP_RADIUS_PX = 6
 const GRADIENT_SELECTED_STOP_RADIUS_PX = 7.5
 // 文字があふれているセルの印（スライド v2）：赤い枠線。倍率によらず 2 CSS ピクセル
@@ -294,6 +299,9 @@ export function drawOverlay(
   // 塗りのグラデーションのハンドル（MAI-82）
   const gradient = gradientHandles(editor)
   if (gradient) drawGradientHandles(ctx, gradient, view.dpr)
+  // 画像の切り抜きモード：窓の外の画像（薄く）と、窓・画像全体の枠とハンドル
+  const crop = cropHandles(editor)
+  if (crop) drawCropOverlay(ctx, crop, view)
 
   // 範囲選択の枠
   if (state.brush) {
@@ -547,6 +555,62 @@ function drawSpacingHandles(
     }
   }
   ctx.lineCap = 'butt'
+}
+
+// 画像の切り抜きモード：窓の外にはみ出した画像を薄く描き（窓の中はシーンにある）、画像全体の枠（点線）と角の白い丸、
+// 窓の枠とハンドル（画像ノードだけ）を描く
+function drawCropOverlay(ctx: CanvasRenderingContext2D, found: CropHandles, view: Viewport): void {
+  const { target, full } = found
+  const asset = view.assets?.get(target.assetId)
+  const raster = asset
+    ? requestAssetImage({ images: view.images, assets: view.assets }, asset, Math.max(full.w, full.h) * view.camera.zoom * view.dpr)
+    : null
+  const { box } = target
+  ctx.save()
+  setNodeTransform(ctx, target.worldMatrix, view)
+  ctx.beginPath()
+  ctx.rect(full.x, full.y, full.w, full.h)
+  ctx.rect(box.x, box.y, box.w, box.h)
+  ctx.clip('evenodd')
+  ctx.globalAlpha = CROP_OUTSIDE_OPACITY
+  if (raster) {
+    ctx.imageSmoothingEnabled = true
+    ctx.drawImage(raster.image, full.x, full.y, full.w, full.h)
+  } else {
+    ctx.fillStyle = '#9aa0a6'
+    ctx.fillRect(full.x, full.y, full.w, full.h)
+  }
+  ctx.restore()
+
+  const dpr = view.dpr
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.save()
+  ctx.strokeStyle = SELECTION_COLOR
+  ctx.lineWidth = 1 * dpr
+  ctx.setLineDash([4 * dpr, 3 * dpr])
+  ctx.beginPath()
+  found.outline.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x * dpr, p.y * dpr) : ctx.lineTo(p.x * dpr, p.y * dpr)))
+  ctx.closePath()
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.lineWidth = 1.5 * dpr
+  ctx.beginPath()
+  found.window.corners.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x * dpr, p.y * dpr) : ctx.lineTo(p.x * dpr, p.y * dpr)))
+  ctx.closePath()
+  ctx.stroke()
+  ctx.restore()
+  if (found.window.handles.length > 0) drawSelectionHandles(ctx, found.window, false, dpr)
+  ctx.save()
+  ctx.fillStyle = '#ffffff'
+  ctx.strokeStyle = SELECTION_COLOR
+  ctx.lineWidth = 1.5 * dpr
+  for (const { point } of found.corners) {
+    ctx.beginPath()
+    ctx.arc(point.x * dpr, point.y * dpr, CROP_CORNER_RADIUS_PX * dpr, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+  }
+  ctx.restore()
 }
 
 // グラデーションのハンドル：始点→終点の線（白に薄い影）、端の白い丸、線の上の止め色。

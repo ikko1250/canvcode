@@ -531,6 +531,14 @@ export function PaintField(props: {
               label={label}
               paints={imagePaints}
               images={images}
+              onCrop={
+                link
+                  ? () => {
+                      setOpen(false)
+                      link.startCrop()
+                    }
+                  : undefined
+              }
               editor={{
                 ...editor,
                 set: (change) => {

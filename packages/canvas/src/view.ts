@@ -66,6 +66,7 @@ import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
 import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
+import { cropEditingTarget, startCropEditing, stopCropEditing } from './cropHandles.ts'
 import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
 import { ImageCache, MissingImageRecorder } from './imageCache.ts'
@@ -458,6 +459,7 @@ export class CanvasView {
       startEditing: (nodeId, options) => this.textEditor.start(nodeId, options),
       openPortal: (portalId) => this.options.onOpenPortal(portalId),
       editDocument: (nodeId) => this.editDocument(nodeId),
+      startCrop: (nodeId) => this.startCrop(nodeId),
       createDocumentAt: (kind, center, width) => void this.createDocumentAt(kind, center, width),
       quoteRegion: (pageId, rect, screen) => {
         const bounds = this.root.getBoundingClientRect()
@@ -741,6 +743,12 @@ export class CanvasView {
       y: box.y + box.h / 2 - this.height / 2 / zoom,
       zoom,
     }
+  }
+
+  // 画像の切り抜きモードに入る（画像ノード・画像の塗りの図形。cropHandles.ts）。入れたら true
+  startCrop(nodeId: string): boolean {
+    this.tool.cancel()
+    return startCropEditing(this.editor, nodeId, this.assets)
   }
 
   // カードの本文をその場で編集する（MAI-30）。編集できるノードなら true
@@ -1343,6 +1351,7 @@ export class CanvasView {
       state.hoveredSpacing !== prev.hoveredSpacing ||
       state.spacingDrag !== prev.spacingDrag ||
       state.paintEditing !== prev.paintEditing ||
+      state.cropEditing !== prev.cropEditing ||
       state.cornerHandlesId !== prev.cornerHandlesId
     ) {
       this.invalidate('overlay')
@@ -1484,6 +1493,8 @@ export class CanvasView {
         editor.session.set({ paintEditing: null })
         return
       }
+      // 画像の切り抜きモードなら、モードを抜ける（切り抜いた結果はドラッグごとに確定している。選択はそのまま）
+      if (stopCropEditing(editor)) return
       // group の中に入っていれば、group を選んで外に出る。そうでなければ選択を外す
       const focused = editor.session.get().focusedGroupId
       if (focused) {
@@ -1567,6 +1578,12 @@ export class CanvasView {
       return
     }
     if (e.key === 'Enter' && !mod) {
+      // 画像の切り抜きモードなら、モードを抜ける
+      if (cropEditingTarget(editor)) {
+        e.preventDefault()
+        stopCropEditing(editor)
+        return
+      }
       // 文字を持つノードを 1 つだけ選んでいれば、編集モードに入る
       const [id, ...rest] = editor.session.get().selectedIds
       const node = id && rest.length === 0 ? editor.getNode(id) : undefined

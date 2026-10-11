@@ -384,6 +384,9 @@ function paintEditingLink(editor: Editor, view: CanvasView | null, nodeId: strin
       const rect = root.getBoundingClientRect()
       return hitGradientHandle(editor, { x: e.clientX - rect.left, y: e.clientY - rect.top }) !== null
     },
+    startCrop: () => {
+      view?.startCrop(nodeId)
+    },
   }
 }
 

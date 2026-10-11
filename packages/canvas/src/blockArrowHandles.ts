@@ -10,6 +10,7 @@ import {
   type GeoProps,
 } from '@canvcode/nodes'
 import { nodeIn, type Editor } from './editor.ts'
+import { cropEditingTarget } from './cropHandles.ts'
 import { paintEditingTarget } from './gradientHandles.ts'
 
 // ブロック矢印の形のハンドル（MAI-87）。ブロック矢印の図形を 1 つだけ選んでいるとき、形の上に小さなひし形のハンドルを出す
@@ -46,7 +47,7 @@ export interface BlockArrowHandles {
 // ハンドルを出せるブロック矢印。出せないときは null
 export function blockArrowTarget(editor: Editor): NodeRecord<GeoProps> | null {
   const { selectedIds, editingId, camera } = editor.session.get()
-  if (editingId || selectedIds.size !== 1 || paintEditingTarget(editor)) return null
+  if (editingId || selectedIds.size !== 1 || paintEditingTarget(editor) || cropEditingTarget(editor)) return null
   const [id] = selectedIds
   const entry = editor.index.get(id)
   if (!entry || entry.node.locked || !isBlockArrow(entry.node)) return null
