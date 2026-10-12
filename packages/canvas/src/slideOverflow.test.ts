@@ -38,7 +38,13 @@ function setup(n = 3, layout: SlideLayoutKind = 'table', editor = new Editor({ c
       const cellNode = nodeIn(tx, id)!
       tx.put({ ...cellNode, props: { ...cellNode.props, label: value, labelParagraphs: richTextFromPlain(value) } })
     })
-  return { editor, slide: slide.id, layout: node.id, rows, setText }
+  // タイトルの文字を変える
+  const setTitle = (value: string) =>
+    editor.transact('edit', (tx) => {
+      const titleNode = nodeIn(tx, title.id)!
+      tx.put({ ...titleNode, props: { ...titleNode.props, paragraphs: richTextFromPlain(value) } })
+    })
+  return { editor, slide: slide.id, layout: node.id, title: title.id, rows, setText, setTitle }
 }
 
 describe('slideLayoutOverflow', () => {
@@ -88,6 +94,42 @@ describe('Editor.slideOverflows', () => {
     editor.undo()
     editor.undo()
     expect(editor.slideOverflows().size).toBe(0)
+  })
+
+  it('reports a title of three lines or more (titles are up to two lines)', () => {
+    const { editor, slide, title, setTitle } = setup()
+    setTitle(lines(2))
+    expect(editor.slideOverflows().size).toBe(0)
+    setTitle(lines(3))
+    expect(editor.slideOverflows().get(slide)).toEqual({ nodes: [title], extraRows: 0 })
+    expect(editor.slides.overflows?.(slide)).toBe(true)
+    // 上へ伸ばすのは 2 行分まで（3 行でも、タイトルの上端は 2 行のときと同じ）
+    const titleY = () => editor.getNode(title)!.y
+    const threeY = titleY()
+    setTitle(lines(2))
+    expect(titleY()).toBe(threeY)
+    setTitle(lines(1))
+    expect(titleY()).toBeGreaterThan(threeY)
+    setTitle(lines(3))
+    editor.undo()
+    editor.undo()
+    editor.undo()
+    editor.undo()
+    expect(editor.slideOverflows().size).toBe(0)
+  })
+
+  it('does not limit the lines of a cover title', () => {
+    const { editor } = setup()
+    const slide = editor.makeNode('slide', { x: 0, y: 5000, props: { ratio: '16:9', name: '', hidden: false } })
+    editor.createNodes([slide])
+    editor.applySlideTemplate(slide.id, 'title')
+    const layout = editor.index.childrenOf(slide.id).find((id) => editor.getNode(id)?.type === 'slide-layout')!
+    const titleId = (editor.getNode(layout)!.props as SlideLayoutProps).slots.title!
+    editor.transact('edit', (tx) => {
+      const titleNode = nodeIn(tx, titleId)!
+      tx.put({ ...titleNode, props: { ...titleNode.props, paragraphs: richTextFromPlain(lines(4)) } })
+    })
+    expect(editor.slideOverflows().has(slide.id)).toBe(false)
   })
 
   it('counts the rows over the limit', () => {

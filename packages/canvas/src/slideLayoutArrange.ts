@@ -23,7 +23,9 @@ import { emptiedCellProps } from './slideLayoutRows.ts'
 //   文字の高さ＋上下の余白（geoFitHeight。あふれの判定と同じ配置で、並べたあとの幅で測る）。手で決めた行（slots の行の h）はその高さを優先する
 // - 手で直した配置（props.adjust。表パネルと右図枠のずらす量、table-image の表の幅、表パネルの高さ）は幾何と行の高さの配分に渡す（slideLayoutAdjust.ts）
 // - 表紙以外のタイトルが 2 行以上（折り返し・改行）なら、1 行より高い分（titleExtraHeight）を幾何に渡す。タイトルは下端を変えずに上へ伸び、
-//   compact の表・箇条書きはタイトルとパネルをまとめて上下中央に寄せ直す（本文と重ならない）
+//   compact の表・箇条書きはタイトルとパネルをまとめて上下中央に寄せ直す（本文と重ならない）。タイトルは 2 行（SLIDE_TITLE_MAX_LINES）まで。
+//   3 行以上でも伸ばすのは 2 行分までにし（パネルの位置は 2 行のときと同じ）、収まらない分はあふれとして知らせる（slideOverflow.ts）
+// - 表紙以外のタイトルの幅は、パネルの横枠（表紙のタイトルと同じ 150〜1810）。折り返しもこの幅で測る
 
 export interface SlideLayoutArrangeInput {
   // slide-layout のレコード（props は SlideLayoutProps。壊れた値も読む）
@@ -144,12 +146,25 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   return { updates, rowCount, overflowRows: rows.length - rowCount, rowHeights: heights?.rowHeights ?? [] }
 }
 
+// 表紙以外のタイトルの行の上限。超えた分は上へ伸ばさず、あふれとして知らせる
+export const SLIDE_TITLE_MAX_LINES = 2
+
+// テキストの書式（props）を写し、文字を lines 行の空の段落にしたもの（最初の段落のリストと最初の run の書式で。emptiedCellProps）。
+// 同じ書式の lines 行分の高さを測るのに使う
+export function emptiedLinesProps(props: Record<string, unknown>, lines: number): Record<string, unknown> {
+  const out = emptiedCellProps(props)
+  if (Array.isArray(out.paragraphs)) out.paragraphs = Array.from({ length: Math.max(1, lines) }, () => (out.paragraphs as unknown[])[0])
+  return out
+}
+
 // タイトル（text）が 1 行より高い分。幅 w で折り返した高さから、同じ書式の 1 行（空の段落。最初の文字の書式）の高さを引く。
-// text でない・1 行に収まるなら 0
+// 伸ばすのは SLIDE_TITLE_MAX_LINES 行分まで（それより高い分はあふれ）。text でない・1 行に収まるなら 0
 export function titleExtraHeight(node: NodeRecord | undefined, w: number, textHeight: (node: NodeRecord, w: number) => number): number {
   if (node?.type !== 'text') return 0
-  const oneLine = textHeight({ ...node, props: emptiedCellProps(node.props as Record<string, unknown>) }, w)
-  const extra = textHeight(node, w) - oneLine
+  const props = node.props as Record<string, unknown>
+  const oneLine = textHeight({ ...node, props: emptiedLinesProps(props, 1) }, w)
+  const maxLines = textHeight({ ...node, props: emptiedLinesProps(props, SLIDE_TITLE_MAX_LINES) }, w)
+  const extra = Math.min(textHeight(node, w), maxLines) - oneLine
   // 小数の誤差では動かさない
   return extra > 0.5 ? extra : 0
 }

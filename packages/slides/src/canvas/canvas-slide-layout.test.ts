@@ -20,7 +20,7 @@ describe('canvasSlideLayout table', () => {
     expect(boxes.size).toEqual({ w: 1920, h: 1080 })
     expect(boxes.title.x).toBe(150)
     expect(boxes.title.y).toBe(178)
-    expect(boxes.title.w).toBe(1770)
+    expect(boxes.title.w).toBe(1660)
     expect(boxes.title.h).toBeCloseTo(46 * 1.18)
     expect(boxes.panel).toEqual({ x: 150, y: 246, w: 1660, h: 656 })
     expect(boxes.grid).toEqual({ x: 220, y: 310, w: 1520, h: 530 })
@@ -263,6 +263,29 @@ describe('canvasSlideLayout title', () => {
   })
 })
 
+describe('canvasSlideLayout title width', () => {
+  it('matches the panel width (150〜1810, same as the cover title) on every layout', () => {
+    const cover = canvasCoverLayout(false)
+    for (const layout of ['table', 'bullets', 'table-image', 'table-images'] as const) {
+      const boxes = canvasSlideLayout(layout, 2)
+      expect(boxes.title.x).toBe(150)
+      expect(boxes.title.w).toBe(1660)
+      expect(boxes.title.x).toBe(cover.headingArea.x)
+      expect(boxes.title.w).toBe(cover.headingArea.w)
+    }
+    // table-image：左表パネルの左端〜右図枠の右端
+    const image = canvasSlideLayout('table-image', 2)
+    expect(image.title.x + image.title.w).toBe(image.figure!.x + image.figure!.w)
+    expect(image.title.x).toBe(image.panel.x)
+  })
+
+  it('does not follow the manual offsets and widths of the panel', () => {
+    const boxes = canvasSlideLayout('table-image', 2, '16:9', { tableWidth: 900, tableOffset: { dx: 40, dy: 10 }, figureOffset: { dx: 30, dy: 0 } })
+    expect(boxes.title.x).toBe(150)
+    expect(boxes.title.w).toBe(1660)
+  })
+})
+
 describe('canvasSlideLayout two-line title (titleExtraPx)', () => {
   const extra = 46 * 1.18
 
@@ -326,7 +349,7 @@ describe('canvasSlideLayout 4:3', () => {
       label: { x: 165, y: 310, w: 295.5, h: 150 },
       body: { x: 476.25, y: 310, w: 828.75, h: 150 },
     })
-    expect(narrow.title.w).toBe(1327.5)
+    expect(narrow.title.w).toBe(1245)
     expect(narrow.title.y).toBe(wide.title.y)
     expect(narrow.title.h).toBe(wide.title.h)
     expect(narrow.rowPx).toBe(wide.rowPx)

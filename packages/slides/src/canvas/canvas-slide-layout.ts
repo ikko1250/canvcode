@@ -223,7 +223,8 @@ function gridBoxes(
     );
   }
 
-  // v1 の h1 は幅の指定がなく、left からスライドの右端までで折り返す
+  // タイトルは表紙のタイトルと同じく、パネルの横枠（150〜1810。table-image は左表と右図枠を合わせた全体）の幅で折り返す。
+  // 表パネル・右図枠を手でずらしても動かさない
   const titleLeft = TABLE_SPEC.left;
   const titleExtra =
     typeof options.titleExtraPx === "number" && Number.isFinite(options.titleExtraPx) ? Math.max(0, options.titleExtraPx) : 0;
@@ -236,7 +237,7 @@ function gridBoxes(
     title: box(
       titleLeft,
       geometry.titleTop,
-      SLIDE_WIDTH - titleLeft,
+      TABLE_SPEC.width,
       lineBoxHeight(TITLE_TYPOGRAPHY) + titleExtra,
       sx,
     ),

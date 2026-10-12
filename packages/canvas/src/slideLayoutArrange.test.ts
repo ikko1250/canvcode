@@ -153,14 +153,41 @@ describe('arrangeSlideLayout', () => {
 
   it('grows a two-line title upward and keeps it off the panel', () => {
     const { slots, children } = tableChildren(4)
-    // 1 行は 50、2 行は 110（並べ直しは、空にした 1 行の高さとの差だけタイトルを伸ばす）
-    const textHeight = (n: NodeRecord) => (n.id === 'title' && JSON.stringify(n.props).includes('"text":"title"') ? 110 : 50)
+    // 1 行は 50、2 行は 110（並べ直しは、空にした 1 行の高さとの差だけタイトルを伸ばす。上限は空にした 2 行の高さ）
+    const lines = (n: NodeRecord) => ((n.props as { paragraphs?: unknown[] }).paragraphs?.length ?? 1)
+    const textHeight = (n: NodeRecord) =>
+      n.id === 'title' && JSON.stringify(n.props).includes('"text":"title"') ? 110 : lines(n) >= 2 ? 110 : 50
     const placed = applied(children, arrangeSlideLayout({ layout: layoutNode('table', slots), children, ratio: '16:9', textHeight }))
     const one = canvasSlideLayout('table', 4)
     const two = canvasSlideLayout('table', 4, '16:9', { titleExtraPx: 60 })
     expect(at(placed.get('title')!)).toEqual(textBox(two.title))
     expect(placed.get('title')!.y).toBe(one.title.y - 60)
     expect(at(placed.get('panel')!)).toEqual(geoBox(one.panel))
+  })
+
+  it('grows a title of three lines or more only by two lines (the rest is an overflow)', () => {
+    const { slots, children } = tableChildren(4)
+    // 本文は 3 行で 170。空にした 1 行は 50、2 行は 110 → 伸ばすのは 2 行分（60）まで
+    const lines = (n: NodeRecord) => ((n.props as { paragraphs?: unknown[] }).paragraphs?.length ?? 1)
+    const textHeight = (n: NodeRecord) =>
+      n.id === 'title' && JSON.stringify(n.props).includes('"text":"title"') ? 170 : lines(n) >= 2 ? 110 : 50
+    const placed = applied(children, arrangeSlideLayout({ layout: layoutNode('table', slots), children, ratio: '16:9', textHeight }))
+    const two = canvasSlideLayout('table', 4, '16:9', { titleExtraPx: 60 })
+    expect(at(placed.get('title')!)).toEqual(textBox(two.title))
+    expect(at(placed.get('panel')!)).toEqual(geoBox(two.panel))
+  })
+
+  it('measures the title with the panel width (150〜1810)', () => {
+    const { slots, children } = tableChildren(2)
+    const widths: number[] = []
+    const textHeight = (n: NodeRecord, w: number) => {
+      if (n.id === 'title') widths.push(w)
+      return 50
+    }
+    const placed = applied(children, arrangeSlideLayout({ layout: layoutNode('table-image', slots), children, ratio: '16:9', textHeight }))
+    expect(new Set(widths)).toEqual(new Set([1660]))
+    expect(placed.get('title')!.x).toBe(150)
+    expect((placed.get('title')!.props as { w: number }).w).toBe(1660)
   })
 
   it('does nothing for an unknown layout', () => {
@@ -175,6 +202,10 @@ describe('titleExtraHeight', () => {
     const height = (n: NodeRecord) => ((n.props as { paragraphs: unknown[] }).paragraphs.length === 2 ? 108 : 54)
     expect(titleExtraHeight(title, 1000, height)).toBe(54)
     expect(titleExtraHeight(title, 1000, () => 54)).toBe(0)
+    // 3 行以上でも、伸ばすのは 2 行分まで
+    const three = node('title', 'text', { paragraphs: richTextFromPlain('一\n二\n三'), fontSize: 46, autoWidth: false, w: 1000 })
+    const byLines = (n: NodeRecord) => (n.props as { paragraphs: unknown[] }).paragraphs.length * 54
+    expect(titleExtraHeight(three, 1000, byLines)).toBe(54)
     expect(titleExtraHeight(geo('g'), 1000, () => 100)).toBe(0)
     expect(titleExtraHeight(undefined, 1000, () => 100)).toBe(0)
   })

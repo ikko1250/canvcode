@@ -1115,7 +1115,7 @@ export class Editor {
   }
 
   // この Canvas のスライドごとの、文字があふれている子の id と、上限を超えて並べられなかった行の数（slideOverflow.ts）。
-  // 対象はスライドの直下の slide-layout の slots の子（geo）だけ。あふれも並べられなかった行も無いスライドは入れない（非表示のものも入れる）。
+  // 対象はスライドの直下の slide-layout の slots の子（geo と、表紙以外のタイトル）だけ。あふれも並べられなかった行も無いスライドは入れない（非表示のものも入れる）。
   // 番号と同じく保存せず、ストアが変わって slide-layout の中に関わったときと、フォントを読み込み終えて測り直すときだけ計算し直す
   slideOverflows(): ReadonlyMap<string, SlideOverflow> {
     const generation = textMetricsGeneration()
