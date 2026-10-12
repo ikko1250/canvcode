@@ -20,7 +20,7 @@ import { adjustLayoutOptions } from './slideLayoutAdjust.ts'
 // - 本文の地の色は行の順で決まる（v1 の canvasSlideBodyFill）ので、行の順に合わせて直す（slideBodyFillFor）
 // - 行の高さは canvasSlideRowHeights（v1 の行容量の規則）で配分する。自動の行の必要高さは、見出しと本文のセルのうち大きい方の
 //   文字の高さ＋上下の余白（geoFitHeight。あふれの判定と同じ配置で、並べたあとの幅で測る）。手で決めた行（slots の行の h）はその高さを優先する
-// - 手で直した配置（props.adjust。表パネルと右図枠のずらす量、table-image の表の幅）は幾何に渡す（slideLayoutAdjust.ts）
+// - 手で直した配置（props.adjust。表パネルと右図枠のずらす量、table-image の表の幅、表パネルの高さ）は幾何と行の高さの配分に渡す（slideLayoutAdjust.ts）
 
 export interface SlideLayoutArrangeInput {
   // slide-layout のレコード（props は SlideLayoutProps。壊れた値も読む）
@@ -124,7 +124,7 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   const required = placed.map((row, i) =>
     Math.max(cellFitHeight(child(row.label), sized.rows[i].label?.w), cellFitHeight(child(row.body), sized.rows[i].body.w)),
   )
-  const heights = rowCount > 0 ? canvasSlideRowHeights(kind, required, placed.map((row) => row.h)) : null
+  const heights = rowCount > 0 ? canvasSlideRowHeights(kind, required, placed.map((row) => row.h), { tableHeight: adjusted.tableHeight }) : null
   const boxes = heights ? canvasSlideLayout(kind, rowCount, ratio, { ...adjusted, forceFull: heights.forceFull, rowHeights: heights.rowHeights }) : sized
   place(slots.title, boxes.title)
   place(slots.panel, boxes.panel)

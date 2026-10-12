@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// スライド（v2）の「配置」：デザインパネルで表の幅・位置を変える。表パネルをドラッグすると、離した位置に残る（並べ直しで戻らない）
+// スライド（v2）の「配置」：デザインパネルで表の幅・高さ・位置を変える。表パネルをドラッグすると、離した位置に残る（並べ直しで戻らない）
 
 const CANVAS_ID = 'canvas:slide-adjust-test'
 const SLIDE_ID = 'node:slide'
@@ -99,4 +99,30 @@ test('changes the table width and position from the design panel, and keeps a dr
   // Undo でドラッグの前に戻る
   await page.keyboard.press('Control+z')
   expect((await state(page)).panel).toEqual(after.panel)
+})
+
+test('changes the table panel height from the design panel, keeping its top and the rows inside it', async ({ page }) => {
+  await openApp(page)
+  await expect(page.getByTestId('slide-layout-adjust')).toBeVisible()
+  const before = await state(page)
+  // 高さ（幅の次の欄）：決めていなければ今のパネルの高さを出す
+  const height = page.locator('[data-testid="slide-layout-adjust"] > .design-field:not(:first-child) input').nth(1)
+  await expect(height).toHaveValue(String(before.panel.h))
+
+  await setNumber(page, '> .design-field:not(:first-child)', 1, '400')
+  const after = await state(page)
+  expect(after.panel).toEqual({ ...before.panel, h: 400 })
+  expect(after.figure).toEqual(before.figure)
+  expect(after.adjust).toEqual({ table: { h: 400, dy: before.panel.y - 197 } })
+  // 行はパネルの中に収まる（引き伸ばされない）
+  const bottom = await page.evaluate((slideId) => {
+    const { editor } = (window as any).canvcode
+    const rows = editor.slideLayoutFor(slideId).props.slots.rows
+    return Math.max(...rows.map((row: { body: string }) => {
+      const n = editor.getNode(row.body)
+      return n.y + n.props.h
+    }))
+  }, SLIDE_ID)
+  expect(bottom).toBeLessThanOrEqual(after.panel.y + after.panel.h)
+  await page.screenshot({ path: test.info().outputPath('height.png') })
 })

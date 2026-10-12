@@ -2,7 +2,7 @@ import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, ty
 import { slideSize, type SlideRatio } from '@canvcode/nodes'
 import { slideOrder } from '@canvcode/canvas/slideOrder'
 import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
-import { getMaxRowCount, TABLE_IMAGE_SPEC, TABLE_IMAGE_WIDTH_RANGE } from '@canvcode/slides'
+import { getMaxRowCount, TABLE_IMAGE_SPEC, TABLE_IMAGE_WIDTH_RANGE, TABLE_IMAGES_SPEC } from '@canvcode/slides'
 import type { RecordStore, StoredRecord } from '../records.ts'
 import { describeChart, plainTextOfProps } from '../refs.ts'
 
@@ -785,7 +785,8 @@ Slides (presentations):
 - template (title | bullets | table | table-image | table-images) fills an empty slide with a slide-layout and placeholder children (3 rows; table-images: 1 row of a full-width table above two image frames side by side). Then read_nodes the slide-layout for its slots and write the text with update {id, text} on each child.
 - Rows: at most ${getMaxRowCount('bullets')} (bullets), ${getMaxRowCount('table')} (table), ${getMaxRowCount('table-image')} (table-image), ${getMaxRowCount('table-images')} (table-images). Add with add_row; remove a row by deleting its body cell (its label goes with it and the rows close up).
 - The children of a slide-layout are laid out again at the end of every edit (positions, sizes and body colours follow the layout and row order): x, y, w, h you write for them are replaced. Long text wraps and may overflow its cell (read_canvas shows overflow on the slide); shorten it or use fewer rows.
-- adjust (update on the slide, its slide-layout or a child; not for the title template) moves the table panel with its rows and, for table-image, the figure frame, and sets the table-image table width: {"table":{"dx":0,"dy":-60,"w":800},"figure":{"dx":0,"dy":0}} in px of a 1920-wide slide (4:3 shrinks x). w is ${TABLE_IMAGE_WIDTH_RANGE.min}–${TABLE_IMAGE_WIDTH_RANGE.max} (default ${TABLE_IMAGE_SPEC.tableWidth}); the figure keeps its right edge and gets narrower. null resets a value. The title does not move.
+- adjust (update on the slide, its slide-layout or a child; not for the title template) moves the table panel with its rows and, for table-image, the figure frame, and sets the table-image table width and the table panel height: {"table":{"dx":0,"dy":-60,"w":800,"h":500},"figure":{"dx":0,"dy":0}} in px of a 1920-wide slide (4:3 shrinks x). w is ${TABLE_IMAGE_WIDTH_RANGE.min}–${TABLE_IMAGE_WIDTH_RANGE.max} (default ${TABLE_IMAGE_SPEC.tableWidth}); the figure keeps its right edge and gets narrower. null resets a value. The title does not move.
+- table.h (any template with rows) fixes the height of the grey table panel; the rows share that height (rows with their own height keep it, the others split the rest), so a smaller h stops rows from stretching to fill a tall panel. Without h the height follows the row count and text. h is kept between room for every row at one line and the slide bottom (table-images: the figures below keep at least ${TABLE_IMAGES_SPEC.minFiguresHeightPx}px and shrink as the table grows). Without dy, the panel keeps its top edge; with a fixed h the panel top is the full-panel top (y ${TABLE_IMAGE_SPEC.top}; table-images ${TABLE_IMAGES_SPEC.top}) plus dy.
 - Other nodes may be put inside a slide (parent = the slide id) and keep their positions.
 
 Example:

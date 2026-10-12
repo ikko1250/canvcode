@@ -3,7 +3,7 @@ import { adjustOf, type SlideLayoutKind, type SlideLayoutProps, type SlideLayout
 import { canvasSlideLayout, TABLE_IMAGE_WIDTH_RANGE, type CanvasBox } from '@canvcode/slides'
 import { duplicateSelection } from './clipboard.ts'
 import { Editor } from './editor.ts'
-import { adjustLayoutOptions, patchAdjust } from './slideLayoutAdjust.ts'
+import { adjustLayoutOptions, patchAdjust, tableHeightPatch } from './slideLayoutAdjust.ts'
 
 // slide-layout（スライド v2）の手で直した配置（props.adjust）。表パネル・右図枠のドラッグと幅のリサイズが adjust になり、並べ直しがそれに従う
 
@@ -19,11 +19,23 @@ describe('patchAdjust', () => {
 
   it('turns into geometry options', () => {
     expect(adjustLayoutOptions({})).toEqual({})
-    expect(adjustLayoutOptions({ table: { dy: -40, w: 800 }, figure: { dx: 5 } })).toEqual({
+    expect(adjustLayoutOptions({ table: { dy: -40, w: 800, h: 500 }, figure: { dx: 5 } })).toEqual({
       tableWidth: 800,
+      tableHeight: 500,
       tableOffset: { dx: 0, dy: -40 },
       figureOffset: { dx: 5, dy: 0 },
     })
+  })
+})
+
+describe('tableHeightPatch', () => {
+  it('keeps the panel top where it is, and clamps the height by the row count', () => {
+    // 表＋画像 2 行の compact のパネル（上端 350）の高さを決める：高さを決めたパネルの上端は 197 + dy
+    expect(tableHeightPatch('table-image', 2, 350, 400)).toEqual({ h: 400, dy: 153 })
+    expect(tableHeightPatch('table-image', 2, undefined, 10)).toEqual({ h: 260 })
+    expect(tableHeightPatch('table-images', 1, 165, 300)).toEqual({ h: 300, dy: 0 })
+    expect(tableHeightPatch('table', 3, 197, undefined)).toEqual({ h: undefined })
+    expect(tableHeightPatch('title', 1, 0, 300)).toBeNull()
   })
 })
 
@@ -104,6 +116,58 @@ describe('editor keeps the slide-layout adjust', () => {
     })
     expect(adjust()).toEqual({})
     expect(box(panel.id)).toEqual(geoBox(canvasSlideLayout('table', 2).panel))
+  })
+
+  it('turns a resize of the bottom edge of the table panel into the panel height, with its top kept', () => {
+    const { editor, panel, rows, box, adjust } = setup()
+    const before = box(panel.id)
+    expect(before).toEqual(geoBox(canvasSlideLayout('table-image', 2).panel))
+    editor.transact('resize', (tx) => {
+      const n = editor.getNode(panel.id)!
+      tx.put({ ...n, props: { ...n.props, h: 400 } })
+    })
+    // compact のパネル（上端 350）の上端を残す：高さを決めたパネルは 197 + dy に置く
+    expect(adjust()).toEqual({ table: { h: 400, dy: before.y - 197 } })
+    const fixed = canvasSlideLayout('table-image', 2, '16:9', { tableHeight: 400, tableOffset: { dx: 0, dy: before.y - 197 } })
+    expect(box(panel.id)).toEqual({ ...before, h: 400 })
+    expect(box(panel.id)).toEqual(geoBox(fixed.panel))
+    // 行はパネルの中で配り直す（引き伸ばさない）
+    expect(box(rows[1].body.id)).toEqual(geoBox(fixed.rows[1].body))
+    expect(box(rows[1].body.id).y + box(rows[1].body.id).h).toBe(before.y + 400 - 40)
+    // 1 回の Undo で戻る
+    editor.undo()
+    expect(adjust()).toEqual({})
+    expect(box(panel.id)).toEqual(before)
+  })
+
+  it('keeps the bottom edge when the top edge of the table panel is resized, and clamps the height', () => {
+    const { editor, panel, box, adjust } = setup()
+    const before = box(panel.id)
+    const bottom = before.y + before.h
+    editor.transact('resize', (tx) => {
+      const n = editor.getNode(panel.id)!
+      tx.put({ ...n, y: n.y + 100, props: { ...n.props, h: before.h - 100 } })
+    })
+    expect(adjust()).toEqual({ table: { h: before.h - 100, dy: before.y + 100 - 197 } })
+    expect(box(panel.id).y + box(panel.id).h).toBe(bottom)
+    // 行が入らない高さにはしない（2 行の下限 260）。縮めた端の方で止まる
+    editor.transact('resize', (tx) => {
+      const n = editor.getNode(panel.id)!
+      tx.put({ ...n, y: bottom - 20, props: { ...n.props, h: 20 } })
+    })
+    expect(box(panel.id)).toMatchObject({ y: bottom - 260, h: 260 })
+    expect(adjust().table?.h).toBe(260)
+  })
+
+  it('changes the height of a full-width table panel too', () => {
+    const { editor, panel, box, adjust } = setup('table')
+    const before = box(panel.id)
+    editor.transact('resize', (tx) => {
+      const n = editor.getNode(panel.id)!
+      tx.put({ ...n, props: { ...n.props, h: 600 } })
+    })
+    expect(adjust()).toEqual({ table: { h: 600, dy: before.y - 197 } })
+    expect(box(panel.id)).toEqual({ ...before, h: 600 })
   })
 
   it('stores a 4:3 drag in 1920-wide units', () => {

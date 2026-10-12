@@ -482,6 +482,26 @@ describe('edit_canvas slides', () => {
     expect(() => edit([{ op: 'update', id: made.s!, adjust: { table: { z: 1 } } }])).toThrow()
   })
 
+  it('fixes the height of the table panel with adjust, keeping its top unless dy is given', () => {
+    const { records, edit } = setup()
+    const slideId = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table-image' }]).created.s!
+    const slots = slotsOf(records, slideId) as Slots & { panel: string }
+    const top = world(records, slots.panel).y
+    edit([{ op: 'update', id: slideId, adjust: { table: { h: 500 } } }])
+    expect((layoutOf(records, slideId).props as { adjust: unknown }).adjust).toEqual({ table: { h: 500, dy: top - 197 } })
+    expect(world(records, slots.panel)).toMatchObject({ y: top, h: 500 })
+    // 行は高さを決めたパネルの中に収まる（一律の行の高さは v1 と同じく 1px に丸めるので、1px までの差は許す）
+    const last = world(records, slots.rows[slots.rows.length - 1]!.body)
+    expect(last.y + last.h).toBeLessThanOrEqual(top + 500 - 40 + 1)
+    // dy を指定すれば、その位置（197 + dy）。範囲の外は収める
+    edit([{ op: 'update', id: slideId, adjust: { table: { h: 99999, dy: 0 } } }])
+    expect(world(records, slots.panel)).toMatchObject({ y: 197, h: 883 })
+    // null は高さを内容から決める（行数と文字）に戻す
+    edit([{ op: 'update', id: slideId, adjust: { table: { h: null, dy: null } } }])
+    expect((layoutOf(records, slideId).props as { adjust: unknown }).adjust).toEqual({})
+    expect(world(records, slots.panel)).toMatchObject({ y: top })
+  })
+
   it('refuses slide ops that do not fit', () => {
     const { records, edit } = setup()
     const made = edit([

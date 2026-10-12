@@ -246,6 +246,11 @@ export type GeometryOptions = {
   forceFull?: boolean;
   /** table-image の左表パネルの幅（手で決めた幅）。無ければ TABLE_IMAGE_SPEC.tableWidth。範囲は clampTableImageWidth で収める */
   tableWidth?: number;
+  /**
+   * 表パネル（灰色の外枠）の高さ（手で決めた高さ）。決めれば compact の規則を使わず、パネルは全高のときの上端
+   * （tablePanelTop）から下へこの高さになり、行はこの中で配分する。範囲は clampTablePanelHeight で収める。forceFull より優先する
+   */
+  tableHeight?: number;
 };
 
 export type SlideGeometry = {
@@ -276,6 +281,83 @@ export function minRowPx(): number {
   return Math.ceil(Math.max(labelFloor, bodyFloor));
 }
 
+/** 表パネルの上下の padding（パネルの高さ − 行グリッドの予算） */
+function panelPaddingV(layout: SlideLayout): number {
+  switch (layout) {
+    case "table-image":
+      return TABLE_IMAGE_SPEC.panelPadding * 2;
+    case "table-images":
+      return TABLE_IMAGES_SPEC.padding.top + TABLE_IMAGES_SPEC.padding.bottom;
+    default:
+      return TABLE_SPEC.padding.top + TABLE_SPEC.padding.bottom;
+  }
+}
+
+/** 高さを手で決めた表パネルの行の間隔（全高パネルの間隔） */
+function fixedHeightGapPx(layout: SlideLayout): number {
+  switch (layout) {
+    case "table-image":
+      return TABLE_IMAGE_SPEC.fullGapPx;
+    case "table-images":
+      return TABLE_IMAGES_SPEC.gapPx;
+    default:
+      return TABLE_SPEC.fullGapPx;
+  }
+}
+
+/** 高さを手で決めた表パネルの上端（全高パネルの上端。ずらす前）。行グリッドを持たないレイアウトでは例外 */
+export function tablePanelTop(layout: SlideLayout): number {
+  switch (layout) {
+    case "table":
+    case "bullets":
+      return TABLE_SPEC.fullPanelTop;
+    case "table-image":
+      return TABLE_IMAGE_SPEC.top;
+    case "table-images":
+      return TABLE_IMAGES_SPEC.top;
+    case "title":
+      throw new Error("title レイアウトは表パネルを持ちません。");
+  }
+}
+
+/**
+ * 表パネルの高さを手で決めるときの範囲。
+ * 下限は行がみな 1 視覚行分（minRowPx）の高さで入る高さ。上限は、パネルの下端がスライドの下端まで
+ * （table-images は下の図の領域が minFiguresHeightPx 残る高さ）
+ */
+export function tablePanelHeightRange(layout: SlideLayout, rowCount: number): { min: number; max: number } {
+  const rows = Math.max(1, rowCount);
+  const min = rows * minRowPx() + (rows - 1) * fixedHeightGapPx(layout) + panelPaddingV(layout);
+  const max =
+    layout === "table-images"
+      ? TABLE_IMAGES_SPEC.height - TABLE_IMAGES_SPEC.minFiguresHeightPx
+      : SLIDE_HEIGHT - tablePanelTop(layout);
+  return { min: Math.min(min, max), max };
+}
+
+/** 表パネルの手で決めた高さを範囲に収める（1px に丸める）。数でなければ undefined（高さは行数と内容から決める） */
+export function clampTablePanelHeight(
+  layout: SlideLayout,
+  rowCount: number,
+  height: number | undefined,
+): number | undefined {
+  if (typeof height !== "number" || !Number.isFinite(height)) return undefined;
+  const { min, max } = tablePanelHeightRange(layout, rowCount);
+  return Math.round(Math.min(max, Math.max(min, height)));
+}
+
+/** 高さを手で決めた表パネルの、行グリッドの縦の値（compact にしない） */
+function fixedHeightRows(
+  layout: SlideLayout,
+  rowCount: number,
+  panelHeight: number,
+): { budgetPx: number; gapPx: number; rowPx: number } {
+  const gapPx = fixedHeightGapPx(layout);
+  const budgetPx = panelHeight - panelPaddingV(layout);
+  const rowPx = Math.round((budgetPx - (rowCount - 1) * gapPx) / rowCount);
+  return { budgetPx, gapPx, rowPx };
+}
+
 /** 全幅パネルの幾何。table はラベル列あり、bullets はラベル列なし（本文が全幅） */
 function panelGeometry(
   layout: "table" | "bullets",
@@ -285,7 +367,8 @@ function panelGeometry(
   const s = TABLE_SPEC;
   const padV = s.padding.top + s.padding.bottom;
   const natural = rowCount * s.compactRowPx + (rowCount - 1) * s.compactGapPx;
-  const compact = !options.forceFull && natural + padV <= s.fullPanelHeight;
+  const fixedHeight = clampTablePanelHeight(layout, rowCount, options.tableHeight);
+  const compact = fixedHeight === undefined && !options.forceFull && natural + padV <= s.fullPanelHeight;
 
   let panelHeight: number;
   let panelTop: number;
@@ -293,7 +376,12 @@ function panelGeometry(
   let rowPx: number;
   let gapPx: number;
 
-  if (compact) {
+  if (fixedHeight !== undefined) {
+    panelHeight = fixedHeight;
+    panelTop = s.fullPanelTop;
+    titleTop = s.fullTitleTop;
+    ({ rowPx, gapPx } = fixedHeightRows(layout, rowCount, panelHeight));
+  } else if (compact) {
     panelHeight = natural + padV;
     const block = s.compactTitleBand + panelHeight;
     titleTop = Math.round((SLIDE_HEIGHT - block) / 2);
@@ -337,17 +425,20 @@ function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): Sl
   // compact 時のパネル高は全幅表と同じ式（466 / 656）に揃える。
   const tablePadV = t.padding.top + t.padding.bottom;
   const natural = rowCount * t.compactRowPx + (rowCount - 1) * t.compactGapPx;
-  const compact = !options.forceFull && natural + tablePadV <= s.height;
-  const panelHeight = compact ? natural + tablePadV : s.height;
-  // 左表パネルは右図枠（高さ s.height）内で上下中央（align-self: center）
-  const panelTop = s.top + Math.round((s.height - panelHeight) / 2);
+  const fixedHeight = clampTablePanelHeight("table-image", rowCount, options.tableHeight);
+  const compact = fixedHeight === undefined && !options.forceFull && natural + tablePadV <= s.height;
+  const panelHeight = fixedHeight ?? (compact ? natural + tablePadV : s.height);
+  // 左表パネルは右図枠（高さ s.height）内で上下中央（align-self: center）。高さを手で決めたら右図枠の上端にそろえる
+  const panelTop = fixedHeight !== undefined ? s.top : s.top + Math.round((s.height - panelHeight) / 2);
   const titleTop = compact ? panelTop - s.compactTitleBand : s.fullTitleTop;
   const budgetPx = panelHeight - s.panelPadding * 2;
 
   let rowPx: number;
   let gapPx: number;
   const override = compact ? s.compactOverrides[rowCount] : undefined;
-  if (override) {
+  if (fixedHeight !== undefined) {
+    ({ rowPx, gapPx } = fixedHeightRows("table-image", rowCount, panelHeight));
+  } else if (override) {
     rowPx = override.rowPx;
     gapPx = override.gapPx;
   } else {
@@ -376,10 +467,12 @@ function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): Sl
   };
 }
 
-function tableImagesGeometry(rowCount: number): SlideGeometry {
+function tableImagesGeometry(rowCount: number, options: GeometryOptions = {}): SlideGeometry {
   const s = TABLE_IMAGES_SPEC;
   const padV = s.padding.top + s.padding.bottom;
-  const budgetPx = rowCount * s.rowPx + (rowCount - 1) * s.gapPx;
+  const fixedHeight = clampTablePanelHeight("table-images", rowCount, options.tableHeight);
+  const fixedRows = fixedHeight !== undefined ? fixedHeightRows("table-images", rowCount, fixedHeight) : undefined;
+  const budgetPx = fixedRows?.budgetPx ?? rowCount * s.rowPx + (rowCount - 1) * s.gapPx;
   const panelHeight = budgetPx + padV;
   const contentWidthPx = s.width - s.padding.x * 2;
   return {
@@ -392,7 +485,7 @@ function tableImagesGeometry(rowCount: number): SlideGeometry {
     figuresHeightPx: s.height - panelHeight,
     grid: {
       rowCount,
-      defaultRowPx: s.rowPx,
+      defaultRowPx: fixedRows?.rowPx ?? s.rowPx,
       gapPx: s.gapPx,
       budgetPx,
       contentWidthPx,
@@ -416,7 +509,7 @@ function rawGeometry(
     case "table-image":
       return tableImageGeometry(rowCount, options);
     case "table-images":
-      return tableImagesGeometry(rowCount);
+      return tableImagesGeometry(rowCount, options);
     case "title":
       throw new Error("title レイアウトは行グリッドを持ちません。");
   }

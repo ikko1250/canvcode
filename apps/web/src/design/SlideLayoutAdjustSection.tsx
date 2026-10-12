@@ -1,23 +1,23 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
-import { MoveHorizontal, MoveVertical, RotateCcw, UnfoldHorizontal } from 'lucide-react'
+import { MoveHorizontal, MoveVertical, RotateCcw, UnfoldHorizontal, UnfoldVertical } from 'lucide-react'
 import type { NodeRecord } from '@canvcode/core'
-import { PropertyEdit, editNodes, patchAdjust, type Editor } from '@canvcode/canvas'
-import { adjustOf } from '@canvcode/nodes'
-import { TABLE_IMAGE_SPEC, TABLE_IMAGE_WIDTH_RANGE } from '@canvcode/slides'
+import { PropertyEdit, editNodes, patchAdjust, tableHeightPatch, type Editor } from '@canvcode/canvas'
+import { adjustOf, slotsOf } from '@canvcode/nodes'
+import { isSlideLayout, layoutUsesRowGrid, TABLE_IMAGE_SPEC, TABLE_IMAGE_WIDTH_RANGE, tablePanelHeightRange } from '@canvcode/slides'
 import { FieldLabel, NumberField, type ValueEditor } from './controls.tsx'
 import type { DesignIcon, DesignSectionProps } from './registry.ts'
 import { slideLayoutAdjustTarget } from './slideLayoutAdjustTarget.ts'
 
-// スライド（v2）の「配置」：表パネル（中の行を含む）と右図枠の位置、table-image の表パネルの幅を手で直す。
+// スライド（v2）の「配置」：表パネル（中の行を含む）と右図枠の位置、table-image の表パネルの幅、表パネルの高さを手で直す。
 // 値は slide-layout の props.adjust（スライドの幾何の単位。1920 幅の px）に書き、並べ直し（コミットフック）が子を置き直す。
 // スライド・表のセル・パネル・図枠のどれを選んでいても、その slide-layout を変える。表パネル・図枠のドラッグでも同じ値が変わる
 
-type Key = { group: 'table' | 'figure'; key: 'dx' | 'dy' | 'w' }
+type Key = { group: 'table' | 'figure'; key: 'dx' | 'dy' | 'w' | 'h' }
 
 const OFFSET_LIMIT = 1920
 
 // 行の左のアイコン（名前はツールチップ）
-const ICONS: Record<Key['key'], DesignIcon> = { dx: MoveHorizontal, dy: MoveVertical, w: UnfoldHorizontal }
+const ICONS: Record<Key['key'], DesignIcon> = { dx: MoveHorizontal, dy: MoveVertical, w: UnfoldHorizontal, h: UnfoldVertical }
 
 export function SlideLayoutAdjustSection(props: DesignSectionProps) {
   const { editor, nodes } = props
@@ -40,6 +40,12 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
   const kind = (layout.props as Record<string, unknown>).layout
   const adjust = adjustOf((layout.props as Record<string, unknown>).adjust)
   const isTableImage = kind === 'table-image'
+  // 表パネルの高さ：決めていなければ今の（行数と内容から決まった）高さを出す。範囲は行数で決まる
+  const slots = slotsOf((layout.props as Record<string, unknown>).slots)
+  const rowCount = slots.rows.filter((row) => editor.getNode(row.body)?.parentId === layout.id).length
+  const panel = slots.panel ? editor.getNode(slots.panel) : undefined
+  const panelH = (panel?.props as Record<string, unknown> | undefined)?.h
+  const heightRange = isSlideLayout(kind) && layoutUsesRowGrid(kind) ? tablePanelHeightRange(kind, rowCount) : null
 
   const write = (patch: Parameters<typeof patchAdjust>[1]) => (node: NodeRecord) => {
     const current = adjustOf((node.props as Record<string, unknown>).adjust)
@@ -49,7 +55,9 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
   const valueEditor = ({ group, key }: Key): ValueEditor<number> => {
     const id = `${group}.${key}`
     const label = `design: slide-layout.${id}`
-    const patch = (value: number) => ({ [group]: { [key]: value } })
+    // 高さを決めるときは、パネルの上端が今の位置に残るように dy も決め直す（tableHeightPatch）
+    const patch = (value: number) =>
+      key === 'h' ? { table: tableHeightPatch(kind, rowCount, panel?.parentId === layout.id ? panel.y : undefined, value) ?? {} } : { [group]: { [key]: value } }
     return {
       set(value) {
         endRunning(true)
@@ -105,6 +113,7 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
         {field({ group: 'table', key: 'dy' }, '縦の位置', adjust.table?.dy ?? 0, offset)}
       </div>
       {isTableImage && field({ group: 'table', key: 'w' }, '幅', adjust.table?.w ?? TABLE_IMAGE_SPEC.tableWidth, TABLE_IMAGE_WIDTH_RANGE)}
+      {heightRange && field({ group: 'table', key: 'h' }, '高さ', adjust.table?.h ?? (typeof panelH === 'number' ? Math.round(panelH) : heightRange.max), heightRange)}
       {isTableImage && (
         <>
           <div className="design-field">

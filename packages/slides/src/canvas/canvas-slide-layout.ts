@@ -116,6 +116,11 @@ export type CanvasSlideLayoutOptions = {
   rowHeights?: readonly number[];
   /** table-image の左表パネルの幅（1920 幅の px）。右図枠は右端を変えずに、その分だけ狭く（広く）なる */
   tableWidth?: number;
+  /**
+   * 表パネル（灰色の外枠）の高さ（手で決めた高さ）。決めれば compact の規則を使わず、パネルは全高のときの上端から下へこの高さになる。
+   * table-images は下の図の枠がその分だけ低く（高く）なる。範囲は clampTablePanelHeight で収める
+   */
+  tableHeight?: number;
   /** 表パネル（中の行を含む）をずらす量（1920 幅の px）。4:3 では横を縮める */
   tableOffset?: CanvasSlideOffset;
   /** table-image の右図枠をずらす量（1920 幅の px） */
@@ -317,6 +322,7 @@ export function canvasSlideLayout(
   const geometry = computeSlideGeometry(layout, rowCount, {
     forceFull: options.forceFull,
     tableWidth: options.tableWidth,
+    tableHeight: options.tableHeight,
   });
   return gridBoxes(layout, geometry, ratio, options);
 }

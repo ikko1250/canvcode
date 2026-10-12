@@ -9,6 +9,7 @@
 import {
   getLayoutProfile,
   minRowPx,
+  type GeometryOptions,
   type LayoutProfile,
   type SlideLayout,
 } from "./slide-layout-spec.ts";
@@ -207,15 +208,17 @@ function fitsGrid(result: AnalyzeSlideRowsResult): boolean {
 
 /**
  * compact 幾何（行数だけで決まる小さいパネル）に収まらないときは、全高パネルで見積もり直す。
- * 全高で収まれば fullPanel: true の結果を返し、compact の警告は出さない。全高でも収まらなければ compact の結果をそのまま返す
+ * 全高で収まれば fullPanel: true の結果を返し、compact の警告は出さない。全高でも収まらなければ compact の結果をそのまま返す。
+ * パネルの高さを手で決めた（options.tableHeight）ときは compact にならないので、その高さだけで分類する
  */
 function classifyWithFullPanelFallback(
   layout: SlideLayout,
   rowCount: number,
   estimate: (profile: LayoutProfile) => number[],
   slideName: string | undefined,
+  options: Pick<GeometryOptions, "tableHeight">,
 ): AnalyzeSlideRowsResult {
-  const profile = getLayoutProfile(layout, rowCount);
+  const profile = getLayoutProfile(layout, rowCount, options);
   const result = classifyRowCapacity(profile, estimate(profile), slideName);
   if (fitsGrid(result) || !profile.compact) {
     return result;
@@ -239,13 +242,15 @@ function classifyWithFullPanelFallback(
 /**
  * 行ごとの必要高さを呼び出し側が測って渡し、分類・partial の再配分・全高パネルへの切り替えの規則を通す。
  * スライド v2（キャンバスのスライド）が、描画と同じ配置で測った高さで使う。
- * measure は幾何（compact / 全高）ごとに呼ばれる。行の幅はどちらも同じなので、同じ値を返してよい
+ * measure は幾何（compact / 全高）ごとに呼ばれる。行の幅はどちらも同じなので、同じ値を返してよい。
+ * options.tableHeight は手で決めた表パネルの高さ（決めれば、その高さの予算で分類する）
  */
 export function analyzeMeasuredRows(
   layout: SlideLayout,
   rowCount: number,
   measure: (profile: LayoutProfile) => number[],
   slideName?: string,
+  options: Pick<GeometryOptions, "tableHeight"> = {},
 ): AnalyzeSlideRowsResult {
-  return classifyWithFullPanelFallback(layout, rowCount, measure, slideName);
+  return classifyWithFullPanelFallback(layout, rowCount, measure, slideName, options);
 }

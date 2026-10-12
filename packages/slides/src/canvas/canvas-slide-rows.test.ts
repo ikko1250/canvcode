@@ -76,6 +76,17 @@ describe('canvasSlideRowHeights: fixed rows', () => {
     expect(sum(canvasSlideRowHeights('table', [60, 60, 60, 60], [200, 200, 200, 200]).rowHeights)).toBeCloseTo(523)
   })
 
+  it('shares a fixed table panel height instead of stretching the auto row to the full panel', () => {
+    // 表＋画像 2 行で、2 行目を手で 216 にしたもの：全高のパネル（行に使える高さ 648）では、自動の 1 行目が残りの 432 に伸びる
+    expect(canvasSlideRowHeights('table-image', [300, 60], [undefined, 216])).toMatchObject({ rowHeights: [432, 216], forceFull: true })
+    // パネルの高さを 640 にすれば（行に使える高さ 640 − 80 − 44 = 516）、1 行目は必要高さ（300）になる
+    const fixed = canvasSlideRowHeights('table-image', [300, 60], [undefined, 216], { tableHeight: 640 })
+    expect(fixed.rowHeights).toEqual([300, 216])
+    expect(fixed.forceFull).toBe(false)
+    // 自動の行だけでも、その高さの予算（474 − 間隔 82 = 392）で配る（一律の高さは v1 と同じく 1px に丸める）
+    expect(canvasSlideRowHeights('table', [60, 60, 60], [], { tableHeight: 600 }).rowHeights).toEqual([131, 131, 131])
+  })
+
   it('places the rows with their heights', () => {
     const boxes = canvasSlideLayout('table', 3, '16:9', { rowHeights: [100, 200, 150] })
     expect(boxes.rows.map((row) => [row.body.y, row.body.h])).toEqual([

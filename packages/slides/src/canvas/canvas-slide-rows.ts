@@ -9,10 +9,11 @@
  *   - compact のパネルに収まらず、全高のパネルなら収まるときは、全高のパネルにする（v1 の computedFullPanel → forceFull）
  * - 手で決めた行（fixed）：その高さを優先し、残りを自動の行で分ける。全高にするかは、手で決めた行の必要高さを
  *   その高さとして、上の規則で決める。配分の規則は distributeWithFixed に書く。
+ * - 表パネルの高さを手で決めた（options.tableHeight）ときは、compact / 全高を選ばず、その高さの予算で同じ規則で配分する。
  */
 
 import { analyzeMeasuredRows, type RowCapacityClassification } from "../core/slide-row-capacity.ts";
-import { getLayoutProfile, minRowPx, type LayoutProfile } from "../core/slide-layout-spec.ts";
+import { getLayoutProfile, minRowPx, type GeometryOptions, type LayoutProfile } from "../core/slide-layout-spec.ts";
 import type { CanvasGridSlideLayout } from "./canvas-slide-layout.ts";
 
 export type CanvasSlideRowHeights = {
@@ -26,18 +27,21 @@ export type CanvasSlideRowHeights = {
 
 /**
  * 行の高さを配分する。required は行ごとの必要高さ（自動の行に使う）、fixed は手で決めた高さ（無い行は undefined）。
+ * options.tableHeight は手で決めた表パネルの高さ（canvasSlideLayout にも同じ値を渡す）。
  * 行数は 1 から getMaxRowCount(layout) まで（幾何と同じく、外れれば例外）
  */
 export function canvasSlideRowHeights(
   layout: CanvasGridSlideLayout,
   required: readonly number[],
   fixed: readonly (number | undefined)[] = [],
+  options: Pick<GeometryOptions, "tableHeight"> = {},
 ): CanvasSlideRowHeights {
   const manual = required.map((_, i) => validHeight(fixed[i]));
   const needs = required.map((value, i) => manual[i] ?? value);
-  const analysis = analyzeMeasuredRows(layout, required.length, () => needs);
+  const { tableHeight } = options;
+  const analysis = analyzeMeasuredRows(layout, required.length, () => needs, undefined, { tableHeight });
   const forceFull = analysis.fullPanel;
-  const profile = getLayoutProfile(layout, required.length, { forceFull });
+  const profile = getLayoutProfile(layout, required.length, { forceFull, tableHeight });
   const { classification } = analysis;
   if (manual.every((h) => h === undefined)) {
     const rowHeights =

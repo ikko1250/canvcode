@@ -5,7 +5,7 @@ import {
   placeCoverHeading,
   type CanvasGridSlideBoxes,
 } from './canvas-slide-layout.ts'
-import { computeSlideGeometry, getMaxRowCount } from '../core/slide-layout-spec.ts'
+import { computeSlideGeometry, getMaxRowCount, tablePanelHeightRange } from '../core/slide-layout-spec.ts'
 
 // スライド v2 の幾何：v1（computeSlideGeometry・computeCoverGeometry・slide.css）と同じ位置になること
 
@@ -93,6 +93,19 @@ describe('canvasSlideLayout table', () => {
   })
 })
 
+describe('canvasSlideLayout table with a fixed panel height', () => {
+  it('drops the compact rule and puts the panel at the full-panel top', () => {
+    const boxes = canvasSlideLayout('table', 3, '16:9', { tableHeight: 600 })
+    expect(boxes.compact).toBe(false)
+    expect(boxes.title.y).toBe(128)
+    expect(boxes.panel).toEqual({ x: 150, y: 197, w: 1660, h: 600 })
+    // 予算 474（padding 64 + 62 を除く）・間隔 41
+    expect(boxes.grid.h).toBe(474)
+    expect(boxes.rowPx).toBe(131)
+    expect(canvasSlideLayout('bullets', 3, '16:9', { tableHeight: 600 }).panel.h).toBe(600)
+  })
+})
+
 describe('canvasSlideLayout bullets', () => {
   it('has body cells only, spanning the panel content width', () => {
     const boxes = canvasSlideLayout('bullets', 3)
@@ -160,6 +173,30 @@ describe('canvasSlideLayout table-image', () => {
     const narrow = canvasSlideLayout('table-image', 4, '4:3', { tableWidth: 800, tableOffset: { dx: 40, dy: 0 } })
     expect(narrow.panel).toEqual({ x: 142.5, y: 197, w: 600, h: 772 })
   })
+
+  it('gives the table panel a fixed height from the top of the figure, and shares it among the rows', () => {
+    const short = canvasSlideLayout('table-image', 2, '16:9', { tableHeight: 500 })
+    expect(short.compact).toBe(false)
+    expect(short.title.y).toBe(128)
+    expect(short.panel).toEqual({ x: 150, y: 197, w: 680, h: 500 })
+    // 予算 420（padding 40 × 2 を除く）・間隔 44（全高と同じ）を 2 行で分ける
+    expect(short.grid.h).toBe(420)
+    expect(short.gapPx).toBe(44)
+    expect(short.rowPx).toBe(188)
+    expect(rowYs(short)).toEqual([237, 469])
+    // 図の枠は変えない。ずらす量は高さを決めたパネルの上端（197）から
+    expect(short.figure).toEqual(canvasSlideLayout('table-image', 2).figure)
+    expect(canvasSlideLayout('table-image', 2, '16:9', { tableHeight: 500, tableOffset: { dx: 0, dy: 60 } }).panel.y).toBe(257)
+    // forceFull より優先する
+    expect(canvasSlideLayout('table-image', 2, '16:9', { tableHeight: 500, forceFull: true }).panel.h).toBe(500)
+  })
+
+  it('keeps a fixed table height within room for every row and the slide bottom', () => {
+    // 2 行：行の最小（68）× 2 ＋ 間隔 44 ＋ padding 80。上限はスライドの下端まで（1080 − 197）
+    expect(tablePanelHeightRange('table-image', 2)).toEqual({ min: 260, max: 883 })
+    expect(canvasSlideLayout('table-image', 2, '16:9', { tableHeight: 10 }).panel.h).toBe(260)
+    expect(canvasSlideLayout('table-image', 2, '16:9', { tableHeight: 5000 }).panel.h).toBe(883)
+  })
 })
 
 describe('canvasSlideLayout table-images', () => {
@@ -180,6 +217,16 @@ describe('canvasSlideLayout table-images', () => {
     expect(two.panel.h).toBe(403)
     expect(two.figure).toEqual({ x: 150, y: 588, w: 820, h: 381 })
     expect(canvasSlideLayout('table', 2).figure2).toBeNull()
+  })
+
+  it('makes the figures lower as the table panel with a fixed height grows', () => {
+    const tall = canvasSlideLayout('table-images', 1, '16:9', { tableHeight: 300 })
+    expect(tall.panel).toEqual({ x: 150, y: 165, w: 1660, h: 300 })
+    expect(tall.rows[0]!.body.h).toBe(237)
+    expect(tall.figure).toEqual({ x: 150, y: 485, w: 820, h: 484 })
+    // 図の領域（915 − パネルの高さ）が 300 残る高さまで
+    expect(tablePanelHeightRange('table-images', 1).max).toBe(615)
+    expect(canvasSlideLayout('table-images', 1, '16:9', { tableHeight: 2000 }).panel.h).toBe(615)
   })
 
   it('scales the figures in 4:3', () => {

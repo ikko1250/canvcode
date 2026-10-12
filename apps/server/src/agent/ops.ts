@@ -18,7 +18,7 @@ import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { nodeIn, type Editor } from '@canvcode/canvas/editor'
-import { patchAdjust } from '@canvcode/canvas/slideLayoutAdjust'
+import { patchAdjust, tableHeightPatch } from '@canvcode/canvas/slideLayoutAdjust'
 import { presentRows } from '@canvcode/canvas/slideLayoutArrange'
 import { hasSlideLayoutRows, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
 import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspace'
@@ -92,7 +92,7 @@ const position = { x: finite.optional(), y: finite.optional(), place: place.opti
 // スライドの表パネル・右図枠の手で直した配置（slide-layout の adjust。1920 幅の px）。null はその値を既定に戻す
 const offsetValue = finite.nullable().optional()
 const slideAdjust = z.strictObject({
-  table: z.strictObject({ dx: offsetValue, dy: offsetValue, w: offsetValue }).optional(),
+  table: z.strictObject({ dx: offsetValue, dy: offsetValue, w: offsetValue, h: offsetValue }).optional(),
   figure: z.strictObject({ dx: offsetValue, dy: offsetValue }).optional(),
 })
 // 画像の切り抜く範囲（画像全体を 0〜1 とした割合）。null は切り抜きをやめる
@@ -471,7 +471,16 @@ class EditRun {
     if ((adjust.table?.w != null || adjust.figure) && props.layout !== 'table-image') throw new EditError('table.w and figure are only for the table-image template')
     const orUndefined = (group: Record<string, number | null | undefined> | undefined) =>
       group && Object.fromEntries(Object.entries(group).filter(([, v]) => v !== undefined).map(([k, v]) => [k, v ?? undefined]))
-    const next = patchAdjust(adjustOf(props.adjust), { table: orUndefined(adjust.table), figure: orUndefined(adjust.figure) })
+    const table = orUndefined(adjust.table)
+    // 表パネルの高さは行数で決まる範囲に収める。dy を指定しなければ、パネルの上端を今の位置に残す（画面のデザインパネルと同じ）
+    if (table && adjust.table?.h !== undefined) {
+      const slots = slotsOf(props.slots)
+      const rowCount = presentRows(slots, (id) => nodeIn(this.tx, id)?.parentId === layout.id).length
+      const panel = slots.panel ? nodeIn(this.tx, slots.panel) : undefined
+      const panelY = adjust.table.dy === undefined && panel?.parentId === layout.id ? panel.y : undefined
+      Object.assign(table, tableHeightPatch(props.layout, rowCount, panelY, adjust.table.h ?? undefined))
+    }
+    const next = patchAdjust(adjustOf(props.adjust), { table, figure: orUndefined(adjust.figure) })
     this.tx.put({ ...layout, props: { ...props, adjust: next } })
     this.tx.flush()
   }
