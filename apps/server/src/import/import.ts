@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from 'node:fs/promises'
+import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, join, resolve } from 'node:path'
@@ -15,7 +15,10 @@ import { ZipReader } from './zip.ts'
 // 書く順番：Asset → .md / .py の本文 → サムネイル → レコード（1 つのトランザクション）。
 // レコードを保存できなかったときは、書き出した .md / .py を .canvcode/deleted/ に移し、何も取り込まなかったことにする
 // （Asset とサムネイルは、どこからも参照されないだけなので残す）。
-// 元の .ricbackup は .canvcode/imports/ に残す（AI 会話などを、あとから取り込めるように）
+// 元の .ricbackup は残さない（数百 MB あるため）：サーバーの上のファイルの場所を渡されたときは、そこから直接読み（写さない・消さない）、
+// ブラウザから送られた本文は .canvcode/imports/ の一時ファイル（<時刻>-<名前>.uploading）に書いて読み、終わったら（失敗しても）消す。
+// 以前は「AI 会話などを、あとから取り込めるように」.canvcode/imports/ に写して残していたが、それを読み直す処理はない。
+// すでに imports/ にあるファイルには触れない
 
 export interface ImportDeps {
   dataDir: string
@@ -102,13 +105,24 @@ export function describeReport(report: ImportReport): string[] {
   return lines
 }
 
-// 元の .ricbackup を .canvcode/imports/ に置く（置いた場所を返す）
-export async function keepBackup(dataDir: string, source: string): Promise<string> {
+// ブラウザから送られた本文を書く一時ファイルの印（書いている途中で止まったものは、storageCleanup.ts が 1 日経ったら消す）
+export const UPLOAD_SUFFIX = '.uploading'
+const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000
+
+// .canvcode/imports/ に残った書きかけの一時ファイル（UPLOAD_SUFFIX で終わり、1 日以上書き足されていないもの）を消し、消した名前を返す。
+// それ以外のファイル（以前に残した .ricbackup など）には触れない
+export async function sweepStaleUploads(dataDir: string, now = Date.now()): Promise<string[]> {
   const dir = join(dataDir, 'imports')
-  await mkdir(dir, { recursive: true })
-  const target = join(dir, basename(source))
-  if (resolve(source) !== resolve(target)) await copyFile(source, target)
-  return target
+  const names = await readdir(dir).catch(() => [] as string[])
+  const removed: string[] = []
+  for (const name of names) {
+    if (!name.endsWith(UPLOAD_SUFFIX)) continue
+    const info = await stat(join(dir, name)).catch(() => null)
+    if (!info?.isFile() || now - info.mtimeMs < STALE_UPLOAD_MS) continue
+    await rm(join(dir, name), { force: true })
+    removed.push(name)
+  }
+  return removed
 }
 
 // POST /api/import：ブラウザからドロップしたファイル（本文）か、サーバーの上のファイルの場所（JSON の path）を受け取って取り込む
@@ -118,36 +132,42 @@ export async function handleImport(req: IncomingMessage, res: ServerResponse, pa
     send(res, 405, { error: 'method not allowed' })
     return true
   }
-  let source: string
+  let upload: string | null = null
+  let status: number
+  let body: unknown
   try {
+    let source: string
     if ((req.headers['content-type'] ?? '').startsWith('application/json')) {
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(chunk as Buffer)
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { path?: string }
-      if (!body.path) throw new ImportError('path がありません')
-      source = await keepBackup(deps.dataDir, resolve(body.path))
+      const request = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { path?: string }
+      if (!request.path) throw new ImportError('path がありません')
+      // サーバーの上のファイルは、その場所から直接読む（写さない・消さない）
+      source = resolve(request.path)
     } else {
-      // 本文をそのまま .canvcode/imports/ に書く（数百 MB あるので、メモリに載せない）
+      // 本文を一時ファイルに書く（数百 MB あるので、メモリに載せない）。取り込みが終わったら消す
       const name = basename(decodeURIComponent(String(req.headers['x-filename'] ?? 'upload.ricbackup'))).replace(/[^\w.\-()]/g, '_')
       const dir = join(deps.dataDir, 'imports')
       await mkdir(dir, { recursive: true })
-      source = join(dir, `${Date.now()}-${name}`)
-      try {
-        await pipeline(req, createWriteStream(source))
-      } catch (error) {
-        await rm(source, { force: true })
-        throw error
-      }
+      upload = join(dir, `${Date.now()}-${name}${UPLOAD_SUFFIX}`)
+      source = upload
+      await pipeline(req, createWriteStream(upload))
     }
-    const result = await importBackup(source, deps)
-    send(res, 200, result)
+    status = 200
+    body = await importBackup(source, deps)
   } catch (error) {
-    if (error instanceof ImportError) send(res, 400, { error: error.message })
-    else {
+    if (error instanceof ImportError) {
+      status = 400
+      body = { error: error.message }
+    } else {
       console.error('import failed', error)
-      send(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      status = 500
+      body = { error: error instanceof Error ? error.message : String(error) }
     }
   }
+  // 応答する前に、一時ファイルを消す（成功しても失敗しても）
+  if (upload) await rm(upload, { force: true }).catch((error: unknown) => console.error('failed to remove the uploaded backup', upload, error))
+  send(res, status, body)
   return true
 }
 

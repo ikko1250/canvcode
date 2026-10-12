@@ -2,13 +2,14 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { AssetStore } from './assets.ts'
 import { FileStore } from './files.ts'
-import { describeReport, importBackup, keepBackup, type ImportResult } from './import/import.ts'
+import { describeReport, importBackup, type ImportResult } from './import/import.ts'
 import { RecordStore } from './records.ts'
 import { ThumbnailStore } from './thumbnails.ts'
 
 // 旧データ（.ricbackup）を取り込む（MAI-36）。VPS の上にあるファイルを、アップロードせずに取り込むとき。
 // npm run import -- --workspace <フォルダ> <ファイル>
-// サーバーが動いていれば、サーバーに頼む（開いているブラウザにもすぐ届く）。動いていなければ、ここで取り込む
+// サーバーが動いていれば、サーバーに頼む（開いているブラウザにもすぐ届く）。動いていなければ、ここで取り込む。
+// どちらも、渡したファイルをその場所から読む（.canvcode/imports/ に写さない。渡したファイルは消さない）
 const { values: args, positionals } = parseArgs({ options: { workspace: { type: 'string' } }, allowPositionals: true, strict: false })
 const file = positionals[0]
 if (!file) {
@@ -49,7 +50,7 @@ try {
     const files = new FileStore(workspace, dataDir, () => {})
     await files.init()
     try {
-      result = await importBackup(await keepBackup(dataDir, resolve(file)), { dataDir, records, files, assets, thumbnails })
+      result = await importBackup(resolve(file), { dataDir, records, files, assets, thumbnails })
     } finally {
       records.close()
       await files.close()
