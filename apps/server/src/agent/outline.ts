@@ -729,7 +729,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - note: sticky note (text, w, h, color = background)
 - geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
-- arrow: line or arc between two points (start, end, bend, label, color, size, arrowheads); ends may be bound to nodes
+- arrow: arrow or plain line ("矢印・線" in the UI; no arrowheads = a line), straight or arc between two points (start, end, bend, label, color, size, arrowheads); ends may be bound to nodes
 - draw: freehand stroke (color, size; points are not returned)
 - image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null)
 - frame: named container that clips its children (name, w, h)
@@ -773,7 +773,7 @@ Ops:
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
 - group: ids (2+, same parent), as?   ungroup: ids
-- connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none). Arrows bound to nodes follow them when they move.
+- connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none; none = a plain line). Arrows bound to nodes follow them when they move.
 - align: ids, edge (left | hcenter | right | top | vcenter | bottom)
 - distribute: ids, axis (x | y), gap? (without gap: 3+ ids, equal spacing between the outer ones)
 - reparent: ids, parent (frame/group id, or "canvas")

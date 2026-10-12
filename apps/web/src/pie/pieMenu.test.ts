@@ -292,7 +292,7 @@ describe('buildPieMenus', () => {
       const entry = tools.items.find((e) => e.label === label)!
       return isSubmenu(entry) ? entry.items : []
     }
-    expect(labels(sub('図形'))).toEqual(['矩形', '楕円', 'ブロック矢印', '円グラフ', 'フレーム', 'スライド 16:9', 'スライド 4:3', '矢印'])
+    expect(labels(sub('図形'))).toEqual(['矩形', '楕円', 'ブロック矢印', '円グラフ', 'フレーム', 'スライド 16:9', 'スライド 4:3', '矢印・線'])
     // ブロック矢印（MAI-87）は 図形 › ブロック矢印 › の中
     const blockArrows = sub('図形').find((e) => e.label === 'ブロック矢印')!
     expect(isSubmenu(blockArrows) ? labels(blockArrows.items) : []).toEqual(['右向き', '両向き', '曲がった矢印', 'シェブロン'])

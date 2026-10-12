@@ -416,7 +416,7 @@ const TYPE_LABELS: Record<string, string> = {
   geo: '図形',
   text: 'テキスト',
   note: '付箋',
-  arrow: '矢印',
+  arrow: '矢印・線',
   draw: 'フリーハンド',
   image: '画像',
   chart: 'グラフ',
