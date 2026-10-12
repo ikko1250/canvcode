@@ -216,6 +216,59 @@ describe('canvasSlideLayout title', () => {
   })
 })
 
+describe('canvasSlideLayout two-line title (titleExtraPx)', () => {
+  const extra = 46 * 1.18
+
+  it('grows a full-panel title upward, keeping its bottom and the panel', () => {
+    const one = canvasSlideLayout('table', 4)
+    const two = canvasSlideLayout('table', 4, '16:9', { titleExtraPx: extra })
+    expect(two.title.y).toBeCloseTo(128 - extra)
+    expect(two.title.h).toBeCloseTo(one.title.h + extra)
+    expect(two.title.y + two.title.h).toBeCloseTo(one.title.y + one.title.h)
+    expect(two.panel).toEqual(one.panel)
+    expect(two.rows).toEqual(one.rows)
+  })
+
+  it('re-centers the title and the panel together for a compact table or bullets', () => {
+    for (const layout of ['table', 'bullets'] as const) {
+      const one = canvasSlideLayout(layout, 2)
+      const two = canvasSlideLayout(layout, 2, '16:9', { titleExtraPx: 60 })
+      expect(two.compact).toBe(true)
+      // パネルは増えた分の半分だけ下がり、タイトルは半分だけ上がる
+      expect(two.panel.y).toBe(one.panel.y + 30)
+      expect(two.title.y).toBe(one.title.y - 30)
+      expect(two.panel.y - (two.title.y + two.title.h)).toBeCloseTo(one.panel.y - (one.title.y + one.title.h))
+      expect(rowYs(two)).toEqual(rowYs(one).map((y) => y + 30))
+      // タイトルとパネルのまとまりが上下中央にある
+      expect(two.title.y + (two.panel.y + two.panel.h - two.title.y) / 2).toBeCloseTo(540, 0)
+    }
+  })
+
+  it('grows the title of table-image and table-images upward without moving the panel or the figures', () => {
+    for (const [layout, rows] of [['table-image', 2], ['table-image', 4], ['table-images', 1]] as const) {
+      const one = canvasSlideLayout(layout, rows)
+      const two = canvasSlideLayout(layout, rows, '16:9', { titleExtraPx: extra })
+      expect(two.title.y).toBeCloseTo(one.title.y - extra)
+      expect(two.title.y + two.title.h).toBeCloseTo(one.title.y + one.title.h)
+      expect(two.panel).toEqual(one.panel)
+      expect(two.figure).toEqual(one.figure)
+      expect(two.figure2).toEqual(one.figure2)
+    }
+  })
+
+  it('keeps the title inside the slide, and ignores invalid values', () => {
+    expect(canvasSlideLayout('table-images', 1, '16:9', { titleExtraPx: 500 }).title.y).toBe(0)
+    expect(canvasSlideLayout('table', 4, '16:9', { titleExtraPx: 500 }).title.y).toBe(0)
+    const one = canvasSlideLayout('table', 2)
+    expect(canvasSlideLayout('table', 2, '16:9', { titleExtraPx: -10 })).toEqual(one)
+    expect(canvasSlideLayout('table', 2, '16:9', { titleExtraPx: Number.NaN })).toEqual(one)
+  })
+
+  it('does not change the maximum row counts', () => {
+    expect(computeSlideGeometry('table', 6, { titleExtraPx: extra }).grid.defaultRowPx).toBe(computeSlideGeometry('table', 6).grid.defaultRowPx)
+  })
+})
+
 describe('canvasSlideLayout 4:3', () => {
   it('scales only horizontal dimensions by 1440/1920', () => {
     const wide = canvasSlideLayout('table', 3)

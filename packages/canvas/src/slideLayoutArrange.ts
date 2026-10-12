@@ -11,6 +11,7 @@ import {
   type CanvasSlideLayout,
 } from '@canvcode/slides'
 import { adjustLayoutOptions } from './slideLayoutAdjust.ts'
+import { emptiedCellProps } from './slideLayoutRows.ts'
 
 // slide-layout（スライド v2）の子を、レイアウトの幾何（canvasSlideLayout）どおりに並べ直す計算。DOM に依存しない純粋な関数だけを置く。
 // 書き込むのは呼び出し側（Editor）で、変更を起こしたトランザクションの終わりに同じ 1 歩として書く。
@@ -21,6 +22,8 @@ import { adjustLayoutOptions } from './slideLayoutAdjust.ts'
 // - 行の高さは canvasSlideRowHeights（v1 の行容量の規則）で配分する。自動の行の必要高さは、見出しと本文のセルのうち大きい方の
 //   文字の高さ＋上下の余白（geoFitHeight。あふれの判定と同じ配置で、並べたあとの幅で測る）。手で決めた行（slots の行の h）はその高さを優先する
 // - 手で直した配置（props.adjust。表パネルと右図枠のずらす量、table-image の表の幅）は幾何に渡す（slideLayoutAdjust.ts）
+// - 表紙以外のタイトルが 2 行以上（折り返し・改行）なら、1 行より高い分（titleExtraHeight）を幾何に渡す。タイトルは下端を変えずに上へ伸び、
+//   compact の表・箇条書きはタイトルとパネルをまとめて上下中央に寄せ直す（本文と重ならない）
 
 export interface SlideLayoutArrangeInput {
   // slide-layout のレコード（props は SlideLayoutProps。壊れた値も読む）
@@ -117,8 +120,12 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   const rows = presentRows(slots, (id) => children.has(id))
   const max = getMaxRowCount(kind)
   const rowCount = Math.min(rows.length, max)
-  const adjusted = adjustLayoutOptions(adjustOf(props.adjust))
-  const sized = canvasSlideLayout(kind, Math.max(1, rowCount), ratio, adjusted)
+  const manual = adjustLayoutOptions(adjustOf(props.adjust))
+  const base = canvasSlideLayout(kind, Math.max(1, rowCount), ratio, manual)
+  // タイトルの幅は行の数・高さによらないので、一律の幾何の箱の幅で測る
+  const titleExtraPx = titleExtraHeight(child(slots.title), base.title.w, textHeight)
+  const adjusted = titleExtraPx > 0 ? { ...manual, titleExtraPx } : manual
+  const sized = titleExtraPx > 0 ? canvasSlideLayout(kind, Math.max(1, rowCount), ratio, adjusted) : base
   const placed = rows.slice(0, rowCount)
   // 行の幅は compact でも全高でも同じなので、一律の幾何の箱の幅で測る
   const required = placed.map((row, i) =>
@@ -135,6 +142,16 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
     place(rows[i].body, boxes.rows[i].body, i)
   }
   return { updates, rowCount, overflowRows: rows.length - rowCount, rowHeights: heights?.rowHeights ?? [] }
+}
+
+// タイトル（text）が 1 行より高い分。幅 w で折り返した高さから、同じ書式の 1 行（空の段落。最初の文字の書式）の高さを引く。
+// text でない・1 行に収まるなら 0
+export function titleExtraHeight(node: NodeRecord | undefined, w: number, textHeight: (node: NodeRecord, w: number) => number): number {
+  if (node?.type !== 'text') return 0
+  const oneLine = textHeight({ ...node, props: emptiedCellProps(node.props as Record<string, unknown>) }, w)
+  const extra = textHeight(node, w) - oneLine
+  // 小数の誤差では動かさない
+  return extra > 0.5 ? extra : 0
 }
 
 // 行のセルの文字が収まる高さ。geo だけを測る（ほかの型・無いセルは 0。行の高さを決めない）

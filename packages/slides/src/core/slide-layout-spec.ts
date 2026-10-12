@@ -246,12 +246,25 @@ export type GeometryOptions = {
   forceFull?: boolean;
   /** table-image の左表パネルの幅（手で決めた幅）。無ければ TABLE_IMAGE_SPEC.tableWidth。範囲は clampTableImageWidth で収める */
   tableWidth?: number;
+  /**
+   * タイトルが 1 行より高い分（2 行以上に折り返した・改行したときの、増えた高さ）。無ければ 0。
+   * タイトルの下端（パネルとの間隔）は変えずに、タイトルを上へ伸ばす。compact の table / bullets は、
+   * タイトルとパネルをまとめて上下中央に寄せ直す（パネルも増えた分の半分だけ下がる）。タイトルの上端はスライドの上端（0）より上に出さない
+   */
+  titleExtraPx?: number;
 };
+
+/** タイトルの増えた高さ（数でない・負のものは 0） */
+function titleExtraOf(options: GeometryOptions): number {
+  const extra = options.titleExtraPx;
+  return typeof extra === "number" && Number.isFinite(extra) && extra > 0 ? extra : 0;
+}
 
 export type SlideGeometry = {
   layout: SlideLayout;
   rowCount: number;
   compact: boolean;
+  /** タイトルの上端。titleExtraPx があれば、その分だけ上（compact の table / bullets は上下中央に寄せ直した位置） */
   titleTop: number;
   /** 灰色表パネルのスライド座標での上端・高さ */
   panelTop: number;
@@ -292,18 +305,20 @@ function panelGeometry(
   let titleTop: number;
   let rowPx: number;
   let gapPx: number;
+  const extra = titleExtraOf(options);
 
   if (compact) {
     panelHeight = natural + padV;
-    const block = s.compactTitleBand + panelHeight;
-    titleTop = Math.round((SLIDE_HEIGHT - block) / 2);
-    panelTop = titleTop + s.compactTitleBand;
+    // タイトルが増えた分も含めて、タイトルとパネルをまとめて上下中央に寄せる
+    const block = extra + s.compactTitleBand + panelHeight;
+    titleTop = Math.max(0, Math.round((SLIDE_HEIGHT - block) / 2));
+    panelTop = titleTop + extra + s.compactTitleBand;
     rowPx = s.compactRowPx;
     gapPx = s.compactGapPx;
   } else {
     panelHeight = s.fullPanelHeight;
     panelTop = s.fullPanelTop;
-    titleTop = s.fullTitleTop;
+    titleTop = Math.max(0, s.fullTitleTop - extra);
     gapPx = s.fullGapPx;
     rowPx = Math.round((panelHeight - padV - (rowCount - 1) * gapPx) / rowCount);
   }
@@ -341,7 +356,7 @@ function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): Sl
   const panelHeight = compact ? natural + tablePadV : s.height;
   // 左表パネルは右図枠（高さ s.height）内で上下中央（align-self: center）
   const panelTop = s.top + Math.round((s.height - panelHeight) / 2);
-  const titleTop = compact ? panelTop - s.compactTitleBand : s.fullTitleTop;
+  const titleTop = Math.max(0, (compact ? panelTop - s.compactTitleBand : s.fullTitleTop) - titleExtraOf(options));
   const budgetPx = panelHeight - s.panelPadding * 2;
 
   let rowPx: number;
@@ -376,7 +391,7 @@ function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): Sl
   };
 }
 
-function tableImagesGeometry(rowCount: number): SlideGeometry {
+function tableImagesGeometry(rowCount: number, options: GeometryOptions = {}): SlideGeometry {
   const s = TABLE_IMAGES_SPEC;
   const padV = s.padding.top + s.padding.bottom;
   const budgetPx = rowCount * s.rowPx + (rowCount - 1) * s.gapPx;
@@ -386,7 +401,7 @@ function tableImagesGeometry(rowCount: number): SlideGeometry {
     layout: "table-images",
     rowCount,
     compact: false,
-    titleTop: s.titleTop,
+    titleTop: Math.max(0, s.titleTop - titleExtraOf(options)),
     panelTop: s.top,
     panelHeight,
     figuresHeightPx: s.height - panelHeight,
@@ -416,7 +431,7 @@ function rawGeometry(
     case "table-image":
       return tableImageGeometry(rowCount, options);
     case "table-images":
-      return tableImagesGeometry(rowCount);
+      return tableImagesGeometry(rowCount, options);
     case "title":
       throw new Error("title レイアウトは行グリッドを持ちません。");
   }

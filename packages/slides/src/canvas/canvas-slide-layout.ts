@@ -68,7 +68,7 @@ export type CanvasGridSlideBoxes = {
   rowCount: number;
   /** v1 の compact 規則（行が少ないときにタイトルとパネルを上下中央に寄せる）が効いているか */
   compact: boolean;
-  /** スライドのタイトル（v1 の h1）。高さは 1 行分 */
+  /** スライドのタイトル（v1 の h1）。高さは 1 行分＋titleExtraPx（2 行以上のときの増えた分） */
   title: CanvasBox;
   /** 灰色の地のパネル */
   panel: CanvasBox;
@@ -120,6 +120,11 @@ export type CanvasSlideLayoutOptions = {
   tableOffset?: CanvasSlideOffset;
   /** table-image の右図枠をずらす量（1920 幅の px） */
   figureOffset?: CanvasSlideOffset;
+  /**
+   * タイトルが 1 行より高い分（呼び出し側が測る。2 行以上に折り返した・改行したとき）。
+   * タイトルは下端を変えずに上へ伸ばす（compact の table / bullets はタイトルとパネルをまとめて上下中央に寄せ直す）。computeSlideGeometry の titleExtraPx
+   */
+  titleExtraPx?: number;
 };
 
 /** 手でずらした量（右・下が正） */
@@ -215,6 +220,8 @@ function gridBoxes(
 
   // v1 の h1 は幅の指定がなく、left からスライドの右端までで折り返す
   const titleLeft = TABLE_SPEC.left;
+  const titleExtra =
+    typeof options.titleExtraPx === "number" && Number.isFinite(options.titleExtraPx) ? Math.max(0, options.titleExtraPx) : 0;
   return {
     layout,
     ratio,
@@ -225,7 +232,7 @@ function gridBoxes(
       titleLeft,
       geometry.titleTop,
       SLIDE_WIDTH - titleLeft,
-      lineBoxHeight(TITLE_TYPOGRAPHY),
+      lineBoxHeight(TITLE_TYPOGRAPHY) + titleExtra,
       sx,
     ),
     panel: box(panelLeft, panelTop, panelWidth, geometry.panelHeight, sx),
@@ -317,6 +324,7 @@ export function canvasSlideLayout(
   const geometry = computeSlideGeometry(layout, rowCount, {
     forceFull: options.forceFull,
     tableWidth: options.tableWidth,
+    titleExtraPx: options.titleExtraPx,
   });
   return gridBoxes(layout, geometry, ratio, options);
 }
