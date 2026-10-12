@@ -3,7 +3,7 @@ import type { NodeRecord } from '@canvcode/core'
 import { richTextFromPlain, type SlideLayoutKind, type SlideLayoutProps, type SlideLayoutSlots, type SlideRatio } from '@canvcode/nodes'
 import { canvasSlideBodyFill, canvasSlideLayout, getMaxRowCount, placeCoverHeading, type CanvasBox } from '@canvcode/slides'
 import { Editor } from './editor.ts'
-import { arrangeSlideLayout, pruneSlideLayoutRows, slideBodyFillFor, type SlideLayoutArrangement } from './slideLayoutArrange.ts'
+import { arrangeSlideLayout, pruneSlideLayoutRows, slideBodyFillFor, titleExtraHeight, type SlideLayoutArrangement } from './slideLayoutArrange.ts'
 
 // slide-layout（スライド v2）の子の並べ直し。純粋な計算と、Editor がトランザクションの終わりに並べ直すこと
 
@@ -151,9 +151,32 @@ describe('arrangeSlideLayout', () => {
     expect(bare.headingCenterY).not.toBe(cover.headingCenterY)
   })
 
+  it('grows a two-line title upward and keeps it off the panel', () => {
+    const { slots, children } = tableChildren(4)
+    // 1 行は 50、2 行は 110（並べ直しは、空にした 1 行の高さとの差だけタイトルを伸ばす）
+    const textHeight = (n: NodeRecord) => (n.id === 'title' && JSON.stringify(n.props).includes('"text":"title"') ? 110 : 50)
+    const placed = applied(children, arrangeSlideLayout({ layout: layoutNode('table', slots), children, ratio: '16:9', textHeight }))
+    const one = canvasSlideLayout('table', 4)
+    const two = canvasSlideLayout('table', 4, '16:9', { titleExtraPx: 60 })
+    expect(at(placed.get('title')!)).toEqual(textBox(two.title))
+    expect(placed.get('title')!.y).toBe(one.title.y - 60)
+    expect(at(placed.get('panel')!)).toEqual(geoBox(one.panel))
+  })
+
   it('does nothing for an unknown layout', () => {
     const { slots, children } = tableChildren(1)
     expect(arrange(layoutNode('nope' as SlideLayoutKind, slots), children).updates).toEqual([])
+  })
+})
+
+describe('titleExtraHeight', () => {
+  it('measures the height beyond one line of the same format', () => {
+    const title = node('title', 'text', { paragraphs: richTextFromPlain('一行目\n二行目'), fontSize: 46, autoWidth: false, w: 1000 })
+    const height = (n: NodeRecord) => ((n.props as { paragraphs: unknown[] }).paragraphs.length === 2 ? 108 : 54)
+    expect(titleExtraHeight(title, 1000, height)).toBe(54)
+    expect(titleExtraHeight(title, 1000, () => 54)).toBe(0)
+    expect(titleExtraHeight(geo('g'), 1000, () => 100)).toBe(0)
+    expect(titleExtraHeight(undefined, 1000, () => 100)).toBe(0)
   })
 })
 
@@ -299,6 +322,29 @@ describe('editor arranges slide-layouts', () => {
     editor.createNodes([other])
     expect(commits).toEqual([1])
     expect(editor.getNode(layout.id)).toBeDefined()
+  })
+
+  it('moves the title up when it becomes two lines, and back when it is one line again', () => {
+    const { editor, title, panel, box } = setup(4)
+    const one = canvasSlideLayout('table', 4)
+    const y = () => editor.getNode(title.id)!.y
+    const height = () => editor.index.get(title.id)!.localBounds.h
+    const bottom = () => y() + height()
+    expect(y()).toBe(one.title.y)
+    const oneBottom = bottom()
+    const setText = (text: string) =>
+      editor.transact('edit text', (tx) => {
+        const node = editor.getNode(title.id)!
+        tx.put({ ...node, props: { ...node.props, paragraphs: richTextFromPlain(text) } })
+      })
+    setText('一行目\n二行目')
+    expect(y()).toBeLessThan(one.title.y)
+    // 下端（パネルとの間隔）は 1 行のときと同じで、パネルは動かない
+    expect(bottom()).toBeCloseTo(oneBottom)
+    expect(bottom()).toBeLessThan(box(panel.id).y)
+    expect(box(panel.id)).toEqual(geoBox(one.panel))
+    setText('一行')
+    expect(y()).toBe(one.title.y)
   })
 
   it('arranges the cover heading when the title text changes its height', () => {
