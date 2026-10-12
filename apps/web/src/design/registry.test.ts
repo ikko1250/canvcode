@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Editor, editNodes, type TextSelection } from '@canvcode/canvas'
+import { Editor, editNodes, makeBinding, type TextSelection } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { defaultChartRows, parseChartTable, type ChartProps, defaultShadow, NOTE_TEXT_COLOR, gradientStop, imagePaint, linearGradient, radialGradient, richTextFromPlain, solidPaint, type NoteProps, type TextProps } from '@canvcode/nodes'
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
@@ -35,6 +35,21 @@ describe('design sections', () => {
     expect(sectionIds([text])).toEqual(['text', 'layer'])
     expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
+  })
+
+  it('shows the angle and length of an arrow unless both of its ends are connected', () => {
+    const { editor, geo, geo2, arrow } = setup()
+    const ids = (nodes: NodeRecord[]) => visibleSections(nodes, undefined, null, editor).map((s) => s.section.id)
+    expect(ids([arrow])).toEqual(['arrow-direction', 'stroke', 'layer'])
+    expect(ids([geo, arrow])).not.toContain('arrow-direction')
+    editor.transact('bind', (tx) => {
+      tx.put(makeBinding(arrow.id, geo.id, { terminal: 'start', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+    })
+    expect(ids([arrow])).toContain('arrow-direction')
+    editor.transact('bind', (tx) => {
+      tx.put(makeBinding(arrow.id, geo2.id, { terminal: 'end', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+    })
+    expect(ids([arrow])).toEqual(['stroke', 'layer'])
   })
 
   it('puts the text of a shape in the text tab, with the same fields as a text', () => {

@@ -4,7 +4,9 @@ import {
   dist,
   expandBox,
   invert,
+  multiply,
   panBy,
+  transformOf,
   unionBoxes,
   worldToScreen,
   type Box,
@@ -23,6 +25,7 @@ import {
   arcGeometry,
   arcPoint,
   bendThrough,
+  snapArrowPoint,
   normalizeDrawPoints,
   segmentTouchesDraw,
   type ArrowProps,
@@ -1545,7 +1548,9 @@ const ARROW_STRAIGHT_SNAP_PX = 6
 const PRECISE_DELAY_MS = 400
 const PRECISE_STILL_PX = 3
 
-// 矢印の端をドラッグして、つながる先を決める。矢印を作るときと、選んだ矢印の端を動かすときに使う
+// 矢印の端をドラッグして、つながる先を決める。矢印を作るときと、選んだ矢印の端を動かすときに使う。
+// Shift を押している間は、もう一方の端から見た向きを 45° 刻み（縦・横・斜め）に吸い付ける。
+// 吸い付けた点の下にノードがあれば、その点（anchor）につなぐ（中心につなぐと向きが崩れるので）
 export class ArrowTerminalDrag {
   private readonly ctx: ToolContext
   private readonly tx: Transaction<WorkspaceRecord>
@@ -1573,7 +1578,7 @@ export class ArrowTerminalDrag {
     const editor = this.ctx.editor
     this.lastPointer = pointer
     // Ctrl（⌘）を押している間は、どこにもつながない（tldraw と同じ）
-    const candidate = pointer.ctrlKey || pointer.metaKey ? null : bindTargetAt(editor, pointer.world, this.arrowId)
+    const candidate = pointer.ctrlKey || pointer.metaKey ? null : bindTargetAt(editor, this.pointOf(pointer), this.arrowId)
     if (candidate !== this.target) {
       this.target = candidate
       this.precise = false
@@ -1592,6 +1597,17 @@ export class ArrowTerminalDrag {
 
   private binding() {
     return this.ctx.editor.bindingsOfArrow(this.arrowId).find((b) => b.props.terminal === this.terminal)
+  }
+
+  // 端を置く点（ワールド座標）。Shift なら、もう一方の端（つながっていれば、その先の中心か anchor）から見た向きを吸い付ける。
+  // 向きは矢印のローカル座標（親の座標）で測る（デザインパネルの角度と同じ）
+  private pointOf(pointer: ToolPointer): Vec {
+    if (!pointer.shiftKey) return pointer.world
+    const arrow = nodeIn(this.tx, this.arrowId) as NodeRecord<ArrowProps> | undefined
+    if (!arrow) return pointer.world
+    const toWorld = multiply(this.ctx.editor.parentMatrix(arrow.parentId), transformOf(arrow.x, arrow.y, arrow.rotation))
+    const fixed = arrow.props[this.terminal === 'start' ? 'end' : 'start']
+    return applyMat(toWorld, snapArrowPoint(fixed, applyMat(invert(toWorld), pointer.world)))
   }
 
   private restartStillTimer(pointer: ToolPointer): void {
@@ -1614,20 +1630,22 @@ export class ArrowTerminalDrag {
     if (!pointer || !arrow) return
     const existing = this.binding()
     const target = this.target ? nodeIn(this.tx, this.target) : undefined
+    const world = this.pointOf(pointer)
     // 端を今の位置に置いておく（つながっていれば、知らせる前に基盤がつながる先に合わせ直す）
-    const local = editor.worldToParent(arrow.parentId, pointer.world)
+    const local = editor.worldToParent(arrow.parentId, world)
     const point = { x: local.x - arrow.x, y: local.y - arrow.y }
     this.tx.put({
       ...arrow,
       props: { ...arrow.props, [this.terminal]: point, clip: [0, 1] as [number, number] },
     })
     if (target) {
-      // 両端が同じノードなら、中心どうしになって見えなくなるので、指している点につなぐ
+      // 両端が同じノードなら、中心どうしになって見えなくなるので、指している点につなぐ。
+      // Shift で向きを吸い付けているときも、中心ではなく吸い付けた点につなぐ（向きを保つ）
       const other = editor.bindingsOfArrow(this.arrowId).find((b) => b.props.terminal !== this.terminal)
-      const isPrecise = this.precise || other?.toId === target.id
+      const isPrecise = this.precise || pointer.shiftKey || other?.toId === target.id
       const props = {
         terminal: this.terminal,
-        normalizedAnchor: isPrecise ? normalizedAnchorAt(editor, target, pointer.world) : { x: 0.5, y: 0.5 },
+        normalizedAnchor: isPrecise ? normalizedAnchorAt(editor, target, world) : { x: 0.5, y: 0.5 },
         isPrecise,
       }
       if (existing) this.tx.put({ ...existing, toId: target.id, props })
@@ -1675,6 +1693,8 @@ export class ArrowTool implements Tool {
     tx.put(arrow)
     if (startTarget) {
       tx.put(makeBinding(arrow.id, startTarget, { terminal: 'start', normalizedAnchor: { x: 0.5, y: 0.5 }, isPrecise: false }))
+      // 始点をつながる先の中心に合わせておく（Shift で吸い付ける向きは、その中心から測る）
+      tx.flush()
     }
     this.creating = { tx, start: pointer, arrowId: arrow.id, drag: new ArrowTerminalDrag(this.ctx, tx, arrow.id, 'end'), moved: false }
     this.ctx.lift([arrow.id])
