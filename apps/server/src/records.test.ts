@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { JOURNAL_SIZE_LIMIT, RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
+import { JOURNAL_SIZE_LIMIT, MAX_AGENT_OPS, MAX_AGENT_OPS_BYTES, RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
 
 // レコードの保存（MAI-13、MAI-35）
 
@@ -141,5 +141,62 @@ describe('RecordStore', () => {
     expect(db.prepare('PRAGMA journal_size_limit').get()).toEqual({ journal_size_limit: 16 * 1024 * 1024 })
     expect(JOURNAL_SIZE_LIMIT).toBe(16 * 1024 * 1024)
     store.close()
+  })
+
+  describe('AI の編集の記録の上限', () => {
+    // patch の JSON がおよそ bytes バイトになる記録
+    const op = (store: RecordStore, n: number, bytes: number) =>
+      store.applyAgentOp({
+        id: `ai-${n}`,
+        canvasId: store.rootCanvasId,
+        label: String(n),
+        createdAt: n,
+        patch: [{ id: `node:n${n}`, before: null, after: { ...node(`node:n${n}`, store.rootCanvasId), meta: { pad: 'x'.repeat(bytes) } } }],
+      })
+    const kept = (store: RecordStore, count: number) => Array.from({ length: count }, (_, i) => i + 1).filter((n) => store.getAgentOp(`ai-${n}`))
+
+    it('keeps 50 ops and 20 MB by default', () => {
+      expect(MAX_AGENT_OPS).toBe(50)
+      expect(MAX_AGENT_OPS_BYTES).toBe(20 * 1024 * 1024)
+      const store = new RecordStore(dataDir())
+      for (let n = 1; n <= 53; n++) op(store, n, 10)
+      expect(kept(store, 53)).toEqual(Array.from({ length: 50 }, (_, i) => i + 4))
+      store.close()
+    })
+
+    it('removes the oldest ops beyond the total size', () => {
+      const store = new RecordStore(dataDir(), { maxAgentOpsBytes: 3500 })
+      for (let n = 1; n <= 5; n++) op(store, n, 1000)
+      // 1 件はおよそ 1100 バイト。新しい 3 件で 3500 バイトに収まる
+      expect(kept(store, 5)).toEqual([3, 4, 5])
+      store.close()
+    })
+
+    it('applies the count and the size limits together', () => {
+      const store = new RecordStore(dataDir(), { maxAgentOps: 2, maxAgentOpsBytes: 100_000 })
+      for (let n = 1; n <= 4; n++) op(store, n, 100)
+      expect(kept(store, 4)).toEqual([3, 4])
+      store.close()
+    })
+
+    it('keeps the newest op even when it alone is over the size limit', () => {
+      const store = new RecordStore(dataDir(), { maxAgentOpsBytes: 500 })
+      op(store, 1, 100)
+      op(store, 2, 2000)
+      expect(kept(store, 2)).toEqual([2])
+      // 次の小さな記録が来たら、大きなものは消える
+      op(store, 3, 100)
+      expect(kept(store, 3)).toEqual([3])
+      store.close()
+    })
+
+    it('counts the size in bytes, not in characters', () => {
+      const store = new RecordStore(dataDir(), { maxAgentOpsBytes: 4000 })
+      // 「あ」は UTF-8 で 3 バイト。600 文字でおよそ 1900 バイト
+      for (let n = 1; n <= 3; n++)
+        store.applyAgentOp({ id: `ai-${n}`, canvasId: store.rootCanvasId, label: '', createdAt: n, patch: [{ id: `node:n${n}`, before: null, after: { ...node(`node:n${n}`, store.rootCanvasId), meta: { pad: 'あ'.repeat(600) } } }] })
+      expect(kept(store, 3)).toEqual([2, 3])
+      store.close()
+    })
   })
 })

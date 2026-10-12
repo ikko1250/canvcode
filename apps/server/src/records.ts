@@ -44,8 +44,16 @@ const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
 // WAL のファイル（workspace.db-wal）の大きさの上限（バイト）。チェックポイントのあと、これを超えた分を切り詰める
 export const JOURNAL_SIZE_LIMIT = 16 * 1024 * 1024
 
-// 残しておく AI の編集の記録の数
-const MAX_AGENT_OPS = 50
+// 残しておく AI の編集の記録の数と、合計の大きさ（patch の JSON のバイト数）。どちらかを超えたら古いものから消す。
+// 最新の 1 件は、大きさの上限を超えていても残す（直前の編集を取り消せるように）
+export const MAX_AGENT_OPS = 50
+export const MAX_AGENT_OPS_BYTES = 20 * 1024 * 1024
+
+export interface RecordStoreOptions {
+  // AI の編集の記録の上限（テスト用。省けば MAX_AGENT_OPS・MAX_AGENT_OPS_BYTES）
+  maxAgentOps?: number
+  maxAgentOpsBytes?: number
+}
 
 // AI の編集 1 回分の記録。patch は変わったレコードの前後（null はなかった・消した）
 export interface AgentOpEntry {
@@ -70,8 +78,12 @@ const RECORD_PREFIX: Record<string, string> = { canvas: 'canvas:', file: 'file:'
 export class RecordStore {
   private readonly db: DatabaseSync
   readonly path: string
+  private readonly maxAgentOps: number
+  private readonly maxAgentOpsBytes: number
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options: RecordStoreOptions = {}) {
+    this.maxAgentOps = options.maxAgentOps ?? MAX_AGENT_OPS
+    this.maxAgentOpsBytes = options.maxAgentOpsBytes ?? MAX_AGENT_OPS_BYTES
     mkdirSync(dataDir, { recursive: true })
     this.path = join(dataDir, 'workspace.db')
     const existed = existsSync(this.path)
@@ -174,7 +186,8 @@ export class RecordStore {
     return out
   }
 
-  // 差分を保存し、AI の編集として記録する（同じトランザクション）。古い記録は MAX_AGENT_OPS 件を残して消す
+  // 差分を保存し、AI の編集として記録する（同じトランザクション）。古い記録は、件数（MAX_AGENT_OPS）と
+  // 合計の大きさ（MAX_AGENT_OPS_BYTES）に収まるように消す
   applyAgentOp(op: Omit<AgentOp, 'rev' | 'undoneAt'>): number {
     const puts = op.patch.flatMap((e) => (e.after ? [e.after] : []))
     const deletes = op.patch.flatMap((e) => (e.after ? [] : [e.id]))
@@ -182,8 +195,19 @@ export class RecordStore {
       this.db
         .prepare('INSERT INTO agent_ops (id, canvas_id, label, created_at, rev, patch) VALUES (?, ?, ?, ?, ?, ?)')
         .run(op.id, op.canvasId, op.label, op.createdAt, rev, JSON.stringify(op.patch))
-      this.db.prepare('DELETE FROM agent_ops WHERE id NOT IN (SELECT id FROM agent_ops ORDER BY created_at DESC, rowid DESC LIMIT ?)').run(MAX_AGENT_OPS)
+      this.pruneAgentOps()
     })
+  }
+
+  // 新しいものから数えて、件数か合計の大きさが上限を超えたところから先（古いもの）を消す。いちばん新しい 1 件は必ず残す
+  private pruneAgentOps(): void {
+    const rows = this.db.prepare('SELECT id, length(CAST(patch AS BLOB)) AS bytes FROM agent_ops ORDER BY created_at DESC, rowid DESC').all() as { id: string; bytes: number }[]
+    const remove = this.db.prepare('DELETE FROM agent_ops WHERE id = ?')
+    let total = 0
+    for (const [i, row] of rows.entries()) {
+      total += Number(row.bytes)
+      if (i > 0 && (i >= this.maxAgentOps || total > this.maxAgentOpsBytes)) remove.run(row.id)
+    }
   }
 
   getAgentOp(id: string): AgentOp | undefined {
