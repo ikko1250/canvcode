@@ -76,6 +76,10 @@ const style = {
   fill: paint.optional(),
   stroke: paint.optional(),
   strokeWidth: finite.min(0).optional(),
+  // 線の種類（geo の線、arrow の線。props の strokeDash）
+  dash: z.enum(['solid', 'dashed', 'dotted']).optional(),
+  // 矢じり（arrow。connect の heads と同じ）
+  heads: z.enum(['end', 'start', 'both', 'none']).optional(),
   fontSize: finite.positive().optional(),
   align: z.enum(['left', 'center', 'right']).optional(),
   shape: z.enum(GEO_SHAPES as [string, ...string[]]).optional(),
@@ -137,6 +141,7 @@ const opSchemas = {
     color: hex.optional(),
     bend: finite.optional(),
     heads: z.enum(['end', 'start', 'both', 'none']).optional(),
+    dash: z.enum(['solid', 'dashed', 'dotted']).optional(),
   }),
   align: z.strictObject({ op: z.literal('align'), ids: z.array(id).min(2), edge: z.enum(['left', 'hcenter', 'right', 'top', 'vcenter', 'bottom']) }),
   distribute: z.strictObject({ op: z.literal('distribute'), ids: z.array(id).min(2), axis: z.enum(['x', 'y']), gap: finite.min(0).optional() }),
@@ -558,6 +563,7 @@ class EditRun {
         arrowheadEnd: heads === 'end' || heads === 'both' ? 'arrow' : 'none',
         ...(op.label !== undefined ? { label: op.label } : {}),
         ...(op.color !== undefined ? { color: op.color } : {}),
+        ...(op.dash !== undefined && op.dash !== 'solid' ? { strokeDash: op.dash } : {}),
       },
     })
     this.tx.put(arrow)
@@ -832,6 +838,8 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
   const fill = take<string>('fill')
   const stroke = take<string>('stroke')
   const strokeWidth = take<number>('strokeWidth')
+  const dash = take<string>('dash')
+  const heads = take<string>('heads')
   const fontSize = take<number>('fontSize')
   const align = take<string>('align')
   const shape = take<string>('shape')
@@ -879,6 +887,7 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       set('fill', fill === undefined ? undefined : fill === 'none' ? null : solidPaint(fill), 'fill')
       set('stroke', stroke === undefined ? undefined : stroke === 'none' ? null : solidPaint(stroke), 'stroke')
       set('strokeWidth', strokeWidth, 'strokeWidth')
+      set('strokeDash', dash, 'dash')
       set('labelColor', color, 'color')
       set('labelFontSize', fontSize, 'fontSize')
       set('labelAlign', align, 'align')
@@ -905,6 +914,13 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       if (text !== undefined && label !== undefined) throw new EditError('give either text or label')
       set('label', text ?? label, text !== undefined ? 'text' : 'label')
       set('color', color, 'color')
+      // 矢印の線の太さは size
+      set('size', strokeWidth, 'strokeWidth')
+      set('strokeDash', dash, 'dash')
+      if (heads !== undefined) {
+        set('arrowheadStart', heads === 'start' || heads === 'both' ? 'arrow' : 'none', 'heads')
+        set('arrowheadEnd', heads === 'end' || heads === 'both' ? 'arrow' : 'none', 'heads')
+      }
       break
     case 'markdown-card':
     case 'code-card':

@@ -5,7 +5,7 @@ import { defaultChartRows, parseChartTable, type ChartProps, defaultShadow, NOTE
 import { designSections, propField, registerDesignSection, visibleSections, type DesignSection } from './registry.ts'
 import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartShowLabelsField, chartShowPercentField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
 import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
-import { applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, fontWeightField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { arrowheadsField, applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, fontWeightField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -68,8 +68,8 @@ describe('design sections', () => {
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
     expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
-    // 図形と矢印：線は共通（図形の stroke と矢印の color）
-    expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
+    // 図形と矢印：線の色・太さ・種類は共通（図形の stroke と矢印の color）
+    expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'stroke.dash', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
     // group には変えられる項目がない
     expect(visibleSections([group])).toEqual([])
@@ -153,8 +153,8 @@ describe('border fields (MAI-85)', () => {
     const dashed = strokeDashField.write(geo2, 'dashed')
     expect(fieldIds([dashed]).filter((id) => id.startsWith('stroke.'))).toEqual(['stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'stroke.dashLength', 'stroke.dashGap'])
     expect(fieldIds([strokeDashField.write(geo2, 'dotted')]).filter((id) => id.startsWith('stroke.dash'))).toEqual(['stroke.dash', 'stroke.dashGap'])
-    // 矢印と混ぜれば、共通の色と太さだけ（線なしは選べない）
-    expect(fieldIds([dashed, arrow])).toEqual(['stroke.color', 'stroke.width', 'layer.opacity'])
+    // 矢印と混ぜれば、共通の色・太さと線の種類（位置と矢じりは出さない。線なしは選べない）
+    expect(fieldIds([dashed, arrow])).toEqual(['stroke.color', 'stroke.width', 'stroke.dash', 'layer.opacity'])
     const control = strokeColorField.control as { none: (node: NodeRecord) => boolean; opacity: (node: NodeRecord) => boolean }
     expect(control.none(arrow)).toBe(false)
     expect(control.opacity(geo2)).toBe(true)
@@ -183,6 +183,46 @@ describe('border fields (MAI-85)', () => {
     expect(strokeDashGapField.write(longer, 0).props).toMatchObject({ strokeDashGap: 0.5 })
     const solid = strokeDashField.write(longer, 'solid')
     expect(strokeDashField.write(solid, 'dotted').props).toMatchObject({ strokeDash: 'dotted', strokeDashLength: 20, strokeDashGap: 4 })
+  })
+})
+
+describe('arrow line fields', () => {
+  it('shows the dash and the arrowheads for an arrow, and the dash lengths per dash style', () => {
+    const { arrow } = setup()
+    expect(fieldIds([arrow])).toEqual(['stroke.color', 'stroke.width', 'stroke.dash', 'stroke.arrowheads', 'layer.opacity'])
+    expect(strokeDashField.read(arrow)).toBe('solid')
+    const dashed = strokeDashField.write(arrow, 'dashed')
+    expect(fieldIds([dashed]).filter((id) => id.startsWith('stroke.dash'))).toEqual(['stroke.dash', 'stroke.dashLength', 'stroke.dashGap'])
+    expect(fieldIds([strokeDashField.write(arrow, 'dotted')]).filter((id) => id.startsWith('stroke.dash'))).toEqual(['stroke.dash', 'stroke.dashGap'])
+  })
+
+  it('writes the dash of an arrow without fixing the lengths, so they follow the width until set', () => {
+    const { arrow } = setup()
+    expect(strokeDashField.write(arrow, 'solid')).toBe(arrow)
+    const dashed = strokeDashField.write(arrow, 'dashed')
+    expect(dashed.props).toMatchObject({ strokeDash: 'dashed' })
+    expect(dashed.props).not.toHaveProperty('strokeDashLength')
+    // 太さ 3 の既定は 12px・6px。太くすれば、それに合わせて伸びる
+    expect(strokeDashLengthField.read(dashed)).toBe(12)
+    expect(strokeDashGapField.read(dashed)).toBe(6)
+    const thick = strokeWidthField.write(dashed, 5)
+    expect(strokeDashLengthField.read(thick)).toBe(20)
+    // 手で決めたら、その px
+    const fixed = strokeDashLengthField.write(thick, 9)
+    expect(fixed.props).toMatchObject({ strokeDashLength: 9 })
+    expect(strokeDashLengthField.read(strokeWidthField.write(fixed, 1.5))).toBe(9)
+  })
+
+  it('reads and writes the arrowheads', () => {
+    const { arrow, geo } = setup()
+    expect(arrowheadsField.appliesTo(geo)).toBe(false)
+    expect(arrowheadsField.read(arrow)).toBe('end')
+    expect(arrowheadsField.write(arrow, 'end')).toBe(arrow)
+    const line = arrowheadsField.write(arrow, 'none')
+    expect(line.props).toMatchObject({ arrowheadStart: 'none', arrowheadEnd: 'none' })
+    expect(arrowheadsField.read(line)).toBe('none')
+    expect(arrowheadsField.write(line, 'start').props).toMatchObject({ arrowheadStart: 'arrow', arrowheadEnd: 'none' })
+    expect(arrowheadsField.read(arrowheadsField.write(line, 'both'))).toBe('both')
   })
 })
 

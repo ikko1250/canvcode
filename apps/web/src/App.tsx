@@ -29,6 +29,7 @@ import {
   type PortalProps,
   type QuoteCardProps,
   type SlideRatio,
+  type StrokeDash,
 } from '@canvcode/nodes'
 import type { MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './benchmark.ts'
@@ -68,7 +69,14 @@ const SIZE_LABELS = ['細', '中', '太']
 const ARROWHEADS: { label: string; title: string; start: ArrowStyle['arrowheadStart']; end: ArrowStyle['arrowheadEnd'] }[] = [
   { label: '—', title: '矢じりなし', start: 'none', end: 'none' },
   { label: '→', title: '終点に矢じり', start: 'none', end: 'arrow' },
+  { label: '←', title: '始点に矢じり', start: 'arrow', end: 'none' },
   { label: '↔', title: '両端に矢じり', start: 'arrow', end: 'arrow' },
+]
+// 矢印の線の種類（デザインパネルの「線」の種類と同じ。アイコンも同じ形）
+const ARROW_DASHES: { dash: StrokeDash; title: string; dasharray: string; cap: 'butt' | 'round' }[] = [
+  { dash: 'solid', title: '実線', dasharray: 'none', cap: 'butt' },
+  { dash: 'dashed', title: '破線', dasharray: '4 2', cap: 'butt' },
+  { dash: 'dotted', title: '点線', dasharray: '0 4', cap: 'round' },
 ]
 
 // 右クリックメニューの「重なり順 ›」の項目
@@ -1096,6 +1104,7 @@ export function App(props: { initial: InitialRecords }) {
       size: props.size,
       arrowheadStart: props.arrowheadStart,
       arrowheadEnd: props.arrowheadEnd,
+      strokeDash: props.strokeDash ?? 'solid',
     })
     if (selectedArrows.length > 0) {
       editor.transact('arrow style', (tx) => {
@@ -1302,6 +1311,19 @@ export function App(props: { initial: InitialRecords }) {
                   onClick={() => setArrowStyle({ arrowheadStart: head.start, arrowheadEnd: head.end })}
                 >
                   {head.label}
+                </button>
+              ))}
+              <span className="separator" />
+              {ARROW_DASHES.map((item) => (
+                <button
+                  key={item.dash}
+                  title={item.title}
+                  className={(arrowStyle.strokeDash ?? 'solid') === item.dash ? 'active' : ''}
+                  onClick={() => setArrowStyle({ strokeDash: item.dash })}
+                >
+                  <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden>
+                    <line x1={2} x2={14} y1={8} y2={8} stroke="currentColor" strokeWidth={2} strokeDasharray={item.dasharray} strokeLinecap={item.cap} />
+                  </svg>
                 </button>
               ))}
             </div>

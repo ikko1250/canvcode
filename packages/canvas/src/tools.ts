@@ -1656,13 +1656,21 @@ export class ArrowTool implements Tool {
     const editor = this.ctx.editor
     const startTarget = pointer.ctrlKey || pointer.metaKey ? null : bindTargetAt(editor, pointer.world, null)
     const { parentId, local } = placeAt(editor, pointer.world)
-    const { color, size, arrowheadStart, arrowheadEnd } = editor.session.get().arrowStyle
+    const { color, size, arrowheadStart, arrowheadEnd, strokeDash } = editor.session.get().arrowStyle
     const tx = editor.begin('create arrow')
     const arrow = editor.makeNode('arrow', {
       x: local.x,
       y: local.y,
       parentId,
-      props: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 }, color, size, arrowheadStart, arrowheadEnd },
+      props: {
+        start: { x: 0, y: 0 },
+        end: { x: 0, y: 0 },
+        color,
+        size,
+        arrowheadStart,
+        arrowheadEnd,
+        ...(strokeDash && strokeDash !== 'solid' ? { strokeDash } : {}),
+      },
     })
     tx.put(arrow)
     if (startTarget) {

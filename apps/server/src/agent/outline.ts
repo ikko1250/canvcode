@@ -508,7 +508,7 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
         const end = ends[key]
         out[key] = { x: round2(end.world.x), y: round2(end.world.y), ...(end.node ? { node: end.node } : {}) }
       }
-      copy('label', 'color', 'size', 'bend', 'arrowheadStart', 'arrowheadEnd')
+      copy('label', 'color', 'size', 'bend', 'arrowheadStart', 'arrowheadEnd', 'strokeDash')
       break
     }
     case 'frame':
@@ -728,8 +728,9 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 ## Node types
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - note: sticky note (text, w, h, color = background)
-- geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
-- arrow: line or arc between two points (start, end, bend, label, color, size, arrowheads); ends may be bound to nodes
+- geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
+- arrow: line or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line
+- strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
 - draw: freehand stroke (color, size; points are not returned)
 - image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null)
 - frame: named container that clips its children (name, w, h)
@@ -764,16 +765,17 @@ Ops:
 - create: type (text | note | geo | frame | slide | card), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
   text: text, fontSize, color, align (left|center|right), w (wraps; default 240)
   note: text, color (background), fontSize, align, w, h
-  geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label), fill, stroke, strokeWidth, color (label), fontSize, align, cornerRadius, w, h
+  geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label), fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize, align, cornerRadius, w, h
   frame: name, w, h
   slide: name, ratio, hidden, template (see Slides below)
   card: file (document id from list_documents; markdown or code), w, h (fixes the height)
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
+  arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none; none = a plain line).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
 - group: ids (2+, same parent), as?   ungroup: ids
-- connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none). Arrows bound to nodes follow them when they move.
+- connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none), dash? (solid | dashed | dotted). Arrows bound to nodes follow them when they move.
 - align: ids, edge (left | hcenter | right | top | vcenter | bottom)
 - distribute: ids, axis (x | y), gap? (without gap: 3+ ids, equal spacing between the outer ones)
 - reparent: ids, parent (frame/group id, or "canvas")

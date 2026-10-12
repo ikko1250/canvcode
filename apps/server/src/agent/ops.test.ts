@@ -171,6 +171,28 @@ describe('edit_canvas', () => {
     expect(end.y).toBeGreaterThan(250)
   })
 
+  it('sets the dash, width and heads of an arrow (a plain line without heads), and the dash of a shape', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 100, h: 100, dash: 'dotted' },
+      { op: 'connect', as: 'e', from: '$a', to: { x: 400, y: 50 }, dash: 'dashed', heads: 'none' },
+      { op: 'connect', as: 'f', from: '$a', to: { x: 400, y: 300 } },
+    ]).created
+    expect(records.get(made.a!)!.props).toMatchObject({ strokeDash: 'dotted' })
+    expect(records.get(made.e!)!.props).toMatchObject({ strokeDash: 'dashed', arrowheadStart: 'none', arrowheadEnd: 'none' })
+    // 実線は書かない（未指定 = 実線）
+    expect(records.get(made.f!)!.props).not.toHaveProperty('strokeDash')
+    expect(readNodes(records, [made.e!]).nodes[0]).toMatchObject({ strokeDash: 'dashed', arrowheadStart: 'none', arrowheadEnd: 'none' })
+    expect(readNodes(records, [made.f!]).nodes[0]).not.toHaveProperty('strokeDash')
+
+    edit([{ op: 'update', id: made.e, dash: 'dotted', strokeWidth: 5, heads: 'start' }])
+    expect(records.get(made.e!)!.props).toMatchObject({ strokeDash: 'dotted', size: 5, arrowheadStart: 'arrow', arrowheadEnd: 'none' })
+    edit([{ op: 'update', id: made.e, dash: 'solid', heads: 'both' }])
+    expect(records.get(made.e!)!.props).toMatchObject({ strokeDash: 'solid', arrowheadStart: 'arrow', arrowheadEnd: 'arrow' })
+    expect(() => edit([{ op: 'update', id: made.e, dash: 'wavy' }])).toThrow(/dash/)
+    expect(() => edit([{ op: 'update', id: made.a, heads: 'both' }])).toThrow(/heads is not supported for geo/)
+  })
+
   it('refuses style fields the type does not have, and locked nodes', () => {
     const { records, edit, root } = setup()
     records.apply([node('node:t', 'text', root, 'a1', {}, { locked: true })], [])
