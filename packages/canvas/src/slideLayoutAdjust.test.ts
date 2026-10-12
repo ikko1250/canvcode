@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import type { NodeRecord } from '@canvcode/core'
 import { adjustOf, type SlideLayoutKind, type SlideLayoutProps, type SlideLayoutSlots } from '@canvcode/nodes'
 import { canvasSlideLayout, TABLE_IMAGE_WIDTH_RANGE, type CanvasBox } from '@canvcode/slides'
 import { duplicateSelection } from './clipboard.ts'
 import { Editor } from './editor.ts'
-import { adjustLayoutOptions, patchAdjust, tableHeightPatch } from './slideLayoutAdjust.ts'
+import { adjustLayoutOptions, adjustWithMovedChildren, patchAdjust, tableHeightPatch } from './slideLayoutAdjust.ts'
 
 // slide-layout（スライド v2）の手で直した配置（props.adjust）。表パネル・右図枠のドラッグと幅のリサイズが adjust になり、並べ直しがそれに従う
 
@@ -15,6 +16,7 @@ describe('patchAdjust', () => {
     expect(a).toEqual({ table: { dy: -40, w: TABLE_IMAGE_WIDTH_RANGE.max } })
     expect(patchAdjust(a, { table: { dy: 0 }, figure: { dx: 10 } })).toEqual({ table: { w: TABLE_IMAGE_WIDTH_RANGE.max }, figure: { dx: 10 } })
     expect(patchAdjust(a, { table: { dy: undefined, w: undefined } })).toEqual({})
+    expect(patchAdjust(a, { title: { dx: 5, dy: -10 } })).toEqual({ ...a, title: { dx: 5, dy: -10 } })
   })
 
   it('turns into geometry options', () => {
@@ -25,6 +27,27 @@ describe('patchAdjust', () => {
       tableOffset: { dx: 0, dy: -40 },
       figureOffset: { dx: 5, dy: 0 },
     })
+    expect(adjustLayoutOptions({ title: { dy: 30 } })).toEqual({ titleOffset: { dx: 0, dy: 30 } })
+  })
+})
+
+describe('adjustWithMovedChildren for the title', () => {
+  const slots: SlideLayoutSlots = { title: 'node:t', panel: 'node:p', rows: [] }
+  const node = (id: string, x: number, y: number, props: Record<string, unknown>) => ({ id, x, y, parentId: 'node:l', props }) as unknown as NodeRecord
+  const changes = (map: Record<string, [NodeRecord, NodeRecord]>) => (id: string) => (map[id] ? { before: map[id][0], after: map[id][1] } : undefined)
+
+  it('turns a moved title (a text without h) into the title offset', () => {
+    const next = adjustWithMovedChildren('table', slots, {}, changes({ 'node:t': [node('node:t', 150, 178, { w: 1660 }), node('node:t', 170, 148, { w: 1660 })] }), 1)
+    expect(next).toEqual({ title: { dx: 20, dy: -30 } })
+  })
+
+  it('does not write a resized title, nor the part of a move that follows the table panel', () => {
+    expect(adjustWithMovedChildren('table', slots, {}, changes({ 'node:t': [node('node:t', 150, 178, { w: 1660 }), node('node:t', 150, 178, { w: 1000 })] }), 1)).toBeNull()
+    const both = changes({
+      'node:p': [node('node:p', 150, 246, { w: 1660, h: 656 }), node('node:p', 150, 296, { w: 1660, h: 656 })],
+      'node:t': [node('node:t', 150, 178, { w: 1660 }), node('node:t', 150, 228, { w: 1660 })],
+    })
+    expect(adjustWithMovedChildren('table', slots, {}, both, 1)).toEqual({ table: { dy: 50 } })
   })
 })
 

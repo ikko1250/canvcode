@@ -125,6 +125,8 @@ export type CanvasSlideLayoutOptions = {
   tableOffset?: CanvasSlideOffset;
   /** table-image の右図枠をずらす量（1920 幅の px） */
   figureOffset?: CanvasSlideOffset;
+  /** タイトルを手でずらす量（1920 幅の px）。表パネルの縦のずらし量に付いて動いた位置からさらにずらす */
+  titleOffset?: CanvasSlideOffset;
   /**
    * タイトルが 1 行より高い分（呼び出し側が測る。2 行以上に折り返した・改行したとき）。
    * タイトルは下端を変えずに上へ伸ばす（compact の table / bullets はタイトルとパネルをまとめて上下中央に寄せ直す）。computeSlideGeometry の titleExtraPx
@@ -224,8 +226,11 @@ function gridBoxes(
   }
 
   // タイトルは表紙のタイトルと同じく、パネルの横枠（150〜1810。table-image は左表と右図枠を合わせた全体）の幅で折り返す。
-  // 表パネル・右図枠を手でずらしても動かさない
-  const titleLeft = TABLE_SPEC.left;
+  // 表パネルを縦にずらしたら、パネルとの間を変えずにタイトルも付いて動く（上端 0 で止める）。横は全幅で折り返すので付いて動かない。
+  // そのうえで、タイトルを手でずらした量（titleOffset）を足す
+  const titleShift = options.titleOffset ?? { dx: 0, dy: 0 };
+  const titleLeft = TABLE_SPEC.left + titleShift.dx;
+  const titleTop = Math.max(0, geometry.titleTop + table.dy) + titleShift.dy;
   const titleExtra =
     typeof options.titleExtraPx === "number" && Number.isFinite(options.titleExtraPx) ? Math.max(0, options.titleExtraPx) : 0;
   return {
@@ -236,7 +241,7 @@ function gridBoxes(
     compact: geometry.compact,
     title: box(
       titleLeft,
-      geometry.titleTop,
+      titleTop,
       TABLE_SPEC.width,
       lineBoxHeight(TITLE_TYPOGRAPHY) + titleExtra,
       sx,

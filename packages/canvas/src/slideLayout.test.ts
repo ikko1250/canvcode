@@ -109,12 +109,29 @@ describe('slide-layout in the editor', () => {
     expect(editor.frameAt({ x: 1000, y: 150 })).toBe(slide.id)
   })
 
+  it('moves the title with the table panel when the panel is dragged up or down', () => {
+    const { editor, layout, title, panel, drag } = setup()
+    const before = { title: editor.getNode(title)!, panel: editor.getNode(panel)! }
+    drag({ x: 1000, y: 690 }, { x: 1000, y: 740 })
+    const dy = editor.getNode(panel)!.y - before.panel.y
+    expect(dy).toBeGreaterThan(0)
+    expect(editor.getNode(title)).toMatchObject({ x: before.title.x, y: before.title.y + dy })
+    expect((editor.getNode(layout.id)!.props as SlideLayoutProps).adjust).toEqual({ table: { dy } })
+  })
+
   it('keeps a child moved within the slide in place, and releases it from the slots when dragged out', () => {
     const { editor, slide, layout, title, body, label, panel, drag, slotsOf } = setup()
-    // 同じスライドの中で動かしただけなら、slide-layout に残り、並べ直しで元の位置に戻る
+    // 同じスライドの中で動かしただけなら、slide-layout に残り、動かした位置を手で直した配置（adjust.title）として覚える
     drag({ x: 200, y: 380 }, { x: 300, y: 420 })
-    expect(editor.getNode(title)).toMatchObject({ parentId: layout.id, x: 150, y: 368 })
+    const moved = editor.getNode(title)!
+    expect(moved).toMatchObject({ parentId: layout.id, x: 250 })
+    expect(moved.y).toBeCloseTo(408, -1)
     expect(slotsOf().title).toBe(title)
+    expect((editor.getNode(layout.id)!.props as SlideLayoutProps).adjust).toEqual({ title: { dx: 100, dy: Math.round(moved.y - 368) } })
+    // 1 回の Undo で、位置と adjust が戻る
+    editor.undo()
+    expect(editor.getNode(title)).toMatchObject({ parentId: layout.id, x: 150, y: 368 })
+    expect((editor.getNode(layout.id)!.props as SlideLayoutProps).adjust).toBeUndefined()
     // 外へ出すと Canvas の子になり、slots からも外れる。ワールドでの位置はそのまま
     drag({ x: 200, y: 380 }, { x: 2200, y: 420 })
     expect(editor.getNode(title)!.parentId).toBe('canvas:1')

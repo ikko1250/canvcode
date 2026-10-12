@@ -8,12 +8,13 @@ import { FieldLabel, NumberField, type ValueEditor } from './controls.tsx'
 import type { DesignIcon, DesignSectionProps } from './registry.ts'
 import { slideLayoutAdjustTarget } from './slideLayoutAdjustTarget.ts'
 
-// スライド（v2）の「配置」：表パネル（中の行を含む）と右図枠の位置、table-image の表パネルの幅、表パネルの高さを手で直す。
+// スライド（v2）の「配置」：表パネル（中の行を含む）と右図枠とタイトルの位置、table-image の表パネルの幅、表パネルの高さを手で直す。
 // 高さの横の「自動に戻す」は、手で決めた高さ（table の h）だけを消す（行数と内容から決める高さに戻る）。
 // 値は slide-layout の props.adjust（スライドの幾何の単位。1920 幅の px）に書き、並べ直し（コミットフック）が子を置き直す。
-// スライド・表のセル・パネル・図枠のどれを選んでいても、その slide-layout を変える。表パネル・図枠のドラッグでも同じ値が変わる
+// スライド・表のセル・パネル・図枠・タイトルのどれを選んでいても、その slide-layout を変える。表パネル・図枠・タイトルのドラッグでも同じ値が変わる。
+// タイトルは表パネルの縦の位置に付いて動き、タイトルの位置はそこからさらにずらす量
 
-type Key = { group: 'table' | 'figure'; key: 'dx' | 'dy' | 'w' | 'h' }
+type Key = { group: 'table' | 'figure' | 'title'; key: 'dx' | 'dy' | 'w' | 'h' }
 
 const OFFSET_LIMIT = 1920
 
@@ -104,7 +105,7 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
     </button>
   )
   const offset = { min: -OFFSET_LIMIT, max: OFFSET_LIMIT }
-  const hasAdjust = adjust.table !== undefined || adjust.figure !== undefined
+  const hasAdjust = adjust.table !== undefined || adjust.figure !== undefined || adjust.title !== undefined
 
   return (
     <div className="design-slide-adjust" data-testid="slide-layout-adjust">
@@ -144,6 +145,13 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
           </div>
         </>
       )}
+      <div className="design-field">
+        <FieldLabel label="タイトル" />
+      </div>
+      <div className="design-field-row" data-row="slide-layout.title">
+        {field({ group: 'title', key: 'dx' }, '横の位置', adjust.title?.dx ?? 0, offset)}
+        {field({ group: 'title', key: 'dy' }, '縦の位置', adjust.title?.dy ?? 0, offset)}
+      </div>
     </div>
   )
 }

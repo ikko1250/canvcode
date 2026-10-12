@@ -98,6 +98,7 @@ const offsetValue = finite.nullable().optional()
 const slideAdjust = z.strictObject({
   table: z.strictObject({ dx: offsetValue, dy: offsetValue, w: offsetValue, h: offsetValue }).optional(),
   figure: z.strictObject({ dx: offsetValue, dy: offsetValue }).optional(),
+  title: z.strictObject({ dx: offsetValue, dy: offsetValue }).optional(),
 })
 // 画像の切り抜く範囲（画像全体を 0〜1 とした割合）。null は切り抜きをやめる
 const unit = finite.min(0).max(1)
@@ -485,7 +486,7 @@ class EditRun {
       const panelY = adjust.table.dy === undefined && panel?.parentId === layout.id ? panel.y : undefined
       Object.assign(table, tableHeightPatch(props.layout, rowCount, panelY, adjust.table.h ?? undefined))
     }
-    const next = patchAdjust(adjustOf(props.adjust), { table, figure: orUndefined(adjust.figure) })
+    const next = patchAdjust(adjustOf(props.adjust), { table, figure: orUndefined(adjust.figure), title: orUndefined(adjust.title) })
     this.tx.put({ ...layout, props: { ...props, adjust: next } })
     this.tx.flush()
   }

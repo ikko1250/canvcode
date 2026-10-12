@@ -166,7 +166,16 @@ describe('canvasSlideLayout table-image', () => {
     expect(moved.panel).toEqual({ ...plain.panel, x: 160, y: 300 })
     expect(moved.rows[1]!.body).toEqual({ ...plain.rows[1]!.body, x: plain.rows[1]!.body.x + 10, y: plain.rows[1]!.body.y - 50 })
     expect(moved.figure).toEqual({ ...plain.figure!, y: plain.figure!.y + 30 })
-    expect(moved.title).toEqual(plain.title)
+    // タイトルは表パネルの縦のずらし量に付いて動く（横は動かない）
+    expect(moved.title).toEqual({ ...plain.title, y: plain.title.y - 50 })
+  })
+
+  it('moves the title by its own offset on top of the table offset, and stops it at the top edge', () => {
+    const plain = canvasSlideLayout('table', 3)
+    const moved = canvasSlideLayout('table', 3, '16:9', { tableOffset: { dx: 40, dy: 20 }, titleOffset: { dx: 5, dy: -10 } })
+    expect(moved.title).toEqual({ ...plain.title, x: plain.title.x + 5, y: plain.title.y + 10 })
+    const up = canvasSlideLayout('table', 3, '16:9', { tableOffset: { dx: 0, dy: -1000 } })
+    expect(up.title.y).toBe(0)
   })
 
   it('scales the width and the offset in 4:3', () => {
@@ -279,7 +288,7 @@ describe('canvasSlideLayout title width', () => {
     expect(image.title.x).toBe(image.panel.x)
   })
 
-  it('does not follow the manual offsets and widths of the panel', () => {
+  it('does not follow the horizontal offsets and widths of the panel', () => {
     const boxes = canvasSlideLayout('table-image', 2, '16:9', { tableWidth: 900, tableOffset: { dx: 40, dy: 10 }, figureOffset: { dx: 30, dy: 0 } })
     expect(boxes.title.x).toBe(150)
     expect(boxes.title.w).toBe(1660)

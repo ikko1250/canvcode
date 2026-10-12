@@ -494,6 +494,11 @@ describe('edit_canvas slides', () => {
     // null は既定に戻す
     edit([{ op: 'update', id: slideId, adjust: { table: { w: null }, figure: { dx: null } } }])
     expect((layoutOf(records, slideId).props as { adjust: unknown }).adjust).toEqual({ table: { dy: -60 } })
+    // タイトルは表の dy に付いて動き、title の dx / dy でさらにずらせる
+    edit([{ op: 'update', id: slideId, adjust: { title: { dx: 5, dy: 20 } } }])
+    expect((layoutOf(records, slideId).props as { adjust: unknown }).adjust).toEqual({ table: { dy: -60 }, title: { dx: 5, dy: 20 } })
+    const titled = canvasSlideLayout('table-image', 3, '16:9', { tableOffset: { dx: 0, dy: -60 }, titleOffset: { dx: 5, dy: 20 } })
+    expect(world(records, slots.title!)).toMatchObject({ x: titled.title.x, y: titled.title.y })
     // 表紙・全幅の表には使えない値
     const other = edit([
       { op: 'create', type: 'slide', as: 't', x: 3000, y: 0, template: 'title' },

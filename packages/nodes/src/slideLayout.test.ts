@@ -65,5 +65,6 @@ describe('adjustOf', () => {
     expect(adjustOf('x')).toEqual({})
     expect(adjustOf({ table: { dx: 'a', dy: Number.NaN, w: 0 }, figure: null })).toEqual({})
     expect(adjustOf({ table: { dx: 10, dy: -20, w: 800, z: 1 }, figure: { dy: 5 } })).toEqual({ table: { dx: 10, dy: -20, w: 800 }, figure: { dy: 5 } })
+    expect(adjustOf({ title: { dx: 0, dy: 12, w: 3 } })).toEqual({ title: { dy: 12 } })
   })
 })

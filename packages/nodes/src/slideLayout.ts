@@ -39,10 +39,11 @@ export interface SlideLayoutProps {
 
 // 手で直した配置。値はスライドの幾何の単位（16:9 の 1920 幅の px。4:3 では横を縮めて使う）。
 // table は表パネル（中の行を含む）のずらす量と、table-image の左表パネルの幅（w）、表パネルの高さ（h。無ければ行数と内容から決める）。
-// figure は table-image の右図枠のずらす量。0 や無い値は既定の配置
+// figure は table-image の右図枠のずらす量。title はタイトルを手でずらす量（表パネルの縦のずらし量に付いて動いた位置から）。0 や無い値は既定の配置
 export interface SlideLayoutAdjust {
   table?: { dx?: number; dy?: number; w?: number; h?: number }
   figure?: { dx?: number; dy?: number }
+  title?: { dx?: number; dy?: number }
 }
 
 // 壊れたデータ（数でない値・NaN など）を捨てて読む。0 の値と空になった組は省く
@@ -59,7 +60,8 @@ export function adjustOf(value: unknown): SlideLayoutAdjust {
   }
   const table = pick(v.table, ['dx', 'dy', 'w', 'h'])
   const figure = pick(v.figure, ['dx', 'dy'])
-  return { ...(table ? { table } : {}), ...(figure ? { figure } : {}) }
+  const title = pick(v.title, ['dx', 'dy'])
+  return { ...(table ? { table } : {}), ...(figure ? { figure } : {}), ...(title ? { title } : {}) }
 }
 
 export type SlideLayoutNode = NodeRecord<SlideLayoutProps>
