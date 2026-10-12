@@ -15,6 +15,7 @@ import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
 import { RefImageStore } from './refImages.ts'
+import { STORAGE_SWEEP_INTERVAL_MS, sweepStorage } from './storageCleanup.ts'
 import { handleRefs } from './refs.ts'
 import { cleanupSlidesV1, describeSlidesV1Cleanup } from './slidesV1Cleanup.ts'
 import { SyncHub } from './sync.ts'
@@ -61,6 +62,10 @@ const refImages = new RefImageStore(DATA_DIR)
 // 3 日経った ref を消す（MAI-65）。起動したときと、そのあと 1 時間ごと
 await sweepRefs(records, refImages)
 setInterval(() => void sweepRefs(records, refImages), REF_SWEEP_INTERVAL_MS).unref()
+// .canvcode の中のたまっていくもの（deleted/ の 90 日経ったファイル）を片付ける（storageCleanup.ts）。起動したときと、そのあと 1 時間ごと。
+// 起動を待たせないよう、裏で行う
+void sweepStorage(DATA_DIR)
+setInterval(() => void sweepStorage(DATA_DIR), STORAGE_SWEEP_INTERVAL_MS).unref()
 const sync = new SyncHub(records)
 
 // ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）

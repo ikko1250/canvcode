@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ReferenceRecord } from '@canvcode/core'
 
@@ -338,6 +338,15 @@ export class RecordStore {
     this.db.prepare('VACUUM INTO ?').run(path)
   }
 
+  // レコードを一度に書き換える前（移行・片付け）の写し（workspace.db.before-<label>-<時刻>.bak）を作り、その場所を返す。
+  // 写しは新しい DB_BACKUPS_TO_KEEP 個だけを残し、古いものを消す
+  backupBefore(label: string): string {
+    const path = `${this.path}.before-${label}-${Date.now()}.bak`
+    this.snapshot(path)
+    pruneDbBackups(dirname(this.path))
+    return path
+  }
+
   close(): void {
     this.db.close()
   }
@@ -357,7 +366,7 @@ export class RecordStore {
     const current = Number(this.meta('schema') ?? 1)
     if (current < SCHEMA_VERSION) {
       // 適用する前に写しを作る（WAL の中身も含めて写すため、VACUUM INTO を使う）
-      if (existed) this.snapshot(`${this.path}.before-v${SCHEMA_VERSION}-${Date.now()}.bak`)
+      if (existed) this.backupBefore(`v${SCHEMA_VERSION}`)
       for (let v = current + 1; v <= SCHEMA_VERSION; v++) MIGRATIONS[v]?.(this.db)
     }
     this.setMeta('schema', String(SCHEMA_VERSION))
@@ -388,6 +397,31 @@ function validRecord(value: unknown): asserts value is StoredRecord {
 function randomId(): string {
   const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
   return [...randomBytes(16)].map((b) => alphabet[b % 62]).join('')
+}
+
+// 移行・片付けの前の写し（workspace.db.before-*.bak）のうち、新しい keep 個を残して消し、消したものの名前を返す。
+// 新しさは名前の末尾の時刻（ミリ秒）で決める。時刻が読めない名前は、更新時刻で比べる
+export const DB_BACKUPS_TO_KEEP = 2
+const DB_BACKUP_PATTERN = /^workspace\.db\.before-.+\.bak$/
+
+export function pruneDbBackups(dataDir: string, keep = DB_BACKUPS_TO_KEEP): string[] {
+  const backups = readdirSync(dataDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && DB_BACKUP_PATTERN.test(entry.name))
+    .map((entry) => {
+      const stamp = /-(\d{10,})\.bak$/.exec(entry.name)
+      return { name: entry.name, time: stamp ? Number(stamp[1]) : statSync(join(dataDir, entry.name)).mtimeMs }
+    })
+    .sort((a, b) => b.time - a.time || (a.name < b.name ? 1 : -1))
+  const removed: string[] = []
+  for (const backup of backups.slice(keep)) {
+    try {
+      rmSync(join(dataDir, backup.name), { force: true })
+      removed.push(backup.name)
+    } catch (error) {
+      console.error('failed to remove an old copy of workspace.db', backup.name, error)
+    }
+  }
+  return removed
 }
 
 // 写しを作る（npm run snapshot）。.canvcode/snapshots/workspace-<日時>.db に置き、その場所を返す

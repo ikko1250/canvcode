@@ -28,9 +28,9 @@ npm start       # http://127.0.0.1:8787
 ワークスペースのフォルダは `npm start -- --workspace <フォルダ>` か、環境変数 `CANVCODE_WORKSPACE` で指定する（既定は `./workspace`）。
 
 - Markdown と Python は、ワークスペースのフォルダに普通の `.md` / `.py` ファイルとして置く（サブフォルダも可）。SSH から Neovim などで直接編集してよく、変更はブラウザに届く
-- スライドはキャンバスに置く（「スライド」の節）。以前のスライドデッキ（`.slide.md` / `.slide.json` とスライドエディタ）は消した。残っている `.slide.md` は通常の Markdown として扱い、`.slide.json` は一覧に出さない（実ファイルはそのまま）。サーバーは起動したときに、以前のデッキのカードとスライドの画像のノードを消し、`.canvcode/slide-pages/`・`.canvcode/figures/` を片付ける（片付ける前の `workspace.db` の写しを `.canvcode/` に残す）
+- スライドはキャンバスに置く（「スライド」の節）。以前のスライドデッキ（`.slide.md` / `.slide.json` とスライドエディタ）は消した。残っている `.slide.md` は通常の Markdown として扱い、`.slide.json` は一覧に出さない（実ファイルはそのまま）。サーバーは起動したときに、以前のデッキのカードとスライドの画像のノードを消し、`.canvcode/slide-pages/`・`.canvcode/figures/` を片付ける（片付ける前の `workspace.db` の写しを `.canvcode/` に残す。移行・片付けの前の写し `workspace.db.before-*.bak` は新しい 2 個だけを残す）
 - 貼り付けた画像と取り込んだ PDF は `<ワークスペース>/.canvcode/assets/` に、中身の SHA-256 を名前にして保存される。PDF は検索用のテキストも `<ハッシュ>.pages.json` に取り出しておく
-- File の id とパスの対応は `.canvcode/files.json`、完全に削除したファイルは `.canvcode/deleted/` に置く
+- File の id とパスの対応は `.canvcode/files.json`、完全に削除したファイルは `.canvcode/deleted/` に置く（90 日経ったら消す）
 - キャンバス・ノード・矢印のつながり・引用などのレコードは `.canvcode/workspace.db`（SQLite）、Portal のサムネイルは `.canvcode/thumbnails/` に保存される。操作するたびに少し待ってサーバーへ送る。右上に「保存済み」「保存中…」「未接続」が出る。サーバーが止まっている間の変更は、つながったら送る（タブを閉じると失われる）
 - Canvas ごとの最後のカメラは、ブラウザ（端末ごと）に覚える
 - 旧アプリ（recursive-infinite-canvas）の `.ricbackup` は、画面にドロップするか、VPS の上にあるなら `npm run import -- --workspace <フォルダ> <ファイル>` で取り込む（サーバーが動いていればサーバーに頼み、開いているタブにもすぐ届く）。ワークスペースが空なら旧のルートがそのままホームに、空でなければホームの下の「取り込み（日付）」に入る。ゴミ箱の中のものと AI 会話は取り込まない。元のファイルは `.canvcode/imports/` に残る

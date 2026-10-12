@@ -1,9 +1,9 @@
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { JOURNAL_SIZE_LIMIT, MAX_AGENT_OPS, MAX_AGENT_OPS_BYTES, RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
+import { DB_BACKUPS_TO_KEEP, JOURNAL_SIZE_LIMIT, MAX_AGENT_OPS, MAX_AGENT_OPS_BYTES, pruneDbBackups, RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
 
 // レコードの保存（MAI-13、MAI-35）
 
@@ -197,6 +197,49 @@ describe('RecordStore', () => {
         store.applyAgentOp({ id: `ai-${n}`, canvasId: store.rootCanvasId, label: '', createdAt: n, patch: [{ id: `node:n${n}`, before: null, after: { ...node(`node:n${n}`, store.rootCanvasId), meta: { pad: 'あ'.repeat(600) } } }] })
       expect(kept(store, 3)).toEqual([2, 3])
       store.close()
+    })
+  })
+
+  describe('移行・片付けの前の写し', () => {
+    it('keeps only the newest two copies of workspace.db', () => {
+      expect(DB_BACKUPS_TO_KEEP).toBe(2)
+      const dir = dataDir()
+      const names = [
+        'workspace.db.before-v2-1791022997711.bak',
+        'workspace.db.before-slides-v1-removal-1791207891760.bak',
+        'workspace.db.before-v2-1791300000000.bak',
+      ]
+      for (const name of names) writeFileSync(join(dir, name), 'x')
+      // 写しでないものには触れない
+      for (const name of ['workspace.db', 'workspace.db-wal', 'other.bak', 'workspace.db.bak']) writeFileSync(join(dir, name), 'x')
+      expect(pruneDbBackups(dir)).toEqual(['workspace.db.before-v2-1791022997711.bak'])
+      expect(readdirSync(dir).sort()).toEqual(['other.bak', 'workspace.db', 'workspace.db-wal', 'workspace.db.bak', names[1], names[2]].sort())
+      expect(pruneDbBackups(dir)).toEqual([])
+    })
+
+    it('orders copies without a time in the name by mtime', () => {
+      const dir = dataDir()
+      writeFileSync(join(dir, 'workspace.db.before-a.bak'), 'x')
+      writeFileSync(join(dir, 'workspace.db.before-b.bak'), 'x')
+      utimesSync(join(dir, 'workspace.db.before-a.bak'), new Date(1000), new Date(1000))
+      expect(pruneDbBackups(dir, 1)).toEqual(['workspace.db.before-a.bak'])
+    })
+
+    it('removes old copies when a migration makes a new one', () => {
+      const dir = dataDir()
+      new RecordStore(dir).close()
+      for (const stamp of [1, 2, 3]) writeFileSync(join(dir, `workspace.db.before-v2-${1790000000000 + stamp}.bak`), 'x')
+      const db = new DatabaseSync(join(dir, 'workspace.db'))
+      db.exec("DROP TABLE agent_ops; UPDATE meta SET value = '1' WHERE key = 'schema'")
+      db.close()
+      new RecordStore(dir).close()
+      const backups = readdirSync(dir).filter((name) => name.endsWith('.bak')).sort()
+      expect(backups).toHaveLength(2)
+      expect(backups[0]).toBe('workspace.db.before-v2-1790000000003.bak')
+      // 新しく作った写しは、開ける db
+      const copy = new DatabaseSync(join(dir, backups[1]), { readOnly: true })
+      expect(copy.prepare("SELECT value FROM meta WHERE key = 'schema'").get()).toEqual({ value: '1' })
+      copy.close()
     })
   })
 })
