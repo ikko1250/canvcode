@@ -16,6 +16,7 @@
     "snapshot": "node apps/server/src/snapshot.ts",
     "backup": "node apps/server/src/backup-cli.ts",
     "restore": "node apps/server/src/backup-cli.ts restore",
+    "backup:sync": "node apps/server/src/backup-sync-cli.ts",
     "import": "node apps/server/src/import-cli.ts",
     "bench:memory": "npm run build -w @canvcode/web && node tests/bench/memory.ts",
     "test:e2e": "playwright test --project=chromium --project=firefox"

@@ -925,10 +925,17 @@ body,
 }
 
 /* 保存の状態（段階 11-1） */
-.sync-status {
+.status-bar {
   position: absolute;
   right: 12px;
   top: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.sync-status {
   padding: 4px 10px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
@@ -946,6 +953,56 @@ body,
   color: #cf222e;
   border-color: #f5c2c7;
   background: #fff5f5;
+}
+
+/* 定期バックアップ（Google Drive）のアイコン。「保存済み」「未接続」の左に出す */
+/* 説明は .status-bar の右端にそろえる（アイコンの右には「保存済み」がある） */
+.backup-status-wrap {
+  display: contents;
+}
+
+.backup-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #f5c2c7;
+  border-radius: 999px;
+  background: #fff5f5;
+  color: #cf222e;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.backup-status.stale {
+  border-color: #f0d58a;
+  background: #fffaeb;
+  color: #9a6700;
+}
+
+.backup-status-detail {
+  position: absolute;
+  right: 0;
+  top: 30px;
+  width: min(300px, calc(100vw - 24px));
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+
+.backup-status-detail-title {
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 
 .loading-screen {

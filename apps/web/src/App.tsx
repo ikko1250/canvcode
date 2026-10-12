@@ -45,6 +45,7 @@ import { DesignPanel } from './design/DesignPanel.tsx'
 import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
+import { BackupStatus } from './backup/BackupStatus.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
@@ -1462,8 +1463,11 @@ export function App(props: { initial: InitialRecords }) {
           </div>
         )}
 
-        <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
-          {syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
+        <div className="status-bar">
+          <BackupStatus serverOnline={syncStatus !== 'offline'} />
+          <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
+            {syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
+          </div>
         </div>
 
         <AgentToasts sync={sync} />

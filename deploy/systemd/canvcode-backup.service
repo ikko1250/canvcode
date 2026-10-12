@@ -1,0 +1,16 @@
+# CanvCode の定期バックアップ（npm run backup:sync）。canvcode-backup.timer から 5 分ごとに起動する。
+# @...@ は install.sh が置き換える（直接 ~/.config/systemd/user に写さない）
+[Unit]
+Description=CanvCode backup to Google Drive (backup:sync)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PATH=@PATH@
+Environment=CANVCODE_WORKSPACE=@WORKSPACE@
+EnvironmentFile=-%h/.config/canvcode/backup.env
+ExecStart=@NODE@ apps/server/src/backup-sync-cli.ts
+Nice=10
+IOSchedulingClass=idle
+# 最初の Asset のアップロードは時間がかかる。動いている間はタイマーが次を起動しない
+TimeoutStartSec=2h

@@ -1,0 +1,13 @@
+# CanvCode の定期バックアップを 5 分ごとに起動する（canvcode-backup.service）。
+# 止まっていた間の分は、起動したときに 1 回だけ取り戻す（Persistent=true）
+[Unit]
+Description=Run CanvCode backup every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=30s
+Unit=canvcode-backup.service
+
+[Install]
+WantedBy=timers.target
