@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
+import { JOURNAL_SIZE_LIMIT, RecordStore, RefConflictError, snapshotWorkspace } from './records.ts'
 
 // レコードの保存（MAI-13、MAI-35）
 
@@ -133,5 +133,13 @@ describe('RecordStore', () => {
     expect(reopened.getAgentOp('ai-1')).toMatchObject({ rev, undoneAt: null, patch: [{ id: 'node:b', before: null }] })
     expect(reopened.revsOf(['node:a', 'node:b', 'node:none'])).toEqual(new Map([['node:a', 1], ['node:b', rev]]))
     reopened.close()
+  })
+
+  it('limits the size of the WAL file to 16 MB', () => {
+    const store = new RecordStore(dataDir())
+    const db = (store as unknown as { db: DatabaseSync }).db
+    expect(db.prepare('PRAGMA journal_size_limit').get()).toEqual({ journal_size_limit: 16 * 1024 * 1024 })
+    expect(JOURNAL_SIZE_LIMIT).toBe(16 * 1024 * 1024)
+    store.close()
   })
 })

@@ -41,6 +41,9 @@ const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
     `),
 }
 
+// WAL のファイル（workspace.db-wal）の大きさの上限（バイト）。チェックポイントのあと、これを超えた分を切り詰める
+export const JOURNAL_SIZE_LIMIT = 16 * 1024 * 1024
+
 // 残しておく AI の編集の記録の数
 const MAX_AGENT_OPS = 50
 
@@ -75,6 +78,8 @@ export class RecordStore {
     this.db = new DatabaseSync(this.path)
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA synchronous = NORMAL')
+    // チェックポイントのあとも、WAL のファイルを JOURNAL_SIZE_LIMIT より大きいまま残さない（大きな書き込みのあとに膨らんだままにしない）
+    this.db.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT}`)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS records (
