@@ -454,6 +454,8 @@ export async function convertBackup(zip: ZipReader, options: ImportOptions): Pro
             size: (STROKE_SIZES[String(props.size)] ?? 3.5) * scale,
             arrowheadStart: head(props.arrowheadStart),
             arrowheadEnd: head(props.arrowheadEnd ?? 'arrow'),
+            // 旧アプリの線の種類（draw・solid は実線）
+            ...(props.dash === 'dashed' || props.dash === 'dotted' ? { strokeDash: props.dash } : {}),
             label: text,
           })
           break

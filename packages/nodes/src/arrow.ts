@@ -1,5 +1,6 @@
 import type { Box, NodeRecord, Vec } from '@canvcode/core'
 import { defineNodeType } from './defineNodeType.ts'
+import { strokeStyleOf, type StrokeDash, type StrokeProps } from './stroke.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
 
 // 矢印（MAI-7 の `arrow`、MAI-28）。直線と曲線（円弧）。
@@ -7,7 +8,10 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // - 実際に見えるのは、その円弧のうち clip の範囲（0〜1）。つながっている先のノードの縁で切った結果を、
 //   基盤（Editor）が計算して書き込む。描画の関数はほかのノードを見ずに描ける
 // - 端がどのノードにつながっているかは、Binding のレコードで持つ（MAI-7）
-export interface ArrowProps {
+// - 線の種類（実線・破線・点線）は図形の線（stroke.ts）と同じ名前の props（strokeDash・strokeDashLength・strokeDashGap）。
+//   どれも省略できる（ないときは実線。古いデータもそのまま読める）ので、足しても版は上げない。
+//   破線の長さ・間隔がないときは太さ（size）に比例した既定（stroke.ts の defaultDashLength など）で描く。矢じりはいつも実線
+export interface ArrowProps extends Partial<Pick<StrokeProps, 'strokeDash' | 'strokeDashLength' | 'strokeDashGap'>> {
   // 親のローカル座標（ノードの x・y からの相対）
   start: Vec
   end: Vec
@@ -27,6 +31,38 @@ export type ArrowNode = NodeRecord<ArrowProps>
 
 export const ARROW_COLORS = ['#1f2328', '#e03131', '#1971c2', '#2f9e44', '#f08c00'] as const
 export const ARROW_SIZES = [1.5, 3, 5] as const
+
+// 矢印の線の種類と、破線の長さ・間隔（px。値がないときは太さに比例した既定）
+export interface ArrowDashStyle {
+  dash: StrokeDash
+  dashLength: number
+  dashGap: number
+}
+
+export function arrowDashStyle(props: Pick<ArrowProps, 'size' | 'strokeDash' | 'strokeDashLength' | 'strokeDashGap'>): ArrowDashStyle {
+  const { dash, dashLength, dashGap } = strokeStyleOf({
+    strokeWidth: props.size,
+    strokeDash: props.strokeDash,
+    strokeDashLength: props.strokeDashLength,
+    strokeDashGap: props.strokeDashGap,
+  })
+  return { dash, dashLength, dashGap }
+}
+
+// 線の種類を Canvas に設定する（破線は lineCap butt、点線は長さ 0 の破線と lineCap round で丸い点を並べる。stroke.ts と同じ）
+export function setArrowLineDash(ctx: CanvasRenderingContext2D, style: ArrowDashStyle, width: number): void {
+  if (style.dash === 'dotted') {
+    ctx.lineCap = 'round'
+    ctx.setLineDash([0, style.dashGap + width])
+  } else if (style.dash === 'dashed') {
+    ctx.lineCap = 'butt'
+    ctx.setLineDash([style.dashLength, style.dashGap])
+  } else {
+    ctx.lineCap = 'round'
+    ctx.setLineDash([])
+  }
+  ctx.lineDashOffset = 0
+}
 
 // ---- 円弧の形 ----
 
@@ -259,10 +295,12 @@ export const arrowType = defineNodeType<ArrowProps>({
     const props = node.props
     const g = arrowGeometry(props)
     const [t0, t1] = props.clip
+    const dash = arrowDashStyle(props)
     ctx.lineWidth = props.size
     ctx.strokeStyle = props.color
-    ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
+    // 線（実線・破線・点線）
+    setArrowLineDash(ctx, dash, props.size)
     ctx.beginPath()
     if (g.kind === 'line') {
       const a = arcPoint(g, t0)
@@ -274,6 +312,13 @@ export const arrowType = defineNodeType<ArrowProps>({
       const to = g.startAngle + g.sweep * t1
       ctx.arc(g.center.x, g.center.y, g.radius, from, to, g.sweep < 0)
     }
+    if (dash.dash !== 'solid') {
+      ctx.stroke()
+      // 矢じりは線の種類によらず実線で描く
+      ctx.setLineDash([])
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+    }
     const length = Math.min(headLength(props), arcLength(g) * (t1 - t0) * 0.5)
     if (props.arrowheadEnd !== 'none') drawHead(ctx, arcPoint(g, t1), arcTangent(g, t1), length)
     if (props.arrowheadStart !== 'none') {
@@ -281,6 +326,7 @@ export const arrowType = defineNodeType<ArrowProps>({
       drawHead(ctx, arcPoint(g, t0), { x: -d.x, y: -d.y }, length)
     }
     ctx.stroke()
+    if (dash.dash !== 'solid') ctx.setLineDash([])
 
     const label = labelBox(props)
     if (label && !info.editing) {

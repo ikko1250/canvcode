@@ -52,6 +52,8 @@ import {
   toShadow,
   type Shadow,
   canRoundCorners,
+  arrowDashStyle,
+  type ArrowProps,
   clampDash,
   defaultDashGap,
   defaultDashLength,
@@ -447,7 +449,8 @@ export const cornerRadiusField: DesignField<CornerRadiusChange> = {
 // ---- 線 ----
 
 // 線（MAI-73）は、図形の枠（MAI-85 のボーダー）・矢印・フリーハンドの線で、色と太さを共通の項目にする（混ぜて選んでも出す）。
-// 位置・種類・破線の長さと間隔は、図形だけの項目（選んでいるノードがすべて図形で、線があるときだけ出す）
+// 位置は図形だけの項目（選んでいるノードがすべて図形で、線があるときだけ出す）。
+// 種類・破線の長さと間隔は、線のある図形と矢印の項目（同じ名前の props。arrow.ts）。矢じりは矢印だけの項目
 
 // 線の色。値は塗り（Fill）の形にそろえ、塗りの項目と同じ PaintField（単色だけ）で見せる。
 // 図形の線は単色の塗り（色・不透明度。線なしは null。stroke.ts の StrokePaint）。
@@ -545,15 +548,35 @@ const STROKE_DASH_OPTIONS: SegmentOption[] = [
   { value: 'dotted', title: '点線', icon: dashIcon('0 4', 'round') },
 ]
 
-// 線の種類。破線・点線にするとき、長さ・間隔を持たなければ、今の太さに合わせた既定（太さの 4 倍・2 倍の px）を入れる
+function isArrow(node: NodeRecord): node is NodeRecord<ArrowProps> {
+  return node.type === 'arrow'
+}
+
+// 線の種類を持てるか（線のある図形と、矢印）
+function hasDashStroke(node: NodeRecord): boolean {
+  return hasBorderStroke(node) || isArrow(node)
+}
+
+// 描く線の種類と破線の長さ・間隔（値がないときの既定を埋めたもの）
+function dashStyleOf(node: NodeRecord) {
+  return isArrow(node) ? arrowDashStyle(node.props) : strokeStyleOf(node.props as object)
+}
+
+// 線の種類。図形を破線・点線にするとき、長さ・間隔を持たなければ、今の太さに合わせた既定（太さの 4 倍・2 倍の px）を入れる
+// （Figma と同じく、あとで太さを変えても長さは変わらない）。
+// 矢印は入れない：長さ・間隔を手で決めるまでは、太さ（細・中・太）に比例した既定で描く
 export const strokeDashField: DesignField<StrokeDash> = {
   id: 'stroke.dash',
   label: '種類',
   row: STROKE_STYLE_ROW,
   control: { kind: 'segmented', options: STROKE_DASH_OPTIONS },
-  appliesTo: hasBorderStroke,
-  read: (node) => strokeStyleOf(node.props as object).dash,
+  appliesTo: hasDashStroke,
+  read: (node) => dashStyleOf(node).dash,
   write(node, value) {
+    if (isArrow(node)) {
+      if (arrowDashStyle(node.props).dash === value) return node
+      return { ...node, props: { ...node.props, strokeDash: value } }
+    }
     if (!hasBorder(node) || strokeStyleOf(node.props).dash === value) return node
     const props = { ...node.props, strokeDash: value }
     if (value !== 'solid') {
@@ -568,26 +591,65 @@ export const strokeDashField: DesignField<StrokeDash> = {
 // 破線の長さ・間隔（px）。長さは破線だけ、間隔は破線・点線（点の縁どうしの間）
 function dashLengthField(id: string, label: string, key: 'strokeDashLength' | 'strokeDashGap', dashes: readonly StrokeDash[]): DesignField<number> {
   const read = (node: NodeRecord) => {
-    const style = strokeStyleOf(node.props as object)
+    const style = dashStyleOf(node)
     return key === 'strokeDashLength' ? style.dashLength : style.dashGap
   }
   return {
     id,
     label,
     control: { kind: 'number', min: 0.5, max: 100, step: 0.5, unit: 'px' },
-    appliesTo: (node) => hasBorderStroke(node) && dashes.includes(strokeStyleOf(node.props as object).dash),
+    appliesTo: (node) => hasDashStroke(node) && dashes.includes(dashStyleOf(node).dash),
     read,
     write(node, value) {
-      if (!hasBorder(node)) return node
+      if (!hasBorder(node) && !isArrow(node)) return node
       const next = clampDash(value)
-      if (read(node) === next && node.props[key] === next) return node
-      return { ...node, props: { ...node.props, [key]: next } }
+      const props = node.props as unknown as Record<string, unknown>
+      if (read(node) === next && props[key] === next) return node
+      return { ...node, props: { ...props, [key]: next } }
     },
   }
 }
 
 export const strokeDashLengthField = dashLengthField('stroke.dashLength', '長さ', 'strokeDashLength', ['dashed'])
 export const strokeDashGapField = dashLengthField('stroke.dashGap', '間隔', 'strokeDashGap', ['dashed', 'dotted'])
+
+// 矢じり（矢印だけ）。なし・終点・始点・両端の 4 つから選ぶ（矢じりなしなら、ただの線）
+export type ArrowheadsValue = 'none' | 'end' | 'start' | 'both'
+
+function arrowheadsIcon(start: boolean, end: boolean) {
+  return strokeIcon((color) => [
+    createElement('line', { key: 'l', x1: 2, x2: 14, y1: 8, y2: 8, stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' }),
+    ...(end ? [createElement('path', { key: 'e', d: 'M10 4.5 L14 8 L10 11.5', fill: 'none', stroke: color, strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' })] : []),
+    ...(start ? [createElement('path', { key: 's', d: 'M6 4.5 L2 8 L6 11.5', fill: 'none', stroke: color, strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' })] : []),
+  ])
+}
+
+const ARROWHEADS_OPTIONS: SegmentOption[] = [
+  { value: 'none', title: '矢じりなし', icon: arrowheadsIcon(false, false) },
+  { value: 'end', title: '終点に矢じり', icon: arrowheadsIcon(false, true) },
+  { value: 'start', title: '始点に矢じり', icon: arrowheadsIcon(true, false) },
+  { value: 'both', title: '両端に矢じり', icon: arrowheadsIcon(true, true) },
+]
+
+export const arrowheadsField: DesignField<ArrowheadsValue> = {
+  id: 'stroke.arrowheads',
+  label: '矢じり',
+  control: { kind: 'segmented', options: ARROWHEADS_OPTIONS },
+  appliesTo: isArrow,
+  read(node) {
+    const { arrowheadStart, arrowheadEnd } = (node as NodeRecord<ArrowProps>).props
+    const start = arrowheadStart !== 'none'
+    const end = arrowheadEnd !== 'none'
+    return start && end ? 'both' : start ? 'start' : end ? 'end' : 'none'
+  },
+  write(node, value) {
+    if (!isArrow(node)) return node
+    const arrowheadStart = value === 'start' || value === 'both' ? 'arrow' : 'none'
+    const arrowheadEnd = value === 'end' || value === 'both' ? 'arrow' : 'none'
+    if (node.props.arrowheadStart === arrowheadStart && node.props.arrowheadEnd === arrowheadEnd) return node
+    return { ...node, props: { ...node.props, arrowheadStart, arrowheadEnd } }
+  },
+}
 
 // ---- 効果（影） ----
 
@@ -989,7 +1051,7 @@ export const builtinDesignSections: DesignSection[] = [
   // 画像ノードの切り抜き（トリミング）
   { id: 'image-crop', title: '切り抜き', order: 90, fields: [], appliesTo: (node) => node.type === 'image', Component: ImageCropSection },
   { id: 'fill', title: '塗り', order: 100, hideTitle: true, fields: [fillField] },
-  { id: 'stroke', title: '線', order: 200, hideTitle: true, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField] },
+  { id: 'stroke', title: '線', order: 200, hideTitle: true, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField, arrowheadsField] },
   { id: 'effects', title: '効果', order: 250, hideTitle: true, fields: [shadowsField] },
   { id: 'text', title: '文字', order: 300, tab: textSectionTab, hideTitle: true, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, textColorField, lineHeightField, letterSpacingField, textAlignField, listTypeField, listStyleField] },
   { id: 'layer', title: 'レイヤー', order: 900, hideTitle: true, footer: true, fields: [opacityField] },
