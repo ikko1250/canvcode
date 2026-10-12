@@ -109,10 +109,11 @@ import {
   type TextRunFormat,
   type TextToggleFormat,
 } from '@canvcode/nodes'
-import { sameValue, type SharedValue } from '@canvcode/canvas'
+import { arrowPivot, sameValue, type SharedValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
 import { SlideLayoutAdjustSection } from './SlideLayoutAdjustSection.tsx'
 import { ImageCropSection } from './ImageCropSection.tsx'
+import { ArrowDirectionSection } from './ArrowDirectionSection.tsx'
 import { slideLayoutAdjustTarget } from './slideLayoutAdjustTarget.ts'
 
 // デザインパネルに最初から出すセクション（MAI-73）。
@@ -983,6 +984,8 @@ export const builtinDesignSections: DesignSection[] = [
     Component: SlideLayoutAdjustSection,
   },
   { id: 'chart', title: 'グラフ', order: 40, hideTitle: true, fields: [chartDataField, chartInnerRadiusField, chartStartAngleField, chartShowLabelsField, chartShowPercentField] },
+  // 矢印の向き（角度）と長さ。両端がつながった矢印には出さない
+  { id: 'arrow-direction', title: '向き', order: 45, hideTitle: true, fields: [], appliesTo: (node, editor) => node.type === 'arrow' && editor !== undefined && arrowPivot(editor, node.id) !== null, Component: ArrowDirectionSection },
   { id: 'shape', title: '形', order: 50, hideTitle: true, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
   // 角丸は形のすぐ下に、区切り線なしで続ける
   { id: 'corner', title: '角丸', order: 60, hideTitle: true, joinPrevious: true, fields: [cornerRadiusField] },

@@ -1,5 +1,6 @@
 import type { Box, NodeRecord, Vec } from '@canvcode/core'
 import { defineNodeType } from './defineNodeType.ts'
+import { normalizeAngle } from './paint.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type TextLayout, type TextStyle } from './text/layout.ts'
 
 // 矢印（MAI-7 の `arrow`、MAI-28）。直線と曲線（円弧）。
@@ -112,6 +113,58 @@ export function bendThrough(a: Vec, b: Vec, p: Vec): number {
   if (d === 0) return 0
   const n = { x: -(b.y - a.y) / d, y: (b.x - a.x) / d }
   return (p.x - (a.x + b.x) / 2) * n.x + (p.y - (a.y + b.y) / 2) * n.y
+}
+
+// ---- 向きと長さ ----
+// 向きは「曲げる前の」始点→終点の向き（度）。0° が右（+x）、時計回り（y が下向きの画面で）、0 以上 360 未満。
+// ノードの回転（rotation）・グラデーションの角度と同じ決め方。長さは始点と終点の距離（ワールド座標の単位）
+
+// Shift で吸い付ける角度の刻み（縦・横・斜め）
+export const ARROW_ANGLE_SNAP = 45
+
+// 向きや長さを変えるとき、動かさない点。始点・終点（その端がほかのノードにつながっているとき）か、真ん中
+export type ArrowPivot = 'start' | 'end' | 'middle'
+
+export function arrowAngle(props: Pick<ArrowProps, 'start' | 'end'>): number {
+  const dx = props.end.x - props.start.x
+  const dy = props.end.y - props.start.y
+  if (dx === 0 && dy === 0) return 0
+  return normalizeAngle((Math.atan2(dy, dx) * 180) / Math.PI)
+}
+
+export function arrowLength(props: Pick<ArrowProps, 'start' | 'end'>): number {
+  return Math.hypot(props.end.x - props.start.x, props.end.y - props.start.y)
+}
+
+// 向きを angle（度）、長さを length にした始点と終点。pivot の点は動かさない。曲がり（bend）は弦に対する量なので、そのまま形ごと回る
+export function arrowWithDirection<P extends Pick<ArrowProps, 'start' | 'end'>>(props: P, angle: number, length: number, pivot: ArrowPivot): P {
+  const rad = (angle * Math.PI) / 180
+  // 丸めの誤差（cos 90° が 6e-17 になるなど）を残さない
+  const round = (v: number) => Math.round(v * 1e6) / 1e6
+  const dx = Math.cos(rad) * length
+  const dy = Math.sin(rad) * length
+  let start: Vec
+  if (pivot === 'start') start = props.start
+  else if (pivot === 'end') start = { x: props.end.x - dx, y: props.end.y - dy }
+  else start = { x: (props.start.x + props.end.x) / 2 - dx / 2, y: (props.start.y + props.end.y) / 2 - dy / 2 }
+  const end = pivot === 'end' ? props.end : { x: round(start.x + dx), y: round(start.y + dy) }
+  if (pivot !== 'start') start = { x: round(start.x), y: round(start.y) }
+  if (start.x === props.start.x && start.y === props.start.y && end.x === props.end.x && end.y === props.end.y) return props
+  return { ...props, start, end }
+}
+
+// from から to に向かう向きを step（度）刻みに吸い付けた点。長さは、吸い付けた向きの直線に to を下ろした足まで
+// （カーソルを直線に沿って動かせば、端がカーソルの下に来る）
+export function snapArrowPoint(from: Vec, to: Vec, step = ARROW_ANGLE_SNAP): Vec {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  if (dx === 0 && dy === 0) return to
+  const snapped = Math.round(Math.atan2(dy, dx) / ((step * Math.PI) / 180)) * ((step * Math.PI) / 180)
+  const ux = Math.cos(snapped)
+  const uy = Math.sin(snapped)
+  const length = Math.max(0, dx * ux + dy * uy)
+  const round = (v: number) => Math.round(v * 1e6) / 1e6
+  return { x: round(from.x + ux * length), y: round(from.y + uy * length) }
 }
 
 // ---- ラベル ----
