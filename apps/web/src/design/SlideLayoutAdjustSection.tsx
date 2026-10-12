@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { MoveHorizontal, MoveVertical, RotateCcw, UnfoldHorizontal, UnfoldVertical } from 'lucide-react'
 import type { NodeRecord } from '@canvcode/core'
 import { PropertyEdit, editNodes, patchAdjust, tableHeightPatch, type Editor } from '@canvcode/canvas'
@@ -9,6 +9,7 @@ import type { DesignIcon, DesignSectionProps } from './registry.ts'
 import { slideLayoutAdjustTarget } from './slideLayoutAdjustTarget.ts'
 
 // スライド（v2）の「配置」：表パネル（中の行を含む）と右図枠の位置、table-image の表パネルの幅、表パネルの高さを手で直す。
+// 高さの横の「自動に戻す」は、手で決めた高さ（table の h）だけを消す（行数と内容から決める高さに戻る）。
 // 値は slide-layout の props.adjust（スライドの幾何の単位。1920 幅の px）に書き、並べ直し（コミットフック）が子を置き直す。
 // スライド・表のセル・パネル・図枠のどれを選んでいても、その slide-layout を変える。表パネル・図枠のドラッグでも同じ値が変わる
 
@@ -75,7 +76,7 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
       },
     }
   }
-  const field = (k: Key, label: string, value: number, range: { min: number; max: number }) => (
+  const field = (k: Key, label: string, value: number, range: { min: number; max: number }, extra?: ReactNode) => (
     <NumberField
       key={`${k.group}.${k.key}`}
       label={label}
@@ -83,7 +84,24 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
       value={{ kind: 'same', value }}
       editor={valueEditor(k)}
       control={{ kind: 'number', ...range, step: 1, unit: 'px' }}
+      extra={extra}
     />
+  )
+  // 高さの横の「自動に戻す」：table の h だけを消す（位置・幅・画像の値は残す）。高さが自動なら押せない
+  const autoHeight = (
+    <button
+      className="design-icon-button"
+      title="高さを自動に戻す"
+      aria-label="高さを自動に戻す"
+      disabled={adjust.table?.h === undefined}
+      onPointerDown={(e) => e.preventDefault()}
+      onClick={() => {
+        endRunning(true)
+        editNodes(editor, [layout.id], write({ table: { h: undefined } }), 'design: slide-layout.table.h.auto')
+      }}
+    >
+      <RotateCcw size={16} strokeWidth={1.75} aria-hidden />
+    </button>
   )
   const offset = { min: -OFFSET_LIMIT, max: OFFSET_LIMIT }
   const hasAdjust = adjust.table !== undefined || adjust.figure !== undefined
@@ -113,7 +131,8 @@ export function SlideLayoutAdjustSection(props: DesignSectionProps) {
         {field({ group: 'table', key: 'dy' }, '縦の位置', adjust.table?.dy ?? 0, offset)}
       </div>
       {isTableImage && field({ group: 'table', key: 'w' }, '幅', adjust.table?.w ?? TABLE_IMAGE_SPEC.tableWidth, TABLE_IMAGE_WIDTH_RANGE)}
-      {heightRange && field({ group: 'table', key: 'h' }, '高さ', adjust.table?.h ?? (typeof panelH === 'number' ? Math.round(panelH) : heightRange.max), heightRange)}
+      {heightRange &&
+        field({ group: 'table', key: 'h' }, '高さ', adjust.table?.h ?? (typeof panelH === 'number' ? Math.round(panelH) : heightRange.max), heightRange, autoHeight)}
       {isTableImage && (
         <>
           <div className="design-field">

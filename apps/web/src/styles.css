@@ -1493,6 +1493,15 @@ body,
   color: var(--dp-text);
 }
 
+/* 押せないとき（元に戻す値が無い） */
+.design-panel button.design-fill-toggle:disabled,
+.design-panel button.design-icon-button:disabled {
+  background: transparent;
+  color: var(--dp-secondary);
+  opacity: 0.4;
+  cursor: default;
+}
+
 .design-panel button.design-icon-button.active {
   background: var(--dp-selected);
   color: var(--dp-accent);

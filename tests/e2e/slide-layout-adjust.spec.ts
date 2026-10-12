@@ -126,3 +126,67 @@ test('changes the table panel height from the design panel, keeping its top and 
   expect(bottom).toBeLessThanOrEqual(after.panel.y + after.panel.h)
   await page.screenshot({ path: test.info().outputPath('height.png') })
 })
+
+test('returns the table panel height to automatic with the button next to the height, keeping the other values', async ({ page }) => {
+  await openApp(page)
+  await expect(page.getByTestId('slide-layout-adjust')).toBeVisible()
+  const before = await state(page)
+  const auto = page.getByRole('button', { name: '高さを自動に戻す' })
+  // 高さが自動なら押せない
+  await expect(auto).toBeDisabled()
+
+  await setNumber(page, '> .design-field:not(:first-child)', 0, '800')
+  await setNumber(page, '> .design-field:not(:first-child)', 1, '400')
+  const fixed = await state(page)
+  expect(fixed.adjust).toEqual({ table: { w: 800, h: 400, dy: before.panel.y - 197 } })
+  await expect(auto).toBeEnabled()
+
+  // h だけを消す（幅・位置は残す）。高さは行数と内容から決まる高さに戻る
+  await auto.click()
+  const reset = await state(page)
+  expect(reset.adjust).toEqual({ table: { w: 800, dy: before.panel.y - 197 } })
+  expect(reset.panel.h).toBe(before.panel.h)
+  expect(reset.panel.w).toBe(800)
+  await expect(auto).toBeDisabled()
+  await page.screenshot({ path: test.info().outputPath('auto-height.png') })
+
+  // Undo 1 回で、決めた高さに戻る（キャンバスに戻ってから。数の欄の Undo は欄の文字の Undo）
+  await page.locator('.canvas-container > div[tabindex]').focus()
+  await page.keyboard.press('Control+z')
+  expect(await state(page)).toEqual(fixed)
+})
+
+test('a title spans the panel width, grows up to two lines, and is marked as an overflow from the third line', async ({ page }) => {
+  await openApp(page)
+  // タイトルの文字を変えて、タイトルの箱（x・y・幅・高さ）と、あふれている子を返す
+  const setTitle = (value: string) =>
+    page.evaluate(
+      ({ slideId, value }) => {
+        const { editor } = (window as any).canvcode
+        const layout = editor.slideLayoutFor(slideId)
+        const id = layout.props.slots.title
+        editor.transact('title', (tx: any) => {
+          const n = editor.getNode(id)
+          tx.put({ ...n, props: { ...n.props, paragraphs: value.split('\n').map((text: string) => ({ runs: [{ text }] })) } })
+        })
+        const n = editor.getNode(id)
+        const bounds = editor.getType(n).getBounds(n)
+        return { id, x: n.x, y: n.y, w: n.props.w, h: bounds.h, overflows: editor.slideOverflows().get(slideId)?.nodes ?? [] }
+      },
+      { slideId: SLIDE_ID, value },
+    )
+  const one = await setTitle('一行目')
+  // 表紙のタイトルと同じ、パネルの横枠（150〜1810）
+  expect(one.x).toBe(150)
+  expect(one.w).toBe(1660)
+  expect(one.overflows).toEqual([])
+  const two = await setTitle('一行目\n二行目')
+  expect(two.y).toBeLessThan(one.y)
+  expect(two.overflows).toEqual([])
+  const three = await setTitle('一行目\n二行目\n三行目')
+  // 上へ伸ばすのは 2 行分まで。3 行目からはあふれの印を出す
+  expect(three.y).toBe(two.y)
+  expect(three.h).toBeGreaterThan(two.h)
+  expect(three.overflows).toEqual([three.id])
+  await page.screenshot({ path: test.info().outputPath('title-overflow.png') })
+})
