@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rename, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { watch, type FSWatcher } from 'chokidar'
+import { writeViaTemp } from './writeAtomic.ts'
 
 // Markdown / Python の File（MAI-10、MAI-13、MAI-30）。
 // - 本文は、ワークスペースのフォルダに .md / .py として置く。サブフォルダは SSH 側で自由に作ってよい。
@@ -420,18 +421,14 @@ export class FileStore {
     const abs = this.abs(path)
     await mkdir(dirname(abs), { recursive: true })
     // 一時ファイルは . で始まる名前にして、監視に拾わせない
-    const temp = join(dirname(abs), `.${basename(abs)}.${process.pid}.${Date.now()}.tmp`)
-    await writeFile(temp, data)
-    await rename(temp, abs)
+    await writeViaTemp(join(dirname(abs), `.${basename(abs)}.${process.pid}.${Date.now()}.tmp`), abs, data)
   }
 
   // 索引を書く。同時に呼ばれても、順番に 1 つずつ書く（一時ファイルの取り合いで失敗しないように）
   private saveIndex(): Promise<void> {
     const run = async () => {
       const index: IndexFile = { version: 1, files: this.list().map(({ id, path }) => ({ id, path })) }
-      const temp = `${this.indexPath}.${process.pid}.${++this.indexWrites}.tmp`
-      await writeFile(temp, JSON.stringify(index, null, 2))
-      await rename(temp, this.indexPath)
+      await writeViaTemp(`${this.indexPath}.${process.pid}.${++this.indexWrites}.tmp`, this.indexPath, JSON.stringify(index, null, 2))
     }
     this.indexQueue = this.indexQueue.then(run, run)
     return this.indexQueue

@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { writeViaTemp } from './writeAtomic.ts'
 
 // 画像の Asset の保存と配信（MAI-10、MAI-13、MAI-26）。
 // - 実体は <ワークスペース>/.canvcode/assets/<ハッシュ>.<拡張子> に置く。名前が中身の SHA-256 なので、
@@ -277,9 +278,7 @@ export async function ensurePdfTextFile(dataDir: string, hash: string): Promise<
 
 // 一時ファイルに書いてから名前を変える（書きかけのファイルが残らない。MAI-13）
 async function writeAtomic(path: string, data: Buffer): Promise<void> {
-  const temp = `${path}.${process.pid}.${Date.now()}.tmp`
-  await writeFile(temp, data)
-  await rename(temp, path)
+  await writeViaTemp(`${path}.${process.pid}.${Date.now()}.tmp`, path, data)
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

@@ -1,6 +1,7 @@
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { REF_ID_PATTERN, type Box } from '@canvcode/core'
+import { writeViaTemp } from './writeAtomic.ts'
 
 // ref に添える画像（MAI-64）。手書き線や画像のある範囲は、座標より画像のほうが AI に読み取りやすいので、
 // ブラウザが ID をコピーしたときに範囲を PNG に描いて送ってくる。.canvcode/ref-images/<ref の id>.png に置き、
@@ -38,10 +39,8 @@ export class RefImageStore {
     await mkdir(this.dir, { recursive: true })
     const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
     // PNG を先に置き、.json を置いた時点で「ある」ことにする
-    await writeFile(`${base}.png.${suffix}`, png)
-    await rename(`${base}.png.${suffix}`, `${base}.png`)
-    await writeFile(`${base}.json.${suffix}`, JSON.stringify(info))
-    await rename(`${base}.json.${suffix}`, `${base}.json`)
+    await writeViaTemp(`${base}.png.${suffix}`, `${base}.png`, png)
+    await writeViaTemp(`${base}.json.${suffix}`, `${base}.json`, JSON.stringify(info))
     return info
   }
 

@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
+import { writeViaTemp } from './writeAtomic.ts'
 
 // Canvas のサムネイル（MAI-8 の「4. 親の Canvas 上でのプレビュー」、MAI-10、MAI-13）。
 // ブラウザが Canvas を離れるときに描いた PNG を、.canvcode/thumbnails/<Canvas の id>.png に置く。
@@ -24,9 +25,7 @@ export class ThumbnailStore {
   async save(canvasId: string, png: Buffer): Promise<void> {
     if (!ID_PATTERN.test(canvasId)) return
     const file = join(this.dir, `${canvasId.replace(':', '_')}.png`)
-    const temp = `${file}.${process.pid}.${Date.now()}.tmp`
-    await writeFile(temp, png)
-    await rename(temp, file)
+    await writeViaTemp(`${file}.${process.pid}.${Date.now()}.tmp`, file, png)
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
@@ -70,9 +69,7 @@ export class ThumbnailStore {
         }
         chunks.push(chunk as Buffer)
       }
-      const temp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
-      await writeFile(temp, Buffer.concat(chunks))
-      await rename(temp, file)
+      await writeViaTemp(`${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`, file, Buffer.concat(chunks))
       send(res, 200, 'ok')
       return true
     }
