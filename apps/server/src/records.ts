@@ -333,6 +333,11 @@ export class RecordStore {
     }
   }
 
+  // すべての表のすべての行の、文字列とバイト列の値を visit に渡し、records の行数を返す（使われていない Asset を探すとき。assetGc.ts）
+  forEachText(visit: (text: string) => void): { records: number } {
+    return forEachTextInDb(this.db, visit)
+  }
+
   // 動かしたまま、一貫した写しを作る（MAI-13 の「8. バックアップ」）
   snapshot(path: string): void {
     this.db.prepare('VACUUM INTO ?').run(path)
@@ -397,6 +402,23 @@ function validRecord(value: unknown): asserts value is StoredRecord {
 function randomId(): string {
   const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
   return [...randomBytes(16)].map((b) => alphabet[b % 62]).join('')
+}
+
+// db のすべての表（sqlite_ で始まる内部の表を除く）のすべての行の、文字列とバイト列（latin1 で文字列にする）の値を visit に渡す。
+// 表の形を知らずに読むので、新しい表・古い版の写し（*.bak）でも漏れない。records の行数を返す（表がなければ 0）
+export function forEachTextInDb(db: DatabaseSync, visit: (text: string) => void): { records: number } {
+  let records = 0
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]
+  for (const { name } of tables) {
+    for (const row of db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}"`).iterate()) {
+      if (name === 'records') records++
+      for (const value of Object.values(row as Record<string, unknown>)) {
+        if (typeof value === 'string') visit(value)
+        else if (value instanceof Uint8Array) visit(Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('latin1'))
+      }
+    }
+  }
+  return { records }
 }
 
 // 移行・片付けの前の写し（workspace.db.before-*.bak）のうち、新しい keep 個を残して消し、消したものの名前を返す。

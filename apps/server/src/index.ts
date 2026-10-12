@@ -62,10 +62,10 @@ const refImages = new RefImageStore(DATA_DIR)
 // 3 日経った ref を消す（MAI-65）。起動したときと、そのあと 1 時間ごと
 await sweepRefs(records, refImages)
 setInterval(() => void sweepRefs(records, refImages), REF_SWEEP_INTERVAL_MS).unref()
-// .canvcode の中のたまっていくもの（deleted/ の 90 日経ったファイル）を片付ける（storageCleanup.ts）。起動したときと、そのあと 1 時間ごと。
-// 起動を待たせないよう、裏で行う
-void sweepStorage(DATA_DIR)
-setInterval(() => void sweepStorage(DATA_DIR), STORAGE_SWEEP_INTERVAL_MS).unref()
+// .canvcode の中のたまっていくもの（deleted/ の 90 日経ったファイル、参照されなくなってから 30 日経った Asset など）を片付ける
+// （storageCleanup.ts）。起動したときと、そのあと 1 時間ごと。起動を待たせないよう、裏で行う
+void sweepStorage({ workspace: WORKSPACE, dataDir: DATA_DIR, records })
+setInterval(() => void sweepStorage({ workspace: WORKSPACE, dataDir: DATA_DIR, records }), STORAGE_SWEEP_INTERVAL_MS).unref()
 const sync = new SyncHub(records)
 
 // ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）

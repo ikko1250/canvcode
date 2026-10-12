@@ -2,7 +2,10 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DELETED_TTL_MS, sweepDeletedFiles } from './storageCleanup.ts'
+import { ASSET_GC_STATE } from './assetGc.ts'
+import { UPLOAD_SUFFIX } from './import/import.ts'
+import { RecordStore } from './records.ts'
+import { DELETED_TTL_MS, sweepDeletedFiles, sweepStorage } from './storageCleanup.ts'
 
 // .canvcode の中の、たまっていくものの片付け
 
@@ -46,3 +49,35 @@ describe('sweepDeletedFiles', () => {
     expect(existsSync(join(dataDir, 'deleted', '手で置いた.md'))).toBe(false)
   })
 })
+
+describe('sweepStorage', () => {
+  it('sweeps deleted/, stale uploads and unused assets, and goes on when one of them fails', async () => {
+    const workspace = tempDir()
+    const dataDir = join(workspace, '.canvcode')
+    for (const dir of ['deleted', 'imports', 'assets']) mkdirSync(join(dataDir, dir), { recursive: true })
+    const records = new RecordStore(dataDir)
+    const now = Date.now()
+    writeFileSync(join(dataDir, 'deleted', `${now - DELETED_TTL_MS - 1}-古い.md`), 'x')
+    writeFileSync(join(dataDir, 'imports', `1-a.ricbackup${UPLOAD_SUFFIX}`), 'x')
+    utimesSync(join(dataDir, 'imports', `1-a.ricbackup${UPLOAD_SUFFIX}`), new Date(0), new Date(0))
+    const hash = 'a'.repeat(64)
+    writeFileSync(join(dataDir, 'assets', `${hash}.png`), 'x')
+    // 読めない写しがあると Asset の片付けだけが止まる
+    writeFileSync(join(dataDir, 'workspace.db.before-v9-1.bak'), 'broken')
+    const errors: unknown[] = []
+    const original = console.error
+    console.error = (...args: unknown[]) => void errors.push(args)
+    try {
+      await sweepStorage({ workspace, dataDir, records }, now)
+    } finally {
+      console.error = original
+      records.close()
+    }
+    expect(readdirSync(join(dataDir, 'deleted'))).toEqual([])
+    expect(readdirSync(join(dataDir, 'imports'))).toEqual([])
+    expect(readdirSync(join(dataDir, 'assets'))).toEqual([`${hash}.png`])
+    expect(errors).toHaveLength(1)
+    expect(existsSync(join(dataDir, ASSET_GC_STATE))).toBe(false)
+  })
+})
+
