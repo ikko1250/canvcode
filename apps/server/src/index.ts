@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { AgentHost } from './agent/host.ts'
 import { handleAgentOps } from './agent/ops.ts'
 import { AssetStore } from './assets.ts'
+import { handleBackupStatus } from './backupStatus.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { MarkdownPdf } from './markdownPdf.ts'
@@ -27,6 +28,7 @@ import { ThumbnailStore } from './thumbnails.ts'
 // - レコードは .canvcode/workspace.db（SQLite）に保存し、/api/sync の WebSocket で同期する（MAI-11、MAI-13）
 // - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きする（MAI-59）。
 //   Canvas のノードの書き換え（スライドもここで作る）は、サーバーの中のワークスペース（agent/host.ts）で行い、画面から取り消せる（/api/agent-ops）
+// - 定期バックアップ（npm run backup:sync）の状態（.canvcode/backup-status.json）を /api/backup-status で画面に渡す
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
 const HOST = '127.0.0.1'
@@ -146,6 +148,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (sync.handle(req, res, url.pathname)) return
+  if (await handleBackupStatus(req, res, url.pathname, DATA_DIR)) return
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, rm, rmdir, stat } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
@@ -24,10 +25,59 @@ import { extractTar, tarChunks, type TarEntry } from './tar.ts'
 
 export const BACKUP_MANIFEST = 'canvcode-backup.json'
 const FORMAT = 1
-const NAME_PATTERN = /^canvcode-backup-.+\.tar\.gz$/
+export const BACKUP_NAME_PATTERN = /^canvcode-backup-.+\.tar\.gz$/
+const NAME_PATTERN = BACKUP_NAME_PATTERN
 
-// .canvcode の中で入れないもの（キャッシュ・写し・db の本体（写しを別に入れる））
-const EXCLUDED_DATA = new Set(['workspace.db', 'workspace.db-wal', 'workspace.db-shm', 'workspace.db-journal', 'texmf', 'snapshots', 'backups', 'slide-pages', 'figures'])
+// .canvcode の中で入れないもの（キャッシュ・写し・db の本体（写しを別に入れる）・定期バックアップの状態（backupSync.ts））
+const EXCLUDED_DATA = new Set([
+  'workspace.db',
+  'workspace.db-wal',
+  'workspace.db-shm',
+  'workspace.db-journal',
+  'texmf',
+  'snapshots',
+  'backups',
+  'slide-pages',
+  'figures',
+  'backup-status.json',
+  'backup-sync.lock',
+])
+
+// バックアップの名前（canvcode-backup-2026-10-12T03-05-00-000Z.tar.gz）から、作った時刻（ミリ秒）を読む。読めなければ null
+export function backupTime(name: string): number | null {
+  const match = /^canvcode-backup-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.tar\.gz$/.exec(name)
+  if (!match) return null
+  const time = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`)
+  return Number.isNaN(time) ? null : time
+}
+
+// 前のバックアップから変わったかを見るための指紋。db の全テーブルの行と、バックアップに入るファイル（Asset も含む）の
+// 名前・大きさ・更新時刻から作る。db は読み取り専用で開くので、動いているサーバーの db には何も書かない
+export async function fingerprintWorkspace(workspaceDir: string, outDir: string): Promise<{ rev: number; hash: string }> {
+  const workspace = resolve(workspaceDir)
+  const hash = createHash('sha256')
+  let rev = 0
+  const db = new DatabaseSync(join(workspace, '.canvcode', 'workspace.db'), { readOnly: true, timeout: 10_000 })
+  try {
+    rev = Number((db.prepare("SELECT value FROM meta WHERE key = 'rev'").get() as { value: string } | undefined)?.value ?? 0)
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((row) => row.name)
+    for (const table of tables) {
+      hash.update(`table ${table}\n`)
+      for (const row of db.prepare(`SELECT * FROM "${table.replace(/"/g, '""')}" ORDER BY rowid`).iterate()) {
+        hash.update(JSON.stringify(row, (_key, value: unknown) => (value instanceof Uint8Array ? Buffer.from(value).toString('base64') : typeof value === 'bigint' ? String(value) : value)))
+        hash.update('\n')
+      }
+    }
+  } finally {
+    db.close()
+  }
+  hash.update('files\n')
+  for (const file of await listWorkspace(workspace, resolve(outDir), true, false)) {
+    const info = await stat(join(workspace, ...file.split('/'))).catch(() => null)
+    if (info) hash.update(`${file}\t${info.size}\t${Math.round(info.mtimeMs)}\n`)
+  }
+  return { rev, hash: hash.digest('hex') }
+}
 
 export interface BackupManifest {
   app: 'canvcode'
@@ -260,7 +310,7 @@ function keep(rel: string, name: string, assets: boolean, imports: boolean): boo
 }
 
 // 書きかけの一時ファイル（files.ts は「.<名前>….tmp」、ほかは「<名前>.<pid>.<時刻>….tmp」、書き出し中の .partial）
-function isTemp(name: string): boolean {
+export function isTemp(name: string): boolean {
   return name.endsWith('.tmp') || name.endsWith('.partial')
 }
 

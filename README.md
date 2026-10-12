@@ -37,6 +37,32 @@ npm start       # http://127.0.0.1:8787
 - バックアップは `npm run backup -- --workspace <フォルダ> --out <置く場所> [--keep <残す数>]` で、復元に要るもの（`workspace.db` の揃った写し・.md / .py などのファイル・Asset・サムネイルなど）を 1 つの `.tar.gz` にまとめる。サーバーを動かしたままでよい。キャッシュ（`texmf` など）と取り込んだ元の `.ricbackup`（`--imports` で入れる）は入れない。`--no-assets` にすると Asset を入れない（Asset は書き換わらないので、別に増えた分だけ写しておく）
 - 復元は `npm run restore -- <バックアップ.tar.gz> --workspace <新しいフォルダ> [--assets <Asset のフォルダ>]`。ないか空のフォルダにだけ展開し、`workspace.db` を確かめてから置く。そのあとサーバーをそのフォルダで起動する。`tar -xzf` でも展開できる（そのときは `canvcode-backup.json` を消す）
 
+### 定期バックアップ（Google Drive）
+
+`npm run backup:sync` が、バックアップを作って Google Drive へ送るまでを 1 回で行う。systemd のユーザータイマーで 5 分ごとに動かす。
+
+- 前回から変わっていれば（`workspace.db` の中身とファイルの名前・大きさ・更新時刻で判定）、Asset を入れないバックアップ（`--no-assets` と同じ）を `<ワークスペース>/.canvcode/backups/` に作る。手元には 96 個まで残す（`--keep`）。変わっていなければ作らない
+- `rclone about gdrive:` で Drive につながるか確かめてから、`rclone copy` で `gdrive:CanvCode-backup/archives` に送る。送り損ねた分は、変わっていない回にも送り直す
+- Drive の archives は、2 日以内は 1 時間に 1 個、30 日以内は 1 日に 1 個（それぞれその間でいちばん新しいもの）に間引き、それより古いものは消す（ゴミ箱に入れない）。いちばん新しいものは古くても残す
+- Asset（`.canvcode/assets`）は `gdrive:CanvCode-backup/assets` に追加だけで写す（`*.tmp` などは除く。Drive からは消さない）。変わっていなければ写さない
+- 結果は `.canvcode/backup-status.json` に書く。Drive につながらない（rclone の失敗・認証切れ・ネットワーク）、バックアップに失敗した、15 分以上動いていない、のどれかなら、画面右上の「保存済み」「未接続」の左にアイコンが出る（ホバーで理由、クリックで詳しく）。うまくいっているときと、定期バックアップを入れていないときは出ない
+- 暗号化はしない。mount（`~/gdrive`）は使わない
+- オプション：`--workspace`（既定は `CANVCODE_WORKSPACE`）、`--out`、`--remote`（既定は `CANVCODE_BACKUP_REMOTE`、なければ `gdrive:CanvCode-backup`）、`--keep`（既定 96）、`--rclone`（既定は `CANVCODE_RCLONE`、なければ `rclone`）。どこかで失敗すると終了コード 1
+
+入れ方（ユニットは `deploy/systemd/`。リポジトリの場所と node の場所を埋めて `~/.config/systemd/user/` に書き、タイマーを有効にする）：
+
+```bash
+deploy/systemd/install.sh --workspace /path/to/workspace --dry-run   # 書き出すユニットを見るだけ
+deploy/systemd/install.sh --workspace /path/to/workspace
+systemctl --user start canvcode-backup.service   # すぐに 1 回動かす（初回は Asset を全部送るので時間がかかる）
+systemctl --user list-timers canvcode-backup.timer
+journalctl --user -u canvcode-backup.service -n 50
+```
+
+リモートや rclone の場所を変えるときは `~/.config/canvcode/backup.env` に `CANVCODE_BACKUP_REMOTE=...` などを書く。Drive の認証が切れたら `rclone config reconnect gdrive:` で認証し直す。ユーザーのタイマーをログアウト中も動かすには `loginctl enable-linger` が要る。
+
+復元するときは、Drive の archives からアーカイブを、assets を 1 つのフォルダに取ってきて、`npm run restore -- <アーカイブ> --workspace <新しいフォルダ> --assets <Asset のフォルダ>`。
+
 VPS 上で動かし、手元の PC からは SSH のポートフォワードで開く。
 
 ```bash
