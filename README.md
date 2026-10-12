@@ -34,7 +34,8 @@ npm start       # http://127.0.0.1:8787
 - キャンバス・ノード・矢印のつながり・引用などのレコードは `.canvcode/workspace.db`（SQLite）、Portal のサムネイルは `.canvcode/thumbnails/` に保存される。操作するたびに少し待ってサーバーへ送る。右上に「保存済み」「保存中…」「未接続」が出る。サーバーが止まっている間の変更は、つながったら送る（タブを閉じると失われる）
 - Canvas ごとの最後のカメラは、ブラウザ（端末ごと）に覚える
 - 旧アプリ（recursive-infinite-canvas）の `.ricbackup` は、画面にドロップするか、VPS の上にあるなら `npm run import -- --workspace <フォルダ> <ファイル>` で取り込む（サーバーが動いていればサーバーに頼み、開いているタブにもすぐ届く）。ワークスペースが空なら旧のルートがそのままホームに、空でなければホームの下の「取り込み（日付）」に入る。ゴミ箱の中のものと AI 会話は取り込まない。元のファイルは `.canvcode/imports/` に残る
-- バックアップはワークスペースのフォルダを丸ごとコピーすればよい。サーバーを動かしたままコピーするときは、先に `npm run snapshot -- --workspace <フォルダ>` で `workspace.db` の写し（`.canvcode/snapshots/`）を作る
+- バックアップは `npm run backup -- --workspace <フォルダ> --out <置く場所> [--keep <残す数>]` で、復元に要るもの（`workspace.db` の揃った写し・.md / .py などのファイル・Asset・サムネイルなど）を 1 つの `.tar.gz` にまとめる。サーバーを動かしたままでよい。キャッシュ（`texmf` など）と取り込んだ元の `.ricbackup`（`--imports` で入れる）は入れない。`--no-assets` にすると Asset を入れない（Asset は書き換わらないので、別に増えた分だけ写しておく）
+- 復元は `npm run restore -- <バックアップ.tar.gz> --workspace <新しいフォルダ> [--assets <Asset のフォルダ>]`。ないか空のフォルダにだけ展開し、`workspace.db` を確かめてから置く。そのあとサーバーをそのフォルダで起動する。`tar -xzf` でも展開できる（そのときは `canvcode-backup.json` を消す）
 
 VPS 上で動かし、手元の PC からは SSH のポートフォワードで開く。
 
