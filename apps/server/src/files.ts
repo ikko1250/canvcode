@@ -268,7 +268,7 @@ export class FileStore {
     return next
   }
 
-  // ゴミ箱から完全に削除したとき。実ファイルは消さず、.canvcode/deleted/ に移す（MAI-13）
+  // ゴミ箱から完全に削除したとき。実ファイルは消さず、.canvcode/deleted/ に移す（MAI-13）。移したものは 90 日経ったら消す（storageCleanup.ts）
   async removeForever(id: string): Promise<void> {
     const info = this.get(id)
     if (!info.missing) {

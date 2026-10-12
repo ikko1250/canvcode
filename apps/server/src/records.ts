@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ReferenceRecord } from '@canvcode/core'
 
@@ -41,8 +41,19 @@ const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
     `),
 }
 
-// 残しておく AI の編集の記録の数
-const MAX_AGENT_OPS = 50
+// WAL のファイル（workspace.db-wal）の大きさの上限（バイト）。チェックポイントのあと、これを超えた分を切り詰める
+export const JOURNAL_SIZE_LIMIT = 16 * 1024 * 1024
+
+// 残しておく AI の編集の記録の数と、合計の大きさ（patch の JSON のバイト数）。どちらかを超えたら古いものから消す。
+// 最新の 1 件は、大きさの上限を超えていても残す（直前の編集を取り消せるように）
+export const MAX_AGENT_OPS = 50
+export const MAX_AGENT_OPS_BYTES = 20 * 1024 * 1024
+
+export interface RecordStoreOptions {
+  // AI の編集の記録の上限（テスト用。省けば MAX_AGENT_OPS・MAX_AGENT_OPS_BYTES）
+  maxAgentOps?: number
+  maxAgentOpsBytes?: number
+}
 
 // AI の編集 1 回分の記録。patch は変わったレコードの前後（null はなかった・消した）
 export interface AgentOpEntry {
@@ -67,14 +78,20 @@ const RECORD_PREFIX: Record<string, string> = { canvas: 'canvas:', file: 'file:'
 export class RecordStore {
   private readonly db: DatabaseSync
   readonly path: string
+  private readonly maxAgentOps: number
+  private readonly maxAgentOpsBytes: number
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options: RecordStoreOptions = {}) {
+    this.maxAgentOps = options.maxAgentOps ?? MAX_AGENT_OPS
+    this.maxAgentOpsBytes = options.maxAgentOpsBytes ?? MAX_AGENT_OPS_BYTES
     mkdirSync(dataDir, { recursive: true })
     this.path = join(dataDir, 'workspace.db')
     const existed = existsSync(this.path)
     this.db = new DatabaseSync(this.path)
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA synchronous = NORMAL')
+    // チェックポイントのあとも、WAL のファイルを JOURNAL_SIZE_LIMIT より大きいまま残さない（大きな書き込みのあとに膨らんだままにしない）
+    this.db.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT}`)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS records (
@@ -169,7 +186,8 @@ export class RecordStore {
     return out
   }
 
-  // 差分を保存し、AI の編集として記録する（同じトランザクション）。古い記録は MAX_AGENT_OPS 件を残して消す
+  // 差分を保存し、AI の編集として記録する（同じトランザクション）。古い記録は、件数（MAX_AGENT_OPS）と
+  // 合計の大きさ（MAX_AGENT_OPS_BYTES）に収まるように消す
   applyAgentOp(op: Omit<AgentOp, 'rev' | 'undoneAt'>): number {
     const puts = op.patch.flatMap((e) => (e.after ? [e.after] : []))
     const deletes = op.patch.flatMap((e) => (e.after ? [] : [e.id]))
@@ -177,8 +195,19 @@ export class RecordStore {
       this.db
         .prepare('INSERT INTO agent_ops (id, canvas_id, label, created_at, rev, patch) VALUES (?, ?, ?, ?, ?, ?)')
         .run(op.id, op.canvasId, op.label, op.createdAt, rev, JSON.stringify(op.patch))
-      this.db.prepare('DELETE FROM agent_ops WHERE id NOT IN (SELECT id FROM agent_ops ORDER BY created_at DESC, rowid DESC LIMIT ?)').run(MAX_AGENT_OPS)
+      this.pruneAgentOps()
     })
+  }
+
+  // 新しいものから数えて、件数か合計の大きさが上限を超えたところから先（古いもの）を消す。いちばん新しい 1 件は必ず残す
+  private pruneAgentOps(): void {
+    const rows = this.db.prepare('SELECT id, length(CAST(patch AS BLOB)) AS bytes FROM agent_ops ORDER BY created_at DESC, rowid DESC').all() as { id: string; bytes: number }[]
+    const remove = this.db.prepare('DELETE FROM agent_ops WHERE id = ?')
+    let total = 0
+    for (const [i, row] of rows.entries()) {
+      total += Number(row.bytes)
+      if (i > 0 && (i >= this.maxAgentOps || total > this.maxAgentOpsBytes)) remove.run(row.id)
+    }
   }
 
   getAgentOp(id: string): AgentOp | undefined {
@@ -304,9 +333,23 @@ export class RecordStore {
     }
   }
 
+  // すべての表のすべての行の、文字列とバイト列の値を visit に渡し、records の行数を返す（使われていない Asset を探すとき。assetGc.ts）
+  forEachText(visit: (text: string) => void): { records: number } {
+    return forEachTextInDb(this.db, visit)
+  }
+
   // 動かしたまま、一貫した写しを作る（MAI-13 の「8. バックアップ」）
   snapshot(path: string): void {
     this.db.prepare('VACUUM INTO ?').run(path)
+  }
+
+  // レコードを一度に書き換える前（移行・片付け）の写し（workspace.db.before-<label>-<時刻>.bak）を作り、その場所を返す。
+  // 写しは新しい DB_BACKUPS_TO_KEEP 個だけを残し、古いものを消す
+  backupBefore(label: string): string {
+    const path = `${this.path}.before-${label}-${Date.now()}.bak`
+    this.snapshot(path)
+    pruneDbBackups(dirname(this.path))
+    return path
   }
 
   close(): void {
@@ -328,7 +371,7 @@ export class RecordStore {
     const current = Number(this.meta('schema') ?? 1)
     if (current < SCHEMA_VERSION) {
       // 適用する前に写しを作る（WAL の中身も含めて写すため、VACUUM INTO を使う）
-      if (existed) this.snapshot(`${this.path}.before-v${SCHEMA_VERSION}-${Date.now()}.bak`)
+      if (existed) this.backupBefore(`v${SCHEMA_VERSION}`)
       for (let v = current + 1; v <= SCHEMA_VERSION; v++) MIGRATIONS[v]?.(this.db)
     }
     this.setMeta('schema', String(SCHEMA_VERSION))
@@ -359,6 +402,48 @@ function validRecord(value: unknown): asserts value is StoredRecord {
 function randomId(): string {
   const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
   return [...randomBytes(16)].map((b) => alphabet[b % 62]).join('')
+}
+
+// db のすべての表（sqlite_ で始まる内部の表を除く）のすべての行の、文字列とバイト列（latin1 で文字列にする）の値を visit に渡す。
+// 表の形を知らずに読むので、新しい表・古い版の写し（*.bak）でも漏れない。records の行数を返す（表がなければ 0）
+export function forEachTextInDb(db: DatabaseSync, visit: (text: string) => void): { records: number } {
+  let records = 0
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]
+  for (const { name } of tables) {
+    for (const row of db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}"`).iterate()) {
+      if (name === 'records') records++
+      for (const value of Object.values(row as Record<string, unknown>)) {
+        if (typeof value === 'string') visit(value)
+        else if (value instanceof Uint8Array) visit(Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('latin1'))
+      }
+    }
+  }
+  return { records }
+}
+
+// 移行・片付けの前の写し（workspace.db.before-*.bak）のうち、新しい keep 個を残して消し、消したものの名前を返す。
+// 新しさは名前の末尾の時刻（ミリ秒）で決める。時刻が読めない名前は、更新時刻で比べる
+export const DB_BACKUPS_TO_KEEP = 2
+const DB_BACKUP_PATTERN = /^workspace\.db\.before-.+\.bak$/
+
+export function pruneDbBackups(dataDir: string, keep = DB_BACKUPS_TO_KEEP): string[] {
+  const backups = readdirSync(dataDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && DB_BACKUP_PATTERN.test(entry.name))
+    .map((entry) => {
+      const stamp = /-(\d{10,})\.bak$/.exec(entry.name)
+      return { name: entry.name, time: stamp ? Number(stamp[1]) : statSync(join(dataDir, entry.name)).mtimeMs }
+    })
+    .sort((a, b) => b.time - a.time || (a.name < b.name ? 1 : -1))
+  const removed: string[] = []
+  for (const backup of backups.slice(keep)) {
+    try {
+      rmSync(join(dataDir, backup.name), { force: true })
+      removed.push(backup.name)
+    } catch (error) {
+      console.error('failed to remove an old copy of workspace.db', backup.name, error)
+    }
+  }
+  return removed
 }
 
 // 写しを作る（npm run snapshot）。.canvcode/snapshots/workspace-<日時>.db に置き、その場所を返す

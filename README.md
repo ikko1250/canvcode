@@ -28,13 +28,13 @@ npm start       # http://127.0.0.1:8787
 ワークスペースのフォルダは `npm start -- --workspace <フォルダ>` か、環境変数 `CANVCODE_WORKSPACE` で指定する（既定は `./workspace`）。
 
 - Markdown と Python は、ワークスペースのフォルダに普通の `.md` / `.py` ファイルとして置く（サブフォルダも可）。SSH から Neovim などで直接編集してよく、変更はブラウザに届く
-- スライドはキャンバスに置く（「スライド」の節）。以前のスライドデッキ（`.slide.md` / `.slide.json` とスライドエディタ）は消した。残っている `.slide.md` は通常の Markdown として扱い、`.slide.json` は一覧に出さない（実ファイルはそのまま）。サーバーは起動したときに、以前のデッキのカードとスライドの画像のノードを消し、`.canvcode/slide-pages/`・`.canvcode/figures/` を片付ける（片付ける前の `workspace.db` の写しを `.canvcode/` に残す）
-- 貼り付けた画像と取り込んだ PDF は `<ワークスペース>/.canvcode/assets/` に、中身の SHA-256 を名前にして保存される。PDF は検索用のテキストも `<ハッシュ>.pages.json` に取り出しておく
-- File の id とパスの対応は `.canvcode/files.json`、完全に削除したファイルは `.canvcode/deleted/` に置く
+- スライドはキャンバスに置く（「スライド」の節）。以前のスライドデッキ（`.slide.md` / `.slide.json` とスライドエディタ）は消した。残っている `.slide.md` は通常の Markdown として扱い、`.slide.json` は一覧に出さない（実ファイルはそのまま）。サーバーは起動したときに、以前のデッキのカードとスライドの画像のノードを消し、`.canvcode/slide-pages/`・`.canvcode/figures/` を片付ける（片付ける前の `workspace.db` の写しを `.canvcode/` に残す。移行・片付けの前の写し `workspace.db.before-*.bak` は新しい 2 個だけを残す）
+- 貼り付けた画像と取り込んだ PDF は `<ワークスペース>/.canvcode/assets/` に、中身の SHA-256 を名前にして保存される。PDF は検索用のテキストも `<ハッシュ>.pages.json` に取り出しておく。どこからも参照されなくなった Asset（ゴミ箱・AI の編集の記録・ref・`.bak` などの写し・ワークスペースのファイルのどこにもハッシュが出てこないもの）は、そうなってから 30 日経ったら消す（起動時と 1 時間ごと。参照されなくなった時刻は `.canvcode/asset-gc.json`）
+- File の id とパスの対応は `.canvcode/files.json`、完全に削除したファイルは `.canvcode/deleted/` に置く（90 日経ったら消す）
 - キャンバス・ノード・矢印のつながり・引用などのレコードは `.canvcode/workspace.db`（SQLite）、Portal のサムネイルは `.canvcode/thumbnails/` に保存される。操作するたびに少し待ってサーバーへ送る。右上に「保存済み」「保存中…」「未接続」が出る。サーバーが止まっている間の変更は、つながったら送る（タブを閉じると失われる）
 - Canvas ごとの最後のカメラは、ブラウザ（端末ごと）に覚える
-- 旧アプリ（recursive-infinite-canvas）の `.ricbackup` は、画面にドロップするか、VPS の上にあるなら `npm run import -- --workspace <フォルダ> <ファイル>` で取り込む（サーバーが動いていればサーバーに頼み、開いているタブにもすぐ届く）。ワークスペースが空なら旧のルートがそのままホームに、空でなければホームの下の「取り込み（日付）」に入る。ゴミ箱の中のものと AI 会話は取り込まない。元のファイルは `.canvcode/imports/` に残る
-- バックアップは `npm run backup -- --workspace <フォルダ> --out <置く場所> [--keep <残す数>]` で、復元に要るもの（`workspace.db` の揃った写し・.md / .py などのファイル・Asset・サムネイルなど）を 1 つの `.tar.gz` にまとめる。サーバーを動かしたままでよい。キャッシュ（`texmf` など）と取り込んだ元の `.ricbackup`（`--imports` で入れる）は入れない。`--no-assets` にすると Asset を入れない（Asset は書き換わらないので、別に増えた分だけ写しておく）
+- 旧アプリ（recursive-infinite-canvas）の `.ricbackup` は、画面にドロップするか、VPS の上にあるなら `npm run import -- --workspace <フォルダ> <ファイル>` で取り込む（サーバーが動いていればサーバーに頼み、開いているタブにもすぐ届く）。ワークスペースが空なら旧のルートがそのままホームに、空でなければホームの下の「取り込み（日付）」に入る。ゴミ箱の中のものと AI 会話は取り込まない。元のファイルは残さない（`npm run import` は渡したファイルをその場所から読み、写さない。ドロップしたファイルは取り込みに使った一時ファイルを消す）
+- バックアップは `npm run backup -- --workspace <フォルダ> --out <置く場所> [--keep <残す数>]` で、復元に要るもの（`workspace.db` の揃った写し・.md / .py などのファイル・Asset・サムネイルなど）を 1 つの `.tar.gz` にまとめる。サーバーを動かしたままでよい。キャッシュ（`texmf` など）と取り込んだ元の `.ricbackup`（`--imports` で入れる）は入れない。`--no-assets` にすると Asset を入れない（Asset は書き換わらないので、別に増えた分だけ写しておく。使われなくなった Asset はサーバーが消すので、写し先から消さない `rclone copy` などで写す）
 - 復元は `npm run restore -- <バックアップ.tar.gz> --workspace <新しいフォルダ> [--assets <Asset のフォルダ>]`。ないか空のフォルダにだけ展開し、`workspace.db` を確かめてから置く。そのあとサーバーをそのフォルダで起動する。`tar -xzf` でも展開できる（そのときは `canvcode-backup.json` を消す）
 
 ### 定期バックアップ（Google Drive）

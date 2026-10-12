@@ -18,7 +18,7 @@ import type { RecordStore, StoredRecord } from './records.ts'
 // - ゴミ箱のまとまりの根が、消した型の持ち主の写し（trash.portal）を持っていれば外す（元に戻すと未配置に戻る）
 // - AI の編集の記録のうち、消した型のノードを含むものを消す（取り消しで、そのノードを戻さないように）
 // - v1 のキャッシュ（.canvcode/slide-pages/ のスライドの画像と、.canvcode/figures/ の図の画像）を消す
-// レコードを変えるときは、先に workspace.db の写しを作る（移行と同じ。records.ts の migrate）
+// レコードを変えるときは、先に workspace.db の写しを作る（移行と同じ。records.ts の backupBefore。写しは新しい 2 個だけを残す）
 
 export const SLIDES_V1_NODE_TYPES: readonly string[] = ['slide-deck-card', 'slide-page']
 const SLIDES_V1_DIRS = ['slide-pages', 'figures']
@@ -72,8 +72,7 @@ export async function cleanupSlidesV1(records: RecordStore, dataDir: string): Pr
     }
     result.removedNodes = deletes.filter((id) => id.startsWith('node:')).length
     result.removedBindings = deletes.filter((id) => id.startsWith('binding:')).length
-    result.backup = `${records.path}.before-slides-v1-removal-${Date.now()}.bak`
-    records.snapshot(result.backup)
+    result.backup = records.backupBefore('slides-v1-removal')
     result.rev = records.apply(puts, deletes)
   }
   result.removedAgentOps = records.deleteAgentOpsWithNodeTypes(SLIDES_V1_NODE_TYPES)
