@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import type { SharedValue } from '@canvcode/canvas'
+import { isImeEvent, type SharedValue } from '@canvcode/canvas'
 import { fontFamilyCss, fontLabel, type FontCategory, type FontOption } from '@canvcode/nodes'
 import { FieldLabel, MIXED_LABEL, type ValueEditor } from './controls.tsx'
 import type { DesignIcon } from './registry.ts'
@@ -101,6 +101,8 @@ export function FontField(props: { label: string; icon?: DesignIcon; value: Shar
   }
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
+    // 日本語入力の確定の Enter・変換中のキーは IME のもの
+    if (isImeEvent(e.nativeEvent)) return
     if (e.key === 'Escape') {
       e.preventDefault()
       close(true)

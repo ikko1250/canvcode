@@ -22,6 +22,15 @@ describe('design controls', () => {
     expect(normalizeHexColor('#abcd')).toBeNull()
   })
 
+  it('reads full-width input typed with a Japanese IME on', () => {
+    expect(parseNumber('１８')).toBe(18)
+    expect(parseNumber('－１．５')).toBe(-1.5)
+    expect(parseNumber('２４ｐｘ')).toBe(24)
+    expect(normalizeHexColor('＃ＦＦ００００')).toBe('#ff0000')
+    expect(parseLineHeight('１５０％', 'px')).toEqual({ unit: 'multiplier', value: 1.5 })
+    expect(parseLineHeight('２４ｐｘ', 'multiplier')).toEqual({ unit: 'px', value: 24 })
+  })
+
   it('parses line heights as a multiplier, a percentage or pixels (MAI-76)', () => {
     expect(parseLineHeight('1.5', 'multiplier')).toEqual({ unit: 'multiplier', value: 1.5 })
     expect(parseLineHeight('150%', 'px')).toEqual({ unit: 'multiplier', value: 1.5 })

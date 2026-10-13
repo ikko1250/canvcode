@@ -1,6 +1,6 @@
 import { Check, ClipboardPaste, Minus, Plus } from 'lucide-react'
 import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import type { SharedValue } from '@canvcode/canvas'
+import { isImeEvent, type SharedValue } from '@canvcode/canvas'
 import { chartRowColor, parseChartNumber, parseChartTable, type ChartRow } from '@canvcode/nodes'
 import { FieldLabel, MIXED_LABEL, type ValueEditor } from './controls.tsx'
 import type { DesignIcon } from './registry.ts'
@@ -269,8 +269,10 @@ function CellInput(props: {
       onFocus={(e) => e.currentTarget.select()}
       onBlur={commit}
       onKeyDown={(e) => {
+        // 日本語入力の確定の Enter・変換中のキーは IME のもの
+        if (isImeEvent(e.nativeEvent)) return
         if (onMoveKey(e, commit)) return
-        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+        if (e.key === 'Enter') {
           e.preventDefault()
           commit()
           onNext()

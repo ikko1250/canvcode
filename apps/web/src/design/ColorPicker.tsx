@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import type { SharedValue } from '@canvcode/canvas'
+import { isImeEvent, type SharedValue } from '@canvcode/canvas'
 import { GEO_DEFAULT_FILL, GEO_DEFAULT_STROKE, isGradientPaint, normalizeColor, solidPaint, type Fill, type ImagePaint, type PaintType } from '@canvcode/nodes'
 import { FieldLabel, MIXED_LABEL, Slider, type ValueEditor } from './controls.tsx'
 import type { DesignIcon } from './registry.ts'
@@ -295,6 +295,8 @@ function HexInput(props: { label: string; value: string | null; placeholder: str
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commitDraft}
       onKeyDown={(e) => {
+        // 日本語入力の確定の Enter・変換中のキーは IME のもの
+        if (isImeEvent(e.nativeEvent)) return
         if (e.key === 'Enter') {
           e.preventDefault()
           commitDraft()
@@ -603,6 +605,8 @@ function OpacityInput(props: { label: string; value: number | null; onCommit: (o
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commitDraft}
         onKeyDown={(e) => {
+          // 日本語入力の確定の Enter・変換中のキーは IME のもの
+          if (isImeEvent(e.nativeEvent)) return
           if (e.key === 'Enter') {
             e.preventDefault()
             commitDraft()

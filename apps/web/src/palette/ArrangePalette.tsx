@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import type { AlignEdge, Axis, Editor } from '@canvcode/canvas'
+import { isImeEvent, type AlignEdge, type Axis, type Editor } from '@canvcode/canvas'
 
 // 整列・等間隔・間隔のパレット（MAI-54）。2 つ以上のノードを選んでいるときに左端に出す。
 // - 整列：全体を囲む箱の左・中央・右、上・中央・下に合わせる
@@ -25,13 +25,16 @@ export function ArrangePalette(props: { editor: Editor; count: number; onDone?: 
 
   const apply = (axis: Axis) => {
     const text = gapText[axis]
-    const value = text === null ? defaults[axis] : Number(text)
+    // 日本語入力を ON にしたまま打った全角の数字（「１６」）も読む
+    const value = text === null ? defaults[axis] : Number(text.normalize('NFKC'))
     if (value === null || !Number.isFinite(value)) return
     editor.spaceSelection(axis, Math.round(value))
     setGapText((prev) => ({ ...prev, [axis]: null }))
     onDone?.()
   }
   const onKeyDown = (axis: Axis) => (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    // 日本語入力の確定の Enter・変換中のキーは IME のもの
+    if (isImeEvent(e.nativeEvent)) return
     if (e.key === 'Enter') {
       e.preventDefault()
       apply(axis)

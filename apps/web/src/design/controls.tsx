@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ComponentType, type CSSProperties, type HTMLAttributes, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import type { SharedValue } from '@canvcode/canvas'
+import { isImeEvent, type SharedValue } from '@canvcode/canvas'
 import { CornerDownLeft, CornerDownRight, CornerUpLeft, CornerUpRight, Scan } from 'lucide-react'
 import { CORNER_RADIUS_MAX, cornerRadii, type CornerRadius, type LineHeight, type LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, parseLineHeight, parseNumber } from './parse.ts'
@@ -71,6 +71,8 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
     if (parsed !== null) editor.set(toValue(parsed))
   }
   const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    // 日本語入力の確定の Enter・変換中のキーは IME のもの（ここで確定すると、確定した文字が二重に入る）
+    if (isImeEvent(e.nativeEvent)) return
     if (e.key === 'Enter') {
       e.preventDefault()
       commitDraft()
@@ -251,6 +253,8 @@ export function LineHeightField(props: Omit<FieldProps<LineHeight>, 'editor'> & 
     if (parsed) editor.set(parsed)
   }
   const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    // 日本語入力の確定の Enter・変換中のキーは IME のもの（ここで確定すると、確定した文字が二重に入る）
+    if (isImeEvent(e.nativeEvent)) return
     if (e.key === 'Enter') {
       e.preventDefault()
       commitDraft()

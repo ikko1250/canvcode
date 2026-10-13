@@ -2,13 +2,14 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndI
 import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { Compartment, EditorState, Prec, RangeSetBuilder, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, RangeSetBuilder, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, lineNumbers, placeholder, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { getCM, vim } from '@replit/codemirror-vim'
 import { tags } from '@lezer/highlight'
 import { CODE_CARD_METRICS, CODE_FONT_FAMILY } from '@canvcode/nodes'
 import { linesOfSelection } from '@canvcode/core'
 import { registerVimKeymap, setVimHandlers, vimModeOf, type VimHandlers, type VimMode } from './vimKeymap.ts'
+import { vimImeExtension } from './vimIme.ts'
 
 // CodeMirror の設定（MAI-9、MAI-30）。カードの上での編集と、全画面のエディタで同じものを使う。
 // 本文の履歴（Undo）は CodeMirror 自身が持つ。キャンバスの履歴には入れない（MAI-11）
@@ -141,8 +142,8 @@ const codeTheme = EditorView.theme({
 function vimExtension(): Extension {
   registerVimKeymap()
   return [
-    // 日本語入力の変換中のキー（確定の Enter、取り消しの Esc など）は vim に渡さず、IME に任せる
-    Prec.highest(EditorView.domEventHandlers({ keydown: (event, view) => event.isComposing || view.composing })),
+    // 日本語入力の変換中のキーは IME に任せ、通常モードで IME が ON のまま打ったキーは vim のコマンドにする
+    vimImeExtension(),
     vim(),
     drawSelection(),
   ]

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Vim, getCM } from '@replit/codemirror-vim'
 import { createCodeEditor, type CodeEditorHandle, type CodeEditorOptions } from './codeEditor.ts'
 import { vimModeOf, type VimMode } from './vimKeymap.ts'
+import { vimKeyOfImeEvent } from './vimIme.ts'
+import { EditorView } from '@codemirror/view'
 
 // vim モードのキーの割り当て（MAI-60 の段階 1）。jsdom の上で CodeMirror を動かし、キーを vim に渡して確かめる。
 // jsdom は文字の位置を計れないので、CodeMirror が計るところだけ空の値を返す。
@@ -328,5 +330,52 @@ describe('閉じるキーとモード', () => {
     keydown(editor, { key: 'Escape' })
     expect(onEscape).toHaveBeenCalledTimes(1)
     expect(editor.view).toBe(view)
+  })
+})
+
+describe('日本語入力が ON のままの通常モード', () => {
+  // IME が文字を入れようとしたときに CodeMirror が呼ぶ inputHandler を、同じ順に呼ぶ（true を返したものがあれば入れない）
+  function imeInput(editor: CodeEditorHandle, text: string) {
+    const view = editor.view
+    const { from, to } = view.state.selection.main
+    const handled = view.state.facet(EditorView.inputHandler).some((handler) => handler(view, from, to, text, () => view.state.update({ changes: { from, to, insert: text } })))
+    if (!handled) view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length }, userEvent: 'input.type' })
+  }
+
+  it('IME を通ったキーを vim のキーにする', () => {
+    const base = { code: '', keyCode: 229, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false }
+    expect(vimKeyOfImeEvent({ ...base, key: 'i' })).toBe('i')
+    expect(vimKeyOfImeEvent({ ...base, key: 'I', shiftKey: true })).toBe('I')
+    expect(vimKeyOfImeEvent({ ...base, key: '：' })).toBe(':')
+    expect(vimKeyOfImeEvent({ ...base, key: 'Process', code: 'KeyI', shiftKey: true })).toBe('I')
+    expect(vimKeyOfImeEvent({ ...base, key: 'Process', code: 'Digit3' })).toBe('3')
+    expect(vimKeyOfImeEvent({ ...base, key: 'Process', code: 'Semicolon' })).toBeNull()
+    expect(vimKeyOfImeEvent({ ...base, key: 'い' })).toBeNull()
+    expect(vimKeyOfImeEvent({ ...base, key: 'i', ctrlKey: true })).toBeNull()
+    // IME を通っていないキーは、codemirror-vim がそのまま扱う
+    expect(vimKeyOfImeEvent({ ...base, key: 'i', keyCode: 73 })).toBeNull()
+  })
+
+  it('I で挿入モードに入り、IME が入れようとした「い」は入れない', () => {
+    const { editor } = open('  abc')
+    press(editor, '$')
+    keydown(editor, { key: 'I', code: 'KeyI', keyCode: 229, shiftKey: true })
+    expect(vimModeOf(editor.view)).toBe('insert')
+    expect(head(editor)).toBe(2)
+    imeInput(editor, 'い')
+    expect(editor.text()).toBe('  abc')
+    // 挿入モードに入ったあとの日本語は、そのまま入る
+    imeInput(editor, 'あ')
+    expect(editor.text()).toBe('  あabc')
+  })
+
+  it('IME が ON のままでも、dd などのコマンドが効く', () => {
+    const { editor } = open('one\ntwo')
+    for (const key of ['d', 'd']) {
+      keydown(editor, { key, code: 'KeyD', keyCode: 229 })
+      imeInput(editor, 'ｄ')
+    }
+    expect(editor.text()).toBe('two')
+    expect(vimModeOf(editor.view)).toBe('normal')
   })
 })
