@@ -147,7 +147,7 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 | `list_canvases` | Canvas の木（id・名前・ノードの数。名前で絞り込み。ユーザーが見ている Canvas に `viewing` を付ける） |
 | `read_canvas` | Canvas のノードを 1 行 1 ノードの短い一覧で返す（ワールド座標。範囲・文字・型・`since` の rev 以降の変更で絞り込み、ページ送り。`view` で画面に見えているものだけ） |
 | `read_nodes` | ノードの詳しい中身（位置・大きさ・プレーンテキスト・色・File・矢印の端など。JSON） |
-| `edit_canvas` | ノードの作成・変更・移動・削除・group・矢印でつなぐ・整列・親の付け替えを、まとめて 1 回の編集として行う（どれかが失敗したら何も変えない。`if_rev` で、読んだあとの変更を検出） |
+| `edit_canvas` | ノードの作成・変更・移動・削除・group・矢印でつなぐ・整列・拡大・縮小（scale：倍率か、箱に収める）・親の付け替えを、まとめて 1 回の編集として行う（どれかが失敗したら何も変えない。`if_rev` で、読んだあとの変更を検出） |
 | `undo_canvas_edit` | `edit_canvas` の編集を取り消す（そのあと変わったノードがあれば断る） |
 
 AI にスライドを頼むときは「canvcode のこのキャンバスにスライドを作って」のように言えばよい。AI は `get_canvas_format` で書き方を読み、`edit_canvas` でスライドを置いてテンプレートを当て、セルに文字を書き、`add_row` で行を足す。`read_canvas` では、スライドの番号（`n=`）と、文字があふれているスライド（`overflow`）が分かる。

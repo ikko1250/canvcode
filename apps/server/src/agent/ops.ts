@@ -17,6 +17,7 @@ import { adjustOf, GEO_SHAPES, normalizeCrop, richTextFromPlain, slotsOf, solidP
 import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
+import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
 import { nodeIn, type Editor } from '@canvcode/canvas/editor'
 import { patchAdjust, tableHeightPatch } from '@canvcode/canvas/slideLayoutAdjust'
 import { presentRows } from '@canvcode/canvas/slideLayoutArrange'
@@ -103,6 +104,11 @@ const slideAdjust = z.strictObject({
 // 画像の切り抜く範囲（画像全体を 0〜1 とした割合）。null は切り抜きをやめる
 const unit = finite.min(0).max(1)
 const crop = z.strictObject({ x: unit, y: unit, w: unit.positive(), h: unit.positive() }).nullable()
+// 拡大・縮小の基準（選んだノード全体を囲む箱の、どこを動かさないか。fit なら収める箱のどこに合わせるか）
+const anchor = z.enum(SCALE_ANCHORS as [ScaleAnchor, ...ScaleAnchor[]])
+// 倍率の範囲
+const SCALE_MIN = 0.01
+const SCALE_MAX = 100
 
 const opSchemas = {
   create: z.strictObject({
@@ -146,6 +152,22 @@ const opSchemas = {
   }),
   align: z.strictObject({ op: z.literal('align'), ids: z.array(id).min(2), edge: z.enum(['left', 'hcenter', 'right', 'top', 'vcenter', 'bottom']) }),
   distribute: z.strictObject({ op: z.literal('distribute'), ids: z.array(id).min(2), axis: z.enum(['x', 'y']), gap: finite.min(0).optional() }),
+  // 選んだノードを中身ごと拡大・縮小する。factor（倍率）か fit（収める箱）のどちらか
+  scale: z
+    .strictObject({
+      op: z.literal('scale'),
+      ids,
+      factor: finite.positive().optional(),
+      origin: z.union([anchor, z.strictObject({ x: finite, y: finite })]).optional(),
+      fit: z.strictObject({ x: finite, y: finite, w: finite.positive(), h: finite.positive() }).optional(),
+      align: anchor.optional(),
+      text: z.boolean().optional(),
+      minFontSize: finite.positive().optional(),
+      strokes: z.boolean().optional(),
+    })
+    .refine((o) => (o.factor === undefined) !== (o.fit === undefined), 'scale needs exactly one of factor, fit')
+    .refine((o) => o.fit !== undefined || o.align === undefined, 'align is only for fit (use origin with factor)')
+    .refine((o) => o.factor !== undefined || o.origin === undefined, 'origin is only for factor (use align with fit)'),
   reparent: z.strictObject({ op: z.literal('reparent'), ids, parent: id }),
   // スライドの slide-layout に行を足す。slide（スライドか slide-layout）なら最後に、after（行のセル）ならその行の下に足す
   add_row: z
@@ -381,6 +403,8 @@ class EditRun {
       case 'distribute':
         if (op.gap === undefined && op.ids.length < 3) throw new EditError('distribute needs at least 3 ids (or a gap)')
         return this.arrange(op.ids, (boxes) => (op.gap === undefined ? distributeBoxes(boxes, op.axis) : spaceBoxes(boxes, op.axis, op.gap)))
+      case 'scale':
+        return this.scale(op)
       case 'reparent':
         return this.reparent(op)
       case 'add_row':
@@ -591,6 +615,90 @@ class EditRun {
     const moves = plan(boxes)
     this.editor.detachArrows(this.tx, moves.map((m) => m.id))
     for (const move of moves) this.shift(move.id, move.dx, move.dy)
+  }
+
+  // 選んだノード（の中身ごと）を、まとめて拡大・縮小する。全体を囲む箱（ワールド座標）を origin のまわりに factor 倍するか、fit の箱に縦横比を保って収める。
+  // 回転はノードの左上（x, y）が軸なので、根は x, y をワールドで写し、子孫は親のローカルの x, y を s 倍するだけでよい（回転は変えない）。
+  // 両端がこの中のノードにつながった矢印も一緒に縮める。つながった端は、ストアのフックが付け直す（外のノードにつながった矢印は、つながったまま伸び縮みする）
+  private scale(op: Extract<Op, { op: 'scale' }>): void {
+    const index = this.editor.index
+    const list = this.roots(op.ids.map((ref) => this.node(ref)))
+    const members = new Set<string>()
+    for (const rootId of list) {
+      for (const nodeId of [rootId, ...index.descendantsOf(rootId)]) {
+        const node = nodeIn(this.tx, nodeId)!
+        if (node.type === 'slide') throw new EditError(`${nodeId} is a slide; slides cannot be scaled (scale its contents instead)`)
+        if (this.inSlideLayout(nodeId)) {
+          throw new EditError(`${nodeId} is a slide template (slide-layout) or one of its cells; they are laid out automatically and cannot be scaled`)
+        }
+        if (node.locked) throw new EditError(`${nodeId} is locked. Unlock it first (update with "locked": false)`)
+        members.add(nodeId)
+      }
+    }
+    const box = this.aabbOf(list)
+    let s: number
+    let from: Vec
+    let to: Vec
+    if (op.fit) {
+      const fit = fitScale(box, op.fit)
+      if (fit === null) throw new EditError('the selection has no size to scale')
+      const at = op.align ?? 'center'
+      s = fit
+      from = anchorPoint(box, at)
+      to = anchorPoint(op.fit, at)
+    } else {
+      s = op.factor!
+      from = typeof op.origin === 'object' ? op.origin : anchorPoint(box, op.origin ?? 'top-left')
+      to = from
+    }
+    if (!(s >= SCALE_MIN && s <= SCALE_MAX)) throw new EditError(`scale factor ${s} is out of range (${SCALE_MIN}–${SCALE_MAX})`)
+    const rootSet = new Set([...list, ...this.connectorsWithin(members)])
+    const options = { text: op.text ?? true, strokes: op.strokes ?? true, minFontSize: op.minFontSize }
+    // 書く前にすべて読む（空間の索引は flush まで古いまま）
+    const puts: NodeRecord[] = []
+    const clamped: string[] = []
+    for (const nodeId of new Set([...members, ...rootSet])) {
+      const node = nodeIn(this.tx, nodeId)!
+      const bounds = index.get(nodeId)!.localBounds
+      const scaled = scaleNodeProps(node, this.editor.getType(node), bounds, s, options)
+      if (scaled.clamped) clamped.push(nodeId)
+      const isRoot = rootSet.has(nodeId)
+      const base = isRoot ? this.editor.toWorld(node) : node
+      const map = (p: Vec): Vec => (isRoot ? { x: to.x + s * (p.x - from.x), y: to.y + s * (p.y - from.y) } : { x: s * p.x, y: s * p.y })
+      let position = map(base)
+      // 文字の倍率が s と違うテキスト（下限で止めた・文字を変えない）は、箱の中心を写した点に置く
+      if (node.type === 'text' && scaled.textFactor !== s) {
+        const half = applyMat(transformOf(0, 0, base.rotation), { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 })
+        const center = map({ x: base.x + half.x, y: base.y + half.y })
+        position = { x: center.x - half.x * scaled.textFactor, y: center.y - half.y * scaled.textFactor }
+      }
+      const next = { ...base, x: position.x, y: position.y, props: scaled.props }
+      puts.push(isRoot ? this.editor.fromWorld(next) : next)
+    }
+    for (const record of puts) this.tx.put(record)
+    this.tx.flush()
+    if (clamped.length) this.warnings.push(`scale: ${clamped.length} node(s) kept their minimum size (${listIds(clamped)})`)
+  }
+
+  // 両端（つながっている端すべて）が nodes の中のノードにつながった矢印のうち、nodes に入っていないもの（ロックしたもの・スライドの中のものは除く）
+  private connectorsWithin(nodes: Set<string>): string[] {
+    const found = new Set<string>()
+    for (const nodeId of nodes) {
+      for (const bindingId of this.editor.bindings.toTarget(nodeId)) {
+        const arrowId = this.editor.getBinding(bindingId)?.fromId
+        if (!arrowId || nodes.has(arrowId) || found.has(arrowId)) continue
+        const arrow = nodeIn(this.tx, arrowId)
+        if (!arrow || arrow.locked || this.inSlideLayout(arrowId)) continue
+        if (this.editor.bindingsOfArrow(arrowId).every((b) => nodes.has(b.toId))) found.add(arrowId)
+      }
+    }
+    return [...found]
+  }
+
+  // slide-layout か、その中のノードか
+  private inSlideLayout(nodeId: string): boolean {
+    const isLayout = (id: string) => nodeIn(this.tx, id)?.type === 'slide-layout'
+    return isLayout(nodeId) || this.editor.index.ancestorsOf(nodeId).some(isLayout)
   }
 
   private reparent(op: Extract<Op, { op: 'reparent' }>): void {

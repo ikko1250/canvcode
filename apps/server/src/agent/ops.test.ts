@@ -624,3 +624,222 @@ describe('undo_canvas_edit', () => {
     expect(() => undoCanvasEdit(host, first)).toThrow(/Unknown batch/)
   })
 })
+
+describe('edit_canvas scale', () => {
+  type P = Record<string, unknown>
+  const props = (records: RecordStore, id: string) => records.get(id)!.props as P
+
+  it('scales shapes around the top-left of their bounding box, with strokes, label fonts and corners, in one broadcast', () => {
+    const { records, edit, tab, root } = setup()
+    const style = { strokeWidth: 2, labelFontSize: 20, cornerRadius: 10, label: 'A', labelParagraphs: richTextFromPlain('A') }
+    records.apply(
+      [
+        node('node:a', 'geo', root, 'a1', { w: 100, h: 50, ...style }),
+        node('node:b', 'geo', root, 'a2', { w: 100, h: 100, ...style }, { x: 200, y: 100 }),
+      ],
+      [],
+    )
+    const result = edit([{ op: 'scale', ids: ['node:a', 'node:b'], factor: 0.5 }])
+    expect(result.counts).toEqual({ created: 0, updated: 2, deleted: 0 })
+    expect(result.warnings).toBeUndefined()
+    expect(world(records, 'node:a')).toMatchObject({ x: 0, y: 0, w: 50, h: 25 })
+    expect(world(records, 'node:b')).toMatchObject({ x: 100, y: 50, w: 50, h: 50 })
+    expect(props(records, 'node:b')).toMatchObject({ strokeWidth: 1, labelFontSize: 10, cornerRadius: 5 })
+    expect(tab.sent).toHaveLength(1)
+  })
+
+  it('keeps the origin fixed (an anchor of the box, or a point)', () => {
+    const { records, edit, root } = setup()
+    records.apply([node('node:a', 'geo', root, 'a1', { w: 100, h: 100 }, { x: 100, y: 100 })], [])
+    edit([{ op: 'scale', ids: ['node:a'], factor: 2, origin: 'center' }])
+    expect(world(records, 'node:a')).toMatchObject({ x: 50, y: 50, w: 200, h: 200 })
+    edit([{ op: 'scale', ids: ['node:a'], factor: 0.5, origin: { x: 0, y: 0 } }])
+    expect(world(records, 'node:a')).toMatchObject({ x: 25, y: 25, w: 100, h: 100 })
+    edit([{ op: 'scale', ids: ['node:a'], factor: 2, origin: 'bottom-right' }])
+    expect(world(records, 'node:a')).toMatchObject({ x: -75, y: -75, w: 200, h: 200 })
+  })
+
+  it('fits the selection into a rect, centred or at an anchor', () => {
+    const { records, edit, root } = setup()
+    records.apply(
+      [
+        node('node:a', 'geo', root, 'a1', { w: 400, h: 300 }, { x: -100, y: 50 }),
+        node('node:b', 'geo', root, 'a2', { w: 600, h: 300 }, { x: 1300, y: 900 }),
+      ],
+      [],
+    )
+    // 全体は 2000×1150。940×765 に収めると、幅で決まる（0.47）
+    const rect = { x: 4558, y: 3975, w: 940, h: 765 }
+    edit([{ op: 'scale', ids: ['node:a', 'node:b'], fit: rect }])
+    const s = 940 / 2000
+    const a = world(records, 'node:a')
+    const b = world(records, 'node:b')
+    expect(a.x).toBeCloseTo(rect.x)
+    expect(b.x + b.w).toBeCloseTo(rect.x + rect.w)
+    expect(a.w).toBeCloseTo(400 * s)
+    const top = rect.y + (rect.h - 1150 * s) / 2
+    expect(a.y).toBeCloseTo(top)
+    expect(b.y + b.h).toBeCloseTo(top + 1150 * s)
+    // 左上に合わせると、全体の左上が箱の左上に来る（同じ大きさなので、倍率は 1）
+    edit([{ op: 'scale', ids: ['node:a', 'node:b'], fit: { x: 0, y: 0, w: 2000, h: 2000 }, align: 'top-left' }])
+    expect(world(records, 'node:a').x).toBeCloseTo(0)
+    expect(world(records, 'node:a').y).toBeCloseTo(0)
+    expect(world(records, 'node:b').x + world(records, 'node:b').w).toBeCloseTo(2000)
+    expect(world(records, 'node:a').w).toBeCloseTo(400 * (2000 / 940) * s)
+  })
+
+  it('scales the contents of a rotated frame and a group, keeping rotations', () => {
+    const { records, edit, root } = setup()
+    records.apply(
+      [
+        node('node:f', 'frame', root, 'a1', { w: 400, h: 300 }, { x: 300, y: 100, rotation: Math.PI / 6 }),
+        node('node:g1', 'geo', 'node:f', 'a1', { w: 50, h: 40 }, { x: 20, y: 30 }),
+        node('node:grp', 'group', 'node:f', 'a2', {}, { x: 100, y: 100 }),
+        node('node:n', 'note', 'node:grp', 'a1', { w: 100, h: 80 }, { x: 10, y: 10, rotation: 0.3 }),
+      ],
+      [],
+    )
+    const ids = ['node:f', 'node:g1', 'node:n']
+    const before = Object.fromEntries(ids.map((id) => [id, world(records, id)]))
+    edit([{ op: 'scale', ids: ['node:f'], factor: 2, origin: { x: 0, y: 0 } }])
+    for (const id of ids) {
+      const after = world(records, id)
+      // read_nodes は小数 2 桁に丸める
+      expect(after.x).toBeCloseTo(before[id]!.x * 2, 1)
+      expect(after.y).toBeCloseTo(before[id]!.y * 2, 1)
+      expect(after.rotation ?? 0).toBeCloseTo(before[id]!.rotation ?? 0, 1)
+    }
+    expect(props(records, 'node:f')).toMatchObject({ w: 800, h: 600 })
+    expect(records.get('node:g1')).toMatchObject({ x: 40, y: 60, rotation: 0 })
+    expect(records.get('node:grp')).toMatchObject({ x: 200, y: 200 })
+    expect(records.get('node:n')).toMatchObject({ x: 20, y: 20, rotation: 0.3 })
+    expect(props(records, 'node:n')).toMatchObject({ w: 200, h: 160 })
+  })
+
+  it('scales rich text sizes and px line heights, with a minimum font size, or keeps the text and centres the box', () => {
+    const { records, host, edit, root } = setup()
+    const paragraphs = [{ runs: [{ text: 'ふつう' }, { text: '大きい', format: { fontSize: 40 } }] }]
+    const text = { fontSize: 20, paragraphs, lineHeight: { unit: 'px', value: 30 }, autoWidth: false, w: 200 }
+    records.apply(
+      [node('node:t', 'text', root, 'a1', text, { x: 100, y: 100 }), node('node:u', 'text', root, 'a2', text, { x: 100, y: 100 }), node('node:v', 'text', root, 'a3', text, { x: 100, y: 100 })],
+      [],
+    )
+    // read_nodes の高さはサーバーの見積もりなので、編集に使う空間の索引の箱で比べる
+    const center = (id: string) => {
+      const w = host.editor(root).index.get(id)!.worldBounds
+      return { x: w.x + w.w / 2, y: w.y + w.h / 2 }
+    }
+    const old = center('node:u')
+    edit([{ op: 'scale', ids: ['node:t'], factor: 0.5, origin: { x: 0, y: 0 } }])
+    const t = props(records, 'node:t')
+    expect(t).toMatchObject({ fontSize: 10, lineHeight: { unit: 'px', value: 15 }, w: 100 })
+    expect((t.paragraphs as typeof paragraphs)[0]!.runs[1]!.format).toMatchObject({ fontSize: 20 })
+    expect(world(records, 'node:t')).toMatchObject({ x: 50, y: 50 })
+
+    edit([{ op: 'scale', ids: ['node:u'], factor: 0.5, origin: { x: 0, y: 0 }, minFontSize: 11 }])
+    const u = props(records, 'node:u')
+    expect(u).toMatchObject({ fontSize: 11 })
+    expect((u.paragraphs as typeof paragraphs)[0]!.runs[1]!.format).toMatchObject({ fontSize: 20 })
+    expect(u.w as number).toBeCloseTo(110)
+    expect((u.lineHeight as { value: number }).value).toBeCloseTo(16.5)
+    expect(center('node:u').x).toBeCloseTo(old.x / 2)
+    expect(center('node:u').y).toBeCloseTo(old.y / 2, 0)
+
+    edit([{ op: 'scale', ids: ['node:v'], factor: 0.5, origin: { x: 0, y: 0 }, text: false }])
+    expect(props(records, 'node:v')).toMatchObject({ fontSize: 20, w: 200, lineHeight: { unit: 'px', value: 30 } })
+    expect(center('node:v').x).toBeCloseTo(old.x / 2)
+    expect(center('node:v').y).toBeCloseTo(old.y / 2)
+  })
+
+  it('keeps line widths with strokes false', () => {
+    const { records, edit, root } = setup()
+    records.apply(
+      [
+        node('node:g', 'geo', root, 'a1', { w: 100, h: 100, strokeWidth: 4 }),
+        node('node:d', 'draw', root, 'a2', { points: [0, 0, 10, 20], size: 4 }),
+        node('node:e', 'arrow', root, 'a3', { start: { x: 0, y: 0 }, end: { x: 100, y: 0 }, size: 3 }, { x: 0, y: 200 }),
+      ],
+      [],
+    )
+    edit([{ op: 'scale', ids: ['node:g', 'node:d', 'node:e'], factor: 0.5, origin: { x: 0, y: 0 }, strokes: false }])
+    expect(props(records, 'node:g')).toMatchObject({ w: 50, strokeWidth: 4 })
+    expect(props(records, 'node:d')).toMatchObject({ points: [0, 0, 5, 10], size: 4 })
+    expect(props(records, 'node:e')).toMatchObject({ end: { x: 50, y: 0 }, size: 3 })
+    expect(records.get('node:e')).toMatchObject({ x: 0, y: 100 })
+  })
+
+  it('takes along arrows between the scaled nodes and keeps them connected, and scales a free arrow', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 100, h: 100 },
+      { op: 'create', type: 'geo', as: 'b', x: 400, y: 0, w: 100, h: 100 },
+      { op: 'connect', as: 'e', from: '$a', to: '$b', bend: 40 },
+      { op: 'connect', as: 'free', from: { x: 0, y: 300 }, to: { x: 200, y: 400 } },
+    ]).created
+    const size = props(records, made.e!).size as number
+    // 矢印の箱は矢じりの分だけ広いので、原点を決める
+    const result = edit([{ op: 'scale', ids: [made.a!, made.b!, made.free!], factor: 0.5, origin: { x: 0, y: 0 } }])
+    expect(result.counts.updated).toBe(4)
+    expect(props(records, made.e!)).toMatchObject({ bend: 20, size: size / 2 })
+    expect(bindingsOf(records, made.e!)).toHaveLength(2)
+    const end = readNodes(records, [made.e!]).nodes[0]!.end as { x: number; y: number; node: string }
+    expect(end.node).toBe(made.b)
+    expect(end.x).toBeLessThan(250)
+    expect(records.get(made.free!)).toMatchObject({ x: 0, y: 150 })
+    expect(props(records, made.free!)).toMatchObject({ start: { x: 0, y: 0 }, end: { x: 100, y: 50 } })
+  })
+
+  it('stops at the minimum size and warns', () => {
+    const { records, edit, root } = setup()
+    records.apply([node('node:i', 'image', root, 'a1', { w: 20, h: 20 })], [])
+    const result = edit([{ op: 'scale', ids: ['node:i'], factor: 0.1 }])
+    expect(props(records, 'node:i')).toMatchObject({ w: 8, h: 8 })
+    expect(result.warnings?.join('\n')).toMatch(/1 node\(s\) kept their minimum size \(node:i\)/)
+  })
+
+  it('refuses bad input, slides, slide layouts and locked nodes, changing nothing', () => {
+    const { records, edit, root } = setup()
+    records.apply(
+      [
+        node('node:a', 'geo', root, 'a1', { w: 100, h: 100 }, { x: 3000 }),
+        node('node:l', 'geo', root, 'a2', { w: 100, h: 100 }, { x: 3200, locked: true }),
+        node('node:f', 'frame', root, 'a3', { w: 300, h: 300 }, { x: 3400 }),
+        node('node:in', 'geo', 'node:f', 'a1', { w: 100, h: 100 }, { locked: true }),
+      ],
+      [],
+    )
+    const made = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'bullets' }]).created
+    const layout = records.childrenOf(made.s!).find((r) => r.type === 'slide-layout')!
+    const cell = records.childrenOf(layout.id)[0]!
+    const rev = records.rev
+    expect(() => edit([{ op: 'scale', ids: ['node:a'] }])).toThrow(/scale needs exactly one of factor, fit/)
+    expect(() => edit([{ op: 'scale', ids: ['node:a'], factor: 2, fit: { x: 0, y: 0, w: 1, h: 1 } }])).toThrow(/exactly one of factor, fit/)
+    expect(() => edit([{ op: 'scale', ids: ['node:a'], factor: 2, align: 'center' }])).toThrow(/align is only for fit/)
+    expect(() => edit([{ op: 'scale', ids: ['node:a'], factor: -1 }])).toThrow(/ops\[0\] \(scale\): factor/)
+    expect(() => edit([{ op: 'scale', ids: ['node:a'], factor: 2, origin: 'middle' }])).toThrow(/ops\[0\] \(scale\): origin/)
+    expect(() => edit([{ op: 'scale', ids: [made.s], factor: 0.5 }])).toThrow(/is a slide; slides cannot be scaled/)
+    expect(() => edit([{ op: 'scale', ids: [cell.id], factor: 0.5 }])).toThrow(/slide template \(slide-layout\) or one of its cells/)
+    expect(() => edit([{ op: 'scale', ids: [layout.id], factor: 0.5 }])).toThrow(/slide template/)
+    expect(() => edit([{ op: 'scale', ids: ['node:a', 'node:l'], factor: 0.5 }])).toThrow(/node:l is locked/)
+    expect(() => edit([{ op: 'scale', ids: ['node:f'], factor: 0.5 }])).toThrow(/node:in is locked/)
+    expect(() => edit([{ op: 'scale', ids: ['node:a'], factor: 0.001 }])).toThrow(/^ops\[0\] \(scale\): scale factor 0\.001 is out of range.*Nothing was changed\.$/)
+    expect(records.rev).toBe(rev)
+    expect(world(records, 'node:a')).toMatchObject({ x: 3000, w: 100 })
+  })
+
+  it('is undone by undo_canvas_edit', () => {
+    const { records, host, edit, root } = setup()
+    records.apply(
+      [
+        node('node:f', 'frame', root, 'a1', { w: 400, h: 300 }, { x: 10, y: 20 }),
+        node('node:n', 'note', 'node:f', 'a1', { w: 100, h: 100, fontSize: 24 }, { x: 30, y: 40 }),
+      ],
+      [],
+    )
+    const before = ['node:f', 'node:n'].map((id) => records.get(id))
+    const result = edit([{ op: 'scale', ids: ['node:f'], fit: { x: 1000, y: 1000, w: 200, h: 200 } }])
+    expect(props(records, 'node:f').w).toBeCloseTo(200)
+    undoCanvasEdit(host, result.batch)
+    expect(['node:f', 'node:n'].map((id) => records.get(id))).toEqual(before)
+  })
+})

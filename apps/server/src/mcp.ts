@@ -273,7 +273,7 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
     'edit_canvas',
     {
       title: 'Edit a canvas',
-      description: 'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, reparent) atomically. World coordinates.',
+      description: 'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, scale, reparent, add_row) atomically. World coordinates.',
       inputSchema: editCanvasInput,
       annotations: { destructiveHint: true },
     },

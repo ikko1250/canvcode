@@ -778,6 +778,11 @@ Ops:
 - connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none; none = a plain line), dash? (solid | dashed | dotted). Arrows bound to nodes follow them when they move.
 - align: ids, edge (left | hcenter | right | top | vcenter | bottom)
 - distribute: ids, axis (x | y), gap? (without gap: 3+ ids, equal spacing between the outer ones)
+- scale: ids, and either factor (e.g. 0.72) with origin? (top-left (default) | top | top-right | left | center | right | bottom-left | bottom | bottom-right of the ids' bounding box, or {x,y}), or fit {x,y,w,h} with align? (same names; default center): scales the whole selection uniformly (keeps aspect ratio); with fit, its bounding box fits inside the rect and is placed at that anchor of it. Contents of groups and frames scale too (positions, sizes, rotation pivots); arrows whose bound ends are all inside the selection scale with it (bend, width), and arrows to outside nodes stay connected and stretch.
+  text? (default true): font sizes scale (text, notes, shape labels, including per-range sizes); minFontSize? keeps scaled text at least that size (text already smaller keeps its size; a clamped text box stays centred on its scaled position, so it may stick out slightly). Use "minFontSize":11 when shrinking a diagram into a slide.
+  strokes? (default true): line widths, dash lengths and shadows scale; false keeps them.
+  Slides and slide-layout cells cannot be scaled (scale the nodes on a slide instead). Locked nodes (or locked nodes inside a group/frame) are refused. Nodes with a minimum size (notes 60, cards 200, images 8) stop there (a warning lists them).
+  Example: {"op":"scale","ids":["node:a","node:b"],"fit":{"x":100,"y":200,"w":1720,"h":760},"minFontSize":11}
 - reparent: ids, parent (frame/group id, or "canvas")
 - add_row: slide (slide or slide-layout id; adds the last row) or after (a cell id; adds below its row), text? (body), label? (table layouts), as? (names the body; created also gets "<as>:label"). New cells copy the format of the neighbouring row.
 Text size is estimated on the server (it cannot measure fonts); give text a width.
