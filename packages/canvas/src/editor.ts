@@ -1519,15 +1519,16 @@ export class Editor {
       const resized = resizeNodes(plain, oldFrame, newFrame, targets.length === 1)
       for (const node of resized) out.push(this.fromWorld(node))
     }
-    // 複数選択の中の group（縦横比を保って伸ばしているので、倍率は 1 つ）
+    // 複数選択の中の group（縦横比を保って伸ばしているので、倍率は 1 つ）。
+    // 行き先の大きさは、つかみ始めの枠（target.frame）から決める（いまの大きさに掛けると、ドラッグ中に倍率が積み重なる）
     const s = oldFrame.w > 0 ? newFrame.w / oldFrame.w : 1
     for (const target of targets) {
       if (target.type.container !== 'group' || targets.length === 1) continue
       const entry = this.index.get(target.node.id)!
       const moved = { x: newFrame.x + (target.frame.x - oldFrame.x) * s, y: newFrame.y + (target.frame.y - oldFrame.y) * s }
       const origin = applyMat(invert(entry.worldMatrix), moved)
-      const lb = entry.localBounds
-      out.push(...this.resizeChildrenOf(entry.node.id, lb, { x: origin.x, y: origin.y, w: lb.w * s, h: lb.h * s }))
+      const box = { x: origin.x, y: origin.y, w: target.frame.w * s, h: target.frame.h * s }
+      out.push(...this.resizeChildrenOf(entry.node.id, entry.localBounds, box))
     }
     return out
   }

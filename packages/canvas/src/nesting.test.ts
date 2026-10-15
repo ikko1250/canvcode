@@ -128,6 +128,33 @@ describe('grouping', () => {
     close(worldOf(b.id), { x: 400, y: 0, w: 200, h: 100 })
   })
 
+  it('resizes a group in a multi-selection from where the drag started (the scale does not pile up)', () => {
+    const { editor, rect, worldOf } = setup()
+    const group = editor.makeNode('group', { x: 0, y: 0 })
+    const a = editor.makeNode('image', { x: 0, y: 0, parentId: group.id, props: { assetId: 'a', w: 100, h: 50, crop: null } })
+    const b = rect(150, 0, 100, 50, group.id)
+    const c = rect(400, 0, 100, 50)
+    editor.createNodes([group, a, b, c])
+    editor.setSelection([group.id, c.id])
+    const selection = editor.transformSelection()!
+    const { frame } = selection
+    // 1 回のドラッグの中で、ポインタが動くたびに同じ selection から枠を変える（画面のリサイズと同じ）
+    const tx = editor.begin('resize')
+    const drag = (k: number) => {
+      for (const node of editor.resizeSelection(selection, { ...frame, w: frame.w * k, h: frame.h * k })) tx.put(node)
+      tx.flush()
+    }
+    for (const k of [1.2, 1.5, 2]) drag(k)
+    close(worldOf(a.id), { x: 0, y: 0, w: 200, h: 100 })
+    close(worldOf(b.id), { x: 300, y: 0, w: 200, h: 100 })
+    close(worldOf(c.id), { x: 800, y: 0, w: 200, h: 100 })
+    for (const k of [1.5, 1]) drag(k)
+    editor.finish(tx)
+    close(worldOf(a.id), { x: 0, y: 0, w: 100, h: 50 })
+    close(worldOf(b.id), { x: 150, y: 0, w: 100, h: 50 })
+    close(worldOf(c.id), { x: 400, y: 0, w: 100, h: 50 })
+  })
+
   it('rotates nested nodes around the pivot in world space', () => {
     const { editor, rect } = setup()
     const group = editor.makeNode('group', { x: 100, y: 0 })
