@@ -121,13 +121,13 @@ describe('snapResize（MAI-58）', () => {
   it('辺のハンドル：その辺の軸でしか探さない', () => {
     // 下の辺 97 は相手の上の辺 100 に近いが、e のハンドルなので吸い付かない
     const result = snapResize(box(0, 0, 250, 97), 'e', [box(400, 100)], 8, free)
-    expect(result).toEqual({ box: box(0, 0, 250, 97), guides: [] })
+    expect(result).toEqual({ box: box(0, 0, 250, 97), guides: [], sizes: [] })
   })
 
   it('動かない辺と中心は吸い付かせない', () => {
     // 左の辺 3 と中心 128 は相手の辺に近いが、動かしているのは右の辺（253）だけ
     const result = snapResize(box(3, 0, 250, 100), 'e', [box(0, 500), box(128, 500, 0, 0)], 8, free)
-    expect(result).toEqual({ box: box(3, 0, 250, 100), guides: [] })
+    expect(result).toEqual({ box: box(3, 0, 250, 100), guides: [], sizes: [] })
   })
 
   it('左の辺のハンドルでは、右の辺を固定して左の辺を動かす', () => {
@@ -149,7 +149,7 @@ describe('snapResize（MAI-58）', () => {
 
   it('しきい値の外なら何もしない', () => {
     const result = snapResize(box(0, 0, 291, 100), 'e', [box(300, 200)], 8, free)
-    expect(result).toEqual({ box: box(0, 0, 291, 100), guides: [] })
+    expect(result).toEqual({ box: box(0, 0, 291, 100), guides: [], sizes: [] })
   })
 
   it('Shift（縦横比を保つ）：ずれの小さい方の軸だけが吸い付き、もう一方は縦横比から決める', () => {
@@ -181,6 +181,64 @@ describe('snapResize（MAI-58）', () => {
     const result = snapResize(box(0, 0, 16, 96), 'se', [box(-90, 0, 100, 100)], 8, { ...free, minW: 12, minH: 12 })
     expect(result.box).toEqual(box(0, 0, 16, 100))
     expect(result.guides.map((g) => g.axis)).toEqual(['y'])
+  })
+})
+
+describe('snapResize：大きさの吸い付き', () => {
+  const free = { keepAspect: false, fromCenter: false, minW: 1, minH: 1 }
+
+  it('右の辺のハンドルで、幅が離れた所のノードの幅にそろい、両方に寸法線が付く', () => {
+    const result = snapResize(box(0, 0, 296, 100), 'e', [box(1000, 500, 300, 80)], 8, free)
+    expect(result).toEqual({
+      box: box(0, 0, 300, 100),
+      guides: [],
+      sizes: [
+        { axis: 'x', from: 0, to: 300, at: 108, equal: true },
+        { axis: 'x', from: 1000, to: 1300, at: 588, equal: true },
+      ],
+    })
+  })
+
+  it('下の辺のハンドルで、高さがそろい、箱の右に寸法線が付く', () => {
+    const result = snapResize(box(0, 0, 100, 97), 's', [box(500, 1000, 60, 100)], 8, free)
+    expect(result).toEqual({
+      box: box(0, 0, 100, 100),
+      guides: [],
+      sizes: [
+        { axis: 'y', from: 0, to: 100, at: 108, equal: true },
+        { axis: 'y', from: 1000, to: 1100, at: 568, equal: true },
+      ],
+    })
+  })
+
+  it('辺の方がずれが小さければ、辺に吸い付く', () => {
+    // 右の辺 296 → 左の辺 298 は 2、幅 296 → 300 は 4
+    const result = snapResize(box(0, 0, 296, 100), 'e', [box(298, 500, 50, 50), box(1000, 500, 300, 80)], 8, free)
+    expect(result).toEqual({
+      box: box(0, 0, 298, 100),
+      guides: [{ axis: 'x', position: 298, from: 0, to: 550 }],
+      sizes: [],
+    })
+  })
+
+  it('中心から広げるときは、大きさの差の半分をしきい値と比べる', () => {
+    const target = [box(1000, 500, 310, 80)]
+    // 幅の差 14 は、辺のずれでは 7
+    const result = snapResize(box(2, 0, 296, 100), 'e', target, 8, { ...free, fromCenter: true })
+    expect(result.box).toEqual(box(-5, 0, 310, 100))
+    expect(result.sizes).toHaveLength(2)
+    expect(snapResize(box(2, 0, 296, 100), 'e', target, 8, free).box).toEqual(box(2, 0, 296, 100))
+  })
+
+  it('縦横比を保つときは、そろえた幅から高さを決め直す', () => {
+    const result = snapResize(box(0, 0, 296, 148), 'se', [box(1000, 1000, 300, 30)], 8, { ...free, keepAspect: true })
+    expect(result.box).toEqual(box(0, 0, 300, 150))
+    expect(result.sizes.map((g) => g.axis)).toEqual(['x', 'x'])
+  })
+
+  it('最小サイズを下回る大きさにはそろえない', () => {
+    const result = snapResize(box(0, 0, 12, 100), 'e', [box(1000, 1000, 6, 50)], 8, { ...free, minW: 10 })
+    expect(result).toEqual({ box: box(0, 0, 12, 100), guides: [], sizes: [] })
   })
 })
 
@@ -462,6 +520,24 @@ describe('SelectTool のリサイズ（MAI-58）', () => {
     expect(editor.getNode(b)).toMatchObject({ x: 300, props: { w: 200 } })
     expect(editor.session.get().snapGuides).toEqual([{ axis: 'x', position: 500, from: 0, to: 400 }])
     tool.onPointerUp(pointer(497, 50))
+  })
+
+  it('幅が離れた所のノードの幅に近づくとそろい、両方に寸法線が出て、離すと消える', () => {
+    const { editor, rect, tool, pointer } = setup()
+    const a = rect(0, 0)
+    rect(1000, 300, 300, 80)
+    editor.setSelection([a])
+    tool.onPointerDown(pointer(100, 50))
+    tool.onPointerMove(pointer(296, 50))
+    expect(editor.getNode(a)).toMatchObject({ x: 0, y: 0, props: { w: 300, h: 100 } })
+    expect(editor.session.get().snapGuides).toEqual([])
+    expect(editor.session.get().gapGuides).toEqual([
+      { axis: 'x', from: 0, to: 300, at: 108, equal: true },
+      { axis: 'x', from: 1000, to: 1300, at: 388, equal: true },
+    ])
+    tool.onPointerUp(pointer(296, 50))
+    expect(editor.getNode(a)).toMatchObject({ props: { w: 300, h: 100 } })
+    expect(editor.session.get().gapGuides).toEqual([])
   })
 })
 

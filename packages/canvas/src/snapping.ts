@@ -1,4 +1,5 @@
 import type { Box } from '@canvcode/core'
+import type { GapGuide } from './gapSnapping.ts'
 import { handleSides, type Handle } from './transform.ts'
 
 // 移動中の吸い付き（MAI-53）。tldraw / Figma と同じく、動かしている選択の外接矩形の
@@ -103,27 +104,41 @@ function placeAxis(start: number, oldSize: number, size: number, side: -1 | 0 | 
 }
 
 // box（resizeFrame で計算した、回転 0 の新しい枠）の、ハンドルで動かしている辺だけを candidates の辺・中心に吸い付ける。
-// 動かない辺と中心は吸い付かせない。keepAspect なら、ずれの小さい方の軸だけを吸い付かせ、もう一方は縦横比から決め直す。
-// fromCenter なら、反対の辺も逆向きに同じだけ動かす。最小サイズを下回る軸は吸い付かせない
+// 動かない辺と中心は吸い付かせない。辺のかわりに、大きさ（幅・高さ）を candidates の同じ軸の大きさにそろえることもある。
+// そのときは、動かしている辺のずれの小さい方を選び、同じずれなら辺を優先する。
+// keepAspect なら、ずれの小さい方の軸だけを吸い付かせ、もう一方は縦横比から決め直す。
+// fromCenter なら、反対の辺も逆向きに同じだけ動かす。最小サイズを下回る軸は吸い付かせない。
+// sizes は、大きさがそろった軸で、直したあとの箱と同じ大きさの相手に付ける寸法線
 export function snapResize<T extends Box>(
   box: T,
   handle: Handle,
   candidates: readonly Box[],
   threshold: number,
   options: SnapResizeOptions,
-): { box: T; guides: SnapGuide[] } {
+): { box: T; guides: SnapGuide[]; sizes: GapGuide[] } {
   const { hx, hy } = handleSides(handle)
   const factor = options.fromCenter ? 2 : 1
-  // 軸ごとに、動かしている辺に近い線を探し、吸い付けたときの大きさを求める
-  const find = (axis: 'x' | 'y') => {
+  // 軸ごとに、動かしている辺に近い線か、近い大きさを探し、吸い付けたときの大きさを求める。
+  // delta は動かしている辺のずれ
+  type Found =
+    | { axis: 'x' | 'y'; kind: 'edge'; delta: number; size: number; hit: { candidate: Box; line: number } }
+    | { axis: 'x' | 'y'; kind: 'size'; delta: number; size: number }
+  const find = (axis: 'x' | 'y'): Found | null => {
     const side = axis === 'x' ? hx : hy
     if (side === 0) return null
     const start = axis === 'x' ? box.x : box.y
     const size = axis === 'x' ? box.w : box.h
     const edge = side === 1 ? start + size : start
     const hit = nearest([edge], candidates, axis, threshold)
-    if (!hit) return null
-    return { axis, hit, size: size + side * hit.delta * factor }
+    let best: Found | null = hit ? { axis, kind: 'edge', delta: hit.delta, size: size + side * hit.delta * factor, hit } : null
+    for (const c of candidates) {
+      const target = axis === 'x' ? c.w : c.h
+      if (target <= 0) continue
+      const delta = (side * (target - size)) / factor
+      if (Math.abs(delta) > threshold) continue
+      if (best === null || Math.abs(delta) < Math.abs(best.delta)) best = { axis, kind: 'size', delta, size: target }
+    }
+    return best
   }
   const fits = (w: number, h: number) => w >= options.minW && h >= options.minH
   let x = find('x')
@@ -131,11 +146,11 @@ export function snapResize<T extends Box>(
   let { w, h } = box
   if (options.keepAspect && box.w > 0 && box.h > 0) {
     // 縦横比を保ったまま最小サイズに収まるものだけを残し、ずれの小さい方の軸に吸い付く
-    const scaleOf = (s: NonNullable<typeof x>) => s.size / (s.axis === 'x' ? box.w : box.h)
+    const scaleOf = (s: Found) => s.size / (s.axis === 'x' ? box.w : box.h)
     if (x && !fits(box.w * scaleOf(x), box.h * scaleOf(x))) x = null
     if (y && !fits(box.w * scaleOf(y), box.h * scaleOf(y))) y = null
     if (x && y) {
-      if (Math.abs(y.hit.delta) < Math.abs(x.hit.delta)) x = null
+      if (Math.abs(y.delta) < Math.abs(x.delta)) x = null
       else y = null
     }
     const chosen = x ?? y
@@ -149,7 +164,7 @@ export function snapResize<T extends Box>(
     if (x) w = x.size
     if (y) h = y.size
   }
-  if (!x && !y) return { box, guides: [] }
+  if (!x && !y) return { box, guides: [], sizes: [] }
   const snapped = {
     ...box,
     x: placeAxis(box.x, box.w, w, hx, options.fromCenter),
@@ -159,7 +174,7 @@ export function snapResize<T extends Box>(
   }
   // ガイドの長さは、移動と同じく、直したあとの箱と相手の箱を、もう一方の軸でまとめた範囲
   const guides: SnapGuide[] = []
-  if (x) {
+  if (x?.kind === 'edge') {
     const c = x.hit.candidate
     guides.push({
       axis: 'x',
@@ -168,7 +183,7 @@ export function snapResize<T extends Box>(
       to: Math.max(snapped.y + snapped.h, c.y + c.h),
     })
   }
-  if (y) {
+  if (y?.kind === 'edge') {
     const c = y.hit.candidate
     guides.push({
       axis: 'y',
@@ -177,7 +192,20 @@ export function snapResize<T extends Box>(
       to: Math.max(snapped.x + snapped.w, c.x + c.w),
     })
   }
-  return { box: snapped, guides }
+  // 寸法線は、幅なら箱の下、高さなら箱の右に、threshold（CSS ピクセルで SNAP_THRESHOLD_PX）だけ離して引く
+  const sizes: GapGuide[] = []
+  const same = (a: number, b: number) => Math.abs(a - b) < 1e-9
+  if (x?.kind === 'size') {
+    for (const b of [snapped, ...candidates.filter((c) => same(c.w, snapped.w))]) {
+      sizes.push({ axis: 'x', from: b.x, to: b.x + b.w, at: b.y + b.h + threshold, equal: true })
+    }
+  }
+  if (y?.kind === 'size') {
+    for (const b of [snapped, ...candidates.filter((c) => same(c.h, snapped.h))]) {
+      sizes.push({ axis: 'y', from: b.y, to: b.y + b.h, at: b.x + b.w + threshold, equal: true })
+    }
+  }
+  return { box: snapped, guides, sizes }
 }
 
 // 2 つの箱の距離（重なっていれば 0）

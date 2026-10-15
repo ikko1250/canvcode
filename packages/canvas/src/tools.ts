@@ -529,15 +529,19 @@ export class SelectTool implements Tool {
           minH: selection.minSize.h,
         }
         let frame = resizeFrame(selection.frame, handle, pointer.world, options)
-        // 動かしている辺を、ほかのノードの辺・中心に吸い付ける（MAI-58）。Ctrl（⌘）を押している間は自由
+        // 動かしている辺を、ほかのノードの辺・中心に吸い付けるか、幅・高さをほかのノードにそろえる（MAI-58）。
+        // Ctrl（⌘）を押している間は自由
         let guides: SnapGuide[] = []
+        let sizes: GapGuide[] = []
         if (state.snapCandidates && !(pointer.ctrlKey || pointer.metaKey)) {
           const threshold = SNAP_THRESHOLD_PX / editor.session.get().camera.zoom
           const snap = snapResize(frame, handle, state.snapCandidates, threshold, options)
           frame = snap.box
           guides = snap.guides
+          sizes = snap.sizes
         }
         if (!sameGuides(guides, editor.session.get().snapGuides)) editor.session.set({ snapGuides: guides })
+        if (!sameGapGuides(sizes, editor.session.get().gapGuides)) editor.session.set({ gapGuides: sizes })
         for (const node of editor.resizeSelection(selection, frame)) tx.put(node)
         tx.flush()
         return
@@ -623,7 +627,9 @@ export class SelectTool implements Tool {
     if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().snapGuides.length > 0) {
       editor.session.set({ snapGuides: [] })
     }
-    if (state.name === 'translating' && editor.session.get().gapGuides.length > 0) editor.session.set({ gapGuides: [] })
+    if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().gapGuides.length > 0) {
+      editor.session.set({ gapGuides: [] })
+    }
     if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
       const next = new Set(editor.session.get().selectedIds)
@@ -718,7 +724,9 @@ export class SelectTool implements Tool {
       if ((state.name === 'translating' || state.name === 'resizing') && session.get().snapGuides.length > 0) {
         session.set({ snapGuides: [] })
       }
-      if (state.name === 'translating' && session.get().gapGuides.length > 0) session.set({ gapGuides: [] })
+      if ((state.name === 'translating' || state.name === 'resizing') && session.get().gapGuides.length > 0) {
+        session.set({ gapGuides: [] })
+      }
       if (state.name === 'spacing') session.set({ spacingDrag: null, hoveredSpacing: null })
       return true
     }
