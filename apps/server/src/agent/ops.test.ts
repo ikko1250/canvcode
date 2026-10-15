@@ -193,6 +193,23 @@ describe('edit_canvas', () => {
     expect(() => edit([{ op: 'update', id: made.a, heads: 'both' }])).toThrow(/heads is not supported for geo/)
   })
 
+  it('draws a dimension line with bars at both ends (heads: bars)', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 100, h: 100 },
+      { op: 'connect', as: 'e', from: { x: 150, y: 0 }, to: { x: 150, y: 100 }, heads: 'bars' },
+    ]).created
+    expect(records.get(made.e!)!.props).toMatchObject({ arrowheadStart: 'bar', arrowheadEnd: 'bar' })
+    expect(readNodes(records, [made.e!]).nodes[0]).toMatchObject({ arrowheadStart: 'bar', arrowheadEnd: 'bar' })
+    edit([{ op: 'update', id: made.e, heads: 'end' }])
+    expect(records.get(made.e!)!.props).toMatchObject({ arrowheadStart: 'none', arrowheadEnd: 'arrow' })
+    edit([{ op: 'update', id: made.e, heads: 'bars' }])
+    expect(records.get(made.e!)!.props).toMatchObject({ arrowheadStart: 'bar', arrowheadEnd: 'bar' })
+    // heads は bars（両端）だけ。片方だけの bar は props で書く
+    expect(() => edit([{ op: 'update', id: made.e, heads: 'bar' }])).toThrow(/heads/)
+    expect(() => edit([{ op: 'update', id: made.a, heads: 'bars' }])).toThrow(/heads is not supported for geo/)
+  })
+
   it('refuses style fields the type does not have, and locked nodes', () => {
     const { records, edit, root } = setup()
     records.apply([node('node:t', 'text', root, 'a1', {}, { locked: true })], [])

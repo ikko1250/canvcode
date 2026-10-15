@@ -444,7 +444,6 @@ export async function convertBackup(zip: ZipReader, options: ImportOptions): Pro
         }
         case 'arrow': {
           const { text } = plainText(props.richText)
-          const head = (value: unknown) => (value === 'none' || value === undefined ? 'none' : 'arrow')
           put('arrow', {
             start: vec(props.start),
             end: vec(props.end),
@@ -452,8 +451,8 @@ export async function convertBackup(zip: ZipReader, options: ImportOptions): Pro
             clip: [0, 1],
             color: color(props.color),
             size: (STROKE_SIZES[String(props.size)] ?? 3.5) * scale,
-            arrowheadStart: head(props.arrowheadStart),
-            arrowheadEnd: head(props.arrowheadEnd ?? 'arrow'),
+            arrowheadStart: importArrowhead(props.arrowheadStart),
+            arrowheadEnd: importArrowhead(props.arrowheadEnd ?? 'arrow'),
             // 旧アプリの線の種類（draw・solid は実線）
             ...(props.dash === 'dashed' || props.dash === 'dotted' ? { strokeDash: props.dash } : {}),
             label: text,
@@ -844,6 +843,11 @@ function unionRects(rects: { x: number; y: number; w: number; h: number }[]) {
 function estimateQuoteHeight(quote: string): number {
   const lines = Math.min(12, Math.ceil([...quote].length / 20) + 1)
   return 30 + lines * 22 + 10 + 40
+}
+
+// 旧アプリ（tldraw）の矢じり。bar・pipe（直交する短い線）は端の線、ほかの形は矢じり
+export function importArrowhead(value: unknown): 'none' | 'arrow' | 'bar' {
+  return value === 'none' || value === undefined ? 'none' : value === 'bar' || value === 'pipe' ? 'bar' : 'arrow'
 }
 
 function color(name: unknown): string {

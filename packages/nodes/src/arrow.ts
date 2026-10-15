@@ -12,6 +12,7 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // - 線の種類（実線・破線・点線）は図形の線（stroke.ts）と同じ名前の props（strokeDash・strokeDashLength・strokeDashGap）。
 //   どれも省略できる（ないときは実線。古いデータもそのまま読める）ので、足しても版は上げない。
 //   破線の長さ・間隔がないときは太さ（size）に比例した既定（stroke.ts の defaultDashLength など）で描く。矢じりはいつも実線
+// - 端の形（arrowheadStart・arrowheadEnd）は矢じり（arrow）・直交する短い線（bar。寸法線）・なし（none）。bar を足しても版は上げない
 export interface ArrowProps extends Partial<Pick<StrokeProps, 'strokeDash' | 'strokeDashLength' | 'strokeDashGap'>> {
   // 親のローカル座標（ノードの x・y からの相対）
   start: Vec
@@ -23,9 +24,17 @@ export interface ArrowProps extends Partial<Pick<StrokeProps, 'strokeDash' | 'st
   color: string
   // 線の太さ（ワールド座標）
   size: number
-  arrowheadStart: 'none' | 'arrow'
-  arrowheadEnd: 'none' | 'arrow'
+  arrowheadStart: ArrowheadKind
+  arrowheadEnd: ArrowheadKind
   label: string
+}
+
+// 矢印の端の形。arrow は開いた矢じり、bar は線に直交する短い線（寸法線の |―| の端）、none は何もなし
+export type ArrowheadKind = 'none' | 'arrow' | 'bar'
+
+// 端の形を読む（知らない値は矢じりとして描く。古いデータや props で直接書いた値もそのまま描ける）
+export function arrowheadKind(value: unknown): ArrowheadKind {
+  return value === 'none' || value === 'bar' ? value : 'arrow'
 }
 
 export type ArrowNode = NodeRecord<ArrowProps>
@@ -261,14 +270,42 @@ function headLength(props: ArrowProps): number {
   return 8 + props.size * 3
 }
 
+// 端の線（bar）の長さの半分。全長は矢じりの開いた幅（headLength）と同じ
+function barHalfLength(props: ArrowProps): number {
+  return headLength(props) / 2
+}
+
+// 端の線（bar）の両端の点。見えている端で、進む向きに直交する（始点の線が先）
+export function arrowEndBars(props: ArrowProps): [Vec, Vec][] {
+  const ends: number[] = []
+  if (arrowheadKind(props.arrowheadStart) === 'bar') ends.push(props.clip[0])
+  if (arrowheadKind(props.arrowheadEnd) === 'bar') ends.push(props.clip[1])
+  if (ends.length === 0) return []
+  const g = arrowGeometry(props)
+  const h = barHalfLength(props)
+  return ends.map((t) => {
+    const p = arcPoint(g, t)
+    const d = arcTangent(g, t)
+    const n = { x: -d.y, y: d.x }
+    return [
+      { x: p.x + n.x * h, y: p.y + n.y * h },
+      { x: p.x - n.x * h, y: p.y - n.y * h },
+    ]
+  })
+}
+
 const boundsCache = new WeakMap<ArrowProps, Box>()
 
 function arrowBounds(props: ArrowProps): Box {
   let box = boundsCache.get(props)
   if (!box) {
     const points = arrowPolyline(props)
-    // 矢じりと線の太さの分だけ広げる
-    const pad = (props.arrowheadStart !== 'none' || props.arrowheadEnd !== 'none' ? headLength(props) : 0) + props.size
+    // 矢じり（端の線は半分）と線の太さの分だけ広げる
+    const extent = (value: unknown) => {
+      const kind = arrowheadKind(value)
+      return kind === 'arrow' ? headLength(props) : kind === 'bar' ? barHalfLength(props) : 0
+    }
+    const pad = Math.max(extent(props.arrowheadStart), extent(props.arrowheadEnd)) + props.size
     let minX = Infinity
     let minY = Infinity
     let maxX = -Infinity
@@ -341,7 +378,10 @@ export const arrowType = defineNodeType<ArrowProps>({
     if (label && point.x >= label.x && point.y >= label.y && point.x <= label.x + label.w && point.y <= label.y + label.h) {
       return true
     }
-    return distanceToArrow(node.props, point) <= node.props.size / 2 + margin
+    const reach = node.props.size / 2 + margin
+    if (distanceToArrow(node.props, point) <= reach) return true
+    // 端の線（bar）も当たりにする（寸法線は端の線をつかんで選べる）
+    return arrowEndBars(node.props).some(([a, b]) => distanceToSegment(point, a, b) <= reach)
   },
 
   render(ctx, node, info) {
@@ -367,16 +407,20 @@ export const arrowType = defineNodeType<ArrowProps>({
     }
     if (dash.dash !== 'solid') {
       ctx.stroke()
-      // 矢じりは線の種類によらず実線で描く
+      // 矢じり・端の線は線の種類によらず実線で描く
       ctx.setLineDash([])
       ctx.lineCap = 'round'
       ctx.beginPath()
     }
     const length = Math.min(headLength(props), arcLength(g) * (t1 - t0) * 0.5)
-    if (props.arrowheadEnd !== 'none') drawHead(ctx, arcPoint(g, t1), arcTangent(g, t1), length)
-    if (props.arrowheadStart !== 'none') {
+    if (arrowheadKind(props.arrowheadEnd) === 'arrow') drawHead(ctx, arcPoint(g, t1), arcTangent(g, t1), length)
+    if (arrowheadKind(props.arrowheadStart) === 'arrow') {
       const d = arcTangent(g, t0)
       drawHead(ctx, arcPoint(g, t0), { x: -d.x, y: -d.y }, length)
+    }
+    for (const [a, b] of arrowEndBars(props)) {
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
     }
     ctx.stroke()
     if (dash.dash !== 'solid') ctx.setLineDash([])

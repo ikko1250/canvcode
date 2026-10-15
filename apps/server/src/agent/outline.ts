@@ -729,7 +729,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - note: sticky note (text, w, h, color = background)
 - geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
-- arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line
+- arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
 - draw: freehand stroke (color, size; points are not returned)
 - image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null)
@@ -770,12 +770,12 @@ Ops:
   slide: name, ratio, hidden, template (see Slides below)
   card: file (document id from list_documents; markdown or code), w, h (fixes the height)
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
-  arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none; none = a plain line).
+  arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
 - group: ids (2+, same parent), as?   ungroup: ids
-- connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none; none = a plain line), dash? (solid | dashed | dotted). Arrows bound to nodes follow them when they move.
+- connect: from, to (node id or {x,y}), as?, label?, color?, bend?, heads? (end | start | both | none | bars; none = a plain line, bars = a dimension line |―|), dash? (solid | dashed | dotted). Arrows bound to nodes follow them when they move.
 - align: ids, edge (left | hcenter | right | top | vcenter | bottom)
 - distribute: ids, axis (x | y), gap? (without gap: 3+ ids, equal spacing between the outer ones)
 - scale: ids, and either factor (e.g. 0.72) with origin? (top-left (default) | top | top-right | left | center | right | bottom-left | bottom | bottom-right of the ids' bounding box, or {x,y}), or fit {x,y,w,h} with align? (same names; default center): scales the whole selection uniformly (keeps aspect ratio); with fit, its bounding box fits inside the rect and is placed at that anchor of it. Contents of groups and frames scale too (positions, sizes, rotation pivots); arrows whose bound ends are all inside the selection scale with it (bend, width), and arrows to outside nodes stay connected and stretch.

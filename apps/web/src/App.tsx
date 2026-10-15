@@ -72,6 +72,7 @@ const ARROWHEADS: { label: string; title: string; start: ArrowStyle['arrowheadSt
   { label: '→', title: '終点に矢じり', start: 'none', end: 'arrow' },
   { label: '←', title: '始点に矢じり', start: 'arrow', end: 'none' },
   { label: '↔', title: '両端に矢じり', start: 'arrow', end: 'arrow' },
+  { label: '|—|', title: '両端に止め線（寸法線）', start: 'bar', end: 'bar' },
 ]
 // 矢印の線の種類（デザインパネルの「線」の種類と同じ。アイコンも同じ形）
 const ARROW_DASHES: { dash: StrokeDash; title: string; dasharray: string; cap: 'butt' | 'round' }[] = [

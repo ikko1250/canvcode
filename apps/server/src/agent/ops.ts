@@ -13,7 +13,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, GEO_SHAPES, normalizeCrop, richTextFromPlain, slotsOf, solidPaint, toFill, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, GEO_SHAPES, normalizeCrop, richTextFromPlain, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
 import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
@@ -56,6 +56,18 @@ const MAX_LISTED_IDS = 10
 const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card'] as const
 const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
 const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
+// 矢じり（arrow）。bars は両端に直交する短い線（寸法線 |―|）
+const HEADS = ['end', 'start', 'both', 'none', 'bars'] as const
+type Heads = (typeof HEADS)[number]
+
+// heads から矢印の端の形（arrowheadStart・arrowheadEnd）を決める
+function headsProps(heads: Heads): { arrowheadStart: ArrowheadKind; arrowheadEnd: ArrowheadKind } {
+  if (heads === 'bars') return { arrowheadStart: 'bar', arrowheadEnd: 'bar' }
+  return {
+    arrowheadStart: heads === 'start' || heads === 'both' ? 'arrow' : 'none',
+    arrowheadEnd: heads === 'end' || heads === 'both' ? 'arrow' : 'none',
+  }
+}
 
 export class EditError extends Error {}
 
@@ -80,7 +92,7 @@ const style = {
   // 線の種類（geo の線、arrow の線。props の strokeDash）
   dash: z.enum(['solid', 'dashed', 'dotted']).optional(),
   // 矢じり（arrow。connect の heads と同じ）
-  heads: z.enum(['end', 'start', 'both', 'none']).optional(),
+  heads: z.enum(HEADS).optional(),
   fontSize: finite.positive().optional(),
   align: z.enum(['left', 'center', 'right']).optional(),
   shape: z.enum(GEO_SHAPES as [string, ...string[]]).optional(),
@@ -147,7 +159,7 @@ const opSchemas = {
     label: z.string().optional(),
     color: hex.optional(),
     bend: finite.optional(),
-    heads: z.enum(['end', 'start', 'both', 'none']).optional(),
+    heads: z.enum(HEADS).optional(),
     dash: z.enum(['solid', 'dashed', 'dotted']).optional(),
   }),
   align: z.strictObject({ op: z.literal('align'), ids: z.array(id).min(2), edge: z.enum(['left', 'hcenter', 'right', 'top', 'vcenter', 'bottom']) }),
@@ -585,7 +597,6 @@ class EditRun {
     const a = end(op.from)
     const b = end(op.to)
     if (a.target && a.target === b.target) throw new EditError('from and to are the same node')
-    const heads = op.heads ?? 'end'
     const arrow = this.editor.makeNode('arrow', {
       x: a.point.x,
       y: a.point.y,
@@ -593,8 +604,7 @@ class EditRun {
         start: { x: 0, y: 0 },
         end: { x: b.point.x - a.point.x, y: b.point.y - a.point.y },
         bend: op.bend ?? 0,
-        arrowheadStart: heads === 'start' || heads === 'both' ? 'arrow' : 'none',
-        arrowheadEnd: heads === 'end' || heads === 'both' ? 'arrow' : 'none',
+        ...headsProps(op.heads ?? 'end'),
         ...(op.label !== undefined ? { label: op.label } : {}),
         ...(op.color !== undefined ? { color: op.color } : {}),
         ...(op.dash !== undefined && op.dash !== 'solid' ? { strokeDash: op.dash } : {}),
@@ -1036,8 +1046,9 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       set('size', strokeWidth, 'strokeWidth')
       set('strokeDash', dash, 'dash')
       if (heads !== undefined) {
-        set('arrowheadStart', heads === 'start' || heads === 'both' ? 'arrow' : 'none', 'heads')
-        set('arrowheadEnd', heads === 'end' || heads === 'both' ? 'arrow' : 'none', 'heads')
+        const ends = headsProps(heads as Heads)
+        set('arrowheadStart', ends.arrowheadStart, 'heads')
+        set('arrowheadEnd', ends.arrowheadEnd, 'heads')
       }
       break
     case 'markdown-card':

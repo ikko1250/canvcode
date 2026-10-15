@@ -1,5 +1,5 @@
 import type { Box, Camera } from '@canvcode/core'
-import type { BlockArrowShape, StrokeDash } from '@canvcode/nodes'
+import type { ArrowheadKind, BlockArrowShape, StrokeDash } from '@canvcode/nodes'
 import type { SnapGuide } from './snapping.ts'
 import type { GapGuide } from './gapSnapping.ts'
 import type { Axis } from './arrange.ts'
@@ -75,8 +75,8 @@ export interface DrawStyle {
 export interface ArrowStyle {
   color: string
   size: number
-  arrowheadStart: 'none' | 'arrow'
-  arrowheadEnd: 'none' | 'arrow'
+  arrowheadStart: ArrowheadKind
+  arrowheadEnd: ArrowheadKind
   // 線の種類。ないときは実線（新しく引く矢印には、実線のときは書かない）
   strokeDash?: StrokeDash
 }

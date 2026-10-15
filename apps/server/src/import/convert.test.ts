@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { StoredRecord } from '../records.ts'
-import { convertBackup, decodeDrawSegments, plainText } from './convert.ts'
+import { convertBackup, decodeDrawSegments, importArrowhead, plainText } from './convert.ts'
 import { zipBytes } from './testZip.ts'
 import { ZipReader } from './zip.ts'
 
@@ -216,5 +216,14 @@ describe('old shape data', () => {
       ],
     })
     expect(text).toEqual({ text: '一行目\n続き\n・項目', formatted: true })
+  })
+
+  it('reads the old arrowheads: bar and pipe are end bars, other shapes are arrowheads', () => {
+    expect(importArrowhead('bar')).toBe('bar')
+    expect(importArrowhead('pipe')).toBe('bar')
+    expect(importArrowhead('triangle')).toBe('arrow')
+    expect(importArrowhead('arrow')).toBe('arrow')
+    expect(importArrowhead('none')).toBe('none')
+    expect(importArrowhead(undefined)).toBe('none')
   })
 })

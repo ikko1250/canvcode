@@ -53,6 +53,7 @@ import {
   type Shadow,
   canRoundCorners,
   arrowDashStyle,
+  type ArrowheadKind,
   type ArrowProps,
   clampDash,
   defaultDashGap,
@@ -614,8 +615,8 @@ function dashLengthField(id: string, label: string, key: 'strokeDashLength' | 's
 export const strokeDashLengthField = dashLengthField('stroke.dashLength', '長さ', 'strokeDashLength', ['dashed'])
 export const strokeDashGapField = dashLengthField('stroke.dashGap', '間隔', 'strokeDashGap', ['dashed', 'dotted'])
 
-// 矢じり（矢印だけ）。なし・終点・始点・両端の 4 つから選ぶ（矢じりなしなら、ただの線）
-export type ArrowheadsValue = 'none' | 'end' | 'start' | 'both'
+// 矢じり（矢印だけ）。なし・終点・始点・両端・寸法線（両端に直交する短い線）の 5 つから選ぶ（矢じりなしなら、ただの線）
+export type ArrowheadsValue = 'none' | 'end' | 'start' | 'both' | 'bars'
 
 function arrowheadsIcon(start: boolean, end: boolean) {
   return strokeIcon((color) => [
@@ -625,11 +626,20 @@ function arrowheadsIcon(start: boolean, end: boolean) {
   ])
 }
 
+// 寸法線（両端に直交する短い線）のアイコン
+function barsIcon() {
+  return strokeIcon((color) => [
+    createElement('line', { key: 'l', x1: 2, x2: 14, y1: 8, y2: 8, stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' }),
+    createElement('path', { key: 'b', d: 'M2 4.5 V11.5 M14 4.5 V11.5', fill: 'none', stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' }),
+  ])
+}
+
 const ARROWHEADS_OPTIONS: SegmentOption[] = [
   { value: 'none', title: '矢じりなし', icon: arrowheadsIcon(false, false) },
   { value: 'end', title: '終点に矢じり', icon: arrowheadsIcon(false, true) },
   { value: 'start', title: '始点に矢じり', icon: arrowheadsIcon(true, false) },
   { value: 'both', title: '両端に矢じり', icon: arrowheadsIcon(true, true) },
+  { value: 'bars', title: '両端に止め線（寸法線）', icon: barsIcon() },
 ]
 
 export const arrowheadsField: DesignField<ArrowheadsValue> = {
@@ -639,14 +649,16 @@ export const arrowheadsField: DesignField<ArrowheadsValue> = {
   appliesTo: isArrow,
   read(node) {
     const { arrowheadStart, arrowheadEnd } = (node as NodeRecord<ArrowProps>).props
+    if (arrowheadStart === 'bar' && arrowheadEnd === 'bar') return 'bars'
     const start = arrowheadStart !== 'none'
     const end = arrowheadEnd !== 'none'
     return start && end ? 'both' : start ? 'start' : end ? 'end' : 'none'
   },
   write(node, value) {
     if (!isArrow(node)) return node
-    const arrowheadStart = value === 'start' || value === 'both' ? 'arrow' : 'none'
-    const arrowheadEnd = value === 'end' || value === 'both' ? 'arrow' : 'none'
+    const bars = value === 'bars'
+    const arrowheadStart: ArrowheadKind = bars ? 'bar' : value === 'start' || value === 'both' ? 'arrow' : 'none'
+    const arrowheadEnd: ArrowheadKind = bars ? 'bar' : value === 'end' || value === 'both' ? 'arrow' : 'none'
     if (node.props.arrowheadStart === arrowheadStart && node.props.arrowheadEnd === arrowheadEnd) return node
     return { ...node, props: { ...node.props, arrowheadStart, arrowheadEnd } }
   },

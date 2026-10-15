@@ -239,6 +239,18 @@ describe('arrow line fields', () => {
     expect(arrowheadsField.write(line, 'start').props).toMatchObject({ arrowheadStart: 'arrow', arrowheadEnd: 'none' })
     expect(arrowheadsField.read(arrowheadsField.write(line, 'both'))).toBe('both')
   })
+
+  it('reads and writes the end bars of a dimension line (寸法線)', () => {
+    const { arrow } = setup()
+    const bars = arrowheadsField.write(arrow, 'bars')
+    expect(bars.props).toMatchObject({ arrowheadStart: 'bar', arrowheadEnd: 'bar' })
+    expect(arrowheadsField.read(bars)).toBe('bars')
+    expect(arrowheadsField.write(bars, 'bars')).toBe(bars)
+    expect(arrowheadsField.write(bars, 'both').props).toMatchObject({ arrowheadStart: 'arrow', arrowheadEnd: 'arrow' })
+    // 端の線と矢じりが混ざっているとき（props で直接書いたもの）は、両端に何かある＝両端
+    const mixed = { ...arrow, props: { ...arrow.props, arrowheadStart: 'bar', arrowheadEnd: 'arrow' } } as typeof arrow
+    expect(arrowheadsField.read(mixed)).toBe('both')
+  })
 })
 
 describe('text format fields per range (MAI-74)', () => {
