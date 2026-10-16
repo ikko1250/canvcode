@@ -61,21 +61,25 @@ async function serve(workspace: string, paths: Record<string, string>, options: 
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 }
 
-// PDF の文字と、描いている画像の数
-async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number }> {
+// PDF の文字と、描いている画像の数と、文字のいちばん右の端（紙の右端からの空き、pt。紙からはみ出すと負）
+async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number; rightGap: number }> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const task = pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: false })
   const doc = await task.promise
   let text = ''
   let images = 0
+  let rightGap = Infinity
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
     const content = await page.getTextContent()
     text += content.items.map((item) => ('str' in item ? item.str : '')).join('')
+    for (const item of content.items) {
+      if ('str' in item && item.str.trim()) rightGap = Math.min(rightGap, page.view[2] - (item.transform[4] + item.width))
+    }
     images += (await page.getOperatorList()).fnArray.filter((fn) => fn === pdfjs.OPS.paintImageXObject).length
   }
   await task.destroy()
-  return { text, images }
+  return { text, images, rightGap }
 }
 
 // 1×1 の PNG
@@ -144,6 +148,37 @@ describe('MarkdownPdf', () => {
       expect(text).toContain('報告書')
       expect(text).toContain('［画像：動く］')
       expect(text).toContain('［画像：外］')
+    },
+    300_000,
+  )
+
+  it.skipIf(!canBuild)(
+    'wraps long lines in code blocks instead of running off the page',
+    async () => {
+      const workspace = tempDir()
+      const long = 'a'.repeat(300)
+      writeFileSync(
+        join(workspace, 'code.md'),
+        [
+          '# コード',
+          '',
+          '```python',
+          `x = "${long}END1"  # 日本語のコメントが長く続いて、行の終わりまで届いてもまだ続くような長いコメントEND2`,
+          '```',
+          '',
+          '```',
+          `plain ${long}END3`,
+          '```',
+          '',
+        ].join('\n'),
+      )
+      const base = await serve(workspace, { 'file:c': 'code.md' })
+      const response = await fetch(`${base}/api/files/file%3Ac/pdf`, { method: 'POST' })
+      expect(response.status, await response.clone().text()).toBe(200)
+      const { text, rightGap } = await readPdf(await response.arrayBuffer())
+      for (const mark of ['END1', 'END2', 'END3']) expect(text).toContain(mark)
+      // 右の余白は 25mm（約 71pt）。折り返しの印のぶん少しはみ出してもよい
+      expect(rightGap).toBeGreaterThan(50)
     },
     300_000,
   )

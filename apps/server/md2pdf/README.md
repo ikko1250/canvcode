@@ -12,6 +12,8 @@ https://github.com/ikko1250/md2pdf の 781f31f から、次のファイルをそ
 
 `canvcode-images.lua` は CanvCode のもの（md2pdf にはない）。画像のパスを、画面のプレビューと同じ規則で探す。
 
+`pandoc-lualatex-mplus.tex` の末尾の「コードブロック」の数行（fvextra で長い行を折り返す）も CanvCode で足したもので、md2pdf にはまだない。写し直すときは消さないこと。
+
 ## 要るもの
 
 - pandoc、LuaLaTeX（Ubuntu なら `pandoc texlive-luatex texlive-lang-japanese texlive-latex-recommended texlive-latex-extra`）

@@ -45,3 +45,11 @@
   {\normalfont\fontsize{21.6}{28}\selectfont\titleonefont\titleonejfont}}
 \makeatother
 \AtBeginDocument{\hypersetup{colorlinks=true,allcolors=blue,pdfborderstyle={/S/U/W 1}}}
+% コードブロック（CanvCode で足した）: 長い行を本文の幅で折り返す（カードの表示と同じ）。
+% 言語付きは pandoc の Highlighting（色付けの命令の中でも折る）、言語なしは verbatim
+\usepackage{fvextra}
+\fvset{breaklines=true,breakanywhere=true}
+\ifdefined\Highlighting
+  \RecustomVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\},breaklines,breakanywhere,breaknonspaceingroup}
+\fi
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
