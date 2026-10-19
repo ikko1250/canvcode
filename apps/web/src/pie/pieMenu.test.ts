@@ -188,6 +188,7 @@ describe('buildPieMenus', () => {
     toolId,
     setTool: vi.fn(),
     importPdf: vi.fn(),
+    importTable: vi.fn(),
     createFileCanvas: vi.fn(),
     placeSlide: vi.fn(),
     undo: vi.fn(),
@@ -298,7 +299,7 @@ describe('buildPieMenus', () => {
     expect(isSubmenu(blockArrows) ? labels(blockArrows.items) : []).toEqual(['右向き', '両向き', '曲がった矢印', 'シェブロン'])
     expect(labels(sub('文字'))).toEqual(['テキスト', 'タイトル', '付箋'])
     expect(labels(sub('Portal'))).toEqual(['空', 'PDF', 'Python', 'Markdown'])
-    expect(labels(sub('Card'))).toEqual(['Python', 'Markdown'])
+    expect(labels(sub('Card'))).toEqual(['Python', 'Markdown', 'CSV'])
   })
 
   it('creates canvases from the Portal group and switches tools from the Card group', () => {
@@ -322,6 +323,8 @@ describe('buildPieMenus', () => {
     leafIn('Card', 'Markdown')!.onSelect()
     expect(ctx.setTool).toHaveBeenLastCalledWith('markdown')
     expect(ctx.createFileCanvas).toHaveBeenCalledTimes(2)
+    leafIn('Card', 'CSV')!.onSelect()
+    expect(ctx.importTable).toHaveBeenCalledTimes(1)
   })
 
   it('places a 16:9 or 4:3 slide from the shapes group (slides v2)', () => {

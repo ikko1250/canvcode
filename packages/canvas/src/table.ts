@@ -37,3 +37,13 @@ export function toMarkdownTable(rows: string[][]): string {
   const [header, ...body] = rows
   return [line(header), `| ${Array.from({ length: columns }, () => '---').join(' | ')} |`, ...body.map(line)].join('\n') + '\n'
 }
+
+// 取り込んだ CSV・TSV のファイルのバイト列を文字にする。BOM のある・正しい UTF-8 ならそのまま読み、
+// そうでなければ Shift_JIS（Excel で保存した日本語の CSV に多い）として読む。BOM は除く
+export function decodeTableFile(bytes: Uint8Array): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^﻿/, '')
+  } catch {
+    return new TextDecoder('shift_jis').decode(bytes)
+  }
+}

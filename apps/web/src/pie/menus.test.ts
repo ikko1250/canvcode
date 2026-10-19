@@ -12,6 +12,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     toolId: 'select',
     setTool: vi.fn(),
     importPdf: vi.fn(),
+    importTable: vi.fn(),
     createFileCanvas: vi.fn(),
     placeSlide: vi.fn(),
     undo: vi.fn(),

@@ -1,5 +1,5 @@
 import type { Patch, WorkspaceRecord } from '@canvcode/core'
-import { builtinNodeTypes, createCodeCardType, type AnyNodeTypeDef } from '@canvcode/nodes'
+import { builtinNodeTypes, createCodeCardType, createTableCardType, type AnyNodeTypeDef } from '@canvcode/nodes'
 import { createMarkdownCardType } from '@canvcode/nodes/markdown'
 import { Editor } from '@canvcode/canvas/editor'
 import { Workspace } from '@canvcode/canvas/workspace'
@@ -38,6 +38,7 @@ export function serverNodeTypes(): AnyNodeTypeDef[] {
     ...builtinNodeTypes,
     createMarkdownCardType({ embedCss: async () => '', measureCss: '', files: noFiles }) as AnyNodeTypeDef,
     createCodeCardType({ files: noFiles }) as AnyNodeTypeDef,
+    createTableCardType({ files: noFiles }) as AnyNodeTypeDef,
   ]
 }
 

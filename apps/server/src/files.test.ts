@@ -74,3 +74,19 @@ describe('GET /api/workspace/<path>', () => {
     expect((await fetch(`${base}/api/workspace/a.png`, { method: 'POST' })).status).toBe(405)
   })
 })
+
+describe('table files (.csv / .tsv)', () => {
+  it('finds .csv and .tsv files as tables and creates new tables as .csv', async () => {
+    const workspace = tempDir()
+    writeFileSync(join(workspace, '売上.csv'), '月,売上\n')
+    writeFileSync(join(workspace, 'data.tsv'), 'a\tb\n')
+    writeFileSync(join(workspace, 'other.txt'), 'x')
+    const store = new FileStore(workspace, join(workspace, '.canvcode'), () => {})
+    await store.init()
+    cleanups.push(() => void store.close())
+    const listed = store.list().map((f) => [f.path, f.kind, f.title]).sort()
+    expect(listed).toEqual([['data.tsv', 'table', 'data'], ['売上.csv', 'table', '売上']])
+    const created = await store.create('table', '新しい表', 'a,b\n')
+    expect(created).toMatchObject({ kind: 'table', path: '新しい表.csv' })
+  })
+})

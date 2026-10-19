@@ -24,11 +24,13 @@ import {
   ARROW_SIZES,
   builtinNodeTypes,
   createCodeCardType,
+  createTableCardType,
   type ArrowProps,
   type FileContentSource,
   type PortalProps,
   type NoteProps,
   type QuoteCardProps,
+  type TableCardProps,
   type SlideRatio,
   type StrokeDash,
 } from '@canvcode/nodes'
@@ -130,6 +132,7 @@ function createWorkspace(initial: InitialRecords) {
       ...builtinNodeTypes,
       createAppMarkdownCardType(content),
       createCodeCardType({ files: content }),
+      createTableCardType({ files: content }),
     ],
   })
   const sync = new SyncClient(workspace, initial)
@@ -726,15 +729,26 @@ export function App(props: { initial: InitialRecords }) {
         items.push({ label: 'メモを編集', shortcut: 'Enter', onSelect: () => view.textEditor.start(single.id) })
         items.push('separator')
       }
-      // File のカード（Markdown・Python）
-      if (single?.type === 'markdown-card' || single?.type === 'code-card') {
+      // File のカード（Markdown・Python・表）。表はカードの上では編集せず、全画面のエディタで開く
+      if (single?.type === 'markdown-card' || single?.type === 'code-card' || single?.type === 'table-card') {
         const props = single.props as MarkdownCardProps
         const file = workspace.getFile(props.fileId)
         if (file) {
-          items.push({ label: '編集', shortcut: 'Enter', onSelect: () => view.editDocument(single.id) })
-          items.push({ label: '全画面で開く', shortcut: 'Ctrl+Enter', onSelect: () => openFile(file.id) })
+          const table = single.type === 'table-card'
+          if (!table) items.push({ label: '編集', shortcut: 'Enter', onSelect: () => view.editDocument(single.id) })
+          items.push({ label: '全画面で開く', shortcut: table ? 'Enter' : 'Ctrl+Enter', onSelect: () => openFile(file.id) })
           items.push({ label: '新しいタブで開く', onSelect: () => openNodeInNewTab(single.id) })
           if (file.kind === 'markdown') items.push({ label: 'PDF で出力', onSelect: () => void exportPdf(file.id) })
+          if (table) {
+            const header = (single.props as TableCardProps).header
+            items.push({
+              label: header ? '1 行目を見出しにしない' : '1 行目を見出しにする',
+              onSelect: () => {
+                const node = editor.getNode(single.id)
+                if (node) editor.transact('table header', (tx) => tx.put({ ...node, props: { ...node.props, header: !header } }))
+              },
+            })
+          }
           // このファイルを引用しているノート（逆リンク。MAI-33）
           const cited = citationItems(workspace.anchorsOfFile(file.id).map((a) => a.id))
           if (cited.length > 0) {
@@ -1237,6 +1251,10 @@ export function App(props: { initial: InitialRecords }) {
                 const center = view.viewportCenter()
                 for (const [i, file] of files.entries()) await view.importPdf(file, { x: center.x + i * 40, y: center.y + i * 40 })
               })
+            },
+            importTable: () => {
+              if (!view) return
+              void pickFiles('.csv,.tsv,text/csv,text/tab-separated-values').then((files) => view?.importFiles(files, view.viewportCenter()))
             },
             createFileCanvas: (kind) => void view?.createFileCanvas(kind),
             placeSlide,

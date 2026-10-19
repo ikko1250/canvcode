@@ -73,9 +73,11 @@ export function FileEditor(props: {
   const { workspace, files, fileId, focus, onQuote, onReference, onExportPdf, onLost, onClose } = props
   const file = workspace.getFile(fileId)
   const isCode = file?.kind === 'code'
+  const isTable = file?.kind === 'table'
+  // Python と表（CSV）にはプレビューがない
+  const sourceOnly = isCode || isTable
   const [chosenMode, setMode] = useState<Mode>('both')
-  // Python にはプレビューがない
-  const mode: Mode = isCode ? 'source' : chosenMode
+  const mode: Mode = sourceOnly ? 'source' : chosenMode
   const [text, setText] = useState<string | null>(null)
   // エディタを作り直した回数。スクロールの見張りを付け直す目印（MAI-44）
   const [editorVersion, setEditorVersion] = useState(0)
@@ -106,8 +108,8 @@ export function FileEditor(props: {
     const editor = createCodeEditor({
       parent,
       doc: text,
-      language: isCode ? 'python' : 'markdown',
-      placeholder: isCode ? 'Python を書く…' : 'Markdown を書く…',
+      language: isCode ? 'python' : isTable ? null : 'markdown',
+      placeholder: isCode ? 'Python を書く…' : isTable ? 'CSV を書く…' : 'Markdown を書く…',
       onChange: (value) => {
         files.edit(fileId, value)
         setPreviewText(value)
@@ -142,7 +144,7 @@ export function FileEditor(props: {
       void files.flush(fileId)
     }
     // text は読み込んだときに一度だけ決まる（そのあとの変更はエディタが持つ）
-  }, [files, fileId, onClose, text, isCode])
+  }, [files, fileId, onClose, text, isCode, isTable])
 
   // 引用ノートから開いたときは、引用した範囲を選んで見せる。見つからなければ、覚えていた行へ
   useEffect(() => {
@@ -211,8 +213,8 @@ export function FileEditor(props: {
   }, [previewText])
   const documentPath = file?.path
   const html = useMemo(
-    () => (isCode ? '' : renderMarkdown(debounced, { sourceLines: true, documentPath }).html),
-    [debounced, isCode, documentPath],
+    () => (sourceOnly ? '' : renderMarkdown(debounced, { sourceLines: true, documentPath }).html),
+    [debounced, sourceOnly, documentPath],
   )
 
   // 本文とプレビューのスクロールを合わせる（MAI-44）。
@@ -223,7 +225,7 @@ export function FileEditor(props: {
   const masterRef = useRef<Pane>('source')
   // こちらで動かした分の scroll イベントを無視する（相手→こちら→相手…と往復しないように）
   const echoRef = useRef<{ pane: Pane; until: number } | null>(null)
-  const syncEnabled = mode === 'both' && !isCode
+  const syncEnabled = mode === 'both' && !sourceOnly
 
   const panes = useCallback((): { scroller: HTMLElement; preview: HTMLElement } | null => {
     const editor = editorRef.current
@@ -337,10 +339,10 @@ export function FileEditor(props: {
     <div className="file-editor" role="dialog" aria-label={file?.title}>
       <style>{MARKDOWN_CARD_CSS}</style>
       <header className="file-editor-header">
-        <span className={isCode ? 'file-editor-type code' : 'file-editor-type'}>{isCode ? 'PY' : 'MD'}</span>
+        <span className={isCode ? 'file-editor-type code' : isTable ? 'file-editor-type table' : 'file-editor-type'}>{isCode ? 'PY' : isTable ? 'CSV' : 'MD'}</span>
         <strong className="file-editor-title">{file?.title ?? ''}</strong>
         <span className="file-editor-path">{file?.path}</span>
-        {!isCode && (
+        {!sourceOnly && (
           <div className="file-editor-modes">
             {MODES.map(({ mode: m, label }) => (
               <button key={m} className={mode === m ? 'active' : ''} onClick={() => setMode(m)}>
@@ -349,7 +351,7 @@ export function FileEditor(props: {
             ))}
           </div>
         )}
-        {!isCode && onQuote && (
+        {!sourceOnly && onQuote && (
           <button className="file-editor-quote" onMouseDown={(e) => e.preventDefault()} onClick={quoteSelection} title="選んだ文字の引用をコピーする。キャンバスに貼ると引用ノートになる">
             引用をコピー
           </button>
@@ -364,7 +366,7 @@ export function FileEditor(props: {
             AIに渡す
           </button>
         )}
-        {!isCode && onExportPdf && (
+        {!sourceOnly && onExportPdf && (
           <button
             className="file-editor-quote"
             disabled={exportingPdf}

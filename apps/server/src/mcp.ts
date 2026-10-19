@@ -34,7 +34,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     { name: 'canvcode', version: '0.2.0' },
     {
       instructions:
-        'CanvCode is an infinite canvas whose Markdown (.md) and Python (.py) documents are real files. ' +
+        'CanvCode is an infinite canvas whose Markdown (.md), Python (.py) and table (.csv / .tsv) documents are real files. ' +
         'Use list_documents to find a document id, read_document before editing, and prefer edit_document for small changes. ' +
         'New documents appear under "未配置" (unplaced) in the sidebar; the user places them on a canvas. ' +
         'When the user\'s message contains an id like ref:XXXXXXXXXX, it points at a place the user selected in CanvCode ' +
@@ -55,10 +55,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
     'list_documents',
     {
       title: 'List documents',
-      description: 'List Markdown and Python documents in the workspace. Filter by a substring of the title or path, and by kind.',
+      description: 'List Markdown, Python and table (CSV) documents in the workspace. Filter by a substring of the title or path, and by kind.',
       inputSchema: {
         query: z.string().optional().describe('Case-insensitive substring of the title or path'),
-        kind: z.enum(['markdown', 'code']).optional().describe('markdown (.md) or code (.py)'),
+        kind: z.enum(['markdown', 'code', 'table']).optional().describe('markdown (.md), code (.py) or table (.csv / .tsv)'),
       },
       annotations: { readOnlyHint: true },
     },
@@ -125,9 +125,11 @@ export function createMcpServer(deps: McpDeps): McpServer {
     'create_document',
     {
       title: 'Create a document',
-      description: 'Create a new Markdown or Python document. It is added to the workspace as unplaced; the user can place it on a canvas from the sidebar.',
+      description:
+        'Create a new Markdown, Python or table (CSV) document. It is added to the workspace as unplaced; the user can place it on a canvas from the sidebar. ' +
+        'A table is UTF-8 CSV text (comma-separated, "..." for cells with commas, quotes or newlines); its first row is shown as the header.',
       inputSchema: {
-        kind: z.enum(['markdown', 'code']).describe('markdown (.md) or code (.py)'),
+        kind: z.enum(['markdown', 'code', 'table']).describe('markdown (.md), code (.py) or table (.csv)'),
         title: z.string().describe('File name without the extension. A number is appended if the name is taken'),
         content: z.string().default('').describe('Initial text'),
       },

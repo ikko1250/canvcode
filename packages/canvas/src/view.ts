@@ -27,7 +27,7 @@ import {
   pickImageLevel,
   resetTextMetrics,
   textMetricsGeneration,
-  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
+  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
 import { AssetManager, IMAGE_MIME_TYPES, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
@@ -62,7 +62,7 @@ import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { slideImageRegion, type SlideImage } from './slideImage.ts'
-import { markdownTableFromClipboard } from './table.ts'
+import { decodeTableFile, markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
@@ -633,12 +633,12 @@ export class CanvasView {
     return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
   }
 
-  // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）のうち、
+  // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）と表のカードのタイルのうち、
   // 頼んだ解像度のものが手元になかったものを読み込んでから、描き直す（読み込み中のプレースホルダーや粗い画像を写さない）。
   // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
   // （上限を超えれば、いつもどおり古いものから捨てる）
   private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>, print = false): Promise<HTMLCanvasElement> {
-    const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:'))
+    const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:') || isTableTileKey(key))
     const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
     if (recorder.size === 0) return canvas
     // 読み込めなかった画像は諦め、プレースホルダーのまま書き出す（1 つの失敗で書き出し全体を失敗させない）
@@ -788,30 +788,39 @@ export class CanvasView {
 
   // カードの本文をその場で編集する（MAI-30）。編集できるノードなら true
   editDocument(nodeId: string): boolean {
+    // 表のカードは、カードの上では編集せず、全画面のエディタで本文（CSV）を開く
+    const node = this.editor.getNode(nodeId)
+    if (node?.type === 'table-card') {
+      const ref = node.locked ? null : this.editor.workspace.referenceOf(node)
+      if (!ref || this.editor.workspace.targetStatus(ref.targetId) !== 'ok') return false
+      this.options.onOpenFile(ref.targetId)
+      return true
+    }
     if (!this.documentEditor?.canEdit(nodeId)) return false
     this.textEditor.finish()
     void this.documentEditor.start(nodeId)
     return true
   }
 
-  // 新しい File（「無題.md」「無題.py」）とカードを作り、その場で編集する（MAI-30、MAI-31）
+  // 新しい File（「無題.md」「無題.py」）とカードを作り、その場で編集する（MAI-30、MAI-31）。
+  // 取り込んだ表（.csv）は、表に合わせた大きさ（props）で置く
   async createDocumentAt(
-    kind: 'markdown' | 'code',
+    kind: 'markdown' | 'code' | 'table',
     top: Vec,
     width?: number,
-    options: { title?: string; content?: string; edit?: boolean } = {},
+    options: { title?: string; content?: string; edit?: boolean; props?: Record<string, unknown> } = {},
   ): Promise<string | null> {
     if (!this.files) return null
     const editor = this.editor
     try {
       const file = await this.files.create(kind, options.title ?? '無題', options.content ?? '')
       if (this.editor !== editor) return null
-      const nodeId = editor.createFileCard(file.id, top, { width })
+      const nodeId = editor.createFileCard(file.id, top, { width, props: options.props })
       if (nodeId && options.edit !== false) this.editDocument(nodeId)
       return nodeId
     } catch (error) {
       console.error('Failed to create a file', error)
-      this.options.notify(`${kind === 'markdown' ? 'Markdown' : 'Python'} のファイルを作れませんでした`)
+      this.options.notify(`${KIND_LABELS[kind]} のファイルを作れませんでした`)
       return null
     }
   }
@@ -1942,13 +1951,14 @@ export class CanvasView {
     for (const file of backups) this.options.onImportBackup(file)
     const files = all.filter((file) => !backups.includes(file))
     if (files.length === 0) return
-    // .md と .py は、ワークスペースに保存する。.md はカードを置き、.py は PDF と同じく、
+    // .md・.py・.csv は、ワークスペースに保存する。.md と .csv はカードを置き、.py は PDF と同じく、
     // コードのカードを置いた Canvas とその Portal にする（MAI-12、MAI-37）
     const documents = this.files ? files.filter((file) => DOCUMENT_EXTENSION.test(file.name)) : []
     for (const [i, file] of documents.entries()) {
       const at = { x: center.x + i * 40, y: center.y + i * 40 }
       const title = file.name.replace(DOCUMENT_EXTENSION, '')
       if (/\.py$/i.test(file.name)) await this.importPython(title, await file.text(), at)
+      else if (/\.(csv|tsv)$/i.test(file.name)) await this.importTable(file, title, at)
       else await this.createDocumentAt('markdown', at, undefined, { title, content: await file.text(), edit: false })
     }
     // PDF は、ページを並べた Canvas とその Portal にする（MAI-12、MAI-32）
@@ -2009,6 +2019,14 @@ export class CanvasView {
       this.options.notify(`PDF を読み込めませんでした：${file.name}`)
       return null
     }
+  }
+
+  // CSV・TSV を取り込む：文字にして（Shift_JIS も読む）UTF-8 の File（.csv）に保存し、表に合わせた大きさの表のカードを置く。
+  // TSV もタブ区切りのまま保存する（表にするときに、タブがあればタブで区切る）
+  async importTable(file: File, title: string, top: Vec): Promise<string | null> {
+    const content = decodeTableFile(new Uint8Array(await file.arrayBuffer()))
+    const props = tableCardImportSize(content, file.name)
+    return this.createDocumentAt('table', top, undefined, { title, content, edit: false, props })
   }
 
   // Python を取り込む：File にして、コードのカードを置いた Canvas と Portal を作る（MAI-37）
@@ -2193,12 +2211,14 @@ function clipboardFiles(data: DataTransfer): File[] {
   })
 }
 
-const DOCUMENT_EXTENSION = /\.(md|markdown|py)$/i
+const DOCUMENT_EXTENSION = /\.(md|markdown|py|csv|tsv)$/i
+
+const KIND_LABELS = { markdown: 'Markdown', code: 'Python', table: 'CSV' } as const
 
 // 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
-  return `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、PDF、旧アプリの .ricbackup）`
+  return `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、CSV（.csv・.tsv）、PDF、旧アプリの .ricbackup）`
 }
 
 // クリップボードに文字を書く。書けたかどうかを返す（投げない）

@@ -307,6 +307,16 @@ describe('edit_canvas', () => {
     expect(records.get('file:md')!.deletedAt).not.toBeNull()
   })
 
+  it('places a table (CSV) document as a table card', () => {
+    const { records, edit } = setup()
+    const now = Date.now()
+    const file = { typeName: 'file', id: 'file:csv', kind: 'table', title: '売上', path: '売上.csv', size: 1, mtime: now, hash: 'h', missing: false, parentCanvasId: null, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null }
+    records.apply([file], [])
+    const made = edit([{ op: 'create', type: 'card', as: 'c', file: 'file:csv', x: 0, y: 0, w: 800 }]).created
+    expect(records.get(made.c!)).toMatchObject({ type: 'table-card', props: { fileId: 'file:csv', role: 'owner', w: 800, header: true } })
+    expect(() => edit([{ op: 'create', type: 'markdown-card', file: 'file:csv', x: 0, y: 0 }])).toThrow(/use type table-card/)
+  })
+
   it('fails atomically and names the failing op', () => {
     const { records, edit, tab, host } = setup()
     const rev = records.rev

@@ -45,6 +45,8 @@ export interface PieMenuContext {
   setTool(id: ToolId): void
   // Portal › PDF：PDF を選んで、ページを並べたキャンバスとその Portal を作る
   importPdf(): void
+  // Card › CSV：CSV・TSV を選んで、表のカードを置く
+  importTable(): void
   // Portal › Markdown / Python：新しい File を置いたキャンバスとその Portal を作る（MAI-42）
   createFileCanvas(kind: 'markdown' | 'code'): void
   // 図形 › スライド 16:9 / 4:3：パイメニューを開いた位置を中心にスライドを置いて選ぶ（スライド v2）
@@ -253,7 +255,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
             { label: 'Markdown', onSelect: () => ctx.createFileCanvas('markdown') },
           ],
         },
-        group('Card', ['code', 'markdown']),
+        { label: 'Card', items: [tool('code'), tool('markdown'), { label: 'CSV', onSelect: ctx.importTable }] },
       ],
     },
     {

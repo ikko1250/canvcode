@@ -7,14 +7,14 @@ import { watch, type FSWatcher } from 'chokidar'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // Markdown / Python の File（MAI-10、MAI-13、MAI-30）。
-// - 本文は、ワークスペースのフォルダに .md / .py として置く。サブフォルダは SSH 側で自由に作ってよい。
+// - 本文は、ワークスペースのフォルダに .md / .py / .csv（表。.tsv も読む）として置く。サブフォルダは SSH 側で自由に作ってよい。
 //   v1 のスライドデッキ（.slide.md）は、v1 を消したあとは通常の Markdown として扱う（.slide.json は扱わない）
 // - File の id とパスの対応は .canvcode/files.json に持つ（段階 11 で SQLite に移す）
 // - 書き込むときは、ブラウザが読んだときのハッシュ（If-Match）と今のハッシュを比べ、違えば 409 で断る（衝突）
 // - 外からの変更（SSH からの編集など）は chokidar で監視し、知らせる。アプリ自身が書いた変更は、ハッシュで見分けて無視する
 // - 外で名前が変わった場合（削除と追加が短い間に続き、中身が同じ）は、同じ File とみなしてパスだけを更新する
 
-export type FileKind = 'markdown' | 'code'
+export type FileKind = 'markdown' | 'code' | 'table'
 
 export interface FileInfo {
   id: string
@@ -35,8 +35,8 @@ export type FileEvent =
   | { type: 'file-changed'; file: FileInfo }
   | { type: 'file-removed'; file: FileInfo }
 
-const KIND_BY_EXT: Record<string, FileKind> = { '.md': 'markdown', '.markdown': 'markdown', '.py': 'code' }
-const EXT_BY_KIND: Record<FileKind, string> = { markdown: '.md', code: '.py' }
+const KIND_BY_EXT: Record<string, FileKind> = { '.md': 'markdown', '.markdown': 'markdown', '.py': 'code', '.csv': 'table', '.tsv': 'table' }
+const EXT_BY_KIND: Record<FileKind, string> = { markdown: '.md', code: '.py', table: '.csv' }
 
 function kindOfPath(path: string): FileKind | undefined {
   return KIND_BY_EXT[extname(path.toLowerCase())]
@@ -140,7 +140,7 @@ export class FileStore {
           title?: string
           content?: string
         }
-        if (body.kind !== 'markdown' && body.kind !== 'code') throw new HttpError(400, 'kind must be markdown or code')
+        if (body.kind !== 'markdown' && body.kind !== 'code' && body.kind !== 'table') throw new HttpError(400, 'kind must be markdown, code or table')
         sendJson(res, 200, { file: await this.create(body.kind, body.title ?? '無題', body.content ?? '') })
       } else if (parts.length === 3 && req.method === 'PATCH') {
         const body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8')) as { title?: string }
