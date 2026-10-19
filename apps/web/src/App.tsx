@@ -27,6 +27,7 @@ import {
   type ArrowProps,
   type FileContentSource,
   type PortalProps,
+  type NoteProps,
   type QuoteCardProps,
   type SlideRatio,
   type StrokeDash,
@@ -696,6 +697,23 @@ export function App(props: { initial: InitialRecords }) {
             },
           })
         }
+      }
+      // 付箋の高さ：文字に合わせる／固定する
+      if (single?.type === 'note') {
+        const props = single.props as NoteProps
+        items.push({
+          label: props.sizing === 'auto' ? '高さを固定' : '高さを文字に合わせる',
+          onSelect: () => {
+            const node = editor.getNode(single.id)
+            const entry = editor.index.get(single.id)
+            if (!node || !entry) return
+            const current = node.props as NoteProps
+            // 固定にするときは、今の高さのまま固定する（見た目が変わらないように）
+            const next: NoteProps = current.sizing === 'auto' ? { ...current, sizing: 'fixed', h: entry.localBounds.h } : { ...current, sizing: 'auto' }
+            editor.transact('note sizing', (tx) => tx.put({ ...node, props: next }))
+          },
+        })
+        items.push('separator')
       }
       // 引用ノート（MAI-33）
       if (single?.type === 'quote-card') {

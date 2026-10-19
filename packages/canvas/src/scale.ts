@@ -91,6 +91,8 @@ export function scaleNodeProps(node: NodeRecord, type: AnyNodeTypeDef, bounds: B
         const resized = resizeTo(node, props, type, bounds, s)
         props = resized.props
         clamped = resized.clamped
+        // 文字に合わせている付箋は、高さが文字に付いてくるので、合わせたままにする（高さを固定しない）
+        if (node.type === 'note' && (node.props as { sizing?: unknown }).sizing === 'auto') props.sizing = 'auto'
       }
   }
   if (node.type === 'geo') {

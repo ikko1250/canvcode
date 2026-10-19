@@ -68,6 +68,8 @@ describe('text and title tools (MAI-62)', () => {
     tool.onPointerUp()
     const [note] = nodes<NoteProps>('note')
     expect(NOTE_DEFAULT_FONT_SIZE).toBe(12)
-    expect(note.props.fontSize).toBe(12)
+    expect(note.props.fontSize).toBe(12)    // 高さは文字に合わせ、押した位置を中心に置く（空の付箋は最小の高さ 60）
+    expect(note.props.sizing).toBe('auto')
+    expect(note.y).toBeCloseTo(100 - 60 / 2)
   })
 })

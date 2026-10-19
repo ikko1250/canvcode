@@ -108,9 +108,14 @@ describe('scaleNodeProps', () => {
   })
 
   it('stops a note at its minimum size and scales its text', () => {
-    const r = scale('note', { w: 200, h: 100, fontSize: 20, paragraphs: richTextFromPlain('メモ') }, 0.5)
+    const r = scale('note', { w: 200, h: 100, sizing: 'fixed', fontSize: 20, paragraphs: richTextFromPlain('メモ') }, 0.5)
     expect(r.props).toMatchObject({ w: 100, h: 60, fontSize: 10 })
     expect(r.clamped).toBe(true)
+  })
+
+  it('keeps a note that fits its text fitted (the height follows the scaled text)', () => {
+    const r = scale('note', { w: 200, h: 200, sizing: 'auto', fontSize: 20, paragraphs: richTextFromPlain('a\nb\nc') }, 2)
+    expect(r.props).toMatchObject({ w: 400, fontSize: 40, sizing: 'auto' })
   })
 
   it('keeps the width of a text that fits its content, and scales a fixed width with its text', () => {

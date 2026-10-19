@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 
 // 間隔のハンドル（MAI-54）：実際の CanvasView で、ピンクの棒をドラッグしてすべての隙間が同じ間隔に変わること、
-// Ctrl+Z で戻ることを確かめる。付箋は fixture の editor で置く（「詰める」はパレットの代わりに editor.spaceSelection で行う）
+// Ctrl+Z で戻ることを確かめる。付箋は fixture の editor で置く（「詰める」はパレットの代わりに editor.spaceSelection で行う）。
+// 付箋は高さを固定し（既定の 220×200）、棒の位置が文字に左右されないようにする
 
 const NOTE_W = 220
 const NOTE_Y = 350
@@ -13,7 +14,7 @@ async function openWithNotes(page: Page, xs: number[]): Promise<string[]> {
     ({ xs, y }) => {
       const { editor, view } = (window as any).canvasInputFixture
       view.setCamera({ x: 0, y: 0, zoom: 1 })
-      const notes = xs.map((x: number) => editor.makeNode('note', { x, y, props: { paragraphs: [{ runs: [{ text: 'メモ' }] }] } }))
+      const notes = xs.map((x: number) => editor.makeNode('note', { x, y, props: { paragraphs: [{ runs: [{ text: 'メモ' }] }], sizing: 'fixed' } }))
       editor.createNodes(notes)
       const ids = notes.map((n: { id: string }) => n.id)
       editor.setSelection(ids)

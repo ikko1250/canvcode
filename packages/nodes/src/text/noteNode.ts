@@ -5,8 +5,9 @@ import { DEFAULT_FONT_FAMILY, fontFamilyOf, textMetricsGeneration } from './font
 import { migratePlainTextProps, paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParagraph } from './richText.ts'
 
 // 付箋（MAI-7 の `note`、MAI-24）。幅は自由に変えられ、高さは文字に合わせて伸びる（MAI-34）。
-// props の h は「最低の高さ」で、文字がそれより多ければ、はみ出さないところまで縦に伸びる。
-// 高さは props から計算するので、前からある付箋も読み込んだときにそのまま文字に合った大きさになる。
+// sizing が 'auto'（新しく作る付箋の既定）なら、高さは文字にちょうど合わせて伸び縮みする（h は使わない）。
+// 'fixed'（sizing を持たない古い付箋も）なら、props の h は「最低の高さ」で、文字がそれより多ければ、はみ出さないところまで縦に伸びる。
+// 高さを手で変えると 'fixed' になる。高さは props から計算するので、前からある付箋も読み込んだときにそのまま文字に合った大きさになる。
 // 文字の大きさと揃え（左・中央・右）はノード単位で変えられる（MAI-50）。align のない古い付箋は左揃え。
 // 文字はテキストと同じく段落と run で持ち、範囲ごとに色・大きさを変えられる（MAI-74）。color は地の色で、文字の既定の色は NOTE_TEXT_COLOR。
 // 版 1 は文字をプレーンテキスト（text）で持っていた。
@@ -29,6 +30,8 @@ export interface NoteProps {
   letterSpacing?: number
   // 文字の既定の太さ（100〜900）。版を上げずに足した。持たない（古い・既定のままの）ものは 400
   fontWeight?: number
+  // 高さの決め方。'auto' は文字に合わせ、'fixed' は h を最低の高さにする。版を上げずに足した。持たない（古い・取り込んだ）ものは 'fixed'
+  sizing?: 'auto' | 'fixed'
 }
 
 export type NoteNode = NodeRecord<NoteProps>
@@ -40,6 +43,8 @@ export const NOTE_DEFAULT_LINE_HEIGHT = 1.4
 export const NOTE_DEFAULT_FONT_SIZE = 12
 // 付箋の文字の既定の色
 export const NOTE_TEXT_COLOR = '#2b2930'
+// 付箋の最小の高さ（文字に合わせるときも、これより低くしない）
+const NOTE_MIN_HEIGHT = 60
 
 export function noteStyle(props: NoteProps): TextStyle {
   return {
@@ -70,9 +75,10 @@ function noteLayout(props: NoteProps): TextLayout {
   return cached.layout
 }
 
-// 実際の高さ：props.h か、文字がすべて収まる高さの大きいほう
+// 実際の高さ：文字がすべて収まる高さ。'fixed' なら props.h より低くしない
 export function noteHeight(props: NoteProps): number {
-  return Math.max(props.h, noteLayout(props).height + PADDING * 2)
+  const fit = noteLayout(props).height + PADDING * 2
+  return props.sizing === 'auto' ? Math.max(NOTE_MIN_HEIGHT, fit) : Math.max(props.h, fit)
 }
 
 function textBox(props: NoteProps) {
@@ -83,7 +89,7 @@ export const noteType = defineNodeType<NoteProps>({
   type: 'note',
   version: 2,
 
-  defaultProps: () => ({ paragraphs: richTextFromPlain(''), w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, fontFamily: DEFAULT_FONT_FAMILY, align: 'left' }),
+  defaultProps: () => ({ paragraphs: richTextFromPlain(''), w: 220, h: 200, color: '#fff3bf', fontSize: NOTE_DEFAULT_FONT_SIZE, fontFamily: DEFAULT_FONT_FAMILY, align: 'left', sizing: 'auto' }),
 
   migrate: (props, fromVersion) => (fromVersion < 2 ? migratePlainTextProps<NoteProps>(props) : props),
 
@@ -116,9 +122,14 @@ export const noteType = defineNodeType<NoteProps>({
 
   colors: (node) => [node.props.color, ...runColors(paragraphsOf(node.props))],
 
-  // 幅は指定どおりにし、高さは最低の高さとして持つ（文字が多ければ、それより縦に伸びる）
-  resize: (node, size) => ({ ...node.props, w: size.w, h: size.h }),
-  minSize: { w: 60, h: 60 },
+  // 幅は指定どおりにし、高さは最低の高さとして持つ（文字が多ければ、それより縦に伸びる）。
+  // 文字に合わせている付箋の高さを手で変えたら、高さを固定する（幅だけ変えたときは合わせたまま）
+  resize(node, size) {
+    const props = node.props
+    if (props.sizing === 'auto' && Math.abs(size.h - noteHeight(props)) < 1) return { ...props, w: size.w }
+    return { ...props, w: size.w, h: size.h, sizing: 'fixed' }
+  },
+  minSize: { w: 60, h: NOTE_MIN_HEIGHT },
 
   editText: (node) => ({
     text: plainTextOf(paragraphsOf(node.props)),

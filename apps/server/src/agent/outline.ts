@@ -1,5 +1,5 @@
 import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
-import { slideSize, type SlideRatio } from '@canvcode/nodes'
+import { noteHeight, noteType, slideSize, type NoteProps, type SlideRatio } from '@canvcode/nodes'
 import { slideOrder } from '@canvcode/canvas/slideOrder'
 import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
 import { getMaxRowCount, TABLE_IMAGE_SPEC, TABLE_IMAGE_WIDTH_RANGE, TABLE_IMAGES_SPEC } from '@canvcode/slides'
@@ -217,6 +217,13 @@ function localBox(item: Item): { box: Box; estimated: boolean } {
       const lines = plainTextOfProps(p).split('\n')
       const w = p.autoWidth === false ? num(p.w) : Math.max(fontSize, ...lines.map((line) => textWidth(line, fontSize)))
       return { box: { x: 0, y: 0, w, h: lines.length * fontSize * 1.35 }, estimated: true }
+    }
+    // 付箋の高さは文字に合わせて伸びる（sizing が auto なら縮みもする）。文字から決めた高さは、文字の幅が概算なので estimated
+    case 'note': {
+      // 欠けた props は既定で補う（sizing を持たない古い付箋は fixed のまま）
+      const h = noteHeight({ ...noteType.defaultProps(), sizing: undefined, ...p } as NoteProps)
+      if (!Number.isFinite(h) || h === num(p.h)) return { box: { x: 0, y: 0, w: num(p.w), h: num(p.h) }, estimated: false }
+      return { box: { x: 0, y: 0, w: num(p.w), h }, estimated: true }
     }
     // スライドは大きさを props に持たず、縦横比から決める
     case 'slide':
@@ -487,6 +494,7 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       out.text = clip(plainTextOfProps(p))
       copy('fontSize', 'fontFamily', 'color', 'align')
       if (type === 'text') copy('autoWidth')
+      if (type === 'note') copy('sizing')
       break
     case 'geo': {
       copy('shape', 'label')
@@ -727,7 +735,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 
 ## Node types
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
-- note: sticky note (text, w, h, color = background)
+- note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
 - geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid

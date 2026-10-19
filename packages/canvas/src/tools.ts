@@ -37,6 +37,7 @@ import {
   type GeoProps,
   type GeoShape,
   type NoteProps,
+  noteHeight,
   type TextProps,
 } from '@canvcode/nodes'
 import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
@@ -1333,7 +1334,7 @@ export class NoteTool implements Tool {
     const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin('create note')
     const draft = editor.makeNode('note', { x: 0, y: 0, parentId }) as NodeRecord<NoteProps>
-    const node = { ...draft, x: local.x - draft.props.w / 2, y: local.y - draft.props.h / 2 }
+    const node = { ...draft, x: local.x - draft.props.w / 2, y: local.y - noteHeight(draft.props) / 2 }
     tx.put(node)
     tx.flush()
     this.creating = { tx, node }

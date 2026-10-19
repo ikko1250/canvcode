@@ -1003,7 +1003,11 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       set('fontSize', fontSize, 'fontSize')
       set('align', align, 'align')
       set('w', w, 'w')
-      set('h', h, 'h')
+      // 付箋は既定では高さを文字に合わせる。h を指定したら、その高さを最低の高さにして固定する
+      if (h !== undefined) {
+        props.sizing = 'fixed'
+        set('h', h, 'h')
+      }
       break
     case 'geo': {
       if (text !== undefined && label !== undefined) throw new EditError('give either text or label')

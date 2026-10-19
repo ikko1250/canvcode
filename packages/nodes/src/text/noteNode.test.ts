@@ -23,9 +23,12 @@ function note({ text, ...rest }: Partial<NoteProps> & { text?: string }): NodeRe
 }
 
 describe('note auto height (MAI-34)', () => {
-  it('keeps the stored height when the text fits', () => {
-    const node = note({ text: 'short', h: 200 })
+  it('keeps the stored height when the text fits (fixed, and old notes without sizing)', () => {
+    const node = note({ text: 'short', h: 200, sizing: 'fixed' })
     expect(noteType.getBounds(node)).toEqual({ x: 0, y: 0, w: 220, h: 200 })
+    const { sizing: _, ...legacy } = note({ text: 'short', h: 200 }).props
+    expect(noteType.getBounds(node)).toEqual({ x: 0, y: 0, w: 220, h: 200 })
+    expect(noteHeight(legacy as NoteProps)).toBe(200)
   })
 
   it('grows to fit the text when it does not fit', () => {
@@ -49,6 +52,45 @@ describe('note auto height (MAI-34)', () => {
   it('also fits notes created before, whose stored height is smaller than the text', () => {
     const node = note({ text: 'a\nb\nc\nd\ne', h: 60, fontSize: 20 })
     expect(noteHeight(node.props)).toBeCloseTo(5 * 28 + 32)
+  })
+})
+
+describe('note height fitted to the text (sizing auto)', () => {
+  it('new notes fit their text', () => {
+    expect(noteType.defaultProps().sizing).toBe('auto')
+  })
+
+  it('shrinks to the text, ignoring the stored height', () => {
+    const node = note({ text: 'a\nb\nc', h: 200, fontSize: 20 })
+    expect(noteHeight(node.props)).toBeCloseTo(3 * 28 + 32)
+    expect(noteType.getBounds(node).h).toBeCloseTo(3 * 28 + 32)
+    expect(noteType.editText!(node).box.h).toBeCloseTo(3 * 28)
+  })
+
+  it('grows as the text grows', () => {
+    const node = note({ text: Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n'), fontSize: 20 })
+    expect(noteHeight(node.props)).toBeCloseTo(20 * 28 + 32)
+  })
+
+  it('does not get lower than the minimum height', () => {
+    expect(noteHeight(note({ text: '' }).props)).toBe(60)
+    expect(noteHeight(note({ text: 'one line' }).props)).toBe(60)
+  })
+
+  it('stays fitted when only the width changes', () => {
+    const node = note({ text: 'a\nb\nc', fontSize: 20 })
+    const props = noteType.resize!(node, { w: 300, h: noteHeight(node.props) })
+    expect(props.sizing).toBe('auto')
+    expect(props.w).toBe(300)
+    expect(props.h).toBe(node.props.h)
+  })
+
+  it('fixes the height when the height is changed by hand', () => {
+    const node = note({ text: 'a\nb\nc', fontSize: 20 })
+    const props = noteType.resize!(node, { w: 220, h: 250 })
+    expect(props.sizing).toBe('fixed')
+    expect(props.h).toBe(250)
+    expect(noteHeight(props)).toBe(250)
   })
 })
 

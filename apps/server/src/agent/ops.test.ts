@@ -119,6 +119,18 @@ describe('edit_canvas', () => {
     expect((tab.sent[0]!.records as unknown[]).length).toBe(6)
   })
 
+  it('creates notes that fit their text unless h is given', () => {
+    const { records, edit } = setup()
+    const result = edit([
+      { op: 'create', type: 'note', as: 'auto', x: 0, y: 0, text: '短い' },
+      { op: 'create', type: 'note', as: 'fixed', x: 300, y: 0, h: 150, text: '短い' },
+    ])
+    expect(records.get(result.created.auto!)!.props).toMatchObject({ sizing: 'auto' })
+    expect(world(records, result.created.auto!).h).toBe(60)
+    expect(records.get(result.created.fixed!)!.props).toMatchObject({ sizing: 'fixed', h: 150 })
+    expect(world(records, result.created.fixed!).h).toBe(150)
+  })
+
   it('converts world coordinates into rotated and nested frames', () => {
     const { records, edit, root } = setup()
     records.apply(
@@ -343,7 +355,7 @@ describe('auto placement', () => {
   it('puts unpositioned nodes in free space near the centre of the user\'s view, stacked', () => {
     const { records, edit, root } = setup()
     // 見ている範囲（0,0 800x600）の中心をふさぐノード
-    records.apply([node('node:a', 'note', root, 'a1', { w: 200, h: 200 }, { x: 300, y: 200 })], [])
+    records.apply([node('node:a', 'note', root, 'a1', { w: 200, h: 200, sizing: 'fixed' }, { x: 300, y: 200 })], [])
     const viewport = { x: 0, y: 0, w: 800, h: 600 }
     const result = edit(
       [
@@ -712,7 +724,7 @@ describe('edit_canvas scale', () => {
         node('node:f', 'frame', root, 'a1', { w: 400, h: 300 }, { x: 300, y: 100, rotation: Math.PI / 6 }),
         node('node:g1', 'geo', 'node:f', 'a1', { w: 50, h: 40 }, { x: 20, y: 30 }),
         node('node:grp', 'group', 'node:f', 'a2', {}, { x: 100, y: 100 }),
-        node('node:n', 'note', 'node:grp', 'a1', { w: 100, h: 80 }, { x: 10, y: 10, rotation: 0.3 }),
+        node('node:n', 'note', 'node:grp', 'a1', { w: 100, h: 80, sizing: 'fixed' }, { x: 10, y: 10, rotation: 0.3 }),
       ],
       [],
     )
