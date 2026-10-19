@@ -2,12 +2,14 @@ import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType, pickImageLevel, type FileContentSource, type RasterImage } from '../defineNodeType.ts'
 import { MARKDOWN_CARD_CSS, buildMarkdownCardHtml } from './cardHtml.ts'
 import { hitLink, measureCardHeight, measureLinks, type LinkRegion } from './layout.ts'
-import { rasterizeHtml } from './rasterize.ts'
+import { drawHtmlTile, loadHtmlImage, rasterizeHtml, type HtmlImage } from './rasterize.ts'
 import { renderMarkdown } from './renderMarkdown.ts'
+import { fullImageLevel, tilesInRect, visibleLocalRect } from './tiles.ts'
 
 // Markdown カード（MAI-7 の `markdown-card`、MAI-9、MAI-30）。
 // - 本文は File（ワークスペースの .md ファイル）にあり、カードは fileId で参照する。本文のコピーは持たない
 // - 描き方は MAI-5・MAI-22 のとおり：表示倍率に合う解像度の画像を画像キャッシュに頼み、手元の画像を拡大・縮小して貼る
+//   長いカードで、全体の画像では解像度が足りないときは、見えている部分をタイルで重ねて描く（tiles.ts）
 // - 高さは、既定では中身に合わせる（sizing: 'auto'）。'fixed' なら w・h のまま、収まらない分は下端をぼかして切る
 // - File を参照するノードなので、Portal と同じく持ち主とショートカットがある（MAI-8）
 
@@ -39,6 +41,8 @@ export const MARKDOWN_CARD_DEFAULT_WIDTH = 480
 const MIN_HEIGHT = 80
 const PLACEHOLDER_LINE_HEIGHT = 26
 const HEADER_H = 36
+// タイルを切り出す元の画像を、いくつのカードの分まで持つか
+const HTML_IMAGE_LIMIT = 4
 
 export function createMarkdownCardType(options: MarkdownCardOptions) {
   const imageOutput = options.output?.() ?? 'canvas'
@@ -80,6 +84,25 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
   const heightOf = (props: MarkdownCardProps) =>
     props.sizing === 'auto' ? (measuredHeight(props) ?? props.h) : props.h
 
+  // タイルを切り出す元の、HTML の SVG の画像（ノードごとに、いまの版の 1 枚だけ）。多すぎないよう、使っていないものから捨てる
+  const htmlImages = new Map<string, { version: string; image: Promise<HtmlImage> }>()
+  const htmlImageOf = (nodeId: string, version: string, html: string, w: number, h: number): Promise<HtmlImage> => {
+    let entry = htmlImages.get(nodeId)
+    if (entry?.version !== version) {
+      const image = (async () => loadHtmlImage({ html, css: (await options.embedCss(html)) + MARKDOWN_CARD_CSS, width: w, height: h }))()
+      const created = { version, image }
+      // 読めなかったら、次に頼まれたときに作り直す
+      image.catch(() => {
+        if (htmlImages.get(nodeId) === created) htmlImages.delete(nodeId)
+      })
+      entry = created
+    }
+    htmlImages.delete(nodeId)
+    htmlImages.set(nodeId, entry)
+    while (htmlImages.size > HTML_IMAGE_LIMIT) htmlImages.delete(htmlImages.keys().next().value!)
+    return entry.image
+  }
+
   // リンクの位置（本文の版と大きさごとに一度だけ測る）
   const linkCache = new Map<string, LinkRegion[]>()
 
@@ -112,20 +135,34 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
       })
       const version = `${w}x${h}:${hashString(html)}`
       const level = pickImageLevel(info.zoom * info.devicePixelRatio)
+      // 全体の画像は、1 枚で作っても解像度が抑えられない段階までにする。それより高い解像度は、タイルで重ねる
+      const fullLevel = Math.min(level, fullImageLevel(w, h))
       // キーはノードごと。中身や大きさが変わっても、作り直すまでは古い画像を引き伸ばして描く
-      const image = info.images?.get(node.id, version, level, async (): Promise<RasterImage> => {
+      const image = info.images?.get(node.id, version, fullLevel, async (): Promise<RasterImage> => {
         const css = await options.embedCss(html)
-        const result = await rasterizeHtml({ html, css: css + MARKDOWN_CARD_CSS, width: w, height: h, scale: level, output: imageOutput })
+        const result = await rasterizeHtml({ html, css: css + MARKDOWN_CARD_CSS, width: w, height: h, scale: fullLevel, output: imageOutput })
         // Canvas のままより ImageBitmap のほうが、描くときに速い（特に Chromium）
         const bitmap = result.canvas instanceof ImageBitmap ? result.canvas : await createImageBitmap(result.canvas)
         // 大きすぎて解像度を抑えた場合も、頼んだ段階として記録する（そうしないと、同じ段階を頼み続けてしまう）
-        return { image: bitmap, width: bitmap.width, height: bitmap.height, level }
+        return { image: bitmap, width: bitmap.width, height: bitmap.height, level: fullLevel }
       })
       if (image) {
         // 解像度は段階で持ち、必要な倍率の 2 倍までしか縮めないので、既定の（軽い）補間で足りる
         ctx.drawImage(image.image, 0, 0, w, h)
       } else {
         drawPlaceholder(ctx, w, h, null)
+      }
+      // 全体の画像では解像度が足りないなら、見えているタイルを重ねる。できていないタイルは、下の全体の画像が見える
+      const visible = level > fullLevel && info.images ? visibleLocalRect(ctx, w, h) : null
+      if (visible && info.images) {
+        for (const tile of tilesInRect(w, h, visible)) {
+          const tileImage = info.images.get(`${node.id}#tile:${tile.col},${tile.row}`, version, level, async (): Promise<RasterImage> => {
+            const source = await htmlImageOf(node.id, version, html, w, h)
+            const bitmap = await createImageBitmap(drawHtmlTile(source, tile, level))
+            return { image: bitmap, width: bitmap.width, height: bitmap.height, level }
+          })
+          if (tileImage) ctx.drawImage(tileImage.image, tile.x, tile.y, tile.w, tile.h)
+        }
       }
       if (props.role === 'shortcut') drawShortcutFrame(ctx, w, h, info.zoom)
     },

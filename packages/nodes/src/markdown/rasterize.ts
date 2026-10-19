@@ -151,30 +151,42 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   return img.decode().then(() => img)
 }
 
-export async function rasterizeHtml(options: RasterizeOptions): Promise<RasterizeResult> {
-  const start = performance.now()
-  const { width, height, css } = options
-  const scale = clampScale(width, height, options.scale)
-
+// HTML を、SVG の画像の中で描ける形にする（フォームの部品を置き換え、画像を data: URL で埋め込む）
+async function prepareBody(html: string): Promise<Element> {
   const doc = document.implementation.createHTMLDocument('')
   const container = doc.createElement('div')
-  container.innerHTML = options.html
+  container.innerHTML = html
   replaceFormControls(container)
   await inlineImages(container)
-  const afterInline = performance.now()
+  return container
+}
 
+// foreignObject に HTML を入れた SVG。中身は width × height（CSS ピクセル）、画像の大きさは pixelW × pixelH
+function svgOf(container: Element, css: string, width: number, height: number, pixelW: number, pixelH: number): string {
   // XMLSerializer は、HTML の要素を XHTML の名前空間付きで書き出す
   const serializer = new XMLSerializer()
   const body = [...container.childNodes].map((node) => serializer.serializeToString(node)).join('')
   const styleText = (css + RASTER_SUBSTITUTE_CSS).replaceAll(']]>', ']]]]><![CDATA[>')
-  const pixelW = Math.round(width * scale)
-  const pixelH = Math.round(height * scale)
-  const svg =
+  return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelW}" height="${pixelH}" viewBox="0 0 ${width} ${height}">` +
     `<foreignObject x="0" y="0" width="${width}" height="${height}">` +
     `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px">` +
     `<style><![CDATA[${styleText}]]></style>${body}</div>` +
     `</foreignObject></svg>`
+  )
+}
+
+export async function rasterizeHtml(options: RasterizeOptions): Promise<RasterizeResult> {
+  const start = performance.now()
+  const { width, height, css } = options
+  const scale = clampScale(width, height, options.scale)
+
+  const container = await prepareBody(options.html)
+  const afterInline = performance.now()
+
+  const pixelW = Math.round(width * scale)
+  const pixelH = Math.round(height * scale)
+  const svg = svgOf(container, css, width, height, pixelW, pixelH)
   const afterSerialize = performance.now()
 
   let url: string
@@ -242,4 +254,34 @@ export async function rasterizeHtml(options: RasterizeOptions): Promise<Rasteriz
       totalMs: end - start,
     },
   }
+}
+
+// ---- 長いカードのタイル（tiles.ts） ----
+// タイルごとに SVG を作り直すと、そのたびに HTML 全体のレイアウトをやり直すことになる。
+// そこで SVG は等倍の大きさで 1 度だけ読み込み、タイルは drawImage の元の範囲で切り出して描く。
+// SVG は描き先の倍率で描き直されるので、切り出して拡大してもぼやけない（Chromium と Firefox で、タイルごとに作った SVG と同じ画素になることを確かめた）
+
+export interface HtmlImage {
+  image: HTMLImageElement
+  width: number
+  height: number
+}
+
+// HTML を SVG の画像として読み込む（等倍の大きさ）
+export async function loadHtmlImage(options: { html: string; css: string; width: number; height: number }): Promise<HtmlImage> {
+  const { width, height } = options
+  const svg = svgOf(await prepareBody(options.html), options.css, width, height, width, height)
+  // カード全体の画像（rasterizeHtml の既定）と同じく data: URL で読む（blob: だと Canvas を汚染するブラウザがある）
+  return { image: await loadImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`), width, height }
+}
+
+// 読み込んだ HTML の画像のうち、rect（CSS ピクセル）を scale 倍の解像度で描いた Canvas
+export function drawHtmlTile(source: HtmlImage, rect: { x: number; y: number; w: number; h: number }, scale: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(rect.w * scale))
+  canvas.height = Math.max(1, Math.round(rect.h * scale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas2D is not available')
+  ctx.drawImage(source.image, rect.x, rect.y, rect.w, rect.h, 0, 0, canvas.width, canvas.height)
+  return canvas
 }
