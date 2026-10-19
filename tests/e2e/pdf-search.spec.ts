@@ -3,7 +3,8 @@ import { searchPages } from '../../packages/core/src/pdfSearch.ts'
 
 // PDF の単語検索（Ctrl+F。試作）：一致するページと件数はサーバー（/api/assets/<ハッシュ>/search。ここでは差し替え）が数え、
 // 画面は一致したページの文字の位置を PDF.js で読んで、上から順に移る。PDF の中の文字の順番が、見た目の順と違っても
-// （スライドを PDF にしたものなど）、ページの上から順に移ることを、カメラの位置で確かめる
+// （スライドを PDF にしたものなど）、ページの上から順に移ることを、カメラの位置で確かめる。
+// 英語の PDF で、行末のハイフンで切れた語が見つかり、語の間の空白は無視しないことも確かめる
 
 const CANVAS_ID = 'canvas:pdf-search-test'
 const FILE_ID = 'file:pdf-search-test'
@@ -22,7 +23,12 @@ const PAGES: { text: string; y: number }[][] = [
     { text: 'apple two', y: 400 },
   ],
   [{ text: 'apple four', y: 700 }],
-  [{ text: 'banana', y: 700 }],
+  // 英語：行末のハイフンで切れた語（manage- / ment）と、行をまたいだ 2 語（the / rapist）
+  [
+    { text: 'risk manage-', y: 700 },
+    { text: 'ment of the', y: 670 },
+    { text: 'rapist', y: 640 },
+  ],
 ]
 
 // Helvetica（埋め込まない標準フォント）で文字を書いた PDF
@@ -131,6 +137,21 @@ test('finds words in PDF pages, and moves through the matches from the top of ea
 
   await input.fill('cherry')
   await expect(count).toHaveText('見つかりません')
+
+  // 行末のハイフンで切れた語は、つないで見つかる（画面も PDF.js の行の終わりで改行を入れ、サーバーと同じ 1 件を見つける）
+  await input.fill('management')
+  await expect(count).toHaveText('1 件')
+  await input.press('Enter')
+  await expect(count).toHaveText('1 / 1')
+  await expect.poll(() => centerY(page)).toBeCloseTo((lineY(2, 700) + lineY(2, 670)) / 2, -1)
+  // 英語の語の間の空白は無視しない
+  await input.fill('therapist')
+  await expect(count).toHaveText('見つかりません')
+  await input.fill('the rapist')
+  await expect(count).toHaveText('1 件')
+  await input.press('Enter')
+  await expect(count).toHaveText('1 / 1')
+
   await input.press('Escape')
   await expect(page.locator('.pdf-search')).toHaveCount(0)
 })

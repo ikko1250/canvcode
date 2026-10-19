@@ -21,6 +21,8 @@ export interface PdfTextItem {
   y: number
   w: number
   h: number
+  // 断片のあとで行が終わるか（PDF.js の hasEOL）。単語検索で、サーバーのテキストと同じところに改行を入れるのに使う
+  eol?: boolean
 }
 
 export interface RegionText {

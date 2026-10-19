@@ -15,6 +15,19 @@ describe('matchRects', () => {
     expect(matchRects(items, 'トランスフォー')).toEqual([[{ x: 140, y: 10, w: 40, h: 10 }, { x: 0, y: 30, w: 30, h: 10 }]])
   })
 
+  it('puts a line break after the last piece of a line, as the server text does', () => {
+    const lines = [
+      { text: 'risk manage-', x: 0, y: 0, w: 120, h: 10, eol: true },
+      { text: 'ment of the', x: 0, y: 20, w: 110, h: 10, eol: true },
+      { text: 'rapist', x: 0, y: 40, w: 60, h: 10 },
+    ]
+    const rounded = matchRects(lines, 'management').map((match) => match.map((r) => ({ x: Math.round(r.x), y: r.y, w: Math.round(r.w), h: r.h })))
+    expect(rounded).toEqual([[{ x: 50, y: 0, w: 70, h: 10 }, { x: 0, y: 20, w: 40, h: 10 }]])
+    // 行をまたいだ英語の 2 語（the / rapist）は、1 語としては当たらない
+    expect(matchRects(lines, 'therapist')).toEqual([])
+    expect(matchRects(lines, 'the rapist')).toHaveLength(1)
+  })
+
   it('orders matches from the top of the page, and from the left on the same line, not in the order of the pieces', () => {
     // スライドの PDF のように、下のテキストボックスの文字が先に書かれている
     const slide = [

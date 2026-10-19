@@ -20,12 +20,13 @@ export function matchRects(items: readonly PdfTextItem[], query: string): Box[][
 }
 
 function findRects(items: readonly PdfTextItem[], query: string): Box[][] {
-  // 断片はそのままつなぐ（サーバーのテキストも、断片をつないで改行を入れただけ。空白と改行は比べるときに無視する）
+  // 断片をつなぎ、行の終わりの断片のあとに改行を入れる（サーバーのテキストと同じつなぎ方。英語の語の区切りと、行末のハイフンに要る）
   const starts: number[] = []
   let text = ''
   for (const item of items) {
     starts.push(text.length)
     text += item.text
+    if (item.eol) text += '\n'
   }
   return findMatches(text, query).map(({ from, to }) => {
     const rects: Box[] = []
