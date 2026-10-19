@@ -1,5 +1,5 @@
 import type { AlignEdge, Axis, PageDirection, ReorderDirection, ToolId } from '@canvcode/canvas'
-import type { SlideLayoutKind, SlideRatio, TextAlign } from '@canvcode/nodes'
+import { FILTER_OP_LABELS, filterNeedsValue, type SlideLayoutKind, type SlideRatio, type TableFilterOp, type TextAlign } from '@canvcode/nodes'
 import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 
 // パイメニューの中身（MAI-39。以前は画面の下端のツールバーに並べていたもの）。
@@ -45,6 +45,8 @@ export interface PieMenuContext {
   setTool(id: ToolId): void
   // Portal › PDF：PDF を選んで、ページを並べたキャンバスとその Portal を作る
   importPdf(): void
+  // Card › CSV：CSV・TSV を選んで、表のカードを置く
+  importTable(): void
   // Portal › Markdown / Python：新しい File を置いたキャンバスとその Portal を作る（MAI-42）
   createFileCanvas(kind: 'markdown' | 'code'): void
   // 図形 › スライド 16:9 / 4:3：パイメニューを開いた位置を中心にスライドを置いて選ぶ（スライド v2）
@@ -66,6 +68,14 @@ export interface PieMenuContext {
   // 操作（MAI-57）：PDF のページの Canvas と、選んでいるもの
   pdf: PdfMenuContext
   selection: SelectionMenuContext
+  // パイメニューを開いた位置の下にある表のカード（なければ null）
+  table: TableMenuContext | null
+  // 表のカードの、開いた位置の列を並び替える（null なら並び替えをやめる）・絞り込む（値の要る条件は、値を尋ねてから）・
+  // 絞り込みの条件を外す（'column' はその列だけ）・折り返しを切り替える
+  sortTable(dir: 'asc' | 'desc' | null): void
+  filterTable(op: TableFilterOp): void
+  clearTableFilters(scope: 'column' | 'all'): void
+  toggleTableWrap(): void
   // 次（前）のページへ（倍率はそのまま）
   panToPage(direction: PageDirection): void
   unlockAndSelectPdfPages(): void
@@ -101,6 +111,15 @@ export interface PdfMenuContext {
   // すべてのページが固定されている（「固定する」は出さない）・どれも固定されていない（「固定を外して選ぶ」は出さない）
   allLocked: boolean
   noneLocked: boolean
+}
+
+export interface TableMenuContext {
+  // 開いた位置の列（列の上でなければ null）
+  column: { numeric: boolean; sorted: boolean; filtered: boolean } | null
+  // 並び替えているか・絞り込みの条件の数・折り返しているか
+  sorted: boolean
+  filterCount: number
+  wrap: boolean
 }
 
 export interface SelectionMenuContext {
@@ -145,6 +164,45 @@ const SLIDE_TEMPLATES: [SlideLayoutKind, string][] = [
   ['table-image', '表＋画像'],
   ['table-images', '表＋2画像'],
 ]
+
+// 絞り込みの条件（文字の列と数の列。値の要るものは「…」を付け、選んだあとに値を尋ねる）
+const TEXT_FILTERS: TableFilterOp[] = ['contains', 'notContains', 'equals', 'notEquals', 'empty', 'notEmpty']
+const NUMBER_FILTERS: TableFilterOp[] = ['equals', 'notEquals', 'gt', 'ge', 'lt', 'le', 'empty', 'notEmpty']
+
+// 表のカードの項目：列の上なら「並び替え ›」「フィルター ›」、条件があれば「フィルターを外す」、いつも「折り返す」
+function buildTableItems(ctx: PieMenuContext, table: TableMenuContext): PieEntry[] {
+  const items: PieEntry[] = []
+  const column = table.column
+  if (column) {
+    const sort: PieEntry[] = [
+      { label: '昇順', onSelect: () => ctx.sortTable('asc') },
+      { label: '降順', onSelect: () => ctx.sortTable('desc') },
+    ]
+    if (table.sorted) sort.push({ label: '並び替えをやめる', onSelect: () => ctx.sortTable(null) })
+    items.push({ label: '並び替え', items: sort })
+    const ops = column.numeric ? NUMBER_FILTERS : TEXT_FILTERS
+    items.push({
+      label: 'フィルター',
+      items: ops.map((op) => ({ label: FILTER_OP_LABELS[op] + (filterNeedsValue(op) ? '…' : ''), onSelect: () => ctx.filterTable(op) })),
+    })
+  }
+  if (table.filterCount > 0) {
+    // この列に条件があり、ほかの列にもあれば、どちらを外すかを選ぶ
+    if (column?.filtered && table.filterCount > 1) {
+      items.push({
+        label: 'フィルターを外す',
+        items: [
+          { label: 'この列', onSelect: () => ctx.clearTableFilters('column') },
+          { label: 'すべて', onSelect: () => ctx.clearTableFilters('all') },
+        ],
+      })
+    } else {
+      items.push({ label: 'フィルターを外す', onSelect: () => ctx.clearTableFilters(column?.filtered ? 'column' : 'all') })
+    }
+  }
+  items.push({ label: table.wrap ? '折り返さない' : '折り返す', onSelect: ctx.toggleTableWrap })
+  return items
+}
 
 const TEXT_ALIGNS: [TextAlign, string][] = [
   ['left', '左'],
@@ -212,6 +270,11 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   const foldSlides = slides.length > 1 && (foldText ? 1 : text.length) + items.length + slides.length > 8
   items.unshift(...(foldText ? [{ label: '文字', items: text }] : text))
   items.push(...(foldSlides ? [{ label: 'スライド', items: slides }] : slides))
+  // 表の項目は先頭に置く（ポインタの下の列への操作なので）。合わせて 8 つを超えるときは「表 ›」にまとめる
+  if (ctx.table) {
+    const table = buildTableItems(ctx, ctx.table)
+    items.unshift(...(table.length + items.length > 8 ? [{ label: '表', items: table }] : table))
+  }
   if (pages.length === 0) return items
   return pages.length + items.length <= 8 ? [...pages, ...items] : [{ label: 'ページ', items: pages }, ...items]
 }
@@ -253,7 +316,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
             { label: 'Markdown', onSelect: () => ctx.createFileCanvas('markdown') },
           ],
         },
-        group('Card', ['code', 'markdown']),
+        { label: 'Card', items: [tool('code'), tool('markdown'), { label: 'CSV', onSelect: ctx.importTable }] },
       ],
     },
     {

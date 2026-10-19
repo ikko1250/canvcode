@@ -362,6 +362,7 @@ function outlineLine(item: Item, ctx: LineContext): string {
       break
     case 'markdown-card':
     case 'code-card':
+    case 'table-card':
     case 'quote-card':
     case 'pdf-page':
       if (typeof p.fileId === 'string' && p.fileId) parts.push(p.fileId)
@@ -421,6 +422,7 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
       if (typeof p.fileId !== 'string' || !p.fileId) return str(p.inlineText)
       return str(recordOf(p.fileId)?.title)
     case 'code-card':
+    case 'table-card':
     case 'pdf-page':
       return typeof p.fileId === 'string' ? str(recordOf(p.fileId)?.title) : ''
     default:
@@ -556,6 +558,10 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       file()
       copy('role', 'sizing')
       if (type === 'markdown-card' && !p.fileId && typeof p.inlineText === 'string') out.text = clip(p.inlineText)
+      break
+    case 'table-card':
+      file()
+      copy('role', 'sizing', 'header', 'wrap', 'sort', 'filters')
       break
     case 'quote-card':
       file()
@@ -720,7 +726,7 @@ export function canvasFormatGuide(options: { editable?: boolean } = {}): string 
 ## Structure
 - A workspace has a tree of canvases. A canvas's child canvases are opened through portal nodes placed on it. list_canvases shows the tree; "unplaced" canvases have no portal yet.
 - A PDF is shown as a canvas of locked pdf-page nodes (pdf=<file id> in list_canvases).
-- Markdown / Python documents are files (file:...), shown on canvases as cards. Read their text with read_document.
+- Markdown / Python / table (CSV) documents are files (file:...), shown on canvases as cards. Read their text with read_document.
 
 ## Coordinates
 - World coordinates: x grows right, y grows down, 1 unit = 1 CSS px at 100% zoom. Rotation is in degrees, clockwise.
@@ -755,6 +761,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
 - markdown-card / code-card: a document file on the canvas
+- table-card: a table document (a .csv / .tsv file) drawn as a grid; its text is the CSV (read_document). header = whether the first row is shown as the header; wrap = long cells wrap; sort {col, dir} and filters [{col, op, value}] (col is 0-based; filters are ANDed) only change what the card shows, not the file
 - quote-card: quotation from a PDF or Markdown file with a memo
 - link-card: a web link pasted as a card (url, and the page's title, description and thumbnail when they could be fetched)
 - pdf-page: one page of a PDF (p= is 1-based)
@@ -787,7 +794,7 @@ Ops:
   geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label), fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize, align, cornerRadius, w, h
   frame: name, w, h
   slide: name, ratio, hidden, template (see Slides below)
-  card: file (document id from list_documents; markdown or code), w, h (fixes the height)
+  card: file (document id from list_documents; markdown, code or table), w, h (fixes the height)
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
   arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).

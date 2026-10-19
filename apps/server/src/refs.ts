@@ -410,6 +410,7 @@ async function describeNode(
       if (!out.file) out.text = str('inlineText')
       break
     case 'code-card':
+    case 'table-card':
       out.file = await file()
       break
     case 'quote-card':

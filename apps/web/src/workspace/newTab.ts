@@ -22,7 +22,7 @@ export function newTabUrl(workspace: Workspace, node: NodeRecord): string | null
     const targetId = (node.props as { targetId?: string }).targetId
     return targetId && workspace.targetStatus(targetId) === 'ok' ? canvasUrl(targetId) : null
   }
-  if (node.type !== 'markdown-card' && node.type !== 'code-card') return null
+  if (node.type !== 'markdown-card' && node.type !== 'code-card' && node.type !== 'table-card') return null
   const fileId = (node.props as { fileId?: string }).fileId
   const file = fileId ? workspace.getFile(fileId) : undefined
   if (!file || workspace.targetStatus(file.id) !== 'ok') return null

@@ -22,19 +22,28 @@ const RADIUS = 100
 const EDGE_MARGIN = RADIUS + 60
 
 // onOpen：出すときに、開いた位置（ポインタの位置。画面の端に寄せる前の、ウィンドウの座標）を知らせる。
-// その位置にものを置く項目（図形 › スライドなど）が使う
-export function PieMenus(props: { menus: PieMenuDef[]; enabled: boolean; onOpen?: (at: { x: number; y: number }) => void }) {
+// その位置にものを置く項目（図形 › スライドなど）が使う。
+// menusAt：開く位置で項目が変わるとき（表のカードの列など）に、キーを押したときの位置のメニューを作る
+// （次の描画を待つと、その位置にしかない項目が出ず、項目のないメニューは出さないので）
+export function PieMenus(props: {
+  menus: PieMenuDef[]
+  enabled: boolean
+  onOpen?: (at: { x: number; y: number }) => void
+  menusAt?: (at: { x: number; y: number }) => PieMenuDef[]
+}) {
   const [state, setState] = useState<PieState>(PIE_IDLE)
   // キーのハンドラから今の値を読むために、ref にも持つ
   const stateRef = useRef(state)
   const menusRef = useRef(props.menus)
   const enabledRef = useRef(props.enabled)
   const onOpenRef = useRef(props.onOpen)
+  const menusAtRef = useRef(props.menusAt)
   useEffect(() => {
     menusRef.current = props.menus
     enabledRef.current = props.enabled
     onOpenRef.current = props.onOpen
-  }, [props.menus, props.enabled, props.onOpen])
+    menusAtRef.current = props.menusAt
+  }, [props.menus, props.enabled, props.onOpen, props.menusAt])
 
   useEffect(() => {
     const update = (next: PieState) => {
@@ -63,16 +72,19 @@ export function PieMenus(props: { menus: PieMenuDef[]; enabled: boolean; onOpen?
       }
       // CapsLock で 'O' になることがあるので、文字のキーは大文字小文字を区別しない（MAI-57）
       const key = e.key.toLowerCase()
-      const menu = menusRef.current.find((m) => m.key === key)
-      if (!menu || e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
       // 文字を入力しているところ（カードの編集、名前の入力欄など）やダイアログでは、ただの文字として扱う
       if (!enabledRef.current || isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
       if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
+      const at = pointer ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+      // 出していないときは、押した位置のメニューにする（出している間は、そのまま）
+      if (!stateRef.current.open && pressed === null && menusAtRef.current) menusRef.current = menusAtRef.current(at)
+      const menu = menusRef.current.find((m) => m.key === key)
+      if (!menu) return
       e.preventDefault()
       e.stopPropagation()
       if (e.repeat || pressed !== null) return
       pressed = e.code
-      const at = pointer ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }
       if (!stateRef.current.open) onOpenRef.current?.(at)
       update(pressPie(stateRef.current, menu.id, clampToViewport(at)))
     }

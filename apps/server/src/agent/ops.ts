@@ -53,9 +53,9 @@ const MAX_LABEL = 80
 const MAX_LISTED_IDS = 10
 
 // 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る
-const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card'] as const
+const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card'] as const
 const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
-const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
+const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', table: 'table-card' }
 // 矢じり（arrow）。bars は両端に直交する短い線（寸法線 |―|）
 const HEADS = ['end', 'start', 'both', 'none', 'bars'] as const
 type Heads = (typeof HEADS)[number]
@@ -1057,6 +1057,7 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       break
     case 'markdown-card':
     case 'code-card':
+    case 'table-card':
       set('w', w, 'w')
       if (h !== undefined) {
         props.sizing = 'fixed'

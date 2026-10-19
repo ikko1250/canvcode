@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildPieMenus, type PdfMenuContext, type PieMenuContext, type SelectionMenuContext } from './menus.ts'
+import { buildPieMenus, type PdfMenuContext, type PieMenuContext, type SelectionMenuContext, type TableMenuContext } from './menus.ts'
 import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
@@ -7,11 +7,12 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
 const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false }
 
-function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false): PieMenuContext {
+function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false, table: TableMenuContext | null = null): PieMenuContext {
   return {
     toolId: 'select',
     setTool: vi.fn(),
     importPdf: vi.fn(),
+    importTable: vi.fn(),
     createFileCanvas: vi.fn(),
     placeSlide: vi.fn(),
     undo: vi.fn(),
@@ -47,6 +48,11 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     applySlideTemplate: vi.fn(),
     hasSlides,
     exportSlidesPdf: vi.fn(),
+    table,
+    sortTable: vi.fn(),
+    filterTable: vi.fn(),
+    clearTableFilters: vi.fn(),
+    toggleTableWrap: vi.fn(),
   }
 }
 
@@ -285,5 +291,47 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(labels(folded?.items)).toEqual(['文字', '重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
     const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
     for (const ring of [menu, full, folded]) for (const size of rings(ring!.items)) expect(size).toBeLessThanOrEqual(8)
+  })
+
+  it('shows sort and filter for the column under the pointer of a table card, before the selection items', () => {
+    const table: TableMenuContext = { column: { numeric: false, sorted: false, filtered: false }, sorted: false, filterCount: 0, wrap: false }
+    const ctx = context({}, { count: 1 }, false, table)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['並び替え', 'フィルター', '折り返す', '固定する', '複製'])
+    expect(labels(sub(menu, '並び替え'))).toEqual(['昇順', '降順'])
+    expect(labels(sub(menu, 'フィルター'))).toEqual(['含む…', '含まない…', '＝…', '≠…', '空', '空でない'])
+    run(sub(menu, '並び替え'), '降順')
+    expect(ctx.sortTable).toHaveBeenLastCalledWith('desc')
+    run(sub(menu, 'フィルター'), '含む…')
+    expect(ctx.filterTable).toHaveBeenLastCalledWith('contains')
+    run(menu?.items, '折り返す')
+    expect(ctx.toggleTableWrap).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers number comparisons on a number column, and undoing sort, filters and wrap when they are set', () => {
+    const table: TableMenuContext = { column: { numeric: true, sorted: true, filtered: true }, sorted: true, filterCount: 2, wrap: true }
+    const ctx = context({}, {}, false, table)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['並び替え', 'フィルター', 'フィルターを外す', '折り返さない'])
+    expect(labels(sub(menu, '並び替え'))).toEqual(['昇順', '降順', '並び替えをやめる'])
+    expect(labels(sub(menu, 'フィルター'))).toEqual(['＝…', '≠…', '＞…', '≧…', '＜…', '≦…', '空', '空でない'])
+    run(sub(menu, '並び替え'), '並び替えをやめる')
+    expect(ctx.sortTable).toHaveBeenLastCalledWith(null)
+    run(sub(menu, 'フィルターを外す'), 'この列')
+    expect(ctx.clearTableFilters).toHaveBeenLastCalledWith('column')
+    run(sub(menu, 'フィルターを外す'), 'すべて')
+    expect(ctx.clearTableFilters).toHaveBeenLastCalledWith('all')
+  })
+
+  it('shows only wrap and clearing the filters outside the columns, and folds the table items when the ring is full', () => {
+    const outside: TableMenuContext = { column: null, sorted: false, filterCount: 1, wrap: false }
+    const ctx = context({}, {}, false, outside)
+    expect(labels(actionsOf(ctx)?.items)).toEqual(['フィルターを外す', '折り返す'])
+    run(actionsOf(ctx)?.items, 'フィルターを外す')
+    expect(ctx.clearTableFilters).toHaveBeenLastCalledWith('all')
+    const busy = context({}, { count: 3, arrangeCount: 3, reorderCount: 3 }, true, { ...outside, column: { numeric: false, sorted: false, filtered: false } })
+    const menu = actionsOf(busy)
+    expect(labels(menu?.items)[0]).toBe('表')
+    expect(labels(sub(menu, '表'))).toEqual(['並び替え', 'フィルター', 'フィルターを外す', '折り返す'])
   })
 })

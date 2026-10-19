@@ -3,6 +3,7 @@ import { COLORS as SLIDE_COLORS } from '@canvcode/slides/core/slide-layout-spec'
 import { ARROW_COLORS } from './arrow.ts'
 import { defineNodeType, outsetSides, type Outset } from './defineNodeType.ts'
 import { normalizeColor, parseHexColor } from './paint.ts'
+import { detectDelimiter, splitDelimited } from './table/delimited.ts'
 import { textMetricsGeneration } from './text/fonts.ts'
 import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutRichText, type TextLayout, type TextStyle } from './text/layout.ts'
 import type { TextParagraph } from './text/richText.ts'
@@ -136,8 +137,7 @@ export function formatPercent(fraction: number): string {
 // 空の行は飛ばす。行が 1 つもなければ null
 export function parseChartTable(text: string): ChartRow[] | null {
   const source = text.replace(/\r\n?/g, '\n')
-  const delimiter = source.includes('\t') ? '\t' : !source.includes(',') && source.includes(';') ? ';' : ','
-  const records = splitDelimited(source, delimiter).filter((cells) => cells.some((cell) => cell.trim() !== ''))
+  const records = splitDelimited(source, detectDelimiter(source)).filter((cells) => cells.some((cell) => cell.trim() !== ''))
   if (records.length === 0) return null
   const header = records.length > 1 && records[0].length > 1 && parseChartNumber(records[0][1]) === null && records.slice(1).some((cells) => parseChartNumber(cells[1] ?? '') !== null)
   const rows: ChartRow[] = []
@@ -167,38 +167,6 @@ export function parseChartNumber(text: string): number | null {
   if (cleaned === '' || !/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(cleaned)) return null
   const value = Number(cleaned)
   return Number.isFinite(value) ? value : null
-}
-
-// 区切り文字の表を、行ごとのセルにする（CSV の "…" と "" を読む）
-function splitDelimited(text: string, delimiter: string): string[][] {
-  const records: string[][] = []
-  let cells: string[] = []
-  let cell = ''
-  let quoted = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (quoted) {
-      if (ch === '"' && text[i + 1] === '"') {
-        cell += '"'
-        i++
-      } else if (ch === '"') quoted = false
-      else cell += ch
-    } else if (ch === '"' && cell.trim() === '') {
-      quoted = true
-      cell = ''
-    } else if (ch === delimiter) {
-      cells.push(cell)
-      cell = ''
-    } else if (ch === '\n') {
-      cells.push(cell)
-      records.push(cells)
-      cells = []
-      cell = ''
-    } else cell += ch
-  }
-  cells.push(cell)
-  records.push(cells)
-  return records
 }
 
 // ---- 形 ----

@@ -109,6 +109,15 @@ describe('MCP server', () => {
     expect(read.data).toMatchObject({ text: '# 見出し\n', hash: created.data.hash })
   })
 
+  it('creates, lists and reads a table (CSV) document', async () => {
+    const { client } = await setup()
+    const created = await call(client, 'create_document', { kind: 'table', title: '売上', content: '月,売上\n1,120\n' })
+    expect(created.data.document).toMatchObject({ kind: 'table', title: '売上', path: '売上.csv' })
+    expect((await call(client, 'list_documents', { kind: 'table' })).data.documents).toEqual([created.data.document])
+    const read = await call(client, 'read_document', { id: created.data.document.id })
+    expect(read.data).toMatchObject({ text: '月,売上\n1,120\n' })
+  })
+
   it('edits part of a document and keeps CRLF line endings', async () => {
     const { client, files, events } = await setup()
     const target = await files.create('markdown', 'crlf', 'one\r\ntwo\r\ntwo\r\n')

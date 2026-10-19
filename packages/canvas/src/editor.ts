@@ -118,7 +118,7 @@ const QUOTE_GAP = 24
 const MOVE_TO_CANVAS_GAP = 80
 
 // File の種類ごとの、カードの型（MAI-7）
-const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card' }
+const FILE_CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', table: 'table-card' }
 
 // 選択しているノードをリサイズ・回転するときの対象（MAI-23）
 export interface TransformSelection {
@@ -761,17 +761,18 @@ export class Editor {
   }
 
   // File のカード（Markdown カードなど）を、上端の中央が top になるように置く（MAI-30）。
-  // 参照先にまだ持ち主がいなければ持ち主、いればショートカットになる。フレームの上なら、フレームの中に置く
-  createFileCard(fileId: string, top: Vec, options: { width?: number } = {}): string | null {
+  // 参照先にまだ持ち主がいなければ持ち主、いればショートカットになる。フレームの上なら、フレームの中に置く。
+  // props は、型の既定に重ねる値（取り込んだ表の大きさなど）
+  createFileCard(fileId: string, top: Vec, options: { width?: number; props?: Record<string, unknown> } = {}): string | null {
     const file = this.workspace.getFile(fileId)
     const type = file ? FILE_CARD_TYPES[file.kind] : undefined
     if (!file || !type || !this.types.has(type)) return null
     const role = file.ownerNodeId === null && file.deletedAt === null ? 'owner' : 'shortcut'
-    const w = options.width ?? (this.types.get(type)!.defaultProps() as { w: number }).w
+    const w = options.width ?? (options.props?.w as number | undefined) ?? (this.types.get(type)!.defaultProps() as { w: number }).w
     return this.transact('create card', (tx) => {
       const parentId = this.frameAt(top) ?? this.canvasId
       const local = this.worldToParent(parentId, top)
-      const node = this.makeNode(type, { x: local.x - w / 2, y: local.y, parentId, props: { fileId, w, role } })
+      const node = this.makeNode(type, { x: local.x - w / 2, y: local.y, parentId, props: { ...options.props, fileId, w, role } })
       tx.put(node)
       this.setSelection([node.id])
       return node.id
