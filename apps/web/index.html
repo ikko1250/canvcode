@@ -7,6 +7,39 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 画面を出す前に止まったとき（古いブラウザで、使っている機能がないなど）に、白紙のままにせず理由を出す。
+      // 開発者ツールを開けない端末（iPad など）でも、何が起きたか分かるように
+      ;(function () {
+        var shown = false
+        function show(message) {
+          var root = document.getElementById('root')
+          if (!root || root.childElementCount > 0) return
+          var box = document.getElementById('boot-error')
+          if (!box) {
+            box = document.createElement('pre')
+            box.id = 'boot-error'
+            box.style.cssText = 'margin:16px;padding:12px;white-space:pre-wrap;word-break:break-all;font:13px/1.5 monospace;color:#b42318;background:#fff4f2;border:1px solid #f3c0b8;border-radius:6px'
+            box.textContent = '画面を読み込めませんでした（' + navigator.userAgent + '）'
+            document.body.appendChild(box)
+          }
+          if (shown && box.textContent.split('\n').length > 12) return
+          shown = true
+          box.textContent += '\n' + message
+        }
+        window.addEventListener('error', function (e) {
+          show(String(e.message || e.error) + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ':' + e.colno + ')' : ''))
+        })
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason
+          show('unhandledrejection: ' + (r && r.stack ? String(r.message) + '\n' + String(r.stack).split('\n').slice(0, 3).join('\n') : String(r)))
+        })
+        // エラーにならずに何も出ないままのときも、しばらくしたら知らせる
+        setTimeout(function () {
+          show('（10 秒たっても画面が出ていません）')
+        }, 10000)
+      })()
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
