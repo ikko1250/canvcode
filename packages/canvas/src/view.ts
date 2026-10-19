@@ -2142,8 +2142,8 @@ export class CanvasView {
   }
 
   // PDF を取り込む：Asset にしてアップロードを始め、ページの大きさを読み、ページの Canvas と Portal を作る。
-  // Portal のサムネイルは 1 ページ目（MAI-10）
-  async importPdf(file: File, center: Vec): Promise<string | null> {
+  // Portal のサムネイルは 1 ページ目（MAI-10）。名前は title、なければファイルの名前
+  async importPdf(file: File, center: Vec, title?: string): Promise<string | null> {
     if (!this.assets.canOpenPdf) {
       this.options.notify('PDF を開く準備ができていません')
       return null
@@ -2155,8 +2155,7 @@ export class CanvasView {
         Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.pageSize(i))),
       )
       if (this.editor !== editor) return null
-      const title = file.name.replace(/\.pdf$/i, '') || 'PDF'
-      const { portalId, canvasId } = editor.importPdf({ title, asset, pageSizes, center })
+      const { portalId, canvasId } = editor.importPdf({ title: title || file.name.replace(/\.pdf$/i, '') || 'PDF', asset, pageSizes, center })
       // 1 ページ目を小さく描いて、Portal のサムネイルにする
       const first = pageSizes[0]
       if (first) {

@@ -27,7 +27,9 @@ import {
   createTableCardType,
   type ArrowProps,
   type FileContentSource,
+  type LinkCardProps,
   type PortalProps,
+  PORTAL_DEFAULT_SIZE,
   type NoteProps,
   type QuoteCardProps,
   type TableCardProps,
@@ -60,6 +62,7 @@ import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
 import { FileEditor } from './workspace/FileEditor.tsx'
 import { exportMarkdownPdf } from './markdownPdf.ts'
+import { downloadLinkPdf, isPdfUrl } from './linkPdf.ts'
 import { createSlidePdfExporter } from './slidePdfExport.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
@@ -344,6 +347,37 @@ export function App(props: { initial: InitialRecords }) {
       }
     },
     [files, notify],
+  )
+
+  // リンクのカード（PDF の URL）の PDF をダウンロードし、ドロップしたときと同じ PDF の Portal を、カードの右隣に作る。
+  // 名前はカードのタイトル、なければファイルの名前。同じ URL を取ってきている途中なら、重ねて頼まない
+  const downloadingPdf = useRef(new Set<string>())
+  const createPdfPortal = useCallback(
+    async (nodeId: string) => {
+      const view = viewRef.current
+      const editor = view?.editor
+      const node = editor?.getNode(nodeId)
+      const entry = editor?.index.get(nodeId)
+      if (!view || !editor || node?.type !== 'link-card' || !entry) return
+      const props = node.props as LinkCardProps
+      if (downloadingPdf.current.has(props.url)) return
+      downloadingPdf.current.add(props.url)
+      notify('PDF をダウンロードしています…')
+      try {
+        const file = await downloadLinkPdf(props.url)
+        // ダウンロードのあいだにほかの Canvas へ移ったら、そこには置かない
+        if (viewRef.current !== view || view.editor !== editor) return notify('Canvas を移ったので、PDF ポータルを作りませんでした')
+        // カードを動かしていれば、今の位置の右隣に置く
+        const bounds = (editor.index.get(nodeId) ?? entry).worldBounds
+        const center = { x: bounds.x + bounds.w + 40 + PORTAL_DEFAULT_SIZE.w / 2, y: bounds.y + bounds.h / 2 }
+        await view.importPdf(file, center, props.title ?? undefined)
+      } catch (error) {
+        notify(error instanceof Error ? error.message : String(error))
+      } finally {
+        downloadingPdf.current.delete(props.url)
+      }
+    },
+    [notify],
   )
 
   // 今のキャンバスのスライドを、番号の順に PDF にしてダウンロードする（スライド v2）。作っている途中なら、重ねて始めない
@@ -689,6 +723,11 @@ export function App(props: { initial: InitialRecords }) {
         if (lockedCount < pdfPageIds.length) items.push({ label: 'すべてのページを固定する', onSelect: () => editor.lockPdfPages() })
         return true
       }
+      // リンクのカード（PDF の URL）：PDF をダウンロードして Portal にする
+      if (single?.type === 'link-card' && isPdfUrl((single.props as LinkCardProps).url)) {
+        items.push({ label: 'PDF ポータルを作成', onSelect: () => void createPdfPortal(single.id) })
+        items.push('separator')
+      }
       if (single?.type === 'portal') {
         items.push({ label: '開く', shortcut: 'Enter', onSelect: () => openPortal(single.id) })
         items.push({ label: '新しいタブで開く', shortcut: 'Ctrl+クリック', onSelect: () => openNodeInNewTab(single.id) })
@@ -949,7 +988,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate, exportPdf],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate, exportPdf, createPdfPortal],
   )
 
 
@@ -1204,6 +1243,10 @@ export function App(props: { initial: InitialRecords }) {
   const templateSlideId =
     session.selectedIds.size === 1 && selectedSlides.length === 1 && editor.index.childrenOf(selectedSlides[0].id).length === 0 ? selectedSlides[0].id : null
   const pageNavigation = pdfPageIds.length > 0 && view ? view.pageNavigation() : { canNext: false, canPrev: false }
+  // PDF の URL のリンクのカードを 1 つだけ選んでいれば、PDF ポータルを作れる
+  const [onlySelectedId] = session.selectedIds.size === 1 ? session.selectedIds : []
+  const onlySelected = onlySelectedId ? editor.getNode(onlySelectedId) : undefined
+  const pdfLinkId = onlySelected?.type === 'link-card' && isPdfUrl((onlySelected.props as LinkCardProps).url) ? onlySelected.id : null
 
   // 図形 › スライド 16:9 / 4:3：パイメニューを開いた位置（ワールド座標）を中心に置く。分からなければ画面の中央
   const placeSlide = useCallback(
@@ -1344,6 +1387,7 @@ export function App(props: { initial: InitialRecords }) {
         slidesHidden: selectedSlides.every((s) => s.props.hidden),
         slideRows: slideRows && { canRemove: slideRows.canRemove, manualHeight: slideRows.manualHeight },
         slideTemplate: templateSlideId !== null,
+        pdfLink: pdfLinkId !== null,
       },
       panToPage: (direction) => view?.panToPage(direction),
       unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
@@ -1374,6 +1418,9 @@ export function App(props: { initial: InitialRecords }) {
       },
       hasSlides: editor.slideCount() > 0,
       exportSlidesPdf,
+      createPdfPortal: () => {
+        if (pdfLinkId) void createPdfPortal(pdfLinkId)
+      },
       ...tableMenu(tableUnder, origin),
     })
   }

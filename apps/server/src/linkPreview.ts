@@ -8,6 +8,7 @@ import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 // ブラウザからは CORS でほかのサイトのページを読めないので、サーバーが代わりに取ってくる。
 // - GET /api/link-preview?url=<ページ> → { title, description, siteName, image }（image はサムネイルの URL）
 // - GET /api/link-preview/image?url=<画像> → 画像の中身（画面がそれを Asset に取り込む）
+// - GET /api/link-preview/pdf?url=<PDF> → PDF の中身（画面がそれを取り込み、PDF の Portal を作る）。名前は x-canvcode-filename
 // 安全のため：
 // - http と https だけを取りに行く
 // - 名前を引いた先が、このマシン・LAN の中など（ループバック・プライベート・リンクローカルなど）なら断る。
@@ -19,6 +20,9 @@ const TIMEOUT_MS = 8000
 const MAX_REDIRECTS = 5
 const MAX_HTML_BYTES = 1024 * 1024
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+// PDF は大きく、取るのに時間がかかる（Asset に置ける上限は 200MB）
+const MAX_PDF_BYTES = 100 * 1024 * 1024
+const PDF_TIMEOUT_MS = 60_000
 const CACHE_MS = 10 * 60 * 1000
 const MAX_CACHE = 200
 const USER_AGENT = 'Mozilla/5.0 (compatible; CanvCode link preview)'
@@ -40,11 +44,13 @@ export interface LinkPreview {
 export interface RemoteResponse {
   url: string
   contentType: string
+  // Content-Disposition（PDF のファイルの名前を読む）
+  contentDisposition?: string
   body: Buffer
 }
 
-// 取りに行く関数（テストで差し替える）
-export type FetchRemote = (url: string, maxBytes: number, accept: string) => Promise<RemoteResponse>
+// 取りに行く関数（テストで差し替える）。timeoutMs を省くと TIMEOUT_MS
+export type FetchRemote = (url: string, maxBytes: number, accept: string, timeoutMs?: number) => Promise<RemoteResponse>
 
 // ---- アドレスの確かめ ----
 
@@ -122,12 +128,12 @@ export function allowedUrl(raw: string): URL | null {
 
 // ---- 取りに行く ----
 
-export const fetchRemote: FetchRemote = async (raw, maxBytes, accept) => {
+export const fetchRemote: FetchRemote = async (raw, maxBytes, accept, timeoutMs = TIMEOUT_MS) => {
   let current = raw
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     const url = allowedUrl(current)
     if (!url) throw new Error(`refused url: ${current}`)
-    const response = await requestOnce(url, maxBytes, accept)
+    const response = await requestOnce(url, maxBytes, accept, timeoutMs)
     if ('redirect' in response) {
       current = new URL(response.redirect, url).href
       continue
@@ -137,7 +143,7 @@ export const fetchRemote: FetchRemote = async (raw, maxBytes, accept) => {
   throw new Error('too many redirects')
 }
 
-function requestOnce(url: URL, maxBytes: number, accept: string): Promise<RemoteResponse | { redirect: string }> {
+function requestOnce(url: URL, maxBytes: number, accept: string, timeoutMs: number): Promise<RemoteResponse | { redirect: string }> {
   return new Promise((resolve, reject) => {
     const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(
       url,
@@ -160,13 +166,19 @@ function requestOnce(url: URL, maxBytes: number, accept: string): Promise<Remote
           return
         }
         readBody(response, maxBytes).then(
-          (body) => resolve({ url: url.href, contentType: String(response.headers['content-type'] ?? ''), body }),
+          (body) =>
+            resolve({
+              url: url.href,
+              contentType: String(response.headers['content-type'] ?? ''),
+              contentDisposition: response.headers['content-disposition'],
+              body,
+            }),
           reject,
         )
       },
     )
     // 全体の時間の上限（timeout は、やり取りが止まっている時間の上限）
-    const timer = setTimeout(() => request.destroy(new Error('timeout')), TIMEOUT_MS)
+    const timer = setTimeout(() => request.destroy(new Error('timeout')), timeoutMs)
     request.on('close', () => clearTimeout(timer))
     request.on('timeout', () => request.destroy(new Error('timeout')))
     request.on('error', reject)
@@ -391,6 +403,42 @@ export function imageType(contentType: string, body: Buffer): string | null {
   return null
 }
 
+// ---- PDF ----
+
+// 中身が PDF か（%PDF- は、先頭の 1024 バイトのどこかにあればよい）
+export function isPdfBody(body: Buffer): boolean {
+  return body.subarray(0, 1024).includes('%PDF-')
+}
+
+// PDF の名前（.pdf は付けない）。Content-Disposition の filename* → filename → URL のパスの最後の順に探す
+export function pdfFileName(contentDisposition: string | undefined, url: string): string {
+  const disposition = contentDisposition ?? ''
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;]+))/i.exec(disposition)
+  const candidates = [/filename\*\s*=\s*[\w-]*'[^']*'([^;]+)/i.exec(disposition)?.[1], plain?.[1] ?? plain?.[2]]
+  try {
+    candidates.push(new URL(url).pathname.split('/').pop())
+  } catch {
+    // 名前を決められない URL は、最後の 'PDF' にする
+  }
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    let name = candidate
+    try {
+      name = decodeURIComponent(candidate)
+    } catch {
+      // % の続きがおかしいものは、そのまま使う
+    }
+    // フォルダの区切りと制御文字は、名前に入れない
+    name = [...name.split(/[\\/]/).pop()!]
+      .filter((char) => char.charCodeAt(0) >= 0x20)
+      .join('')
+      .trim()
+      .replace(/\.pdf$/i, '')
+    if (name) return name
+  }
+  return 'PDF'
+}
+
 // ---- 受け付け ----
 
 export class LinkPreviewService {
@@ -427,8 +475,17 @@ export class LinkPreviewService {
     return png ? { type: 'image/png', body: png } : null
   }
 
+  // リンク先の PDF。大きすぎれば 'too large'、PDF でなければ null
+  async pdf(url: string): Promise<{ name: string; body: Buffer } | 'too large' | null> {
+    const response = await this.fetch(url, MAX_PDF_BYTES + 1, 'application/pdf,*/*;q=0.5', PDF_TIMEOUT_MS)
+    if (response.body.length > MAX_PDF_BYTES) return 'too large'
+    // Content-Type は当てにしない（application/octet-stream で返すサーバーがある）
+    if (!isPdfBody(response.body)) return null
+    return { name: pdfFileName(response.contentDisposition, response.url), body: response.body }
+  }
+
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, params: URLSearchParams): Promise<boolean> {
-    if (pathname !== '/api/link-preview' && pathname !== '/api/link-preview/image') return false
+    if (pathname !== '/api/link-preview' && pathname !== '/api/link-preview/image' && pathname !== '/api/link-preview/pdf') return false
     if (req.method !== 'GET') {
       sendJson(res, 405, { error: 'method not allowed' })
       return true
@@ -441,6 +498,21 @@ export class LinkPreviewService {
     try {
       if (pathname === '/api/link-preview') {
         sendJson(res, 200, await this.preview(url.href))
+        return true
+      }
+      if (pathname === '/api/link-preview/pdf') {
+        const pdf = await this.pdf(url.href)
+        if (pdf === 'too large') sendJson(res, 413, { error: 'too large' })
+        else if (!pdf) sendJson(res, 415, { error: 'not a pdf' })
+        else {
+          res.writeHead(200, {
+            'content-type': 'application/pdf',
+            'content-length': pdf.body.length,
+            'x-canvcode-filename': encodeURIComponent(pdf.name),
+            'cache-control': 'no-store',
+          })
+          res.end(pdf.body)
+        }
         return true
       }
       const image = await this.image(url.href)
