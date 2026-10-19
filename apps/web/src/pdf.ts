@@ -1,6 +1,8 @@
 import type { PdfDocument, PdfService, PdfTextItem } from '@canvcode/canvas'
-import { GlobalWorkerOptions, Util, getDocument, type PDFDocumentProxy } from 'pdfjs-dist'
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// 古いブラウザ向けの版（legacy）を使う。ふつうの版は新しい機能（Iterator など）を前提にしていて、
+// iPad の Safari 17 では読み込んだだけで止まり、画面が白紙になった。legacy は足りない機能を補ってから動く
+import { GlobalWorkerOptions, Util, getDocument, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 
 // PDF.js（MAI-5、MAI-32）。解析は Web Worker（pdf.worker）で行い、ページを描くのはメインスレッドの Canvas。
 // 描く回数は画像キャッシュが抑える（カメラが止まってから、画面に見えるページを 1 枚ずつ）。
