@@ -66,6 +66,7 @@ import { markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
 import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
+import { isMacPlatform, linkHintText } from './linkHint.ts'
 import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
 import { cropEditingTarget, startCropEditing, stopCropEditing } from './cropHandles.ts'
 import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
@@ -209,6 +210,13 @@ export class CanvasView {
   private panPointer: { id: number; last: { x: number; y: number } } | null = null
   // Ctrl（⌘）+クリック・中ボタンのクリックを押し始めた位置（ブラウザの画面の座標）。動かさずに離したらクリックとみなす（MAI-63）
   private linkClick: { id: number; button: number; x: number; y: number } | null = null
+  // ポインタの下にあるカードのリンクと、Ctrl（⌘）を押しているか。リンクの上で押していれば指のカーソルにする
+  private linkHover: string | null = null
+  private modHeld = false
+  // リンクの上で少し止まると出す札（行き先と開き方）
+  private readonly linkHint: HTMLDivElement
+  private linkHintTimer: ReturnType<typeof setTimeout> | null = null
+  private linkHintAt = { x: 0, y: 0 }
   private gestureScale = 1
   // 時間のかかる画像（Markdown カードなど）のキャッシュ。作れたらシーンを描き直す（MAI-22）
   readonly images = new ImageCache({ onReady: () => this.invalidate('scene') })
@@ -309,6 +317,8 @@ export class CanvasView {
     this.editingLayer = document.createElement('div')
     Object.assign(this.editingLayer.style, { position: 'absolute', inset: '0', pointerEvents: 'none' })
     this.root.appendChild(this.editingLayer)
+    this.linkHint = createLinkHint()
+    this.root.appendChild(this.linkHint)
     container.appendChild(this.root)
 
     this.textEditor = new TextEditor({
@@ -369,6 +379,7 @@ export class CanvasView {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
       // 角丸のハンドルも、ポインタが外へ出たら消す（MAI-84）
       if (this.editor.session.get().cornerHandlesId) this.editor.session.set({ cornerHandlesId: null })
+      this.setLinkHover(null)
     })
     this.listen(this.root, 'wheel', (e) => this.onWheel(e), { passive: false })
     // overflow: clip が効かないブラウザ向けの保険。root がスクロールされたら 0 に戻す（MAI-55）
@@ -401,7 +412,10 @@ export class CanvasView {
     this.listen(this.root, 'drop', (e) => void this.onDrop(e))
     this.listen(window, 'keydown', (e) => this.onKeyDown(e))
     this.listen(window, 'keyup', (e) => this.onKeyUp(e))
-    this.listen(window, 'blur', () => this.setSpaceHeld(false))
+    this.listen(window, 'blur', () => {
+      this.setSpaceHeld(false)
+      this.setModHeld(false)
+    })
 
     const resizeObserver = new ResizeObserver(() => this.resize())
     resizeObserver.observe(this.root)
@@ -417,6 +431,7 @@ export class CanvasView {
     this.documentEditor?.finish()
     this.tool.onExit?.()
     this.images.dispose()
+    this.setLinkHover(null)
     for (const dispose of this.editorDisposers) dispose()
     for (const dispose of this.disposers) dispose()
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle)
@@ -434,6 +449,7 @@ export class CanvasView {
     this.documentEditor?.finish()
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
+    this.setLinkHover(null)
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
     this.clearSearch()
     this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
@@ -1261,16 +1277,19 @@ export class CanvasView {
     if (hit?.type === 'portal') this.options.onOpenPortalInNewTab(hit.id)
   }
 
-  // ポインタの下のカードにリンクがあれば、新しいタブで開いて true を返す
-  private openLinkAt(e: PointerEvent): boolean {
+  // ポインタの下のカードにあるリンク
+  private linkUnder(world: Vec): string | null {
     const editor = this.editor
-    const pointer = this.toPointer(e)
-    const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / editor.session.get().camera.zoom)
+    const hit = editor.hitTest(world, HIT_MARGIN_PX / editor.session.get().camera.zoom)
     const type = hit && editor.getType(hit)
     const entry = hit && editor.index.get(hit.id)
-    if (!type?.linkAt || !entry) return false
-    const local = applyMat(invert(entry.worldMatrix), pointer.world)
-    const href = type.linkAt(hit, local)
+    if (!type?.linkAt || !entry) return null
+    return type.linkAt(hit, applyMat(invert(entry.worldMatrix), world))
+  }
+
+  // ポインタの下のカードにリンクがあれば、新しいタブで開いて true を返す
+  private openLinkAt(e: PointerEvent): boolean {
+    const href = this.linkUnder(this.toPointer(e).world)
     if (!href) return false
     // 引用ノートの出典の帯（MAI-33）
     if (href.startsWith(SOURCE_LINK_PREFIX)) {
@@ -1313,6 +1332,8 @@ export class CanvasView {
   }
 
   setCamera(camera: Camera): void {
+    // 動いたら、札の位置とリンクがずれるので消す（次にポインタを動かしたら出し直す）
+    this.setLinkHover(null)
     this.editor.session.set({ camera })
   }
 
@@ -1517,6 +1538,7 @@ export class CanvasView {
     // リンクと同じく、Ctrl（⌘）+クリックと中ボタンのクリックは、Portal を新しいタブで開く（離したときに見る。MAI-63）
     const linkClick = e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey) && !this.spaceHeld)
     this.linkClick = linkClick ? { id: e.pointerId, button: e.button, x: e.clientX, y: e.clientY } : null
+    this.setLinkHover(null)
     // パン中は編集中のカードとフォーカスを維持する
     if (!panning) {
       // 編集中にキャンバスのどこかを押したら、編集を終えてから、その操作を始める
@@ -1547,6 +1569,10 @@ export class CanvasView {
       return
     }
     const pointer = this.toPointer(e)
+    this.setModHeld(e.ctrlKey || e.metaKey)
+    // ボタンを押していない（ドラッグしていない）ときだけ、リンクの上かを見る
+    const canHover = e.buttons === 0 && !this.spaceHeld && !this.textEditor.editingId && !this.documentEditor?.editingId
+    this.setLinkHover(canHover ? this.linkUnder(pointer.world) : null, this.pointerScreen)
     // まとめて届いた途中の位置（速く動かしたときのフリーハンドのため。MAI-27）
     const coalesced = e.getCoalescedEvents?.() ?? []
     if (coalesced.length > 1) {
@@ -1606,6 +1632,8 @@ export class CanvasView {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
+    // リンクの上のカーソルと札のため、修飾キーだけは入力中でも見る
+    if (e.key === 'Control' || e.key === 'Meta') this.setModHeld(true)
     if (isImeEvent(e) || isEditableKeyboardTarget(e.target) || e.defaultPrevented) return
     // ダイアログの中のキーと、ボタンの上での Enter・Space（ボタン自身が押される）は、キャンバスでは扱わない
     if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
@@ -2033,6 +2061,57 @@ export class CanvasView {
 
   private onKeyUp(e: KeyboardEvent): void {
     if (e.code === 'Space') this.setSpaceHeld(false)
+    if (e.key === 'Control' || e.key === 'Meta') this.setModHeld(e.ctrlKey || e.metaKey)
+  }
+
+  private setModHeld(held: boolean): void {
+    if (this.modHeld === held) return
+    this.modHeld = held
+    // 札を待っている間に押したら、すぐ出す
+    if (held && this.linkHover && this.linkHintTimer !== null) this.showLinkHint()
+    this.updateCursor()
+  }
+
+  // ポインタの下のリンクが変わったら、札を消して、少し止まってから（Ctrl（⌘）を押していればすぐ）出す
+  private setLinkHover(href: string | null, at?: { x: number; y: number }): void {
+    if (at) this.linkHintAt = at
+    if (href === this.linkHover) {
+      if (href && this.linkHint.style.display !== 'none') this.placeLinkHint()
+      return
+    }
+    this.linkHover = href
+    if (this.linkHintTimer !== null) clearTimeout(this.linkHintTimer)
+    this.linkHintTimer = null
+    this.linkHint.style.display = 'none'
+    if (href) {
+      if (this.modHeld) this.showLinkHint()
+      else this.linkHintTimer = setTimeout(() => this.showLinkHint(), LINK_HINT_DELAY_MS)
+    }
+    this.updateCursor()
+  }
+
+  private showLinkHint(): void {
+    if (this.linkHintTimer !== null) clearTimeout(this.linkHintTimer)
+    this.linkHintTimer = null
+    if (!this.linkHover) return
+    const { target, action } = linkHintText(this.linkHover, isMacPlatform())
+    const [targetLine, actionLine] = this.linkHint.children as unknown as [HTMLElement, HTMLElement]
+    targetLine.textContent = target
+    actionLine.textContent = action
+    this.linkHint.style.display = 'block'
+    this.placeLinkHint()
+  }
+
+  // ポインタの右下に置き、はみ出すなら左か上へずらす
+  private placeLinkHint(): void {
+    const hint = this.linkHint
+    const { x, y } = this.linkHintAt
+    const w = hint.offsetWidth
+    const h = hint.offsetHeight
+    const left = x + LINK_HINT_OFFSET.x + w > this.width ? Math.max(0, x - LINK_HINT_OFFSET.x - w) : x + LINK_HINT_OFFSET.x
+    const top = y + LINK_HINT_OFFSET.y + h > this.height ? Math.max(0, y - LINK_HINT_OFFSET.y / 2 - h) : y + LINK_HINT_OFFSET.y
+    hint.style.left = `${left}px`
+    hint.style.top = `${top}px`
   }
 
   private setSpaceHeld(held: boolean): void {
@@ -2046,7 +2125,9 @@ export class CanvasView {
       ? 'grabbing'
       : this.spaceHeld
         ? 'grab'
-        : (this.cursorOverride ?? this.tool.cursor)
+        : this.linkHover && this.modHeld
+          ? 'pointer'
+          : (this.cursorOverride ?? this.tool.cursor)
   }
 
   private listen<K extends keyof HTMLElementEventMap>(
@@ -2071,6 +2152,36 @@ export class CanvasView {
     target.addEventListener(type, listener, options)
     this.disposers.push(() => target.removeEventListener(type, listener, options))
   }
+}
+
+// リンクの札を出すまでの時間と、ポインタからの位置
+const LINK_HINT_DELAY_MS = 400
+const LINK_HINT_OFFSET = { x: 12, y: 18 }
+
+// リンクの札。1 行目に行き先、2 行目に開き方を書く
+function createLinkHint(): HTMLDivElement {
+  const hint = document.createElement('div')
+  hint.setAttribute('role', 'tooltip')
+  hint.dataset.testid = 'canvas-link-hint'
+  Object.assign(hint.style, {
+    position: 'absolute',
+    display: 'none',
+    pointerEvents: 'none',
+    maxWidth: '360px',
+    padding: '5px 8px',
+    borderRadius: '6px',
+    background: 'rgba(28, 28, 32, 0.92)',
+    color: '#fff',
+    font: '12px/1.45 system-ui, sans-serif',
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+    zIndex: '1',
+  })
+  for (const opacity of ['1', '0.72']) {
+    const line = document.createElement('div')
+    Object.assign(line.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity })
+    hint.appendChild(line)
+  }
+  return hint
 }
 
 // 貼り付けられたファイル。files が空でも items にファイルが入っていることがあるので、そちらも見る
