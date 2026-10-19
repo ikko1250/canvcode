@@ -6,8 +6,8 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test'
 
 const PAGE_URL = 'https://example.com/article'
 const IMAGE_URL = 'https://example.com/og.png'
-// 2×1 の PNG（赤と青）
-const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAADUlEQVR4nGP4zwAE/wEHAAH/4iOeWQAAAABJRU5ErkJggg==', 'base64')
+// 200×100 の PNG（左が赤、右が青。サムネイルの最小の大きさ 100×60 を超えるもの）
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAMgAAABkCAIAAABM5OhcAAABJUlEQVR42u3SMQ0AAAzDsPInvVHovh2WgiByJlGZB4c8AAsssMACCyyBBRZYYIEFlsACCyywwAJLYIEFFlhggSWwwAILLLDAElhggQUWWGAJLLDAAgsssAQWWGCBBRZYAgsssMACCyyBBRZYYIEFlsACCyywwAJLYIEFFlhggSWwwAILLLDAElhggQUWWGDJA7DAAgsssMASWGCBBRZYYAkssMACCyywBBZYYIEFFlgCCyywwAILLIEFFlhggQWWwAILLLDAAktggQUWWGCBJbDAAgsssMASWGCBBRZYYAkssMACCyywBBZYYIEFFlgCCyywwAILLIEFFlhggQWWDAALLLDAAgssgQUWWGCBBZbAAgsssMACS2CBBRZYYIElsMAC63cL/ofWZIxYFTgAAAAASUVORK5CYII=', 'base64')
 
 async function setup(page: Page, context: BrowserContext, preview: { title: string | null; image: string | null } | 'fail') {
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto&long=0')

@@ -30,7 +30,11 @@ export interface LinkPreview {
   title: string | null
   description: string | null
   siteName: string | null
+  // サムネイルの候補の先頭（images[0]）
   image: string | null
+  // サムネイルの候補（よさそうな順）と、サイトのアイコンの候補
+  images: string[]
+  icons: string[]
 }
 
 export interface RemoteResponse {
@@ -231,35 +235,149 @@ function clean(text: string | undefined, max: number): string | null {
   return value.length > max ? value.slice(0, max - 1) + '…' : value
 }
 
-// <head> の中の <meta> と <title> から、タイトル・説明・サイトの名前・サムネイルの URL を取り出す
+function attributes(tag: string): Map<string, string> {
+  const attrs = new Map<string, string>()
+  for (const m of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+    const key = m[1].toLowerCase()
+    if (!attrs.has(key)) attrs.set(key, m[2] ?? m[3] ?? m[4] ?? '')
+  }
+  return attrs
+}
+
+// 絶対 URL（http・https だけ）にする
+function absolute(raw: string | undefined, base: string): string | null {
+  const value = raw ? decodeEntities(raw).trim() : ''
+  if (!value || value.startsWith('data:')) return null
+  try {
+    const url = new URL(value, base)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+// 本文の画像のうち、サムネイルにならないもの（ロゴ・アイコン・広告の計測用の 1 画素など）
+const NOT_A_PICTURE = /logo|icon|sprite|avatar|blank|spacer|pixel|tracking|badge|button|emoji|loading|placeholder/i
+const MAX_BODY_IMAGES = 3
+const MAX_IMAGES = 6
+
+// JSON-LD（<script type="application/ld+json">）の "image"。文字列・{ url }・その配列のどれでもよい
+function jsonLdImages(html: string): string[] {
+  const found: string[] = []
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 6 || found.length >= 2) return
+    if (Array.isArray(value)) for (const item of value) visit(item, depth + 1)
+    else if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>
+      const image = record.image ?? record.thumbnailUrl
+      const add = (v: unknown): void => {
+        if (typeof v === 'string') found.push(v)
+        else if (Array.isArray(v)) v.forEach(add)
+        else if (v && typeof v === 'object' && typeof (v as { url?: unknown }).url === 'string') found.push((v as { url: string }).url)
+      }
+      add(image)
+      for (const key of ['@graph', 'mainEntity', 'mainEntityOfPage']) if (key in record) visit(record[key], depth + 1)
+    }
+  }
+  for (const m of html.matchAll(/<script\b[^>]*type\s*=\s*["']?application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      visit(JSON.parse(m[1]), 0)
+    } catch {
+      // 壊れた JSON-LD は使わない
+    }
+  }
+  return found
+}
+
+// 本文の <img> のうち、写真らしいもの（遅延読み込みの data-src なども見る。小さいと書かれたもの・SVG は除く）
+function bodyImages(html: string): string[] {
+  const found: string[] = []
+  for (const [tag] of html.matchAll(/<img\b[^>]*>/gi)) {
+    const attrs = attributes(tag)
+    const src = attrs.get('data-src') ?? attrs.get('data-lazy-src') ?? attrs.get('data-original') ?? attrs.get('src') ?? attrs.get('srcset')?.split(/\s+/)[0]
+    if (!src || /\.svg(\?|#|$)/i.test(src) || NOT_A_PICTURE.test(src) || NOT_A_PICTURE.test(attrs.get('class') ?? '')) continue
+    const width = Number(attrs.get('width'))
+    const height = Number(attrs.get('height'))
+    if ((width && width < 120) || (height && height < 80)) continue
+    found.push(src)
+    if (found.length >= MAX_BODY_IMAGES) break
+  }
+  return found
+}
+
+// <head> の <meta> と <title> から、タイトル・説明・サイトの名前を取り出し、
+// サムネイルの候補（images）とサイトのアイコンの候補（icons）を、よさそうな順に並べる。
+// 画面は images を前から試し、取れたものを使う。どれも取れなければ icons を試す
 export function parsePreview(html: string, pageUrl: string): LinkPreview {
   const end = html.search(/<\/head\s*>|<body[\s>]/i)
   const head = end >= 0 ? html.slice(0, end) : html
   const meta = new Map<string, string>()
   for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
-    const attrs = new Map<string, string>()
-    for (const m of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) attrs.set(m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? '')
-    const key = (attrs.get('property') ?? attrs.get('name'))?.toLowerCase()
+    const attrs = attributes(tag)
+    const key = (attrs.get('property') ?? attrs.get('name') ?? attrs.get('itemprop'))?.toLowerCase()
     const content = attrs.get('content')
     if (key && content !== undefined && !meta.has(key)) meta.set(key, content)
   }
+  const links = [...head.matchAll(/<link\b[^>]*>/gi)].map(([tag]) => attributes(tag))
+  const rel = (attrs: Map<string, string>) => (attrs.get('rel') ?? '').toLowerCase().split(/\s+/)
   const titleTag = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(head)?.[1]
-  const imageRaw = clean(meta.get('og:image') ?? meta.get('og:image:url') ?? meta.get('og:image:secure_url') ?? meta.get('twitter:image') ?? meta.get('twitter:image:src'), 2000)
-  let image: string | null = null
-  if (imageRaw) {
-    try {
-      const url = new URL(imageRaw, pageUrl)
-      if (url.protocol === 'http:' || url.protocol === 'https:') image = url.href
-    } catch {
-      image = null
-    }
-  }
+
+  const candidates = [
+    meta.get('og:image'),
+    meta.get('og:image:url'),
+    meta.get('og:image:secure_url'),
+    meta.get('twitter:image'),
+    meta.get('twitter:image:src'),
+    meta.get('image'),
+    meta.get('thumbnail'),
+    ...links.filter((attrs) => rel(attrs).includes('image_src')).map((attrs) => attrs.get('href')),
+    ...jsonLdImages(html),
+    ...bodyImages(end >= 0 ? html.slice(end) : html),
+  ]
+  const images = unique(candidates.map((raw) => absolute(raw, pageUrl))).slice(0, MAX_IMAGES)
+
+  // アイコンは大きいものから（apple-touch-icon は 180 画素ほど）。最後に /favicon.ico
+  const size = (attrs: Map<string, string>) => Math.max(0, ...(attrs.get('sizes') ?? '').split(/\s+/).map((s) => Number(s.split('x')[0]) || 0))
+  const iconLinks = links
+    .filter((attrs) => rel(attrs).some((r) => r === 'icon' || r === 'apple-touch-icon' || r === 'apple-touch-icon-precomposed'))
+    .filter((attrs) => !/svg/i.test(attrs.get('type') ?? '') && !/\.svg(\?|#|$)/i.test(attrs.get('href') ?? ''))
+    .map((attrs) => ({ href: attrs.get('href'), size: size(attrs) || (rel(attrs).some((r) => r.startsWith('apple-touch-icon')) ? 180 : 32) }))
+    .sort((a, b) => b.size - a.size)
+  const icons = unique([...iconLinks.map((icon) => absolute(icon.href, pageUrl)), absolute('/favicon.ico', pageUrl)]).slice(0, 3)
+
   return {
     title: clean(meta.get('og:title') ?? meta.get('twitter:title') ?? titleTag, 300),
     description: clean(meta.get('og:description') ?? meta.get('twitter:description') ?? meta.get('description'), 500),
-    siteName: clean(meta.get('og:site_name'), 100),
-    image,
+    siteName: clean(meta.get('og:site_name') ?? meta.get('application-name'), 100),
+    image: images[0] ?? null,
+    images,
+    icons,
   }
+}
+
+function unique(values: (string | null)[]): string[] {
+  return [...new Set(values.filter((v): v is string => v !== null))]
+}
+
+// .ico の中の PNG（いちばん大きいもの）。Asset には .ico のままでは入れられないので、PNG で入っていれば取り出す
+export function pngFromIco(body: Buffer): Buffer | null {
+  if (body.length < 6 || body.readUInt16LE(0) !== 0 || body.readUInt16LE(2) !== 1) return null
+  const count = body.readUInt16LE(4)
+  let best: Buffer | null = null
+  let bestSize = -1
+  for (let i = 0; i < count; i++) {
+    const entry = 6 + i * 16
+    if (entry + 16 > body.length) break
+    const size = body[entry] || 256
+    const length = body.readUInt32LE(entry + 8)
+    const offset = body.readUInt32LE(entry + 12)
+    if (offset + length > body.length || size <= bestSize) continue
+    const data = body.subarray(offset, offset + length)
+    if (imageType('', data) !== 'image/png') continue
+    best = data
+    bestSize = size
+  }
+  return best
 }
 
 // 中身の先頭から画像の種類を見分ける（Content-Type が書かれていないサーバーがある）
@@ -289,7 +407,7 @@ export class LinkPreviewService {
     if (hit && hit.expires > now) return hit.value
     const value = this.fetch(url, MAX_HTML_BYTES, 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5').then((response) => {
       const type = response.contentType.toLowerCase()
-      if (type && !type.includes('html') && !type.includes('xml')) return { title: null, description: null, siteName: null, image: null }
+      if (type && !type.includes('html') && !type.includes('xml')) return { title: null, description: null, siteName: null, image: null, images: [], icons: [] }
       return parsePreview(decodeHtml(response.body, response.contentType), response.url)
     })
     // 失敗したものは覚えておかない（次に頼まれたら、また取りに行く）
@@ -304,7 +422,9 @@ export class LinkPreviewService {
     const response = await this.fetch(url, MAX_IMAGE_BYTES + 1, 'image/webp,image/png,image/jpeg,image/*;q=0.8')
     if (response.body.length > MAX_IMAGE_BYTES) return null
     const type = imageType(response.contentType, response.body)
-    return type ? { type, body: response.body } : null
+    if (type) return { type, body: response.body }
+    const png = pngFromIco(response.body)
+    return png ? { type: 'image/png', body: png } : null
   }
 
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, params: URLSearchParams): Promise<boolean> {

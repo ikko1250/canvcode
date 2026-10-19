@@ -1,4 +1,4 @@
-import { isNodeRecord, type NodeRecord, type StoreEvent, type WorkspaceRecord } from '@canvcode/core'
+import { isNodeRecord, type AssetRecord, type NodeRecord, type StoreEvent, type WorkspaceRecord } from '@canvcode/core'
 import type { LinkCardProps } from '@canvcode/nodes'
 import { isSupportedImage, type AssetManager } from './assets.ts'
 import type { Editor } from './editor.ts'
@@ -15,9 +15,18 @@ export interface LinkPreview {
   title: string | null
   description: string | null
   siteName: string | null
-  // サムネイルの URL（og:image）
+  // サムネイルの URL（og:image）。images の先頭と同じ
   image: string | null
+  // サムネイルの候補（よさそうな順）と、サイトのアイコンの候補。古いサーバーは返さない
+  images?: string[]
+  icons?: string[]
 }
+
+// サムネイルとして使う画像の最小の大きさ（これより小さいものは、次の候補を試す）
+const MIN_THUMB_W = 100
+const MIN_THUMB_H = 60
+// 試す候補の数の上限
+const MAX_TRIES = 4
 
 export class LinkPreviewer {
   private readonly assets: AssetManager
@@ -64,28 +73,46 @@ export class LinkPreviewer {
     const response = await fetch(`${this.baseUrl}?url=${encodeURIComponent(url)}`)
     if (!response.ok) return null
     const preview = (await response.json()) as LinkPreview
-    const image = preview.image ? await this.fetchImage(preview.image) : null
+    const images = preview.images ?? (preview.image ? [preview.image] : [])
+    // サムネイルは候補を前から試し、取れて十分に大きいものを使う
+    let image: LinkCardProps['image'] = null
+    for (const url of images.slice(0, MAX_TRIES)) {
+      const asset = await this.fetchAsset(url)
+      if (asset && asset.width >= MIN_THUMB_W && asset.height >= MIN_THUMB_H) {
+        image = { assetId: asset.id, aspect: asset.height / asset.width }
+        break
+      }
+    }
+    // サイトのアイコン（サムネイルがなければ、大きいアイコンをその代わりにする）
+    let icon: LinkCardProps['icon'] = null
+    for (const url of (preview.icons ?? []).slice(0, MAX_TRIES)) {
+      const asset = await this.fetchAsset(url)
+      if (asset) {
+        icon = { assetId: asset.id, size: Math.min(asset.width, asset.height) }
+        break
+      }
+    }
     return {
       title: text(preview.title),
       description: text(preview.description),
       siteName: text(preview.siteName),
       image,
+      icon,
       status: 'done',
     }
   }
 
-  // サムネイルはサーバーに中継してもらい、ふつうの画像と同じく Asset に取り込む（縮小版もここで作る）
-  private async fetchImage(url: string): Promise<LinkCardProps['image']> {
+  // 画像はサーバーに中継してもらい、ふつうの画像と同じく Asset に取り込む（縮小版もここで作る）。取れなければ null
+  private async fetchAsset(url: string): Promise<AssetRecord | null> {
     try {
       const response = await fetch(`${this.baseUrl}/image?url=${encodeURIComponent(url)}`)
       if (!response.ok) return null
       const blob = await response.blob()
       if (!isSupportedImage(blob)) return null
       const asset = await this.assets.importImage(blob)
-      if (asset.width <= 0 || asset.height <= 0) return null
-      return { assetId: asset.id, aspect: asset.height / asset.width }
+      return asset.width > 0 && asset.height > 0 ? asset : null
     } catch (error) {
-      console.warn('Failed to load link thumbnail', url, error)
+      console.warn('Failed to load a link image', url, error)
       return null
     }
   }

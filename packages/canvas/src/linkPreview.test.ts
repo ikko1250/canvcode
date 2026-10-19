@@ -73,4 +73,20 @@ describe('link previews', () => {
     expect(editor.getNode(kept)!.props).toMatchObject({ title: 'T', siteName: 'Site', image: null, status: 'done' })
     expect(editor.getNode(deleted)).toBeUndefined()
   })
+
+  it('tries the next thumbnail candidate when one fails or is too small, and keeps the site icon', async () => {
+    const { editor, previewer, importImage } = setup({
+      '/api/link-preview/image?url=https%3A%2F%2Fexample.com%2Fmissing.jpg': () => new Response('{}', { status: 502 }),
+      '/api/link-preview/image?': () => new Response(new Blob([new Uint8Array(4)], { type: 'image/png' })),
+      '/api/link-preview?': () =>
+        Response.json({ title: 'T', description: null, siteName: null, image: 'https://example.com/missing.jpg', images: ['https://example.com/missing.jpg', 'https://example.com/small.png', 'https://example.com/big.png'], icons: ['https://example.com/apple.png'] }),
+    })
+    const small: AssetRecord = { ...asset, id: 'asset:small', hash: 'small', width: 40, height: 40, variants: [] }
+    const icon: AssetRecord = { ...asset, id: 'asset:icon', hash: 'icon', width: 180, height: 180, variants: [] }
+    importImage.mockResolvedValueOnce(small).mockResolvedValueOnce(asset).mockResolvedValueOnce(icon)
+    const id = insertLinkCard(editor, 'https://example.com/page', { x: 0, y: 0 })
+    await previewer.settled()
+    expect(editor.getNode(id)!.props).toMatchObject({ image: { assetId: 'asset:thumb' }, icon: { assetId: 'asset:icon', size: 180 }, status: 'done' })
+    expect(importImage).toHaveBeenCalledTimes(3)
+  })
 })

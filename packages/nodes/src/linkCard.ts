@@ -8,6 +8,8 @@ import { TEXT_BAR_THRESHOLD_PX, drawTextBars, drawTextLayout, layoutText, type T
 // - カードのどこでも Ctrl（⌘）+クリックで URL を開ける（linkAt）
 // - タイトル・説明・サムネイルは、サーバーがリンク先のページ（OGP）から取ってきたものを、あとから書き込む。
 //   取れなかったときは URL だけのカードのまま
+// - サムネイルがなく、サイトのアイコンが大きければ（apple-touch-icon など）、サムネイルの場所にアイコンを置く。
+//   アイコンは、サイトの名前の前にも小さく出す
 // - 高さは中身に合わせて決まる（幅だけを変えられる）
 export interface LinkCardProps {
   url: string
@@ -16,6 +18,8 @@ export interface LinkCardProps {
   siteName: string | null
   // サムネイル（og:image）。aspect は高さ / 幅
   image: { assetId: string; aspect: number } | null
+  // サイトのアイコン。size は短い辺の画素数（版を上げずに足した。ない（undefined）ものは null と同じ）
+  icon?: { assetId: string; size: number } | null
   // 'loading' はページの情報を取ってきているところ。'failed' は取れなかった（URL だけで描く）
   status: 'loading' | 'done' | 'failed'
   w: number
@@ -34,6 +38,9 @@ const MAX_DESCRIPTION_LINES = 2
 const THUMB_RATIO = 0.3
 const MIN_THUMB_H = 84
 const SITE_FONT = 12
+const SITE_ICON = 14
+// サムネイルの場所に置けるアイコンの大きさ（これより小さいとぼやけるので、サイトの名前の前にだけ出す）
+export const LINK_CARD_ICON_THUMB_MIN = 64
 
 const TITLE_STYLE: TextStyle = { fontSize: 15, lineHeight: 1.4, fontWeight: 600, color: '#1f2328', align: 'left' }
 const DESCRIPTION_STYLE: TextStyle = { fontSize: 13, lineHeight: 1.45, fontWeight: 400, color: '#57606a', align: 'left' }
@@ -93,7 +100,8 @@ function layoutClamped(text: string, style: TextStyle, width: number, max: numbe
 function linkCardLayout(props: LinkCardProps): LinkCardLayout {
   let layout = layoutCache.get(props)
   if (layout) return layout
-  const thumbW = props.image ? Math.round(props.w * THUMB_RATIO) : 0
+  const thumb = props.image ?? (props.icon && props.icon.size >= LINK_CARD_ICON_THUMB_MIN ? props.icon : null)
+  const thumbW = thumb ? Math.round(props.w * THUMB_RATIO) : 0
   const textW = Math.max(1, props.w - thumbW - PADDING * 2)
   const title = layoutClamped(linkCardTitle(props), TITLE_STYLE, textW, MAX_TITLE_LINES)
   const titleBox = { x: PADDING, y: PADDING, w: textW, h: title.height }
@@ -104,8 +112,8 @@ function linkCardLayout(props: LinkCardProps): LinkCardLayout {
   if (description) y += description.height + GAP
   const siteY = y + 2
   let h = siteY + SITE_FONT * 1.4 + PADDING
-  if (props.image) h = Math.max(h, MIN_THUMB_H)
-  const thumbBox = props.image ? { x: props.w - thumbW, y: 0, w: thumbW, h } : null
+  if (thumb) h = Math.max(h, MIN_THUMB_H)
+  const thumbBox = thumb ? { x: props.w - thumbW, y: 0, w: thumbW, h } : null
   layout = { title, titleBox, description, descriptionBox, siteY, textW, thumbBox, h }
   layoutCache.set(props, layout)
   return layout
@@ -115,7 +123,7 @@ export const linkCardType = defineNodeType<LinkCardProps>({
   type: 'link-card',
   version: 1,
 
-  defaultProps: () => ({ url: '', title: null, description: null, siteName: null, image: null, status: 'done', w: LINK_CARD_DEFAULT_WIDTH }),
+  defaultProps: () => ({ url: '', title: null, description: null, siteName: null, image: null, icon: null, status: 'done', w: LINK_CARD_DEFAULT_WIDTH }),
 
   getBounds: (node) => ({ x: 0, y: 0, w: node.props.w, h: linkCardLayout(node.props).h }),
 
@@ -134,6 +142,7 @@ export const linkCardType = defineNodeType<LinkCardProps>({
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, w, h)
     if (layout.thumbBox && props.image) drawThumbnail(ctx, props.image, layout.thumbBox, info)
+    else if (layout.thumbBox && props.icon) drawIconThumbnail(ctx, props.icon, layout.thumbBox, info)
     ctx.lineWidth = 1 / info.zoom
     ctx.strokeStyle = BORDER
     ctx.strokeRect(0, 0, w, h)
@@ -151,7 +160,11 @@ export const linkCardType = defineNodeType<LinkCardProps>({
     ctx.textAlign = 'left'
     ctx.fillStyle = '#8c959f'
     const site = props.status === 'loading' ? `${linkCardSite(props)} ・ 読み込み中…` : linkCardSite(props)
-    ctx.fillText(fit(ctx, site, layout.textW), PADDING, layout.siteY)
+    let siteX = PADDING
+    if (props.icon && drawAsset(ctx, props.icon.assetId, { x: PADDING, y: layout.siteY + (SITE_FONT * 1.2 - SITE_ICON) / 2, w: SITE_ICON, h: SITE_ICON }, info, 'contain')) {
+      siteX += SITE_ICON + 6
+    }
+    ctx.fillText(fit(ctx, site, layout.textW - (siteX - PADDING)), siteX, layout.siteY)
   },
 
   roughColor: () => '#ffffff',
@@ -160,7 +173,7 @@ export const linkCardType = defineNodeType<LinkCardProps>({
   resize: (node, size) => ({ ...node.props, w: size.w }),
   minSize: { w: 160, h: 40 },
 
-  assets: (node) => (node.props.image ? [node.props.image.assetId] : []),
+  assets: (node) => [node.props.image?.assetId, node.props.icon?.assetId].filter((id): id is string => Boolean(id)),
 
   // カードのどこでも、Ctrl（⌘）+クリックで開く
   linkAt: (node) => node.props.url || null,
@@ -168,19 +181,41 @@ export const linkCardType = defineNodeType<LinkCardProps>({
 
 // サムネイルを、箱いっぱいに（はみ出す分は切り取って）描く
 function drawThumbnail(ctx: CanvasRenderingContext2D, image: NonNullable<LinkCardProps['image']>, box: Box, info: RenderInfo): void {
-  const asset = info.assets?.get(image.assetId)
-  const longSide = Math.max(box.w, box.h, box.w * image.aspect, box.h / image.aspect)
-  const raster = asset ? requestAssetImage(info, asset, longSide * info.zoom * info.devicePixelRatio) : null
-  if (!raster) {
+  if (!drawAsset(ctx, image.assetId, box, info, 'cover')) {
     ctx.fillStyle = IMAGE_PLACEHOLDER_FILL
     ctx.fillRect(box.x, box.y, box.w, box.h)
-    return
   }
-  const scale = Math.max(box.w / raster.width, box.h / raster.height)
-  const sw = box.w / scale
-  const sh = box.h / scale
+}
+
+// サムネイルの代わりのアイコン。淡い地の真ん中に、余白を取って置く
+function drawIconThumbnail(ctx: CanvasRenderingContext2D, icon: NonNullable<LinkCardProps['icon']>, box: Box, info: RenderInfo): void {
+  ctx.fillStyle = '#f6f8fa'
+  ctx.fillRect(box.x, box.y, box.w, box.h)
+  const side = Math.min(box.w, box.h) * 0.55
+  drawAsset(ctx, icon.assetId, { x: box.x + (box.w - side) / 2, y: box.y + (box.h - side) / 2, w: side, h: side }, info, 'contain')
+}
+
+// Asset の画像を箱に描く。cover は箱いっぱいに（はみ出す分は切り取る）、contain は箱に収める。読み込み中なら false
+function drawAsset(ctx: CanvasRenderingContext2D, assetId: string, box: Box, info: RenderInfo, fitMode: 'cover' | 'contain'): boolean {
+  const asset = info.assets?.get(assetId)
+  if (!asset) return false
+  const aspect = asset.height / asset.width
+  const longSide = fitMode === 'cover' ? Math.max(box.w, box.h, box.w * aspect, box.h / aspect) : Math.max(box.w, box.h)
+  const raster = requestAssetImage(info, asset, longSide * info.zoom * info.devicePixelRatio)
+  if (!raster) return false
   ctx.imageSmoothingEnabled = true
-  ctx.drawImage(raster.image, (raster.width - sw) / 2, (raster.height - sh) / 2, sw, sh, box.x, box.y, box.w, box.h)
+  if (fitMode === 'cover') {
+    const scale = Math.max(box.w / raster.width, box.h / raster.height)
+    const sw = box.w / scale
+    const sh = box.h / scale
+    ctx.drawImage(raster.image, (raster.width - sw) / 2, (raster.height - sh) / 2, sw, sh, box.x, box.y, box.w, box.h)
+  } else {
+    const scale = Math.min(box.w / raster.width, box.h / raster.height)
+    const w = raster.width * scale
+    const h = raster.height * scale
+    ctx.drawImage(raster.image, box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h)
+  }
+  return true
 }
 
 function fit(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {

@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { allowedUrl, decodeHtml, fetchRemote, imageType, isBlockedAddress, LinkPreviewService, parsePreview, safeLookup, type FetchRemote } from './linkPreview.ts'
+import { allowedUrl, decodeHtml, fetchRemote, imageType, isBlockedAddress, LinkPreviewService, parsePreview, pngFromIco, safeLookup, type FetchRemote } from './linkPreview.ts'
 
 // リンクのカードのタイトル・サムネイル（リンク先のページの OGP）を取ってくる
 
@@ -19,12 +19,59 @@ describe('reading a page', () => {
       description: 'About あ',
       siteName: 'Example',
       image: 'https://example.com/img/og.png?x=1&y=2',
+      images: ['https://example.com/img/og.png?x=1&y=2'],
+      icons: ['https://example.com/favicon.ico'],
     })
+  })
+
+  it('collects more thumbnail candidates in order, and site icons from the largest', () => {
+    const html = `<html><head>
+      <meta name="twitter:image" content="https://cdn.example.com/tw.jpg">
+      <link rel="image_src" href="/src.jpg">
+      <link rel="icon" href="/favicon-32.png" sizes="32x32">
+      <link rel="apple-touch-icon" href="/apple.png">
+      <link rel="icon" href="/icon.svg" type="image/svg+xml">
+      <script type="application/ld+json">{"@graph":[{"@type":"Article","image":{"url":"https://example.com/ld.jpg"}}]}</script>
+      </head><body>
+      <img src="/logo.png" width="300" height="80">
+      <img src="/tiny.jpg" width="20" height="20">
+      <img src="/vector.svg">
+      <img data-src="/lazy.jpg" src="data:image/gif;base64,R0lGOD">
+      <img src="/photo.jpg" width="640" height="480">
+      </body></html>`
+    const preview = parsePreview(html, 'https://example.com/a/')
+    expect(preview.images).toEqual([
+      'https://cdn.example.com/tw.jpg',
+      'https://example.com/src.jpg',
+      'https://example.com/ld.jpg',
+      'https://example.com/lazy.jpg',
+      'https://example.com/photo.jpg',
+    ])
+    expect(preview.image).toBe('https://cdn.example.com/tw.jpg')
+    expect(preview.icons).toEqual(['https://example.com/apple.png', 'https://example.com/favicon-32.png', 'https://example.com/favicon.ico'])
+  })
+
+  it('takes the largest PNG out of an .ico', () => {
+    const png = (size: number) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(size)])
+    const small = png(4)
+    const large = png(8)
+    const header = Buffer.alloc(6 + 32)
+    header.writeUInt16LE(1, 2)
+    header.writeUInt16LE(2, 4)
+    header[6] = 16
+    header.writeUInt32LE(small.length, 6 + 8)
+    header.writeUInt32LE(38, 6 + 12)
+    header[22] = 0 // 256
+    header.writeUInt32LE(large.length, 22 + 8)
+    header.writeUInt32LE(38 + small.length, 22 + 12)
+    const ico = Buffer.concat([header, small, large])
+    expect(pngFromIco(ico)?.equals(large)).toBe(true)
+    expect(pngFromIco(Buffer.from('not an icon'))).toBeNull()
   })
 
   it('falls back to <title> and the description meta, and ignores a non-http image', () => {
     const html = '<head><title>\n  Just a   title </title><meta name="description" content="Desc"><meta property="og:image" content="javascript:alert(1)"></head>'
-    expect(parsePreview(html, 'https://example.com/')).toEqual({ title: 'Just a title', description: 'Desc', siteName: null, image: null })
+    expect(parsePreview(html, 'https://example.com/')).toMatchObject({ title: 'Just a title', description: 'Desc', siteName: null, image: null, images: [] })
   })
 
   it('decodes the charset given by the header or by <meta charset>', () => {
@@ -103,7 +150,7 @@ describe('the service', () => {
     const fetch: FetchRemote = async (url) =>
       url.endsWith('.pdf') ? { url, contentType: 'application/pdf', body: Buffer.from('%PDF') } : { url, contentType: 'text/html', body: Buffer.from('<html>') }
     const service = new LinkPreviewService(fetch)
-    expect(await service.preview('https://example.com/a.pdf')).toEqual({ title: null, description: null, siteName: null, image: null })
+    expect(await service.preview('https://example.com/a.pdf')).toEqual({ title: null, description: null, siteName: null, image: null, images: [], icons: [] })
     expect(await service.image('https://example.com/page')).toBeNull()
   })
 })
