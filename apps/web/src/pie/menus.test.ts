@@ -5,7 +5,7 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
-const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false }
+const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false, pdfLink: false }
 
 function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false, table: TableMenuContext | null = null): PieMenuContext {
   return {
@@ -48,6 +48,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     applySlideTemplate: vi.fn(),
     hasSlides,
     exportSlidesPdf: vi.fn(),
+    createPdfPortal: vi.fn(),
     table,
     sortTable: vi.fn(),
     filterTable: vi.fn(),
@@ -291,6 +292,16 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(labels(folded?.items)).toEqual(['文字', '重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
     const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
     for (const ring of [menu, full, folded]) for (const size of rings(ring!.items)) expect(size).toBeLessThanOrEqual(8)
+  })
+
+  it('creates a PDF portal from a link card to a PDF, first among the selection items', () => {
+    const ctx = context({}, { count: 1, reorderCount: 1, pdfLink: true })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['PDF ポータルを作成', '重なり順', '固定する', '複製'])
+    run(menu?.items, 'PDF ポータルを作成')
+    expect(ctx.createPdfPortal).toHaveBeenCalledTimes(1)
+    // PDF でないリンクのカード・ほかのノードには出さない
+    expect(labels(actionsOf(context({}, { count: 1, reorderCount: 1 }))?.items)).not.toContain('PDF ポータルを作成')
   })
 
   it('shows sort and filter for the column under the pointer of a table card, before the selection items', () => {
