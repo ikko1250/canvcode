@@ -279,6 +279,13 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   return pages.length + items.length <= 8 ? [...pages, ...items] : [{ label: 'ページ', items: pages }, ...items]
 }
 
+// キーボードのない端末（スマホ）で、左下に並べるボタン（メニューの id と名前）
+export const PIE_BUTTONS = [
+  { id: 'tools', label: 'ツール' },
+  { id: 'actions', label: '操作' },
+  { id: 'others', label: 'そのほか' },
+]
+
 export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
   const tool = (id: ToolId): PieEntry => ({ label: TOOL_LABELS[id], active: ctx.toolId === id, onSelect: () => ctx.setTool(id) })
   const group = (label: string, ids: ToolId[]): PieEntry => ({ label, items: ids.map(tool) })

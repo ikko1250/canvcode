@@ -50,6 +50,40 @@ body,
   user-select: none;
 }
 
+/* キーボードのない端末（スマホ）でパイメニューを開くボタン。押したまま指をずらして選ぶ。
+   下の項目へも指をずらせるよう、画面の下端から離して置く */
+.pie-buttons {
+  position: fixed;
+  z-index: 24;
+  left: calc(12px + env(safe-area-inset-left));
+  bottom: calc(110px + env(safe-area-inset-bottom));
+  display: flex;
+  gap: 10px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.pie-buttons button {
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  touch-action: none;
+}
+
+.pie-buttons button.open {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .pie-hub {
   position: absolute;
   left: 0;

@@ -46,7 +46,7 @@ import { memoryBreakdown } from './memoryStats.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
-import { buildPieMenus, type PieMenuContext } from './pie/menus.ts'
+import { buildPieMenus, PIE_BUTTONS, type PieMenuContext } from './pie/menus.ts'
 import { PieMenus } from './pie/PieMenu.tsx'
 import { ArrangePalette } from './palette/ArrangePalette.tsx'
 import { DrawPalette } from './palette/DrawPalette.tsx'
@@ -1402,6 +1402,7 @@ export function App(props: { initial: InitialRecords }) {
           // oxlint-disable-next-line react/refs
           menus={pieMenusAt(pieOrigin)}
           menusAt={pieMenusAt}
+          buttons={PIE_BUTTONS}
         />
 
         {tableFilter && (

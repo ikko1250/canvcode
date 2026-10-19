@@ -151,6 +151,17 @@ const NUDGE_LARGE = 10
 const DUPLICATE_OFFSET_PX = 16
 // 押してから離すまでに、これより動かさなければクリックとみなす（CSS ピクセル）
 const CLICK_SLOP_PX = 3
+// タッチの 1 本目の指は、この間（ミリ秒）だけツールに渡さずに待つ。そのうちに 2 本目が触れたら、2 本指の操作にする
+// （渡してしまうと、指を置いたところのノードが選ばれるので）。その前に、この距離（CSS ピクセル）より動いたか離したら、すぐ渡す
+const TOUCH_HOLD_MS = 150
+const TOUCH_SLOP_PX = 6
+// 2 本指で、中点がこれだけ動いたらパン、指の間がこれだけ変わったらズームに決める（決めたら、指を離すまでもう一方はしない）
+const PINCH_LOCK_PX = 12
+
+interface PinchFrame {
+  center: Vec
+  distance: number
+}
 // 貼り付けた画像を、画面のこの割合に収まるよう縮める
 const IMAGE_FIT_RATIO = 0.8
 // Portal のサムネイルの大きさの上限（画素）
@@ -224,6 +235,13 @@ export class CanvasView {
   private linkHintTimer: ReturnType<typeof setTimeout> | null = null
   private linkHintAt = { x: 0, y: 0 }
   private gestureScale = 1
+  // タッチの指（ブラウザの画面の座標）。2 本目が触れたら、それまでの操作を取り消して、2 本指のパン・ピンチにする。
+  // 2 本指をやめたあと、残った指はすべての指が離れるまで何もしない（pinch を null にするのは、すべて離れたとき）。
+  // start は指の組が決まったときの中点と間の距離、last は前に動かしたとき。mode は、パンかズームかを決めたら入れる
+  private readonly touches = new Map<number, Vec>()
+  private pinch: { start: PinchFrame | null; last: PinchFrame | null; mode: 'pan' | 'zoom' | null } | null = null
+  // まだツールに渡していない、1 本目の指の pointerdown（TOUCH_HOLD_MS）
+  private pendingTouch: { event: PointerEvent; timer: ReturnType<typeof setTimeout> } | null = null
   // 時間のかかる画像（Markdown カードなど）のキャッシュ。作れたらシーンを描き直す（MAI-22）
   readonly images = new ImageCache({ onReady: () => this.invalidate('scene') })
   private readonly stats = new FrameStats()
@@ -400,7 +418,7 @@ export class CanvasView {
       this.onContextMenu(e)
     })
     this.listen(this.root, 'dblclick', (e) => {
-      if (this.panPointer || this.spaceHeld) return
+      if (this.panPointer || this.spaceHeld || this.pinch) return
       this.tool.onDoubleClick?.(this.toPointer(e))
     })
     // Safari のトラックパッドのピンチは wheel ではなく gesture イベントで届く
@@ -434,6 +452,7 @@ export class CanvasView {
   }
 
   dispose(): void {
+    this.dropPendingTouch()
     this.textEditor.finish()
     this.documentEditor?.finish()
     this.tool.onExit?.()
@@ -478,6 +497,9 @@ export class CanvasView {
     })
     this.lifted = new Set()
     this.panPointer = null
+    this.touches.clear()
+    this.pinch = null
+    this.dropPendingTouch()
     this.cursorOverride = null
     this.attachEditor()
     // 離れている間にフォントを読み込んでいたら、この Canvas のノードの形も測り直す（MAI-75）
@@ -1565,6 +1587,11 @@ export class CanvasView {
   }
 
   private onPointerDown(e: PointerEvent): void {
+    if (e.pointerType === 'touch' && this.onTouchDown(e)) return
+    this.startPointer(e)
+  }
+
+  private startPointer(e: PointerEvent): void {
     const panning = e.button === 1 || (e.button === 0 && this.spaceHeld)
     // リンクと同じく、Ctrl（⌘）+クリックと中ボタンのクリックは、Portal を新しいタブで開く（離したときに見る。MAI-63）
     const linkClick = e.button === 1 || (e.button === 0 && (e.ctrlKey || e.metaKey) && !this.spaceHeld)
@@ -1591,6 +1618,7 @@ export class CanvasView {
   }
 
   private onPointerMove(e: PointerEvent): void {
+    if (e.pointerType === 'touch' && this.onTouchMove(e)) return
     const rect = this.root.getBoundingClientRect()
     this.pointerScreen = { x: e.clientX - rect.left, y: e.clientY - rect.top }
     if (this.panPointer && this.panPointer.id === e.pointerId) {
@@ -1615,6 +1643,7 @@ export class CanvasView {
 
   private onPointerUp(e: PointerEvent): void {
     if (this.root.hasPointerCapture(e.pointerId)) this.root.releasePointerCapture(e.pointerId)
+    if (e.pointerType === 'touch' && this.onTouchUp(e)) return
     const click = this.linkClick
     this.linkClick = null
     if (click && e.type === 'pointerup' && click.id === e.pointerId && click.button === e.button && Math.hypot(e.clientX - click.x, e.clientY - click.y) < CLICK_SLOP_PX) {
@@ -1626,6 +1655,107 @@ export class CanvasView {
       return
     }
     this.tool.onPointerUp?.(this.toPointer(e))
+  }
+
+  // ---- タッチ（2 本指のパン・ピンチ） ----
+  // どれも、2 本指の操作として受け取った（ツールには渡さない）なら true
+
+  private onTouchDown(e: PointerEvent): boolean {
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    this.root.setPointerCapture(e.pointerId)
+    if (this.pinch) {
+      // 2 本指をやめて 1 本残っているところへ、また触れたら、その 2 本で（パンかズームかを決め直して）続ける。3 本目からの指は見るだけ
+      if (this.touches.size === 2) this.resetPinch()
+      return true
+    }
+    if (this.touches.size < 2) {
+      this.dropPendingTouch()
+      this.pendingTouch = { event: e, timer: setTimeout(() => this.flushPendingTouch(), TOUCH_HOLD_MS) }
+      return true
+    }
+    // 1 本目の指をまだ渡していなければ、渡さずに捨てる。渡していれば、始めていた操作（ドラッグ・範囲選択・フリーハンドなど）を取り消す
+    if (this.pendingTouch) this.dropPendingTouch()
+    else this.tool.cancel()
+    this.linkClick = null
+    this.pinch = { start: null, last: null, mode: null }
+    this.resetPinch()
+    return true
+  }
+
+  private onTouchMove(e: PointerEvent): boolean {
+    if (!this.touches.has(e.pointerId)) return false
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const pending = this.pendingTouch
+    if (pending && pending.event.pointerId === e.pointerId) {
+      if (Math.hypot(e.clientX - pending.event.clientX, e.clientY - pending.event.clientY) < TOUCH_SLOP_PX) return true
+      this.flushPendingTouch()
+      return false
+    }
+    if (!this.pinch) return false
+    const next = this.pinchFrame()
+    const { start, last } = this.pinch
+    if (!next || !start || !last) return true
+    if (!this.pinch.mode) {
+      const moved = Math.hypot(next.center.x - start.center.x, next.center.y - start.center.y)
+      const spread = Math.abs(next.distance - start.distance)
+      if (spread >= PINCH_LOCK_PX && spread >= moved) this.pinch.mode = 'zoom'
+      else if (moved >= PINCH_LOCK_PX) this.pinch.mode = 'pan'
+      // 決めるまでは動かさない（決めたら、決めるまでに動いた分も、決めた方だけ動かす）
+      else return true
+    }
+    const camera = this.editor.session.get().camera
+    if (this.pinch.mode === 'pan') {
+      this.setCamera(panBy(camera, next.center.x - last.center.x, next.center.y - last.center.y))
+    } else if (last.distance > 0 && next.distance > 0) {
+      // 指の組が決まったときの中点を中心に、拡大・縮小だけをする
+      const rect = this.root.getBoundingClientRect()
+      const anchor = { x: start.center.x - rect.left, y: start.center.y - rect.top }
+      this.setCamera(zoomAt(camera, anchor, (camera.zoom * next.distance) / last.distance))
+    }
+    this.pinch.last = next
+    return true
+  }
+
+  private onTouchUp(e: PointerEvent): boolean {
+    this.touches.delete(e.pointerId)
+    const pending = this.pendingTouch
+    if (pending && pending.event.pointerId === e.pointerId) {
+      // 待っている間に離した（叩いた）：押したことを渡してから、離したことを渡す
+      this.flushPendingTouch()
+      return false
+    }
+    if (!this.pinch) return false
+    if (this.touches.size === 0) this.pinch = null
+    // 指の組が変わったら、そこから測り直す（中心が跳ばないように）
+    else this.resetPinch()
+    return true
+  }
+
+  // 今の指の組で、パンかズームかを決め直す（2 本なければ、触れるまで何もしない）
+  private resetPinch(): void {
+    if (!this.pinch) return
+    const frame = this.pinchFrame()
+    this.pinch = { start: frame, last: frame, mode: null }
+  }
+
+  private flushPendingTouch(): void {
+    const pending = this.pendingTouch
+    if (!pending) return
+    clearTimeout(pending.timer)
+    this.pendingTouch = null
+    this.startPointer(pending.event)
+  }
+
+  private dropPendingTouch(): void {
+    if (this.pendingTouch) clearTimeout(this.pendingTouch.timer)
+    this.pendingTouch = null
+  }
+
+  // 触れている指のうち、先の 2 本の中点と間の距離（1 本しかなければ null）
+  private pinchFrame(): PinchFrame | null {
+    const [a, b] = this.touches.values()
+    if (!a || !b) return null
+    return { center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, distance: Math.hypot(a.x - b.x, a.y - b.y) }
   }
 
   private onWheel(e: WheelEvent): void {
