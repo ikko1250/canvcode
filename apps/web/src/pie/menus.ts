@@ -101,6 +101,8 @@ export interface PieMenuContext {
   // 今のキャンバスにスライドがあるか（非表示のものも数える）と、スライドを PDF に出力する（スライド v2）
   hasSlides: boolean
   exportSlidesPdf(): void
+  // 選んでいるリンクのカード（PDF の URL）の PDF をダウンロードして、PDF の Portal を作る
+  createPdfPortal(): void
 }
 
 export interface PdfMenuContext {
@@ -139,6 +141,8 @@ export interface SelectionMenuContext {
   slideRows: { canRemove: boolean; manualHeight?: boolean } | null
   // スライドを 1 つだけ選んでいて、そのスライドに子が無いか。テンプレートを置ける（スライド v2）
   slideTemplate: boolean
+  // PDF の URL のリンクのカードを 1 つだけ選んでいるか（「PDF ポータルを作成」を出す）
+  pdfLink: boolean
 }
 
 const ALIGN_EDGES: [AlignEdge, string][] = [
@@ -232,6 +236,7 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
     text.push({ label: '揃え', items: TEXT_ALIGNS.map(([align, label]) => ({ label, onSelect: () => ctx.setTextAlign(align) })) })
   }
   const items: PieEntry[] = []
+  if (selection.pdfLink) items.push({ label: 'PDF ポータルを作成', onSelect: ctx.createPdfPortal })
   if (selection.arrangeCount >= 2) {
     items.push({ label: '整列', items: ALIGN_EDGES.map(([edge, label]) => ({ label, onSelect: () => ctx.alignSelection(edge) })) })
   }

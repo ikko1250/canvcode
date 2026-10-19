@@ -1,7 +1,20 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { allowedUrl, decodeHtml, fetchRemote, imageType, isBlockedAddress, LinkPreviewService, parsePreview, pngFromIco, safeLookup, type FetchRemote } from './linkPreview.ts'
+import {
+  allowedUrl,
+  decodeHtml,
+  fetchRemote,
+  imageType,
+  isBlockedAddress,
+  isPdfBody,
+  LinkPreviewService,
+  parsePreview,
+  pdfFileName,
+  pngFromIco,
+  safeLookup,
+  type FetchRemote,
+} from './linkPreview.ts'
 
 // リンクのカードのタイトル・サムネイル（リンク先のページの OGP）を取ってくる
 
@@ -152,5 +165,32 @@ describe('the service', () => {
     const service = new LinkPreviewService(fetch)
     expect(await service.preview('https://example.com/a.pdf')).toEqual({ title: null, description: null, siteName: null, image: null, images: [], icons: [] })
     expect(await service.image('https://example.com/page')).toBeNull()
+  })
+
+  it('relays a PDF by its first bytes, with a long time limit, and refuses one that is too large', async () => {
+    const asked: { maxBytes: number; timeoutMs?: number }[] = []
+    const fetch: FetchRemote = async (url, maxBytes, _accept, timeoutMs) => {
+      asked.push({ maxBytes, timeoutMs })
+      if (url.includes('page')) return { url, contentType: 'application/pdf', body: Buffer.from('<html>') }
+      if (url.includes('huge')) return { url, contentType: 'application/pdf', body: Buffer.alloc(maxBytes) }
+      // Content-Type が PDF でなくても、中身が PDF なら受ける。リダイレクトした先の URL から名前を決める
+      return { url: 'https://cdn.example.com/files/%E8%B3%87%E6%96%99.PDF', contentType: 'application/octet-stream', body: Buffer.from('\n%PDF-1.7\n') }
+    }
+    const service = new LinkPreviewService(fetch)
+    expect(await service.pdf('https://example.com/a.pdf')).toEqual({ name: '資料', body: Buffer.from('\n%PDF-1.7\n') })
+    expect(asked[0].timeoutMs).toBeGreaterThan(8000)
+    expect(await service.pdf('https://example.com/page')).toBeNull()
+    expect(await service.pdf('https://example.com/huge.pdf')).toBe('too large')
+  })
+
+  it('names a PDF by Content-Disposition, then by the URL', () => {
+    expect(pdfFileName(`attachment; filename="plain.pdf"; filename*=UTF-8''%E8%A8%88%E7%94%BB.pdf`, 'https://example.com/x.pdf')).toBe('計画')
+    expect(pdfFileName('inline; filename="report 2026.pdf"', 'https://example.com/x.pdf')).toBe('report 2026')
+    expect(pdfFileName('inline; filename=dgc.pdf', 'https://example.com/x.pdf')).toBe('dgc')
+    expect(pdfFileName(undefined, 'https://www.meti.go.jp/policy/dgc/dgc3.0.pdf?x=1')).toBe('dgc3.0')
+    expect(pdfFileName('attachment; filename="..\\..\\evil.pdf"', 'https://example.com/')).toBe('evil')
+    expect(pdfFileName(undefined, 'https://example.com/')).toBe('PDF')
+    expect(isPdfBody(Buffer.from('%PDF-1.4'))).toBe(true)
+    expect(isPdfBody(Buffer.from('<html>%PDF-'.padStart(2000)))).toBe(false)
   })
 })

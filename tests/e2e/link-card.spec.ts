@@ -114,3 +114,84 @@ test('text that is not just a URL is still pasted as a text node', async ({ page
   expect(requested).toEqual([])
 })
 
+// 何も書いていない、595×842 のページが 2 つの PDF
+function blankPdf(): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>',
+  ]
+  let pdf = '%PDF-1.4\n'
+  const offsets = objects.map((body, i) => {
+    const offset = pdf.length
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`
+    return offset
+  })
+  const xref = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(pdf, 'latin1')
+}
+
+test('right-click → PDF ポータルを作成 downloads the PDF of a link card and puts its portal beside the card', async ({ page, context }) => {
+  const PDF_URL = 'https://example.com/docs/dgc3.0.pdf'
+  await setup(page, context, { title: null, image: null })
+  const downloads: string[] = []
+  await context.route('**/api/link-preview/pdf?**', (route) => {
+    downloads.push(new URL(route.request().url()).searchParams.get('url')!)
+    return route.fulfill({ body: blankPdf(), contentType: 'application/pdf', headers: { 'x-canvcode-filename': encodeURIComponent('dgc3.0') } })
+  })
+  const uploads: string[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/assets') uploads.push(request.headers()['content-type'])
+  })
+  const menuItem = page.locator('.context-menu button', { hasText: 'PDF ポータルを作成' })
+
+  // PDF でない URL のカードには、項目を出さない
+  await paste(page, PAGE_URL)
+  await expect.poll(async () => (await selectedNode(page))?.props.status).toBe('done')
+  const pageCard = (await selectedNode(page))!
+  let at = await toPage(page, { x: pageCard.bounds.x + 20, y: pageCard.bounds.y + 20 })
+  await page.mouse.click(at.x, at.y, { button: 'right' })
+  await expect(page.locator('.context-menu')).toBeVisible()
+  await expect(menuItem).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.context-menu')).toBeHidden()
+  await page.evaluate(() => (window as any).canvcode.view.setCamera({ x: 100_000, y: 101_000, zoom: 1 }))
+
+  await paste(page, PDF_URL)
+  await expect.poll(async () => (await selectedNode(page))?.props.status).toBe('done')
+  const card = (await selectedNode(page))!
+  expect(card.props.url).toBe(PDF_URL)
+  at = await toPage(page, { x: card.bounds.x + 20, y: card.bounds.y + 20 })
+  await page.mouse.click(at.x, at.y, { button: 'right' })
+  await menuItem.click()
+  // 取り込んだ Portal を選ぶ
+  await expect.poll(async () => (await selectedNode(page))?.type, { timeout: 15_000 }).toBe('portal')
+  expect(downloads).toEqual([PDF_URL])
+  const portal = (await selectedNode(page))!
+  // カードの右隣（縦はカードと重なる位置）に置く
+  expect(portal.bounds.x).toBeGreaterThan(card.bounds.x + card.bounds.w)
+  expect(portal.bounds.y).toBeLessThan(card.bounds.y + card.bounds.h)
+  expect(portal.bounds.y + portal.bounds.h).toBeGreaterThan(card.bounds.y)
+  // ページの Canvas に 2 ページを並べ、名前はファイルの名前（カードにタイトルが無いので）
+  const target = await page.evaluate((targetId) => {
+    const workspace = (window as any).canvcode.editor.workspace
+    const records = [...workspace.store.values()]
+    return {
+      title: workspace.getCanvas(targetId)?.title,
+      pages: records.filter((r: any) => r.typeName === 'node' && r.type === 'pdf-page' && r.parentId === targetId).length,
+      pageCount: records.find((r: any) => r.typeName === 'file' && r.kind === 'pdf' && r.pagesCanvasId === targetId)?.pageCount,
+    }
+  }, portal.props.targetId)
+  expect(target).toEqual({ title: 'dgc3.0', pages: 2, pageCount: 2 })
+  // ドロップしたときと同じく、PDF をアップロードする
+  await expect.poll(() => uploads).toEqual(['application/pdf'])
+  // 1 回の Undo で Portal がなくなり、カードは残る
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => page.evaluate((id) => Boolean((window as any).canvcode.editor.getNode(id)), portal.id)).toBe(false)
+  expect(await page.evaluate((id) => Boolean((window as any).canvcode.editor.getNode(id)), card.id)).toBe(true)
+})
+
