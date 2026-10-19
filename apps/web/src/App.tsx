@@ -31,6 +31,12 @@ import {
   type NoteProps,
   type QuoteCardProps,
   type TableCardProps,
+  type TableFilterOp,
+  FILTER_OP_LABELS,
+  filterNeedsValue,
+  withTableFilter,
+  withTableSort,
+  withoutTableFilters,
   type SlideRatio,
   type StrokeDash,
 } from '@canvcode/nodes'
@@ -40,7 +46,7 @@ import { memoryBreakdown } from './memoryStats.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
 import { pdfService } from './pdf.ts'
-import { buildPieMenus } from './pie/menus.ts'
+import { buildPieMenus, type PieMenuContext } from './pie/menus.ts'
 import { PieMenus } from './pie/PieMenu.tsx'
 import { ArrangePalette } from './palette/ArrangePalette.tsx'
 import { DrawPalette } from './palette/DrawPalette.tsx'
@@ -56,6 +62,7 @@ import { FileEditor } from './workspace/FileEditor.tsx'
 import { exportMarkdownPdf } from './markdownPdf.ts'
 import { createSlidePdfExporter } from './slidePdfExport.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
+import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
 import { PdfSearchBar } from './workspace/PdfSearchBar.tsx'
@@ -303,6 +310,8 @@ export function App(props: { initial: InitialRecords }) {
   // PDF の単語検索の入力欄（試作）。開いた Canvas と、Ctrl+F を押した回数（押すたびに入力欄に戻る）。
   // 検索の結果はその Canvas の PDF のものなので、Canvas を移ったら見せない
   const [pdfSearch, setPdfSearch] = useState<{ canvasId: string; request: number } | null>(null)
+  // 表のカードの絞り込みの値を尋ねている入力欄
+  const [tableFilter, setTableFilter] = useState<(TableFilterRequest & { op: TableFilterOp }) | null>(null)
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
   const navigating = useRef(false)
   // 移っている途中（アニメーション中）に頼まれた移動。今の移動が終わったら、最後に頼まれたものを行う
@@ -1219,6 +1228,156 @@ export function App(props: { initial: InitialRecords }) {
     runBenchmark(view, (results) => setBench(results))
   }
 
+  // 表のカードの見せ方を変える（Undo 1 回で戻る）
+  const updateTableCard = (nodeId: string, label: string, change: (props: TableCardProps) => TableCardProps) => {
+    const node = editor.getNode(nodeId)
+    if (!node || node.type !== 'table-card') return
+    editor.transact(label, (tx) => tx.put({ ...node, props: change(node.props as TableCardProps) }))
+  }
+
+  // パイメニュー「操作」の、表のカードの項目（開いた位置の下のカードと列）
+  const tableMenu = (
+    under: ReturnType<CanvasView['tableAt']>,
+    origin: { x: number; y: number } | null,
+  ): Pick<PieMenuContext, 'table' | 'sortTable' | 'filterTable' | 'clearTableFilters' | 'toggleTableWrap'> => {
+    const props = under?.node.props
+    const column = under?.column ?? null
+    const filters = props?.filters ?? []
+    return {
+      table:
+        under && props
+          ? {
+              column: column && { numeric: column.numeric, sorted: props.sort?.col === column.col, filtered: filters.some((f) => f.col === column.col) },
+              sorted: Boolean(props.sort),
+              filterCount: filters.length,
+              wrap: props.wrap === true,
+            }
+          : null,
+      sortTable: (dir) => {
+        if (!under || !column) return
+        updateTableCard(under.node.id, 'table sort', (p) => withTableSort(p, dir && { col: column.col, dir }))
+      },
+      filterTable: (op) => {
+        if (!under || !column) return
+        if (!filterNeedsValue(op)) return updateTableCard(under.node.id, 'table filter', (p) => withTableFilter(p, { col: column.col, op, value: '' }))
+        // 値は入力欄で尋ねる（同じ列・同じ条件があれば、その値から始める）
+        const current = filters.find((f) => f.col === column.col && f.op === op)
+        setTableFilter({
+          nodeId: under.node.id,
+          col: column.col,
+          op,
+          label: `「${column.name}」 ${FILTER_OP_LABELS[op]}`,
+          value: current?.value ?? '',
+          at: origin ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+        })
+      },
+      clearTableFilters: (scope) => {
+        if (!under) return
+        updateTableCard(under.node.id, 'table filter', (p) => withoutTableFilters(p, scope === 'column' ? column?.col : undefined))
+      },
+      toggleTableWrap: () => {
+        if (!under) return
+        updateTableCard(under.node.id, 'table wrap', (p) => ({ ...p, wrap: !p.wrap }))
+      },
+    }
+  }
+
+  // パイメニュー。origin は開いた位置（ウィンドウの座標）。「操作」は、その下に表のカードがあれば、その列の並び替え・絞り込みも出す
+  const pieMenusAt = (origin: { x: number; y: number } | null) => {
+    const tableUnder = origin && view ? view.tableAt(origin) : null
+    return buildPieMenus({
+      toolId: session.toolId,
+      setTool: (toolId) => editor.session.set({ toolId }),
+      importPdf: () => {
+        if (!view) return
+        void pickFiles('.pdf,application/pdf').then(async (files) => {
+          if (!view) return
+          const center = view.viewportCenter()
+          for (const [i, file] of files.entries()) await view.importPdf(file, { x: center.x + i * 40, y: center.y + i * 40 })
+        })
+      },
+      importTable: () => {
+        if (!view) return
+        void pickFiles('.csv,.tsv,text/csv,text/tab-separated-values').then((files) => view?.importFiles(files, view.viewportCenter()))
+      },
+      createFileCanvas: (kind) => void view?.createFileCanvas(kind),
+      placeSlide,
+      undo: () => view?.undo(),
+      redo: () => view?.redo(),
+      showStats,
+      toggleStats: () => setShowStats((v) => !v),
+      benchRunning: bench === 'running',
+      cardBenchRunning: cardBench === 'running',
+      addBenchNodes: () => {
+        generateNodes(editor, BENCH_NODE_COUNT)
+        view?.zoomToFit()
+      },
+      addBenchShadowNodes: () => {
+        generateNodes(editor, BENCH_NODE_COUNT, { shadows: true })
+        view?.zoomToFit()
+      },
+      clearNodes: () => clearNodes(editor),
+      runBenchmark: startBenchmark,
+      addMarkdownCards: () => {
+        generateMarkdownCards(editor)
+        view?.zoomToFit()
+      },
+      runCardBenchmark: async () => {
+        if (!view) return
+        setCardBench('running')
+        setCardBench(await runCardBenchmark(view))
+      },
+      markdownCardCount: CARD_COUNT,
+      pdf: {
+        hasPages: pdfPageIds.length > 0,
+        canNext: pageNavigation.canNext,
+        canPrev: pageNavigation.canPrev,
+        allLocked: lockedPageCount === pdfPageIds.length,
+        noneLocked: lockedPageCount === 0,
+      },
+      selection: {
+        count: session.selectedIds.size,
+        arrangeCount: arrangeTargets.length,
+        reorderCount: editor.reorderTargets().length,
+        hasText: selectedTextNodes.length > 0,
+        slideCount: selectedSlides.length,
+        slidesHidden: selectedSlides.every((s) => s.props.hidden),
+        slideRows: slideRows && { canRemove: slideRows.canRemove, manualHeight: slideRows.manualHeight },
+        slideTemplate: templateSlideId !== null,
+      },
+      panToPage: (direction) => view?.panToPage(direction),
+      unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
+      lockPdfPages: () => editor.lockPdfPages(),
+      stepFontSize: (direction) => stepTextFontSize(editor, view, textNodesOf(editor), direction),
+      setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
+      alignSelection: (edge) => editor.alignSelection(edge),
+      distributeSelection: (axis) => editor.distributeSelection(axis),
+      reorderSelection: (direction) => editor.reorderSelection(direction),
+      lockSelection: () => editor.setLocked([...editor.session.get().selectedIds], true),
+      duplicateSelection: () => view?.duplicateSelection(),
+      toggleSlideRatio: () => editor.toggleSlideRatio(),
+      toggleSlidesHidden: () => {
+        editor.toggleSlidesHidden()
+        setSlideEdits((n) => n + 1)
+      },
+      addSlideRow: () => {
+        const state = editor.slideLayoutRowState()
+        if (state && state.rowCount >= state.maxRows) return notify(`これ以上、行を足せません（最大 ${state.maxRows} 行）`)
+        editor.addSlideLayoutRow()
+      },
+      removeSlideRow: () => editor.removeSlideLayoutRow(),
+      resetSlideRowHeight: () => editor.resetSlideLayoutRowHeight(),
+      applySlideTemplate: (kind) => {
+        if (!templateSlideId || !editor.applySlideTemplate(templateSlideId, kind)) return notify('中身のあるスライドには、テンプレートを使えません')
+        // 選択は変わらないので、描き直して操作の項目（行を足す など）を決め直す
+        setSlideEdits((n) => n + 1)
+      },
+      hasSlides: editor.slideCount() > 0,
+      exportSlidesPdf,
+      ...tableMenu(tableUnder, origin),
+    })
+  }
+
   return (
     <div className="app">
       {sidebarOpen && (
@@ -1237,101 +1396,29 @@ export function App(props: { initial: InitialRecords }) {
         </div>
 
         <PieMenus
-          enabled={!openFileId && !dialog && !renaming}
+          enabled={!openFileId && !dialog && !renaming && !tableFilter}
           onOpen={setPieOrigin}
           // 「v2 に変換」は選んだときに Canvas を移る（navigate が ref を読む）。描画中には呼ばない
           // oxlint-disable-next-line react/refs
-          menus={buildPieMenus({
-            toolId: session.toolId,
-            setTool: (toolId) => editor.session.set({ toolId }),
-            importPdf: () => {
-              if (!view) return
-              void pickFiles('.pdf,application/pdf').then(async (files) => {
-                if (!view) return
-                const center = view.viewportCenter()
-                for (const [i, file] of files.entries()) await view.importPdf(file, { x: center.x + i * 40, y: center.y + i * 40 })
-              })
-            },
-            importTable: () => {
-              if (!view) return
-              void pickFiles('.csv,.tsv,text/csv,text/tab-separated-values').then((files) => view?.importFiles(files, view.viewportCenter()))
-            },
-            createFileCanvas: (kind) => void view?.createFileCanvas(kind),
-            placeSlide,
-            undo: () => view?.undo(),
-            redo: () => view?.redo(),
-            showStats,
-            toggleStats: () => setShowStats((v) => !v),
-            benchRunning: bench === 'running',
-            cardBenchRunning: cardBench === 'running',
-            addBenchNodes: () => {
-              generateNodes(editor, BENCH_NODE_COUNT)
-              view?.zoomToFit()
-            },
-            addBenchShadowNodes: () => {
-              generateNodes(editor, BENCH_NODE_COUNT, { shadows: true })
-              view?.zoomToFit()
-            },
-            clearNodes: () => clearNodes(editor),
-            runBenchmark: startBenchmark,
-            addMarkdownCards: () => {
-              generateMarkdownCards(editor)
-              view?.zoomToFit()
-            },
-            runCardBenchmark: async () => {
-              if (!view) return
-              setCardBench('running')
-              setCardBench(await runCardBenchmark(view))
-            },
-            markdownCardCount: CARD_COUNT,
-            pdf: {
-              hasPages: pdfPageIds.length > 0,
-              canNext: pageNavigation.canNext,
-              canPrev: pageNavigation.canPrev,
-              allLocked: lockedPageCount === pdfPageIds.length,
-              noneLocked: lockedPageCount === 0,
-            },
-            selection: {
-              count: session.selectedIds.size,
-              arrangeCount: arrangeTargets.length,
-              reorderCount: editor.reorderTargets().length,
-              hasText: selectedTextNodes.length > 0,
-              slideCount: selectedSlides.length,
-              slidesHidden: selectedSlides.every((s) => s.props.hidden),
-              slideRows: slideRows && { canRemove: slideRows.canRemove, manualHeight: slideRows.manualHeight },
-              slideTemplate: templateSlideId !== null,
-            },
-            panToPage: (direction) => view?.panToPage(direction),
-            unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
-            lockPdfPages: () => editor.lockPdfPages(),
-            stepFontSize: (direction) => stepTextFontSize(editor, view, textNodesOf(editor), direction),
-            setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
-            alignSelection: (edge) => editor.alignSelection(edge),
-            distributeSelection: (axis) => editor.distributeSelection(axis),
-            reorderSelection: (direction) => editor.reorderSelection(direction),
-            lockSelection: () => editor.setLocked([...editor.session.get().selectedIds], true),
-            duplicateSelection: () => view?.duplicateSelection(),
-            toggleSlideRatio: () => editor.toggleSlideRatio(),
-            toggleSlidesHidden: () => {
-              editor.toggleSlidesHidden()
-              setSlideEdits((n) => n + 1)
-            },
-            addSlideRow: () => {
-              const state = editor.slideLayoutRowState()
-              if (state && state.rowCount >= state.maxRows) return notify(`これ以上、行を足せません（最大 ${state.maxRows} 行）`)
-              editor.addSlideLayoutRow()
-            },
-            removeSlideRow: () => editor.removeSlideLayoutRow(),
-            resetSlideRowHeight: () => editor.resetSlideLayoutRowHeight(),
-            applySlideTemplate: (kind) => {
-              if (!templateSlideId || !editor.applySlideTemplate(templateSlideId, kind)) return notify('中身のあるスライドには、テンプレートを使えません')
-              // 選択は変わらないので、描き直して操作の項目（行を足す など）を決め直す
-              setSlideEdits((n) => n + 1)
-            },
-            hasSlides: editor.slideCount() > 0,
-            exportSlidesPdf,
-          })}
+          menus={pieMenusAt(pieOrigin)}
+          menusAt={pieMenusAt}
         />
+
+        {tableFilter && (
+          <TableFilterInput
+            request={tableFilter}
+            onCommit={(value) => {
+              const { nodeId, col, op } = tableFilter
+              setTableFilter(null)
+              updateTableCard(nodeId, 'table filter', (p) => withTableFilter(p, { col, op, value }))
+              view?.root.focus({ preventScroll: true })
+            }}
+            onCancel={() => {
+              setTableFilter(null)
+              view?.root.focus({ preventScroll: true })
+            }}
+          />
+        )}
 
         {/* 左端のパレット。複数出るときは縦に並べる（MAI-54） */}
         <div className="palette-column">

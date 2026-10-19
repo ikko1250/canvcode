@@ -2355,3 +2355,31 @@ body,
   padding: 0 14px 12px;
   border-bottom: 1px solid var(--dp-line);
 }
+
+/* 表のカードの絞り込みの値（パイメニュー「操作」の「フィルター › 含む…」など） */
+.table-filter-input {
+  position: fixed;
+  z-index: 40;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+.table-filter-input label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.table-filter-input input {
+  padding: 4px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 14px;
+  color: #1f2328;
+}

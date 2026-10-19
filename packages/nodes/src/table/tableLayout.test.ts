@@ -23,11 +23,13 @@ describe('layoutTable', () => {
     expect(layout.numeric).toEqual([false, true, false])
   })
 
-  it('treats the first row as data without a header, and puts newlines in cells on one line', () => {
-    const layout = layoutTable([['1', 'a\nb'], ['2', 'c']], { header: false, measure })
+  it('treats the first row as data without a header, and measures newlines in cells as spaces', () => {
+    const layout = layoutTable([['1', 'abc\ndef'], ['2', 'c']], { header: false, measure })
     expect(layout.header).toBe(false)
     expect(layout.numeric).toEqual([true, false])
-    expect(layout.cells[0][1]).toBe('a b')
+    expect(layout.colX[2] - layout.colX[1]).toBe(70 + PAD)
+    expect(layout.rowY).toEqual([0, 28, 56])
+    expect(layout.lines).toBeNull()
     // 短い列は最小の幅
     expect(layout.colX[1]).toBe(TABLE_METRICS.minColumn)
   })
@@ -35,6 +37,40 @@ describe('layoutTable', () => {
   it('handles an empty table', () => {
     const layout = layoutTable([], { header: true, measure })
     expect(layout).toMatchObject({ columns: 0, width: 0, height: 0, header: false })
+  })
+})
+
+describe('layoutTable with wrap', () => {
+  it('wraps long cells at the column width and keeps newlines, making rows as tall as their tallest cell', () => {
+    // 2 列目は上限（320）。余白を除いて 300 の幅に、1 文字 10 なので 30 文字ずつ
+    const long = 'x'.repeat(70)
+    const layout = layoutTable([['名前', '備考'], ['a', long], ['b', 'one two\nthree'], ['c', '']], { header: true, measure, wrap: true })
+    const lines = layout.lines!
+    expect(lines[1][1]).toEqual(['x'.repeat(30), 'x'.repeat(30), 'x'.repeat(10)])
+    expect(lines[2][1]).toEqual(['one two', 'three'])
+    const { lineHeight, paddingY, rowHeight } = TABLE_METRICS
+    expect(layout.rowY).toEqual([0, rowHeight, rowHeight + 3 * lineHeight + 2 * paddingY, rowHeight + 5 * lineHeight + 4 * paddingY, rowHeight * 2 + 5 * lineHeight + 4 * paddingY])
+    expect(layout.height).toBe(layout.rowY[4])
+  })
+
+  it('breaks after a space when a word does not fit', () => {
+    const words = Array.from({ length: 8 }, (_, i) => `word${i}`).join(' ')
+    const layout = layoutTable([[words + ' ' + 'y'.repeat(60)]], { header: false, measure, wrap: true })
+    for (const line of layout.lines![0][0]) expect(Array.from(line).length).toBeLessThanOrEqual(30)
+    expect(layout.lines![0][0][0]).toBe('word0 word1 word2 word3 word4')
+  })
+
+  it('breaks Japanese text between characters instead of at an earlier space', () => {
+    // 2 列目の幅は上限（余白を除いて 300、1 文字 10 なので 30 文字）
+    const text = 'ab ' + 'あ'.repeat(40)
+    const layout = layoutTable([['x', text]], { header: false, measure, wrap: true })
+    expect(layout.lines![0][1]).toEqual(['ab ' + 'あ'.repeat(27), 'あ'.repeat(13)])
+  })
+
+  it('leaves room for the sort and filter mark in the header', () => {
+    const plain = layoutTable([['ab'], ['1']], { header: true, measure })
+    const marked = layoutTable([['ab'], ['1']], { header: true, measure, marks: [{ sort: 'asc' }] })
+    expect(marked.colX[1]).toBeGreaterThan(plain.colX[1])
   })
 })
 

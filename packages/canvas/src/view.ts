@@ -16,6 +16,7 @@ import {
   type Camera,
   type CanvasRefTarget,
   type LinesRefTarget,
+  type NodeRecord,
   type PdfRegion,
   type RefTarget,
   type Vec,
@@ -27,7 +28,7 @@ import {
   pickImageLevel,
   resetTextMetrics,
   textMetricsGeneration,
-  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
+  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage, type TableCardProps, type TableCardType, type TableColumnInfo, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
 import { AssetManager, IMAGE_MIME_TYPES, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
@@ -1284,6 +1285,20 @@ export class CanvasView {
     const pointer = this.toPointer(e)
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / editor.session.get().camera.zoom)
     if (hit?.type === 'portal') this.options.onOpenPortalInNewTab(hit.id)
+  }
+
+  // ウィンドウの座標の点の下にある表のカードと、その点の列（列の上でなければ column は null）。表のカードでなければ null。
+  // パイメニュー「操作」の並び替え・絞り込み・折り返し
+  tableAt(client: Vec): { node: NodeRecord<TableCardProps>; column: TableColumnInfo | null } | null {
+    const editor = this.editor
+    const rect = this.root.getBoundingClientRect()
+    const world = screenToWorld(editor.session.get().camera, { x: client.x - rect.left, y: client.y - rect.top })
+    const hit = editor.hitTest(world, 0)
+    const entry = hit?.type === 'table-card' ? editor.index.get(hit.id) : undefined
+    if (!hit || !entry) return null
+    const node = hit as NodeRecord<TableCardProps>
+    const type = editor.getType(hit) as unknown as Partial<TableCardType>
+    return { node, column: type.columnAt?.(node, applyMat(invert(entry.worldMatrix), world)) ?? null }
   }
 
   // ポインタの下のカードにあるリンク

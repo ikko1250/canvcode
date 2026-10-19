@@ -3,7 +3,8 @@ import { defineNodeType, pickImageLevel, type FileContentSource, type ImageReque
 import { tilesInRect, visibleLocalRect } from '../markdown/tiles.ts'
 import { requestFontLoad, textMetricsGeneration, TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { parseDelimited } from './delimited.ts'
-import { TABLE_METRICS, drawCellBars, drawCells, estimateTextWidth, layoutTable, tableFont, type TableLayout, type TableMeasure } from './tableLayout.ts'
+import { TABLE_METRICS, columnAtX, drawCellBars, drawCells, estimateTextWidth, layoutTable, tableFont, type ColumnMark, type TableLayout, type TableMeasure } from './tableLayout.ts'
+import { applyTableView, filterNeedsValue, type TableFilter, type TableSort } from './tableView.ts'
 
 // 表のカード（`table-card`）。ワークスペースの .csv / .tsv の File を表にして見せる（.md・.py のカードと同じく、本文は File が持つ）。
 // - DOM や SVG は使わない。列の幅を 1 度だけ測り（tableLayout.ts）、見えているところだけを TILE_SIZE の正方形のタイルに分けて、
@@ -11,7 +12,8 @@ import { TABLE_METRICS, drawCellBars, drawCells, estimateTextWidth, layoutTable,
 // - タイルは表の座標で切るので、カードの大きさを変えても作り直さない（カードの外にはみ出す分は切って描く）
 // - 画面上で文字が小さいときはタイルを作らず、セルの代わりの帯を描く。もっと小さければ、表の地だけを描く
 // - 高さは、既定では全部の行に合わせる（sizing: 'auto'）。'fixed' なら下端をぼかして切る
-// - 1 行目を見出しにするか（header）は、カードごとに決める（既定は見出しにする）
+// - 1 行目を見出しにするか（header）・長いセルを折り返すか（wrap。既定は折り返さない）・並び替え（sort）・絞り込み（filters）は、
+//   カードごとに持つ（File の CSV は変えない。tableView.ts）。名前の帯には、絞り込んだ行の数と全体の行の数を出す
 
 export interface TableCardProps {
   fileId: string
@@ -20,6 +22,17 @@ export interface TableCardProps {
   sizing: 'auto' | 'fixed'
   role: 'owner' | 'shortcut'
   header: boolean
+  wrap?: boolean
+  sort?: TableSort | null
+  filters?: TableFilter[]
+}
+
+// 表のカードの型。描画のほかに、カードのローカル座標の点にある列を引ける（パイメニュー「操作」の並び替え・絞り込み）
+export interface TableColumnInfo {
+  col: number
+  // 見出しの文字（見出しがない・空なら「列 N」）
+  name: string
+  numeric: boolean
 }
 
 export type TableCardNode = NodeRecord<TableCardProps>
@@ -66,19 +79,31 @@ export function parseTableFile(text: string, path?: string): string[][] {
   return parseDelimited(text, path && /\.tsv$/i.test(path) ? '\t' : undefined)
 }
 
-function layoutFile(text: string, path: string | undefined, header: boolean): TableLayout {
-  const rows = parseTableFile(text, path)
+type TableView = Pick<TableCardProps, 'header' | 'wrap' | 'sort' | 'filters'>
+
+// 見せる行を配置する。並び替え・絞り込みをしている列には、見出しに印を付ける
+function layoutRows(rows: string[][], view: TableView): TableLayout {
   // 同梱の Web フォントの読み込みを頼む（読み込めたら、測り直して描き直される）
   const sample = rows.slice(0, 200).flat().join('').slice(0, 4000)
   requestFontLoad(undefined, tableFont(false), sample)
   requestFontLoad(undefined, tableFont(true), sample)
-  return layoutTable(rows, { header, measure: measureText })
+  const marks: ColumnMark[] = []
+  if (view.header) {
+    if (view.sort) marks[view.sort.col] = { sort: view.sort.dir }
+    for (const f of activeFilters(view)) marks[f.col] = { ...marks[f.col], filtered: true }
+  }
+  return layoutTable(applyTableView(rows, view), { header: view.header, measure: measureText, wrap: view.wrap, marks })
+}
+
+// 値を入れてある絞り込みの条件（値の要らない条件はそのまま）
+function activeFilters(view: TableView): TableFilter[] {
+  return (view.filters ?? []).filter((f) => !filterNeedsValue(f.op) || f.value.trim() !== '')
 }
 
 // 取り込んだ表のカードの大きさ：幅は表に合わせ（IMPORT_MAX_WIDTH まで）、行が多ければ高さを固定にする。
 // サーバーは本文を読まないので、'auto' のときも h に表の高さを入れておく
 export function tableCardImportSize(text: string, path?: string): Pick<TableCardProps, 'w' | 'h' | 'sizing'> {
-  const layout = layoutFile(text, path, true)
+  const layout = layoutRows(parseTableFile(text, path), { header: true })
   const w = Math.max(200, Math.min(IMPORT_MAX_WIDTH, Math.ceil(layout.width)))
   if (layout.cells.length > IMPORT_AUTO_ROWS) return { w, h: HEADER_H + IMPORT_FIXED_ROWS * ROW_H, sizing: 'fixed' }
   return { w, h: Math.max(MIN_HEIGHT, HEADER_H + layout.height), sizing: 'auto' }
@@ -87,19 +112,45 @@ export function tableCardImportSize(text: string, path?: string): Pick<TableCard
 export function createTableCardType(options: TableCardOptions = {}) {
   const textOf = (props: TableCardProps) => options.files?.get(props.fileId) ?? null
 
-  // 配置は、本文の版・見出しの有無・文字の測り方の世代ごとに一度だけ作る
-  const layoutCache = new Map<string, { layout: TableLayout; version: string }>()
+  // CSV を読んだ表は、本文の版ごとに一度だけ作る（見せ方を変えても読み直さない）
+  const rowsCache = new Map<string, string[][]>()
+  const rowsOf = (content: { text: string; version: string; path?: string }) => {
+    const key = `${content.version}|${content.path ?? ''}`
+    let rows = rowsCache.get(key)
+    if (!rows) {
+      rows = parseTableFile(content.text, content.path)
+      rowsCache.set(key, rows)
+      if (rowsCache.size > 16) rowsCache.delete(rowsCache.keys().next().value!)
+    }
+    return rows
+  }
+
+  // 配置は、本文の版・見せ方・文字の測り方の世代ごとに一度だけ作る。total は絞り込む前のデータの行の数
+  const layoutCache = new Map<string, { layout: TableLayout; version: string; total: number }>()
   const layoutOf = (props: TableCardProps) => {
     const content = textOf(props)
     if (!content) return null
-    const version = `${content.version}|${content.path ?? ''}|${props.header}|${textMetricsGeneration()}`
+    const view: TableView = { header: props.header, wrap: props.wrap === true, sort: props.sort ?? null, filters: activeFilters(props) }
+    const version = `${content.version}|${content.path ?? ''}|${JSON.stringify(view)}|${textMetricsGeneration()}`
     let cached = layoutCache.get(version)
     if (!cached) {
-      cached = { layout: layoutFile(content.text, content.path, props.header), version }
+      const rows = rowsOf(content)
+      cached = { layout: layoutRows(rows, view), version, total: rows.length - (props.header && rows.length > 0 ? 1 : 0) }
       layoutCache.set(version, cached)
-      if (layoutCache.size > 500) layoutCache.delete(layoutCache.keys().next().value!)
+      if (layoutCache.size > 64) layoutCache.delete(layoutCache.keys().next().value!)
     }
     return cached
+  }
+
+  // カードのローカル座標の点にある列（表の中、名前の帯より下だけ）
+  const columnAt = (node: NodeRecord<TableCardProps>, point: { x: number; y: number }): TableColumnInfo | null => {
+    const cached = layoutOf(node.props)
+    if (!cached || point.y < HEADER_H || point.y > heightOf(node.props) || point.x > node.props.w) return null
+    const { layout } = cached
+    const col = columnAtX(layout, point.x)
+    if (col === null) return null
+    const name = (layout.header ? layout.cells[0]?.[col] : '')?.trim() || `列 ${col + 1}`
+    return { col, name, numeric: layout.numeric[col] }
   }
 
   const contentHeight = (props: TableCardProps) => {
@@ -108,7 +159,7 @@ export function createTableCardType(options: TableCardOptions = {}) {
   }
   const heightOf = (props: TableCardProps) => (props.sizing === 'auto' ? (contentHeight(props) ?? props.h) : props.h)
 
-  return defineNodeType<TableCardProps>({
+  const def = defineNodeType<TableCardProps>({
     type: 'table-card',
     version: 1,
 
@@ -131,7 +182,7 @@ export function createTableCardType(options: TableCardOptions = {}) {
       ctx.fillRect(0, 0, w, HEADER_H)
       ctx.fillStyle = BORDER
       ctx.fillRect(0, HEADER_H - 1 / info.zoom, w, 1 / info.zoom)
-      drawHeader(ctx, doc?.title ?? '', props.role === 'shortcut', w, cached?.layout ?? null)
+      drawHeader(ctx, doc?.title ?? '', props.role === 'shortcut', w, cached)
 
       const status = doc?.status
       if (!doc || status !== 'ok' || !cached) {
@@ -176,7 +227,10 @@ export function createTableCardType(options: TableCardOptions = {}) {
     reference: (node) => (node.props.fileId ? { targetId: node.props.fileId, role: node.props.role } : null),
     withRole: (node, role) => ({ ...node.props, role }),
   })
+  return Object.assign(def, { columnAt })
 }
+
+export type TableCardType = ReturnType<typeof createTableCardType>
 
 // 表のタイルの画像キャッシュのキー。書き出し（サムネイル・PDF に出すスライドの画像）では、これを待ってから描く
 export function isTableTileKey(key: string): boolean {
@@ -251,7 +305,7 @@ function statusMessage(status: string | undefined): string | null {
 }
 
 // 名前の帯：種類の印・名前・行と列の数
-function drawHeader(ctx: CanvasRenderingContext2D, title: string, shortcut: boolean, w: number, layout: TableLayout | null): void {
+function drawHeader(ctx: CanvasRenderingContext2D, title: string, shortcut: boolean, w: number, table: { layout: TableLayout; total: number } | null): void {
   ctx.fillStyle = 'rgba(26, 127, 55, 0.16)'
   roundedRect(ctx, 12, 11, 28, 15, 4)
   ctx.fill()
@@ -262,9 +316,12 @@ function drawHeader(ctx: CanvasRenderingContext2D, title: string, shortcut: bool
   ctx.fillText('CSV', 26, 18.5)
   ctx.textAlign = 'left'
   let right = w - 12
-  if (layout) {
+  if (table) {
+    const { layout, total } = table
     const rows = layout.cells.length - (layout.header ? 1 : 0)
-    const size = `${rows.toLocaleString('ja-JP')} 行 × ${layout.columns} 列`
+    // 絞り込んでいれば「見せている行 / 全体の行」
+    const count = rows === total ? total.toLocaleString('ja-JP') : `${rows.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}`
+    const size = `${count} 行 × ${layout.columns} 列`
     ctx.fillStyle = MUTED
     ctx.font = `12px ${TEXT_FONT_FAMILY}`
     const width = ctx.measureText(size).width

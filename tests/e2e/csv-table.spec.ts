@@ -124,3 +124,101 @@ test('dropping a Shift_JIS CSV saves it as a UTF-8 table file and places a table
     // 幅は表に合わせ（狭い表は最小の 200）、高さは帯 36 + 2 行 × 28
     .toEqual({ type: 'table-card', w: 200, h: 92, sizing: 'auto', header: true })
 })
+
+// ---- 並び替え・絞り込み・折り返し（パイメニュー「操作」） ----
+
+const SMALL = '店舗,売上,備考\n渋谷,300,駅の近く\n新宿,1200,大きな店舗で、売り場が広く、品ぞろえも多い。週末はとても混み合う。\n池袋,50,\n'
+
+async function openSmall(page: Page) {
+  const canvas = {
+    typeName: 'canvas', id: CANVAS_ID, title: 'CSV', parentCanvasId: null, ownerNodeId: null,
+    createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
+  }
+  const card = {
+    typeName: 'node', id: 'node:table', type: 'table-card', parentId: CANVAS_ID, x: 100, y: 100, rotation: 0, index: 'a1', opacity: 1, locked: false, version: 1,
+    props: { fileId: FILE_ID, w: 600, h: 200, sizing: 'auto', role: 'owner', header: true },
+    meta: {},
+  }
+  const file = { id: FILE_ID, kind: 'table', title: '店舗', path: '店舗.csv', size: SMALL.length, mtime: 0, hash: 'test', missing: false }
+  await page.addInitScript(() => localStorage.clear())
+  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, card] } }))
+  await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
+  await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: SMALL, headers: { etag: '"test"' } }))
+  await page.goto('/')
+  await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()
+  await setCamera(page, 0, 0, 1)
+}
+
+// キーを押したまま、パイメニューの項目を順に選ぶ（slide-template-menu.spec.ts と同じ）
+async function choose(page: Page, key: string, labels: string[]) {
+  await page.keyboard.down(key)
+  for (const label of labels) {
+    await page.locator('.pie-item').filter({ hasText: new RegExp(`^${label}›?$`) }).click({ force: true })
+  }
+  await page.keyboard.up(key)
+}
+
+// 表の列 col の上（データの 1 行目）にポインタを置く
+async function pointAtColumn(page: Page, col: number) {
+  const x = await page.evaluate((col) => {
+    const editor = (window as any).canvcode.editor
+    const node = editor.getNode('node:table')
+    const type = editor.getType(node)
+    const xs: number[] = []
+    for (let x = 0; x < node.props.w; x += 2) if (type.columnAt(node, { x, y: 36 + 28 + 14 })?.col === col) xs.push(x)
+    return (xs[0] + xs.at(-1)!) / 2
+  }, col)
+  const rect = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  await page.mouse.move(rect.x + 100 + x, rect.y + 100 + 36 + 28 + 14)
+}
+
+const tableState = (page: Page) =>
+  page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const { sort, filters, wrap } = editor.getNode('node:table').props
+    return { sort: sort ?? null, filters: filters ?? [], wrap: wrap ?? false, h: editor.index.get('node:table').worldBounds.h }
+  })
+
+test('sorts, filters and wraps a table card from the actions pie menu over a column, each undoable', async ({ page }) => {
+  await openSmall(page)
+  await expect.poll(async () => (await tableState(page)).h).toBe(36 + 4 * 28)
+
+  await pointAtColumn(page, 1)
+  await choose(page, 'o', ['並び替え', '降順'])
+  await expect.poll(() => tableState(page)).toMatchObject({ sort: { col: 1, dir: 'desc' } })
+
+  // 数の列なので「≧…」がある。値を入れると、300 以上の 2 行だけになる
+  await pointAtColumn(page, 1)
+  await choose(page, 'o', ['フィルター', '≧…'])
+  const input = page.locator('.table-filter-input input')
+  await expect(input).toBeFocused()
+  await expect(page.locator('.table-filter-input')).toContainText('「売上」 ≧')
+  await input.fill('300')
+  await input.press('Enter')
+  await expect.poll(() => tableState(page)).toMatchObject({ filters: [{ col: 1, op: 'ge', value: '300' }], h: 36 + 3 * 28 })
+
+  // 折り返すと、長い備考の行が高くなる
+  await pointAtColumn(page, 2)
+  await choose(page, 'o', ['折り返す'])
+  await expect.poll(async () => (await tableState(page)).h).toBeGreaterThan(36 + 3 * 28)
+  expect((await tableState(page)).wrap).toBe(true)
+
+  // どれも Undo 1 回で戻る
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => tableState(page)).toMatchObject({ wrap: false, h: 36 + 3 * 28 })
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => tableState(page)).toMatchObject({ filters: [], h: 36 + 4 * 28 })
+
+  // 文字の列では、文字の条件が出る。条件を外すと元に戻る
+  await pointAtColumn(page, 0)
+  await page.keyboard.down('o')
+  await page.locator('.pie-item').filter({ hasText: /^フィルター›$/ }).click({ force: true })
+  await expect(page.locator('.pie-item').filter({ hasText: /^含む…$/ })).toBeVisible()
+  await expect(page.locator('.pie-item').filter({ hasText: /^＞…$/ })).toHaveCount(0)
+  await page.locator('.pie-item').filter({ hasText: /^含む…$/ }).click({ force: true })
+  await page.keyboard.up('o')
+  await page.locator('.table-filter-input input').fill('ＳＨＩＮ')
+  await page.locator('.table-filter-input input').press('Escape')
+  await expect(page.locator('.table-filter-input')).toHaveCount(0)
+  expect((await tableState(page)).filters).toEqual([])
+})
