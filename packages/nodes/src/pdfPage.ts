@@ -72,6 +72,16 @@ export const pdfPageType = defineNodeType<PdfPageProps>({
       ctx.strokeStyle = region.emphasized ? '#b7861b' : 'rgba(183, 134, 27, 0.7)'
       ctx.strokeRect(x * w, y * h, rw * w, rh * h)
     }
+    // 単語検索で一致したところ（試作）
+    for (const hit of info.search?.rectsOnPage(node.props.fileId, pageIndex) ?? []) {
+      ctx.fillStyle = hit.current ? 'rgba(255, 140, 0, 0.45)' : 'rgba(255, 230, 0, 0.4)'
+      ctx.fillRect(hit.rect.x * w, hit.rect.y * h, hit.rect.w * w, hit.rect.h * h)
+      if (hit.current) {
+        ctx.lineWidth = 2 / info.zoom
+        ctx.strokeStyle = '#d9480f'
+        ctx.strokeRect(hit.rect.x * w, hit.rect.y * h, hit.rect.w * w, hit.rect.h * h)
+      }
+    }
     ctx.lineWidth = 1 / info.zoom
     ctx.strokeStyle = PAGE_BORDER
     ctx.strokeRect(0, 0, w, h)

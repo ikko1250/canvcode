@@ -26,6 +26,8 @@ export interface RenderInfo {
   files?: FileContentSource
   // 引用の出典を引く先（MAI-33）
   citations?: CitationResolver
+  // PDF の単語検索で一致したところを引く先（試作）
+  search?: SearchHighlightResolver
   // スライドの番号を引く先（スライド v2）
   slides?: SlideNumberResolver
   // PDF に出す画像を描いているか（スライド v2）。スライドは名前（番号）と枠の線を描かず、白い地だけを描く
@@ -49,6 +51,11 @@ export interface CitationResolver {
   location(anchorId: string): { label: string; lost: boolean }
   // PDF のページの上に枠で見せる、引用した範囲（ページ全体を 0〜1 とした割合）。emphasized は「出典へ」で移ってきた範囲
   regionsOnPage(fileId: string, pageIndex: number): { rect: Box; emphasized: boolean }[]
+}
+
+// PDF の単語検索で一致したところ（試作）。rect はページ全体を 0〜1 とした割合。current は、いま選んでいる 1 件
+export interface SearchHighlightResolver {
+  rectsOnPage(fileId: string, pageIndex: number): { rect: Box; current: boolean }[]
 }
 
 export interface DocumentInfo {

@@ -1,6 +1,7 @@
 import { assetIdFromHash, type AssetRecord } from '@canvcode/core'
 import { IMAGE_VARIANT_SIZES, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
 import type { PdfTextItem } from './quotes.ts'
+import type { PdfSearchResponse } from './pdfSearch.ts'
 
 // 画像の Asset の取り込み・アップロード・読み込み（MAI-10、MAI-14、MAI-26）。
 // - 取り込むとき、ブラウザで中身の SHA-256 と縮小版（長辺 256px・1024px）を作り、すぐに使えるようにしてから、
@@ -227,6 +228,16 @@ export class AssetManager implements AssetResolver {
       .finally(() => this.uploads.delete(id))
     this.uploads.set(id, upload)
     return record
+  }
+
+  // PDF の中の単語を探す（サーバーが、取り出しておいたテキストで探す。PDF の単語検索の試作）。
+  // アップロードが済んでいなければ、サーバーにはまだテキストがないので 'pending'
+  async searchPdf(assetId: string, query: string, signal?: AbortSignal): Promise<PdfSearchResponse> {
+    const record = this.records.get(assetId)
+    if (!record || this.uploads.has(assetId)) return { status: 'pending', total: 0, pages: [] }
+    const response = await fetch(`${this.baseUrl}/${record.hash}/search?q=${encodeURIComponent(query)}`, { signal })
+    if (!response.ok) throw new Error(`search failed: ${response.status}`)
+    return (await response.json()) as PdfSearchResponse
   }
 
   async load(assetId: string, size: number): Promise<RasterImage> {

@@ -27,7 +27,7 @@ import {
   pickImageLevel,
   resetTextMetrics,
   textMetricsGeneration,
-  type CitationResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
+  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
 import { AssetManager, IMAGE_MIME_TYPES, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
@@ -45,6 +45,7 @@ import {
 } from './clipboard.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
+import { matchRects, PdfSearchResults, type PdfSearchHit } from './pdfSearch.ts'
 import {
   canvasRefTarget,
   pdfRegionRequests,
@@ -167,6 +168,12 @@ export class CanvasView {
   private emphasizedAnchor: string | null = null
   private emphasizedRegion: { fileId: string; pageIndex: number; rect: Box } | null = null
   private emphasisTimer: number | null = null
+  // PDF の単語検索（試作）。結果と、いま選んでいる 1 件
+  private readonly searchHighlights: SearchHighlightResolver
+  private searchResults: PdfSearchResults | null = null
+  private searchCurrent: PdfSearchHit | null = null
+  // 位置を出している途中のページ（同じページを 2 回読まないように）
+  private readonly searchPagesLoading = new Map<string, Promise<void>>()
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
   readonly files: FileManager | null
@@ -261,6 +268,17 @@ export class CanvasView {
         const region = this.emphasizedRegion
         if (region && region.fileId === fileId && region.pageIndex === pageIndex) regions.push({ rect: region.rect, emphasized: true })
         return regions
+      },
+    }
+    this.searchHighlights = {
+      rectsOnPage: (fileId, pageIndex) => {
+        const matches = this.searchResults?.rectsOnPage(fileId, pageIndex)
+        if (!matches) return []
+        const current = this.searchCurrent
+        return matches.flatMap((rects, index) => {
+          const isCurrent = current?.fileId === fileId && current.pageIndex === pageIndex && current.index === index
+          return rects.map((rect) => ({ rect, current: isCurrent }))
+        })
       },
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
@@ -417,6 +435,7 @@ export class CanvasView {
     this.tool.onExit?.()
     for (const dispose of this.editorDisposers) dispose()
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
+    this.clearSearch()
     this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
     this.editorRef = editor
     // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
@@ -903,6 +922,118 @@ export class CanvasView {
     return true
   }
 
+  // ---- PDF の単語検索（試作） ----
+
+  // 今の Canvas にある PDF のページから単語を探す。件数はサーバーが数え、ハイライトする位置は裏で 1 ページずつ出す
+  // （出したら描き直し、onProgress で件数を知らせる）。'nopdf' はこの Canvas に PDF のページがないとき
+  async searchPdf(query: string, onProgress: () => void, signal?: AbortSignal): Promise<{ status: 'ok' | 'nopdf' | 'pending' | 'textless'; total: number }> {
+    const editor = this.editor
+    // ページを、Canvas の上の位置（上から、左から）の順に並べる
+    const pages = editor.index.allIds().flatMap((id) => {
+      const node = editor.getNode(id)
+      const box = editor.index.get(id)?.worldBounds
+      return node?.type === 'pdf-page' && box ? [{ props: node.props as PdfPageProps, box }] : []
+    })
+    pages.sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x)
+    if (pages.length === 0) {
+      this.clearSearch()
+      return { status: 'nopdf', total: 0 }
+    }
+    const assetIds = [...new Set(pages.map((page) => page.props.assetId))]
+    const responses = new Map(await Promise.all(assetIds.map(async (id) => [id, await this.assets.searchPdf(id, query, signal)] as const)))
+    if (signal?.aborted) return { status: 'ok', total: 0 }
+    const found = pages.flatMap(({ props }) => {
+      const count = responses.get(props.assetId)?.pages.find((page) => page.pageIndex === props.pageIndex)?.count ?? 0
+      return count > 0 ? [{ fileId: props.fileId, assetId: props.assetId, pageIndex: props.pageIndex, count }] : []
+    })
+    const results = new PdfSearchResults(query, found)
+    this.searchResults = results
+    this.searchCurrent = null
+    this.searchPagesLoading.clear()
+    this.invalidate('scene')
+    void (async () => {
+      for (const page of found) {
+        if (signal?.aborted || this.searchResults !== results) return
+        await this.loadSearchPage(results, page.fileId, page.pageIndex)
+        onProgress()
+      }
+    })()
+    const statuses = [...responses.values()].map((response) => response.status)
+    const status = found.length > 0 || statuses.includes('ok') ? 'ok' : statuses.includes('pending') ? 'pending' : 'textless'
+    return { status, total: results.total }
+  }
+
+  get searchTotal(): number {
+    return this.searchResults?.total ?? 0
+  }
+
+  // 検索の結果の n 件目（0 から）を見せる。見せた 1 件の番号（件数が変わって n がなくなれば、最後の 1 件）を返す
+  async showSearchHit(n: number): Promise<number | null> {
+    const results = this.searchResults
+    if (!results || results.total === 0) return null
+    let hit = results.hit(Math.min(n, results.total - 1))
+    if (!hit) return null
+    await this.loadSearchPage(results, hit.fileId, hit.pageIndex)
+    if (this.searchResults !== results) return null
+    // 位置を出したら件数が変わることがある。同じページの中で、近い 1 件にする
+    const ordinal = results.ordinal(hit.fileId, hit.pageIndex, hit.index)
+    hit = ordinal >= 0 ? results.hit(ordinal) : null
+    const rects = hit && results.rectsOnPage(hit.fileId, hit.pageIndex)?.[hit.index]
+    const page = hit && this.pdfPageBounds(hit.fileId, hit.pageIndex)
+    const union = rects && page ? unionBoxes(rects.map((r) => ({ x: page.x + r.x * page.w, y: page.y + r.y * page.h, w: r.w * page.w, h: r.h * page.h }))) : null
+    if (!hit || !page || !union) return null
+    this.searchCurrent = hit
+    this.invalidate('scene')
+    // いまの倍率で文字が十分に読めて、一致が画面の中ほどにあれば動かさない
+    const camera = this.editor.session.get().camera
+    const view = { x: camera.x, y: camera.y, w: this.width / camera.zoom, h: this.height / camera.zoom }
+    const inside = union.x >= view.x + view.w * 0.1 && union.x + union.w <= view.x + view.w * 0.9 && union.y >= view.y + view.h * 0.15 && union.y + union.h <= view.y + view.h * 0.85
+    if (!inside || union.h * camera.zoom < 8) {
+      // ページの幅いっぱいに、一致が画面の中ほどに来るように見せる
+      const h = Math.max(union.h * 8, page.h * 0.35)
+      await this.animateCamera(this.cameraFor({ x: page.x - page.w * 0.05, y: union.y + union.h / 2 - h / 2, w: page.w * 1.1, h }))
+    }
+    return ordinal
+  }
+
+  clearSearch(): void {
+    if (!this.searchResults) return
+    this.searchResults = null
+    this.searchCurrent = null
+    this.searchPagesLoading.clear()
+    this.invalidate('scene')
+  }
+
+  // ページの文字の断片から、一致したところの位置を出す
+  private loadSearchPage(results: PdfSearchResults, fileId: string, pageIndex: number): Promise<void> {
+    const key = `${fileId}#${pageIndex}`
+    let pending = this.searchPagesLoading.get(key)
+    if (results.rectsOnPage(fileId, pageIndex)) return Promise.resolve()
+    if (!pending) {
+      pending = (async () => {
+        const pageId = this.editor.index.allIds().find((id) => {
+          const node = this.editor.getNode(id)
+          return node?.type === 'pdf-page' && (node.props as PdfPageProps).fileId === fileId && (node.props as PdfPageProps).pageIndex === pageIndex
+        })
+        const props = pageId ? (this.editor.getNode(pageId)?.props as PdfPageProps | undefined) : undefined
+        if (!props) return
+        try {
+          const [size, items] = await this.assets.withPdfDocument(props.assetId, (doc) => Promise.all([doc.pageSize(pageIndex), doc.textItems(pageIndex)]))
+          const rects = matchRects(items, results.query).map((match) =>
+            match.map((r) => ({ x: r.x / size.width, y: r.y / size.height, w: r.w / size.width, h: r.h / size.height })),
+          )
+          results.setRects(fileId, pageIndex, rects)
+        } catch (error) {
+          console.error('Failed to locate search matches on a PDF page', error)
+          results.setRects(fileId, pageIndex, [])
+        }
+        if (this.searchResults === results) this.invalidate('scene')
+      })()
+      this.searchPagesLoading.set(key, pending)
+    }
+    return pending
+  }
+
   // 今の Canvas にある PDF のページのワールド座標
   private pdfPageBounds(fileId: string, pageIndex: number): Box | undefined {
     const pageId = this.editor.index.allIds().find((id) => {
@@ -1294,6 +1425,7 @@ export class CanvasView {
       documents: this.documents,
       files: this.files ?? undefined,
       citations: this.citations,
+      search: this.searchHighlights,
       editingId: this.editor.session.get().editingId,
     }
   }

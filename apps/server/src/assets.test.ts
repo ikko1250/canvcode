@@ -97,3 +97,29 @@ describe('AssetStore.reextractEmptyPdfTexts', () => {
     expect(JSON.parse(readFileSync(join(assets, `${kept}.pages.json`), 'utf8'))).toEqual({ version: 1, pages: ['kept'] })
   })
 })
+
+describe('AssetStore.search', () => {
+  it('returns the pages with matches, and tells pending, textless and bad requests apart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-assets-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const store = new AssetStore(dir)
+    await store.init()
+    const assets = join(dir, 'assets')
+    const hash = 'c'.repeat(64)
+    writeFileSync(join(assets, `${hash}.pages.json`), JSON.stringify({ version: 2, pages: ['ＤＸ銘柄', 'なし', 'DX と dx'] }))
+    expect(await store.search(hash, 'dx')).toEqual({
+      status: 'ok',
+      total: 3,
+      pages: [
+        { pageIndex: 0, count: 1, snippets: ['【ＤＸ】銘柄'] },
+        { pageIndex: 2, count: 2, snippets: ['【DX】 と dx', 'DX と 【dx】'] },
+      ],
+    })
+    expect(await store.search('d'.repeat(64), 'dx')).toEqual({ status: 'pending', total: 0, pages: [] })
+    const scanned = 'e'.repeat(64)
+    writeFileSync(join(assets, `${scanned}.pages.json`), JSON.stringify({ version: 2, pages: [' '] }))
+    expect((await store.search(scanned, 'dx')).status).toBe('textless')
+    await expect(store.search('../x', 'dx')).rejects.toThrow()
+    await expect(store.search(hash, 'x'.repeat(201))).rejects.toThrow()
+  })
+})

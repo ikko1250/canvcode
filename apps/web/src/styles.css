@@ -721,6 +721,63 @@ body,
   outline: none;
 }
 
+/* ---- PDF の単語検索（試作） ---- */
+.pdf-search {
+  position: absolute;
+  right: 12px;
+  top: 48px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.pdf-search input {
+  width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  font: inherit;
+  outline: none;
+}
+
+.pdf-search input:focus {
+  border-color: var(--accent);
+}
+
+.pdf-search-count {
+  min-width: 56px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pdf-search button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pdf-search button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.pdf-search button:disabled {
+  color: var(--panel-border);
+  cursor: default;
+}
+
 /* ---- File（MAI-30） ---- */
 
 .sidebar-kind {

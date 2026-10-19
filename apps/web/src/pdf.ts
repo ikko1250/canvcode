@@ -70,12 +70,19 @@ class PdfJsDocument implements PdfDocument {
     const content = await page.getTextContent()
     const items: PdfTextItem[] = []
     for (const item of content.items) {
-      if (!('str' in item) || !item.str) continue
+      if (!('str' in item)) continue
+      // 行の終わり。文字のない断片で知らせることが多いので、直前の断片に付ける
+      if (item.hasEOL && !item.str) {
+        const last = items.at(-1)
+        if (last) last.eol = true
+        continue
+      }
+      if (!item.str) continue
       const m = Util.transform(viewport.transform, item.transform)
       const size = Math.hypot(m[2], m[3])
       if (size <= 0) continue
       // m[5] は文字の並ぶ線（ベースライン）。上端はそこから字の高さの 8 割ほど上
-      items.push({ text: item.str, x: m[4], y: m[5] - size * 0.85, w: item.width * viewport.scale, h: size })
+      items.push({ text: item.str, x: m[4], y: m[5] - size * 0.85, w: item.width * viewport.scale, h: size, ...(item.hasEOL ? { eol: true } : {}) })
     }
     return items
   }
