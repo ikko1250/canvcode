@@ -11,6 +11,7 @@ import { AssetStore } from './assets.ts'
 import { handleBackupStatus } from './backupStatus.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
+import { LinkPreviewService } from './linkPreview.ts'
 import { MarkdownPdf } from './markdownPdf.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
@@ -50,6 +51,8 @@ await assets.init()
 // フォントを埋め込んでいない PDF の、空のまま取り出したテキストを作り直す（裏で行う）
 void assets.reextractEmptyPdfTexts()
 const thumbnails = new ThumbnailStore(DATA_DIR)
+// リンクのカードのタイトル・サムネイル（リンク先のページを取ってくる）
+const linkPreviews = new LinkPreviewService()
 await thumbnails.init()
 const records = new RecordStore(DATA_DIR)
 // v1 のスライド（デッキのカードとスライドの画像のノード、kind が slides の File、キャッシュ）を片付ける。
@@ -158,6 +161,7 @@ const server = createServer(async (req, res) => {
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname, url.searchParams)) return
+  if (await linkPreviews.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await markdownPdf.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return

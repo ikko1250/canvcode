@@ -155,6 +155,10 @@ export interface DescribedNode {
   layout?: string
   memo?: string
   quote?: string
+  // リンクのカード
+  url?: string
+  title?: string
+  description?: string
   file?: FileSummary & { id: string }
   target?: { id: string; title?: string }
   page?: number
@@ -412,6 +416,11 @@ async function describeNode(
       out.quote = str('quote')
       out.memo = str('memo')
       out.file = await file()
+      break
+    case 'link-card':
+      out.url = str('url')
+      out.title = str('title')
+      out.description = str('description')
       break
     case 'pdf-page':
       out.file = await file()

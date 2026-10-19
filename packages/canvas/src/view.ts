@@ -36,13 +36,16 @@ import {
   duplicateSelection,
   insertImages,
   insertPayloadWithResult,
+  insertLinkCard,
   insertText,
+  pastedUrl,
   parsePayload,
   payloadText,
   payloadToHtml,
   quotePayload,
   type ClipboardPayload,
 } from './clipboard.ts'
+import { LinkPreviewer } from './linkPreview.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
 import { matchRects, PdfSearchResults, type PdfSearchHit } from './pdfSearch.ts'
@@ -197,6 +200,8 @@ export class CanvasView {
   private tool!: Tool
   // 今の Editor にだけ関係する購読（Canvas を移ると付け替える）
   private editorDisposers: (() => void)[] = []
+  // リンクのカードのタイトル・サムネイルを取ってくる
+  readonly linkPreviews: LinkPreviewer
   // Canvas のサムネイル（Portal に見せる。MAI-8 の「4. 親の Canvas 上でのプレビュー」）。
   // 作ったらサーバーにも保存し（.canvcode/thumbnails/）、まだ手元にないものは初めて描くときにサーバーから読む
   private readonly thumbnails = new Map<string, RasterImage>()
@@ -290,6 +295,7 @@ export class CanvasView {
       },
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
+    this.linkPreviews = new LinkPreviewer(this.assets)
 
     this.root = document.createElement('div')
     this.root.tabIndex = 0
@@ -535,6 +541,7 @@ export class CanvasView {
     this.editorDisposers = [
       editor.session.subscribe((state, prev) => this.onSessionChange(state, prev)),
       editor.store.listen((event) => {
+        this.linkPreviews.watch(editor, event)
         // ドラッグやリサイズの最中（途中経過）は、カメラが動いているときと同じく画像を作り直さない
         if (event.phase === 'progress' && editor.store.activeTransaction) this.images.notifyMotion()
         // 編集中のノードが（Undo などで）変わったら、編集用の要素の位置を合わせ直す
@@ -1851,6 +1858,12 @@ export class CanvasView {
     const table = this.files ? markdownTableFromClipboard(data.getData('text/html'), text) : null
     if (table) {
       await this.createDocumentAt('markdown', { x: center.x, y: center.y - 60 }, undefined, { title: '貼り付けた表', content: table, edit: false })
+      return
+    }
+    // URL だけなら、リンクのカードにする（タイトルなどは linkPreview が裏で取ってきて書き込む）
+    const url = pastedUrl(text)
+    if (url) {
+      insertLinkCard(this.editor, url, center)
       return
     }
     if (text) insertText(this.editor, text, center)
