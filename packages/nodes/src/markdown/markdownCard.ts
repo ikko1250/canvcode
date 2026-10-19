@@ -2,6 +2,7 @@ import type { NodeRecord } from '@canvcode/core'
 import { defineNodeType, pickImageLevel, type FileContentSource, type RasterImage } from '../defineNodeType.ts'
 import { MARKDOWN_CARD_CSS, buildMarkdownCardHtml } from './cardHtml.ts'
 import { hitLink, measureCardHeight, measureLinks, type LinkRegion } from './layout.ts'
+import { measureLinksInImage } from './linkMap.ts'
 import { drawHtmlTile, loadHtmlImage, rasterizeHtml, type HtmlImage } from './rasterize.ts'
 import { renderMarkdown } from './renderMarkdown.ts'
 import { fullImageLevel, tilesInRect, visibleLocalRect } from './tiles.ts'
@@ -43,6 +44,8 @@ const PLACEHOLDER_LINE_HEIGHT = 26
 const HEADER_H = 36
 // タイルを切り出す元の画像を、いくつのカードの分まで持つか
 const HTML_IMAGE_LIMIT = 4
+// 最後に描いた HTML を、いくつのカードの分まで持つか（リンクの位置を、描いた画像と同じ HTML で読むため）
+const DRAWN_HTML_LIMIT = 16
 
 export function createMarkdownCardType(options: MarkdownCardOptions) {
   const imageOutput = options.output?.() ?? 'canvas'
@@ -106,6 +109,29 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
   // リンクの位置（本文の版と大きさごとに一度だけ測る）
   const linkCache = new Map<string, LinkRegion[]>()
 
+  // ノードごとに、最後に描いた画像の HTML と版
+  const drawnHtml = new Map<string, { version: string; html: string; w: number; h: number }>()
+  // 描いた画像と同じ HTML の SVG から読んだリンクの位置（linkMap.ts）。版ごとに一度だけ読む。
+  // 読めなかったら null（DOM で測った位置を使う）。読んでいる間は入れない
+  const imageLinkCache = new Map<string, LinkRegion[] | null>()
+  const imageLinkPending = new Set<string>()
+  const imageLinksOf = (drawn: { version: string; html: string; w: number; h: number }): LinkRegion[] | null | undefined => {
+    if (imageLinkCache.has(drawn.version)) return imageLinkCache.get(drawn.version)
+    if (!imageLinkPending.has(drawn.version)) {
+      imageLinkPending.add(drawn.version)
+      void (async () => {
+        const css = (await options.embedCss(drawn.html)) + MARKDOWN_CARD_CSS
+        return measureLinksInImage({ html: drawn.html, css, width: drawn.w, height: drawn.h })
+      })()
+        .catch(() => null)
+        .then((regions) => {
+          imageLinkPending.delete(drawn.version)
+          remember(imageLinkCache, drawn.version, regions, IMAGE_LINK_LIMIT)
+        })
+    }
+    return undefined
+  }
+
   return defineNodeType<MarkdownCardProps>({
     type: 'markdown-card',
     version: 1,
@@ -124,6 +150,7 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
       const doc = props.inlineText !== undefined ? { title: 'Markdown', status: 'ok' as const } : info.documents?.get(props.fileId)
       const content = textOf(props)
       if (!doc || doc.status !== 'ok' || !content || info.editing) {
+        drawnHtml.delete(node.id)
         drawPlaceholder(ctx, w, h, info.editing ? null : statusMessage(doc?.status))
         if (props.role === 'shortcut') drawShortcutFrame(ctx, w, h, info.zoom)
         return
@@ -134,6 +161,7 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
         shortcut: props.role === 'shortcut',
       })
       const version = `${w}x${h}:${hashString(html)}`
+      if (drawnHtml.get(node.id)?.version !== version) remember(drawnHtml, node.id, { version, html, w, h }, DRAWN_HTML_LIMIT)
       const level = pickImageLevel(info.zoom * info.devicePixelRatio)
       // 全体の画像は、1 枚で作っても解像度が抑えられない段階までにする。それより高い解像度は、タイルで重ねる
       const fullLevel = Math.min(level, fullImageLevel(w, h))
@@ -186,6 +214,10 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
       const content = textOf(props)
       if (!content || !canMeasure) return null
       const h = heightOf(props)
+      // 描いた画像から読んだ位置があれば、それを使う。読み終えるまでと、読めなかったときは、DOM で測った位置
+      const drawn = drawnHtml.get(node.id)
+      const fromImage = drawn && drawn.w === props.w && drawn.h === h ? imageLinksOf(drawn) : undefined
+      if (fromImage) return hitLink(fromImage, point.x, point.y)?.href ?? null
       const key = `${content.version}|${content.path ?? ''}|${props.w}x${h}`
       let regions = linkCache.get(key)
       if (!regions) {
@@ -208,9 +240,12 @@ function statusMessage(status: string | undefined): string | null {
 
 // キャッシュが大きくなりすぎないよう、古いものから捨てる
 const CACHE_LIMIT = 2000
-function remember<V>(cache: Map<string, V>, key: string, value: V): void {
+// 画像から読んだリンクの位置を、いくつの版の分まで持つか
+const IMAGE_LINK_LIMIT = 64
+function remember<V>(cache: Map<string, V>, key: string, value: V, limit = CACHE_LIMIT): void {
+  cache.delete(key)
   cache.set(key, value)
-  if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!)
+  if (cache.size > limit) cache.delete(cache.keys().next().value!)
 }
 
 // 文字列の簡単なハッシュ（FNV-1a）。版の比較に使うだけなので、衝突しにくければよい
