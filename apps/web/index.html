@@ -9,34 +9,54 @@
     <div id="root"></div>
     <script>
       // 画面を出す前に止まったとき（古いブラウザで、使っている機能がないなど）に、白紙のままにせず理由を出す。
-      // 開発者ツールを開けない端末（iPad など）でも、何が起きたか分かるように
+      // 開発者ツールを開けない端末（iPad など）でも、何が起きたか分かるように、画面の上に重ねて出し、サーバーのログにも送る
+      // （/api/client-log）。画面が出た（window.canvcode ができた）あとは何もしない
       ;(function () {
-        var shown = false
+        var lines = []
+        var box = null
+        function ready() {
+          return Boolean(window.canvcode)
+        }
+        function send(kind, message) {
+          try {
+            fetch('/api/client-log', {
+              method: 'POST',
+              headers: { 'content-type': 'text/plain' },
+              body: kind + ' | ' + location.pathname + ' | ' + innerWidth + 'x' + innerHeight + ' | ' + navigator.userAgent + ' | ' + message,
+              keepalive: true,
+            })
+          } catch (_) {}
+        }
         function show(message) {
-          var root = document.getElementById('root')
-          if (!root || root.childElementCount > 0) return
-          var box = document.getElementById('boot-error')
+          if (ready()) return
+          send('boot-error', message)
+          if (lines.length >= 12) return
+          lines.push(message)
+          if (!document.body) return
           if (!box) {
             box = document.createElement('pre')
             box.id = 'boot-error'
-            box.style.cssText = 'margin:16px;padding:12px;white-space:pre-wrap;word-break:break-all;font:13px/1.5 monospace;color:#b42318;background:#fff4f2;border:1px solid #f3c0b8;border-radius:6px'
-            box.textContent = '画面を読み込めませんでした（' + navigator.userAgent + '）'
+            box.style.cssText =
+              'position:fixed;left:8px;right:8px;top:8px;z-index:2147483647;margin:0;padding:12px;max-height:80vh;overflow:auto;white-space:pre-wrap;word-break:break-all;font:13px/1.5 monospace;color:#b42318;background:#fff4f2;border:1px solid #f3c0b8;border-radius:6px'
             document.body.appendChild(box)
           }
-          if (shown && box.textContent.split('\n').length > 12) return
-          shown = true
-          box.textContent += '\n' + message
+          box.textContent = '画面を読み込めませんでした（' + navigator.userAgent + '）\n' + lines.join('\n')
         }
         window.addEventListener('error', function (e) {
-          show(String(e.message || e.error) + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ':' + e.colno + ')' : ''))
-        })
+          var where = e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ':' + e.colno + ')' : ''
+          var target = e.target && e.target !== window && e.target.tagName ? ' [' + e.target.tagName + ' ' + (e.target.src || e.target.href || '') + ']' : ''
+          show(String(e.message || e.error || 'error') + where + target)
+        }, true)
         window.addEventListener('unhandledrejection', function (e) {
           var r = e.reason
-          show('unhandledrejection: ' + (r && r.stack ? String(r.message) + '\n' + String(r.stack).split('\n').slice(0, 3).join('\n') : String(r)))
+          show('unhandledrejection: ' + (r && r.stack ? String(r.message) + '\n' + String(r.stack).split('\n').slice(0, 4).join('\n') : String(r)))
         })
-        // エラーにならずに何も出ないままのときも、しばらくしたら知らせる
+        send('boot-start', '')
+        // エラーにならずに画面が出ないままのときも、しばらくしたら様子を知らせる
         setTimeout(function () {
-          show('（10 秒たっても画面が出ていません）')
+          if (ready()) return send('boot-ok', '')
+          var root = document.getElementById('root')
+          show('（10 秒たっても画面が出ていません。#root: ' + (root ? root.childElementCount + ' 個 ' + root.innerHTML.slice(0, 300) : 'なし') + '）')
         }, 10000)
       })()
     </script>

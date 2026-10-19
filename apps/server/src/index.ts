@@ -155,6 +155,21 @@ const server = createServer(async (req, res) => {
     sendJson(res, 403, { error: 'forbidden origin' })
     return
   }
+  // 画面を出す前に止まったときの知らせ（index.html の小さなスクリプトから）。開発者ツールを開けない端末（iPad など）の
+  // 白紙の理由を、サーバーのログで見るため。16KB までを 1 行にして出す
+  if (url.pathname === '/api/client-log' && req.method === 'POST') {
+    let body = ''
+    req.setEncoding('utf8')
+    req.on('data', (chunk: string) => {
+      if (body.length < 16384) body += chunk
+    })
+    req.on('end', () => {
+      console.error('[client]', body.slice(0, 16384).replace(/\s+/g, ' '))
+      res.writeHead(204)
+      res.end()
+    })
+    return
+  }
   if (sync.handle(req, res, url.pathname)) return
   if (await handleBackupStatus(req, res, url.pathname, DATA_DIR)) return
   if (handleAgentOps(req, res, url.pathname, agent)) return
