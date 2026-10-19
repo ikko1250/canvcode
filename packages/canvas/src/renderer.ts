@@ -7,6 +7,7 @@ import {
   type ArrowProps,
   type AssetResolver,
   type CitationResolver,
+  type SearchHighlightResolver,
   type DocumentResolver,
   type FileContentSource,
   type ImageRequester,
@@ -69,6 +70,7 @@ export interface Viewport {
   documents?: DocumentResolver
   files?: FileContentSource
   citations?: CitationResolver
+  search?: SearchHighlightResolver
   // PDF に出す画像を描くか（スライド v2）。型に RenderInfo.print で渡し、非表示のスライドも薄くしない
   print?: boolean
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
@@ -124,6 +126,7 @@ export function drawNodes(
     documents: view.documents,
     files: view.files,
     citations: view.citations,
+    search: view.search,
     // スライドの番号は Editor が計算する（スライド v2）
     slides: editor.slides,
     print: view.print,

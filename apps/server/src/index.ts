@@ -157,7 +157,7 @@ const server = createServer(async (req, res) => {
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
-  if (await assets.handle(req, res, url.pathname)) return
+  if (await assets.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await markdownPdf.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return

@@ -56,6 +56,7 @@ import { createSlidePdfExporter } from './slidePdfExport.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
 import { isParentCanvasKey } from './workspace/shortcuts.ts'
+import { PdfSearchBar } from './workspace/PdfSearchBar.tsx'
 import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
 import { usePresence } from './workspace/usePresence.ts'
@@ -296,6 +297,9 @@ export function App(props: { initial: InitialRecords }) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: (MenuItem | 'separator')[]; onClose?: () => void } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   // Portal の名前を、その場で変えているとき（右クリックメニューの「名前を変更」）
+  // PDF の単語検索の入力欄（試作）。開いた Canvas と、Ctrl+F を押した回数（押すたびに入力欄に戻る）。
+  // 検索の結果はその Canvas の PDF のものなので、Canvas を移ったら見せない
+  const [pdfSearch, setPdfSearch] = useState<{ canvasId: string; request: number } | null>(null)
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
   const navigating = useRef(false)
   // 移っている途中（アニメーション中）に頼まれた移動。今の移動が終わったら、最後に頼まれたものを行う
@@ -1045,6 +1049,21 @@ export function App(props: { initial: InitialRecords }) {
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
   }, [workspace, files, sync, editors, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
+  // Ctrl+F（⌘F）で PDF の単語検索を開く（試作）。今の Canvas に PDF のページがなければ、ブラウザの検索に任せる
+  useEffect(() => {
+    if (openFileId || dialog) return
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f') return
+      const editor = viewRef.current?.editor
+      if (!editor || !editor.index.allIds().some((id) => editor.getNode(id)?.type === 'pdf-page')) return
+      e.preventDefault()
+      const current = editor.canvasId
+      setPdfSearch((open) => ({ canvasId: current, request: open?.canvasId === current ? open.request + 1 : 0 }))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [openFileId, dialog])
+
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1514,6 +1533,18 @@ export function App(props: { initial: InitialRecords }) {
             onCancel={() => {
               setRenaming(null)
               view?.root.focus({ preventScroll: true })
+            }}
+          />
+        )}
+
+        {pdfSearch?.canvasId === canvasId && view && !openFileId && (
+          <PdfSearchBar
+            key={`pdf-search:${canvasId}`}
+            view={view}
+            focusRequest={pdfSearch.request}
+            onClose={() => {
+              setPdfSearch(null)
+              view.root.focus({ preventScroll: true })
             }}
           />
         )}

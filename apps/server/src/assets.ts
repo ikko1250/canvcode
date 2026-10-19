@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { normalizeForSearch, searchPages, type NormalizedText, type PdfSearchPage } from '@canvcode/core'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // 画像の Asset の保存と配信（MAI-10、MAI-13、MAI-26）。
@@ -13,7 +14,7 @@ import { writeViaTemp } from './writeAtomic.ts'
 // - 縮小版（長辺 256px・1024px）はブラウザが作って送ってくる（MAI-14）。<ハッシュ>.<長辺>.<拡張子> に置く
 // - 種類・大きさ・縮小版の一覧は <ハッシュ>.json に書いておく。画面を開いたときに、一覧（GET /api/assets）を返す
 // - PDF は、受け取ったあとで検索用のテキストをページごとに取り出し、<ハッシュ>.pages.json に置く（MAI-10 の「4. PDF」）。
-//   全文検索の画面は初版の範囲外なので、取り出しておくだけ
+//   GET /api/assets/<ハッシュ>/search?q=… で、一致するページと件数を返す（PDF の単語検索の試作）
 // - 同じテキストを、ページの区切りを入れた <ハッシュ>.txt にも置く。AI に渡す ref には、このファイルのパスを付ける
 //   （PDF をそのまま読めないモデルもあるので。ファイルがない古い PDF は ensurePdfTextFile が pages.json から作る）
 // - フォントを埋め込んでいない PDF（日本語の CID フォントなど）は、PDF.js に付いている CMap と標準フォントで読む。
@@ -34,6 +35,9 @@ const MAX_ORIGINAL_BYTES = 200 * 1024 * 1024
 const MAX_VARIANT_BYTES = 10 * 1024 * 1024
 const HASH_PATTERN = /^[0-9a-f]{64}$/
 const PAGES_VERSION = 2
+// 検索のために読んでおく PDF のテキストの数（新しく使ったものを残す）
+const MAX_SEARCH_CACHE = 8
+const MAX_QUERY_LENGTH = 200
 const PDFJS_DIR = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
 
 interface AssetMeta {
@@ -48,6 +52,8 @@ interface AssetMeta {
 
 export class AssetStore {
   private readonly dir: string
+  // 検索のために揃えておいたページのテキスト（ハッシュ → ページごと）
+  private readonly searchCache = new Map<string, { pages: string[]; normalized: NormalizedText[] }>()
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, 'assets')
@@ -58,7 +64,7 @@ export class AssetStore {
   }
 
   // /api/assets 以下を扱う。扱わないパスなら false を返す
-  async handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
+  async handle(req: IncomingMessage, res: ServerResponse, path: string, params?: URLSearchParams): Promise<boolean> {
     const parts = path.split('/').filter(Boolean)
     if (parts[0] !== 'api' || parts[1] !== 'assets') return false
     const [, , hash, size] = parts
@@ -68,6 +74,8 @@ export class AssetStore {
         sendJson(res, 200, { assets: await this.list() })
       } else if (req.method === 'POST' && parts.length === 2) {
         await this.receiveOriginal(req, res)
+      } else if (req.method === 'GET' && parts.length === 4 && size === 'search') {
+        sendJson(res, 200, await this.search(hash, params?.get('q') ?? ''))
       } else if (req.method === 'PUT' && parts.length === 4) {
         await this.receiveVariant(req, res, hash, Number(size))
       } else if ((req.method === 'GET' || req.method === 'HEAD') && (parts.length === 3 || parts.length === 4)) {
@@ -110,6 +118,41 @@ export class AssetStore {
       if (mime === 'application/pdf') void this.extractPdfText(hash, body)
     }
     return hash
+  }
+
+  // PDF の中の単語を探す。'pending' はテキストをまだ取り出していない（取り込んだ直後）か、取り出せなかったとき。
+  // 'textless' は、どのページにも文字がない（スキャンした PDF など）とき
+  async search(hash: string, query: string): Promise<{ status: 'ok' | 'pending' | 'textless'; total: number; pages: PdfSearchPage[] }> {
+    if (!HASH_PATTERN.test(hash)) throw new HttpError(404, 'not found')
+    if (query.length > MAX_QUERY_LENGTH) throw new HttpError(400, 'query too long')
+    const text = await this.searchText(hash)
+    if (!text) return { status: 'pending', total: 0, pages: [] }
+    if (text.pages.every((page) => !page.trim())) return { status: 'textless', total: 0, pages: [] }
+    const pages = searchPages(text.normalized, query, text.pages)
+    return { status: 'ok', total: pages.reduce((sum, page) => sum + page.count, 0), pages }
+  }
+
+  private async searchText(hash: string): Promise<{ pages: string[]; normalized: NormalizedText[] } | null> {
+    const cached = this.searchCache.get(hash)
+    if (cached) {
+      this.searchCache.delete(hash)
+      this.searchCache.set(hash, cached)
+      return cached
+    }
+    let pages: unknown
+    try {
+      pages = (JSON.parse(await readFile(join(this.dir, `${hash}.pages.json`), 'utf8')) as { pages?: unknown }).pages
+    } catch {
+      return null
+    }
+    if (!Array.isArray(pages) || !pages.every((page) => typeof page === 'string')) return null
+    const text = { pages, normalized: pages.map(normalizeForSearch) }
+    this.searchCache.set(hash, text)
+    for (const key of this.searchCache.keys()) {
+      if (this.searchCache.size <= MAX_SEARCH_CACHE) break
+      this.searchCache.delete(key)
+    }
+    return text
   }
 
   private async receiveVariant(req: IncomingMessage, res: ServerResponse, hash: string, size: number): Promise<void> {
@@ -175,6 +218,7 @@ export class AssetStore {
       }
       await task.destroy()
       await writeAtomic(join(this.dir, `${hash}.pages.json`), Buffer.from(JSON.stringify({ version: PAGES_VERSION, pages })))
+      this.searchCache.delete(hash)
       await writeAtomic(join(this.dir, `${hash}.txt`), Buffer.from(pdfTextFile(pages)))
     } catch (error) {
       console.error('failed to extract the text of a PDF', hash, error)
