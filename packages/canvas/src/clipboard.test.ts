@@ -5,9 +5,11 @@ import {
   copySelection,
   duplicateSelection,
   insertImages,
+  insertLinkCard,
   insertPayload,
   insertText,
   parsePayload,
+  pastedUrl,
   payloadText,
   payloadToHtml,
 } from './clipboard.ts'
@@ -172,6 +174,33 @@ describe('pasting from outside', () => {
     const long = insertText(editor, 'x'.repeat(200), { x: 0, y: 0 })!
     expect((editor.getNode(long)!.props as { autoWidth: boolean }).autoWidth).toBe(false)
     expect(insertText(editor, '   ', { x: 0, y: 0 })).toBeNull()
+  })
+
+  it('treats text that is a single http(s) URL as a link', () => {
+    expect(pastedUrl('https://example.com/a?b=1#c')).toBe('https://example.com/a?b=1#c')
+    expect(pastedUrl('  http://example.com/  \n')).toBe('http://example.com/')
+    expect(pastedUrl('HTTPS://EXAMPLE.COM')).toBe('HTTPS://EXAMPLE.COM')
+    expect(pastedUrl('see https://example.com')).toBeNull()
+    expect(pastedUrl('https://example.com\nhttps://example.org')).toBeNull()
+    expect(pastedUrl('javascript:alert(1)')).toBeNull()
+    expect(pastedUrl('ftp://example.com/file')).toBeNull()
+    expect(pastedUrl('example.com')).toBeNull()
+    expect(pastedUrl('https://')).toBeNull()
+  })
+
+  it('places a loading link card centred on the point, and copies it as its URL', () => {
+    const { editor } = setup()
+    const id = insertLinkCard(editor, 'https://example.com/page', { x: 100, y: 50 })
+    const node = editor.getNode(id)!
+    expect(node.type).toBe('link-card')
+    expect(node.props).toMatchObject({ url: 'https://example.com/page', title: null, image: null, status: 'loading' })
+    expect([...editor.session.get().selectedIds]).toEqual([id])
+    const box = editor.index.get(id)!.worldBounds
+    expect(box.x + box.w / 2).toBeCloseTo(100, 6)
+    expect(box.y + box.h / 2).toBeCloseTo(50, 6)
+    const payload = copySelection(editor, () => undefined)!
+    expect(payloadText(editor, payload)).toBe('https://example.com/page')
+    expect(editor.getType(node).linkAt!(node, { x: 10, y: 10 })).toBe('https://example.com/page')
   })
 
   it('places images side by side, shrunk to fit', () => {

@@ -233,6 +233,8 @@ function localBox(item: Item): { box: Box; estimated: boolean } {
       const chars = typeof p.quote === 'string' ? p.quote.length : 0
       return { box: { x: 0, y: 0, w, h: 80 + Math.min(8, Math.ceil((chars * 14) / Math.max(1, w - 40))) * 20 }, estimated: true }
     }
+    case 'link-card':
+      return { box: { x: 0, y: 0, w: num(p.w, 400), h: typeof p.description === 'string' && p.description ? 110 : 70 }, estimated: true }
     default:
       return { box: { x: 0, y: 0, w: num(p.w), h: num(p.h) }, estimated: false }
   }
@@ -368,6 +370,9 @@ function outlineLine(item: Item, ctx: LineContext): string {
     case 'chart':
       if (typeof p.kind === 'string') parts.push(p.kind)
       break
+    case 'link-card':
+      if (typeof p.url === 'string') parts.push(p.url)
+      break
     // 番号（非表示なら hidden）と、文字があふれている・並べられなかった行があるときの overflow
     case 'slide': {
       const info = ctx.slides.get(record.id)
@@ -406,6 +411,8 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
       return str(p.layout)
     case 'quote-card':
       return str(p.quote) || str(p.memo)
+    case 'link-card':
+      return str(p.title)
     case 'chart':
       return describeChart(p).rows.map((row) => row.label).join(', ')
     case 'portal':
@@ -553,6 +560,9 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
     case 'quote-card':
       file()
       copy('quote', 'memo')
+      break
+    case 'link-card':
+      copy('url', 'title', 'description', 'siteName')
       break
     case 'pdf-page':
       file()
@@ -716,7 +726,7 @@ export function canvasFormatGuide(options: { editable?: boolean } = {}): string 
 - World coordinates: x grows right, y grows down, 1 unit = 1 CSS px at 100% zoom. Rotation is in degrees, clockwise.
 - Nodes inside a group or frame store positions relative to the parent; the tools always report world coordinates.
 - x,y is the world position of the top-left corner of the node's own (unrotated) box; WxH is its size. rot= is the node's rotation in world space.
-- Sizes marked ~ (text, quote-card) are estimates: the server cannot measure text.
+- Sizes marked ~ (text, quote-card, link-card) are estimates: the server cannot measure text.
 
 ## read_canvas outline
 First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revision> nodes=<total> [matched=<after filters>] shown=<lines> [next=<cursor>]
@@ -746,6 +756,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - portal: window into a child canvas (target canvas id)
 - markdown-card / code-card: a document file on the canvas
 - quote-card: quotation from a PDF or Markdown file with a memo
+- link-card: a web link pasted as a card (url, and the page's title, description and thumbnail when they could be fetched)
 - pdf-page: one page of a PDF (p= is 1-based)
 - chart: pie or donut chart (rows of label and value)
 - slide: a 16:9 (1920x1080) or 4:3 (1440x1080) page of the canvas's slide deck (name, ratio, hidden). One canvas = one deck; slides are exported to PDF in reading order: rows from top to bottom (slides overlapping vertically by half or more form a row), left to right in a row. n= is that number; hidden slides get none. Slides cannot be resized or rotated.

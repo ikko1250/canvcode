@@ -5,6 +5,7 @@ import type { AnyNodeTypeDef } from './defineNodeType.ts'
 import { drawType } from './draw.ts'
 import { geoType } from './geo.ts'
 import { imageType } from './image.ts'
+import { linkCardType } from './linkCard.ts'
 import { pdfPageType } from './pdfPage.ts'
 import { portalType } from './portal.ts'
 import { quoteCardType } from './quoteCard.ts'
@@ -24,6 +25,7 @@ export * from './defineNodeType.ts'
 export * from './draw.ts'
 export * from './geo.ts'
 export * from './image.ts'
+export * from './linkCard.ts'
 export * from './paint.ts'
 export * from './pdfPage.ts'
 export * from './portal.ts'
@@ -41,4 +43,4 @@ export * from './text/textNode.ts'
 export * from './textOverflow.ts'
 
 // ビルド時に組み込むノードの型の一覧（MAI-9）
-export const builtinNodeTypes: AnyNodeTypeDef[] = [geoType, textType, noteType, imageType, drawType, arrowType, portalType, pdfPageType, quoteCardType, groupType, frameType, slideType, slideLayoutType, chartType]
+export const builtinNodeTypes: AnyNodeTypeDef[] = [geoType, textType, noteType, imageType, drawType, arrowType, portalType, pdfPageType, quoteCardType, linkCardType, groupType, frameType, slideType, slideLayoutType, chartType]

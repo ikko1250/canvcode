@@ -2,6 +2,7 @@ import { assetIdFromHash, type AssetRecord } from '@canvcode/core'
 import { IMAGE_VARIANT_SIZES, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
 import type { PdfTextItem } from './quotes.ts'
 import type { PdfSearchResponse } from './pdfSearch.ts'
+import { sha256HexSync } from './sha256.ts'
 
 // 画像の Asset の取り込み・アップロード・読み込み（MAI-10、MAI-14、MAI-26）。
 // - 取り込むとき、ブラウザで中身の SHA-256 と縮小版（長辺 256px・1024px）を作り、すぐに使えるようにしてから、
@@ -290,7 +291,10 @@ export class AssetManager implements AssetResolver {
 }
 
 export async function sha256Hex(blob: Blob): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+  const bytes = await blob.arrayBuffer()
+  // crypto.subtle は安全な文脈（https か localhost）にしかない。http で開いたときは自前で求める
+  if (!globalThis.crypto?.subtle) return sha256HexSync(new Uint8Array(bytes))
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 

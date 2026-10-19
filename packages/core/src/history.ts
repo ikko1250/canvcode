@@ -78,6 +78,19 @@ export class History<R extends BaseRecord> {
     return this.step(scope, 'redo')
   }
 
+  // 履歴に残さない変更で、レコードを prev から next に置き換えたとき、履歴の中の prev も next にする。
+  // 取り消し・やり直しが、その変更と衝突しないように（リンクのカードに、あとから届いたタイトルを書き込んだときなど）。
+  // next は、はじめからそうだったものとして扱われる
+  substitute(prev: R, next: R): void {
+    for (const stacks of this.scopes.values()) {
+      for (const entry of [...stacks.undo, ...stacks.redo]) {
+        const change = entry.patch.get(prev.id)
+        if (!change || (change.before !== prev && change.after !== prev)) continue
+        entry.patch.set(prev.id, { before: change.before === prev ? next : change.before, after: change.after === prev ? next : change.after })
+      }
+    }
+  }
+
   clear(scope = DEFAULT_SCOPE): void {
     this.scopes.delete(scope)
     this.notify()

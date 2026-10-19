@@ -9,7 +9,7 @@ import {
   type SourceAnchorRecord,
   type Vec,
 } from '@canvcode/core'
-import { QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type QuoteCardProps } from '@canvcode/nodes'
+import { LINK_CARD_DEFAULT_WIDTH, QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type QuoteCardProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 import type { QuoteDraft } from './quotes.ts'
@@ -143,7 +143,8 @@ export function payloadText(editor: Editor, payload: ClipboardPayload): string {
   const texts: string[] = []
   for (const node of payload.nodes) {
     const type = editor.types.get(node.type)
-    const text = type?.editText?.(node).text.trim()
+    // リンクのカードは URL を載せる（ほかのアプリに貼ると URL になる）
+    const text = node.type === 'link-card' ? String((node.props as { url?: unknown }).url ?? '') : type?.editText?.(node).text.trim()
     if (text) texts.push(text)
   }
   return texts.join('\n')
@@ -326,6 +327,31 @@ export function insertText(editor: Editor, text: string, center: Vec): string | 
   })
   // 大きさは作ってみないとわからないので、索引に入れてから中心を合わせる
   editor.transact('paste text', (tx) => {
+    const bounds = editor.getType(node).getBounds(node)
+    tx.put({ ...node, x: center.x - bounds.w / 2, y: center.y - bounds.h / 2 })
+    editor.setSelection([node.id])
+  })
+  return node.id
+}
+
+// 貼り付けた文字列が、まるごと 1 つの http(s) の URL なら、その URL（前後の空白を取ったもの）。
+// 文の中の URL・何行にもわたるもの・ほかのスキーム（javascript: など）は null（テキストノードにする）
+export function pastedUrl(text: string): string | null {
+  const trimmed = text.trim()
+  if (!trimmed || /\s/.test(trimmed)) return null
+  if (!/^https?:\/\//i.test(trimmed)) return null
+  try {
+    const url = new URL(trimmed)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? trimmed : null
+  } catch {
+    return null
+  }
+}
+
+// リンクのカードを、center を中心に置く。タイトルなどは、あとから linkPreview.ts が書き込む
+export function insertLinkCard(editor: Editor, url: string, center: Vec): string {
+  const node = editor.makeNode('link-card', { x: 0, y: 0, props: { url, title: null, description: null, siteName: null, image: null, status: 'loading', w: LINK_CARD_DEFAULT_WIDTH } })
+  editor.transact('paste link', (tx) => {
     const bounds = editor.getType(node).getBounds(node)
     tx.put({ ...node, x: center.x - bounds.w / 2, y: center.y - bounds.h / 2 })
     editor.setSelection([node.id])
