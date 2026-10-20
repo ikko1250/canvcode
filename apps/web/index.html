@@ -17,6 +17,7 @@
         function ready() {
           return Boolean(window.canvcode)
         }
+        // 送れなくても（サーバーにつながらないなど）何もしない。失敗を拾われないままにすると、それがまた知らせになり、送り続けてしまう
         function send(kind, message) {
           try {
             fetch('/api/client-log', {
@@ -24,7 +25,7 @@
               headers: { 'content-type': 'text/plain' },
               body: kind + ' | ' + location.pathname + ' | ' + innerWidth + 'x' + innerHeight + ' | ' + navigator.userAgent + ' | ' + message,
               keepalive: true,
-            })
+            }).catch(function () {})
           } catch (_) {}
         }
         function show(message) {

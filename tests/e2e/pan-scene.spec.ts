@@ -77,6 +77,8 @@ test('after panning stops, the whole scene is redrawn', async ({ page }) => {
   await openApp(page)
   const drawnAfter = async () => (await page.evaluate(() => (window as any).canvcode.view.getStats().drawnNodes)) as number
   await page.evaluate(() => (window as any).canvcode.view.setCamera({ x: 0, y: 0, zoom: 1 }))
+  // 開いた直後は、パネルが出るなどでキャンバスの大きさが変わり、シーン全体を描き直すことがあるので、落ち着くまで待つ
+  await page.waitForTimeout(600)
   await nextFrames(page)
   await page.evaluate(() => (window as any).canvcode.view.resetStats())
   await page.evaluate(() => {
