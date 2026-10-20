@@ -2466,7 +2466,13 @@ body,
 }
 
 .claude-thread-select {
+  min-width: 0;
   max-width: 170px;
+}
+
+.claude-panel-header button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .claude-panel button:disabled {
