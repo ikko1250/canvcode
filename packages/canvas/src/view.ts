@@ -1169,27 +1169,57 @@ export class CanvasView {
   async copyReference(target: RefTarget, pdfRegions: readonly PdfRegionRequest[] = []): Promise<string | null> {
     const id = createRefId()
     const copied = writeClipboardText(id)
-    this.clearQuoteRegion()
-    if (target.kind === 'canvas' && pdfRegions.length > 0) target = await this.withPdfRegions(target, pdfRegions)
-    // 手書き線や画像、図があれば、今の見た目を画像にしておく（ref を保存したあとで送る。MAI-64）
-    const image = this.referenceImage(target)
     try {
-      // 保存していない編集があれば、先に保存する（AI が今の本文を読めるように）
-      if (target.kind === 'lines') await this.files?.flush(target.fileId)
-      const saved = await postReference(target, id)
-      if (saved.id !== id) await writeClipboardText(saved.id)
-      if (!(await copied) && saved.id === id) {
-        this.options.notify(`クリップボードに書けませんでした。この ID を AI に渡してください：${saved.id}`)
-      } else {
-        this.options.notify(`AI に渡す ID をコピーしました（${saved.id}）。Claude Code などに貼り付けてください`)
-      }
-      if (image) await this.storeReferenceImage(saved.id, image)
-      return saved.id
+      return await this.storeReference(target, pdfRegions, id, async (savedId) => {
+        if (savedId !== id) await writeClipboardText(savedId)
+        if (!(await copied) && savedId === id) {
+          this.options.notify(`クリップボードに書けませんでした。この ID を AI に渡してください：${savedId}`)
+        } else {
+          this.options.notify(`AI に渡す ID をコピーしました（${savedId}）。Claude Code などに貼り付けてください`)
+        }
+      })
     } catch (error) {
       console.error('Failed to save a reference', error)
       this.options.notify('AI に渡す ID を保存できませんでした。コピーした ID は使えません')
       return null
     }
+  }
+
+  // ref を作って保存し、ID を返す（クリップボードには載せない。画面のパネルから Claude に頼むとき）。保存できなければ null
+  async saveReference(target: RefTarget, pdfRegions: readonly PdfRegionRequest[] = []): Promise<string | null> {
+    try {
+      return await this.storeReference(target, pdfRegions, createRefId())
+    } catch (error) {
+      console.error('Failed to save a reference', error)
+      this.options.notify('選んだ場所を保存できませんでした')
+      return null
+    }
+  }
+
+  // 今の Canvas の範囲（直前の範囲選択か、選んでいるノード）の ref を保存する。範囲がなければ null
+  async saveCanvasReference(): Promise<string | null> {
+    const source = this.canvasRefSource()
+    const target = canvasRefTarget(source)
+    return target ? this.saveReference(target, pdfRegionRequests(source)) : null
+  }
+
+  // ref を保存する。afterSave は保存のすぐあと（画像を送る前）に呼ぶ。画像も送り終えてから返す（AI がすぐ読んでもそろっているように）
+  private async storeReference(
+    target: RefTarget,
+    pdfRegions: readonly PdfRegionRequest[],
+    id: string,
+    afterSave?: (savedId: string) => Promise<void>,
+  ): Promise<string> {
+    this.clearQuoteRegion()
+    if (target.kind === 'canvas' && pdfRegions.length > 0) target = await this.withPdfRegions(target, pdfRegions)
+    // 手書き線や画像、図があれば、今の見た目を画像にしておく（ref を保存したあとで送る。MAI-64）
+    const image = this.referenceImage(target)
+    // 保存していない編集があれば、先に保存する（AI が今の本文を読めるように）
+    if (target.kind === 'lines') await this.files?.flush(target.fileId)
+    const saved = await postReference(target, id)
+    await afterSave?.(saved.id)
+    if (image) await this.storeReferenceImage(saved.id, image)
+    return saved.id
   }
 
   // ref のノードに、PDF のページの範囲とその文字を付ける。文字を読めなかったページには付けない

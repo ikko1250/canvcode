@@ -41,6 +41,11 @@ const EXCLUDED_DATA = new Set([
   'figures',
   'backup-status.json',
   'backup-sync.lock',
+  // 画面から頼んだ Claude Code の会話の履歴（claude/store.ts）。動いているサーバーが書き続けるので、写すと揃わないことがある
+  'claude.db',
+  'claude.db-wal',
+  'claude.db-shm',
+  'claude.db-journal',
 ])
 
 // バックアップの名前（canvcode-backup-2026-10-12T03-05-00-000Z.tar.gz）から、作った時刻（ミリ秒）を読む。読めなければ null

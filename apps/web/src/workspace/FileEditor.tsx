@@ -64,13 +64,15 @@ export function FileEditor(props: {
   onQuote?(draft: QuoteDraft): void
   // 選んでいる行を AI に渡す ID をコピーする（Markdown と Python）
   onReference?(lines: { fileId: string; startLine: number; endLine: number; snapshot: string }): void
+  // 選んでいる行を添えて、画面のパネルから Claude に頼む
+  onAskClaude?(lines: { fileId: string; startLine: number; endLine: number; snapshot: string }): void
   // PDF にしてダウンロードする（Markdown のとき。md2pdf）
   onExportPdf?(fileId: string): Promise<void>
   // focus の文字列が見つからなかった（位置不明）
   onLost?(): void
   onClose(): void
 }) {
-  const { workspace, files, fileId, focus, onQuote, onReference, onExportPdf, onLost, onClose } = props
+  const { workspace, files, fileId, focus, onQuote, onReference, onAskClaude, onExportPdf, onLost, onClose } = props
   const file = workspace.getFile(fileId)
   const isCode = file?.kind === 'code'
   const isTable = file?.kind === 'table'
@@ -177,6 +179,12 @@ export function FileEditor(props: {
     if (!editor || !onReference) return
     onReference({ fileId, ...editor.selectedLines() })
     editor.focus()
+  }
+
+  const askClaude = () => {
+    const editor = editorRef.current
+    if (!editor || !onAskClaude) return
+    onAskClaude({ fileId, ...editor.selectedLines() })
   }
 
   // vim モードを切り替える（エディタは作り直さない）
@@ -364,6 +372,16 @@ export function FileEditor(props: {
             title="選んでいる行を指す ID をコピーする。AI に貼り付けると、AI がその行を読める"
           >
             AIに渡す
+          </button>
+        )}
+        {onAskClaude && (
+          <button
+            className="file-editor-quote"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={askClaude}
+            title="選んでいる行を添えて、右のパネルから Claude に頼む"
+          >
+            Claude に頼む
           </button>
         )}
         {!sourceOnly && onExportPdf && (

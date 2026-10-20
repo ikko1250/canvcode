@@ -183,6 +183,41 @@ AI が受け取るのは、行ならそのときの本文（ファイルが変�
 - Markdown / Python：`absPath` にファイルの絶対パスが入る（行の ref と、キャンバスの範囲の中のカード）。
 - PDF：`textPath` に、PDF から取り出したテキストのファイル（`.canvcode/assets/<ハッシュ>.txt`）の絶対パスが入る。各ページは `=== page N ===` の行で始まり、PDF を読めないモデルでも読める。ファイルは PDF を読み込んだときに作る。それより前に読み込んだ PDF の分は、初めて ref を解決したときに作る。どのページにも文字がない PDF（スキャンした画像など）は、そのことを知らせる。
 
+### 画面から Claude Code に頼む
+
+ID をコピーして貼り付けなくても、画面の右のパネルから頼める。サーバーが、同じマシンの Claude Code を [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) で動かす（`apps/server/src/claude/`）。Claude Code は上の MCP（`/mcp`）で Canvas と文書を読み書きするので、Canvas の編集にはいつもの「AI：…［元に戻す］」が出る。
+
+| 入口 | 操作 |
+| --- | --- |
+| パネルを開け閉めする | 右上の「Claude」 |
+| 選んでいる所を添えて頼む | ノードを選ぶか範囲選択 → 右クリックの「Claude に頼む…」（Ctrl+Alt+Enter）。パネルの「＋ 選んでいる所を添える」でも |
+| PDF・Markdown の引用の範囲 | 「範囲を選んで引用」で囲み、「Claude に頼む…」 |
+| Markdown / Python の行 | 全画面のエディタで行を選び、「Claude に頼む」 |
+
+- 添えた所は、「AIに渡す」と同じ `ref:` にしてプロンプトに付ける（Claude は `resolve_reference` で読む）
+- 送ると（Ctrl+Enter）、今の会話の続きとして頼む。「新規」で新しい会話を始める。パネルの上の一覧で前の会話に戻れ、「削除」を 2 回押すと消す（Claude Code の側の会話の記録も消す）
+- 会話は `.canvcode/claude.db`（SQLite）に残る。続きを頼むと、前の依頼の Claude Code の session を resume するので、サーバーを再起動しても続けられる（Claude Code の会話の中身は Claude Code が `~/.claude/projects/` に持つ）。サーバーが止まったときに動いていた依頼は、次に起動したときに「途切れました」にする。履歴なので、バックアップには入れない
+- 進み具合（使ったツール・答え・かかった時間と費用の見積もり）は、SSE（`/api/claude/events`）で届く。タブを閉じても、頼んだことはサーバーで続く
+- 同時に動かせるのは 2 つまで。1 回の依頼は 30 ターンまで
+
+アプリにログインがないので、画面を開ける人なら誰でも頼める。そのため、できることを絞ってある（`apps/server/src/claude/permissions.ts`）：
+
+- 使えるツールは、ファイルを読む・探す・書く（Read・Glob・Grep・Write・Edit）、Bash、WebSearch・WebFetch、canvcode の MCP だけ。サブエージェント・スキルは使えない
+- 許すかどうかは Claude Code の [auto mode](https://code.claude.com/docs/en/permission-modes) に任せる。分類のモデルが、危ない操作（ワークスペースの外のものを消す・秘密を外に送るなど）を断り、ほかは許す。分類で決められなかったコマンドは、画面で許可する仕組みがまだないので断る。auto mode が使えない（プランやモデルが対応していない）ときは、パネルにそう出て、Bash は使えない
+- ファイルのツールで読み書きするのはワークスペースの中だけ。`.canvcode/` と `.claude/` には書けない（auto mode の判定より前にフックで断る）。Bash はこの制限の外で、どこを触るかは auto mode の判定に任せる
+- 断った操作（フック・auto mode の判定のどちらでも）はパネルに出る
+
+auto mode が断るのは、頼まれていないことや頼まれた範囲を超えることで、はっきり頼まれたコマンドは通す（ワークスペースの外を `rm -rf` するよう頼むと、消した）。つまり、画面を開ける人は、サーバーを動かしているユーザーの権限でシェルを動かせる。Tailscale から開くなら、tailnet のアクセス制御（ACL）で、このマシンに入れる端末を自分のものだけにしておく。この機能を使わないなら `CANVCODE_CLAUDE=0` で切る。
+- 読む設定は、ワークスペースの `CLAUDE.md` と `.claude/` だけ（`~/.claude` の MCP や許可の設定は使わない）
+
+認証は、サーバーを動かしているユーザーの Claude Code のログイン（`claude` を起動してログイン）か、環境変数 `ANTHROPIC_API_KEY`。環境変数で変えられる：
+
+| 変数 | 内容 |
+| --- | --- |
+| `CANVCODE_CLAUDE=0` | この機能を切る（パネルと入口が出なくなる） |
+| `CANVCODE_CLAUDE_MODEL` | モデル（既定は Claude Code の既定） |
+| `CANVCODE_CLAUDE_MAX_TURNS` | 1 回の依頼のターン数の上限（既定 30） |
+
 ## 操作
 
 | 操作 | 入力 |
