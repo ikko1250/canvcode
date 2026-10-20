@@ -137,7 +137,7 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 
 | ツール | 内容 |
 |---|---|
-| `list_documents` | File の一覧（名前・パスで絞り込み） |
+| `list_documents` | File の一覧（名前・パスで絞り込み）と、ワークスペースのフォルダの絶対パス（そこに書いた `.md` などは文書になる） |
 | `read_document` | 本文とハッシュを読む |
 | `create_document` | 新しい File を作る（サイドバーの「未配置」に入る） |
 | `update_document` | 本文を丸ごと置き換える（`expected_hash` で、読んだあとの変更を検出） |
@@ -147,7 +147,7 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 | `list_canvases` | Canvas の木（id・名前・ノードの数。名前で絞り込み。ユーザーが見ている Canvas に `viewing` を付ける） |
 | `read_canvas` | Canvas のノードを 1 行 1 ノードの短い一覧で返す（ワールド座標。範囲・文字・型・`since` の rev 以降の変更で絞り込み、ページ送り。`view` で画面に見えているものだけ） |
 | `read_nodes` | ノードの詳しい中身（位置・大きさ・プレーンテキスト・色・File・矢印の端など。JSON） |
-| `edit_canvas` | ノードの作成・変更・移動・削除・group・矢印でつなぐ・整列・拡大・縮小（scale：倍率か、箱に収める）・親の付け替えを、まとめて 1 回の編集として行う（どれかが失敗したら何も変えない。`if_rev` で、読んだあとの変更を検出） |
+| `edit_canvas` | ノードの作成・変更・移動・削除・group・矢印でつなぐ・整列・拡大・縮小（scale：倍率か、箱に収める）・親の付け替えを、まとめて 1 回の編集として行う（どれかが失敗したら何も変えない。`if_rev` で、読んだあとの変更を検出）。作成では、新しい空の Canvas の Portal（`portal`）と、PDF の Portal（`pdf`：ワークスペースの中の PDF のパスか URL を、画面にドロップしたときと同じページの Canvas にする）も作れ、カードは File の id の代わりにワークスペースの中のパスでも指せる |
 | `undo_canvas_edit` | `edit_canvas` の編集を取り消す（そのあと変わったノードがあれば断る） |
 
 AI にスライドを頼むときは「canvcode のこのキャンバスにスライドを作って」のように言えばよい。AI は `get_canvas_format` で書き方を読み、`edit_canvas` でスライドを置いてテンプレートを当て、セルに文字を書き、`add_row` で行を足す。`read_canvas` では、スライドの番号（`n=`）と、文字があふれているスライド（`overflow`）が分かる。
@@ -157,6 +157,12 @@ AI にスライドを頼むときは「canvcode のこのキャンバスにス�
 AI がキャンバスを書き換えると（`edit_canvas`）、開いているタブにすぐ反映され、画面の下に「AI：<内容>［元に戻す］」が出る。押すとその編集だけを取り消す（そのあと人が同じノードを変えていれば、取り消さない）。編集はサーバーの中のワークスペース（ブラウザと同じ決まりごと：矢印のつながり・空の group・Portal とゴミ箱）で行い、1 回の編集を 1 回で保存して知らせる。直近 50 回分を `.canvcode/workspace.db` に残す。
 
 開いているタブは、いま見ている Canvas と範囲（ワールド座標）を、カメラが止まってから `/api/sync` でサーバーに知らせる（サーバーはメモリにだけ持ち、タブを閉じたら捨てる）。`read_canvas` と `edit_canvas` は `canvas_id` を省くとその Canvas を使うので、「ここに」「この図を」のような頼み方ができる。`edit_canvas` で位置を決めずに作ったノードは、見ている範囲の中心の近くの空いた所に置く（同じ呼び出しで位置を決めずに作ったものは、その下に並べる）。
+
+AI が `edit_canvas` で PDF を取り込むと、サーバーが PDF を読み（URL ならリンクのカードの「PDF ポータルを作成」と同じ確かめで取ってくる）、Asset に保存してページの大きさを測り、ページの Canvas と File と Portal を 1 回の編集で作る（「元に戻す」で消える）。結果には、取り出した文字のファイル（`textPath`）が付く。開いているタブには Asset もレコードと一緒に届くので、読み直さずにページが描け、Portal のサムネイルは、サーバーになければタブが 1 ページ目から作る。
+
+### 調べもの（imozuru）
+
+`.claude/skills/imozuru/` に、知らない分野を原文までたどって調べる Claude Code のスキル [imozuru](https://github.com/MaryCache/imozuru)（MIT）を取り込んである（このリポジトリで Claude Code を動かすと使える。取り込み元と変えた所は `UPSTREAM.md`）。CanvCode の MCP がつながっていれば、調べものをワークスペースの `research/<話題>/` に置き（map.md・log.md・原文の Markdown がそのまま文書になる）、止めたら抜き書きを Canvas に並べる：主張ごとの列に原文から切り出した文の付箋、右に map.md・log.md・原文のカードと PDF の Portal、付箋から原文への矢印。並べる操作は `scripts/canvas.py` が、report.html と同じ照合（言い換えがないか）を通ったものだけから作る。「AIに渡す」の `ref:` を添えて頼めば、その場所から調べ始める。詳しくは `.claude/skills/imozuru/references/canvcode.md`。
 
 ### AI に見てほしい場所を渡す
 

@@ -111,6 +111,14 @@ export type { HistoryMeta } from './workspace.ts'
 const PDF_COLUMNS = 3
 export const PDF_PAGE_GAP = 40
 
+// PDF の File とページの Canvas を作るのに要るもの（putPdfPages）
+export interface PdfPagesOptions {
+  title: string
+  asset: { id: string; hash: string; size: number }
+  // ページの大きさ（ポイント）
+  pageSizes: { width: number; height: number }[]
+}
+
 // 引用ノートを出典の横に置くときの間隔（MAI-33）
 const QUOTE_GAP = 24
 
@@ -539,64 +547,64 @@ export class Editor {
 
   // PDF を取り込む：PDF の File、ページを並べた Canvas（横 3 枚ずつの格子。ページは固定する）、
   // その持ち主の Portal（この Canvas の center）を 1 回の操作で作る（1 回の Undo で戻る）
-  importPdf(options: {
-    title: string
-    asset: { id: string; hash: string; size: number }
-    // ページの大きさ（ポイント）
-    pageSizes: { width: number; height: number }[]
-    center: Vec
-  }): { portalId: string; canvasId: string; fileId: string } {
-    const { title, asset, pageSizes, center } = options
+  importPdf(options: PdfPagesOptions & { center: Vec }): { portalId: string; canvasId: string; fileId: string } {
     return this.transact('import pdf', (tx) => {
-      const canvas = this.workspace.createCanvas(tx, title)
-      const now = Date.now()
-      const fileId = createId('file')
-      tx.put({
-        typeName: 'file',
-        id: fileId,
-        kind: 'pdf',
-        title,
-        path: '',
-        size: asset.size,
-        mtime: now,
-        hash: asset.hash,
-        missing: false,
-        assetId: asset.id,
-        pagesCanvasId: canvas.id,
-        pageCount: pageSizes.length,
-        parentCanvasId: null,
-        ownerNodeId: null,
-        createdAt: now,
-        updatedAt: now,
-        deletedAt: null,
-        trash: null,
-      })
-      // 格子に並べる。列の幅と行の高さは、その中で最も大きいページに合わせる
-      const sizes = pageSizes.map((p) => ({ w: p.width * PDF_POINT_SCALE, h: p.height * PDF_POINT_SCALE }))
-      const columnW = Math.max(...sizes.map((s) => s.w), 1)
-      const indices = indicesBetween(null, null, sizes.length)
-      let y = 0
-      for (let row = 0; row * PDF_COLUMNS < sizes.length; row++) {
-        const rowSizes = sizes.slice(row * PDF_COLUMNS, (row + 1) * PDF_COLUMNS)
-        for (const [col, size] of rowSizes.entries()) {
-          const pageIndex = row * PDF_COLUMNS + col
-          tx.put({
-            ...this.makeNode('pdf-page', {
-              x: col * (columnW + PDF_PAGE_GAP),
-              y,
-              parentId: canvas.id,
-              index: indices[pageIndex],
-              props: { assetId: asset.id, fileId, pageIndex, w: size.w, h: size.h },
-            }),
-            locked: true,
-          })
-        }
-        y += Math.max(...rowSizes.map((s) => s.h)) + PDF_PAGE_GAP
-      }
-      const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
+      const { canvasId, fileId } = this.putPdfPages(tx, options)
+      const portalId = this.putPortal(tx, canvasId, 'owner', options.center, PORTAL_DEFAULT_SIZE)
       this.setSelection([portalId])
-      return { portalId, canvasId: canvas.id, fileId }
+      return { portalId, canvasId, fileId }
     })
+  }
+
+  // PDF の File と、ページを並べた Canvas を tx の中で作る（持ち主の Portal は作らない。AI の編集（edit_canvas）からも使う）
+  putPdfPages(tx: Transaction<WorkspaceRecord>, options: PdfPagesOptions): { canvasId: string; fileId: string } {
+    const { title, asset, pageSizes } = options
+    const canvas = this.workspace.createCanvas(tx, title)
+    const now = Date.now()
+    const fileId = createId('file')
+    tx.put({
+      typeName: 'file',
+      id: fileId,
+      kind: 'pdf',
+      title,
+      path: '',
+      size: asset.size,
+      mtime: now,
+      hash: asset.hash,
+      missing: false,
+      assetId: asset.id,
+      pagesCanvasId: canvas.id,
+      pageCount: pageSizes.length,
+      parentCanvasId: null,
+      ownerNodeId: null,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      trash: null,
+    })
+    // 格子に並べる。列の幅と行の高さは、その中で最も大きいページに合わせる
+    const sizes = pageSizes.map((p) => ({ w: p.width * PDF_POINT_SCALE, h: p.height * PDF_POINT_SCALE }))
+    const columnW = Math.max(...sizes.map((s) => s.w), 1)
+    const indices = indicesBetween(null, null, sizes.length)
+    let y = 0
+    for (let row = 0; row * PDF_COLUMNS < sizes.length; row++) {
+      const rowSizes = sizes.slice(row * PDF_COLUMNS, (row + 1) * PDF_COLUMNS)
+      for (const [col, size] of rowSizes.entries()) {
+        const pageIndex = row * PDF_COLUMNS + col
+        tx.put({
+          ...this.makeNode('pdf-page', {
+            x: col * (columnW + PDF_PAGE_GAP),
+            y,
+            parentId: canvas.id,
+            index: indices[pageIndex],
+            props: { assetId: asset.id, fileId, pageIndex, w: size.w, h: size.h },
+          }),
+          locked: true,
+        })
+      }
+      y += Math.max(...rowSizes.map((s) => s.h)) + PDF_PAGE_GAP
+    }
+    return { canvasId: canvas.id, fileId }
   }
 
   // この Canvas の PDF のページ（File の pagesCanvasId がこの Canvas のもの）を、ページ番号の順に返す（MAI-56）。

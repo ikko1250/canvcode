@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Camera, ReferenceRecord } from '@canvcode/core'
+import { assetIdFromHash, type Camera, type ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
@@ -408,6 +408,11 @@ export function App(props: { initial: InitialRecords }) {
         const view = viewRef.current
         void view?.assets.loadList().then(() => view.invalidate('scene'))
         if (view && view.editor.canvasId === workspace.rootCanvasId) view.zoomToFit()
+      },
+      // AI が取り込んだ PDF の Asset：ページのノードより先に登録して、すぐに描けるようにする
+      onAssets: (assets) => {
+        const view = viewRef.current
+        for (const asset of assets) view?.assets.register({ typeName: 'asset', id: assetIdFromHash(asset.hash), ...asset })
       },
     })
     files.setHandlers({

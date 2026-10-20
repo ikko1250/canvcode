@@ -7,7 +7,8 @@ import type { Workspace } from './workspace.ts'
 //   応答（ack）が来るまでは手元に持っておき、切れたら、つなぎ直したときに送り直す
 // - ほかのタブの変更は、履歴に入れずに当てる。まだ送っていない（応答のない）レコードへの変更は当てない（自分のほうが新しい）
 // - ドラッグや文字の編集の途中（トランザクションが開いている間）に届いた変更は、終わってから当てる
-// - AI（MCP の edit_canvas）がサーバーで行った変更は origin: { kind: 'ai' } 付きで届く。onAgentChange で画面に知らせる
+// - AI（MCP の edit_canvas）がサーバーで行った変更は origin: { kind: 'ai' } 付きで届く。onAgentChange で画面に知らせる。
+//   AI が PDF を取り込んだときは、その Asset（assets）も一緒に届く。レコードを当てる前に onAssets で登録する
 // - いま見ている Canvas と範囲（reportPresence）を、カメラが止まってから送る。AI のツールが、ユーザーの見ている所を既定にする
 
 export interface InitialRecords {
@@ -25,6 +26,16 @@ export interface AgentChange {
   canvasId: string
   // 変わったノードの数
   count: number
+}
+
+// サーバーが保存した Asset（GET /api/assets の一覧の 1 つと同じ形）
+export interface RemoteAsset {
+  hash: string
+  mime: string
+  size: number
+  width: number
+  height: number
+  variants: number[]
 }
 
 // 画面に見えている範囲（ワールド座標）
@@ -47,6 +58,8 @@ export interface SyncOptions {
   onImported?: (report: unknown) => void
   // AI の編集が届いたとき（当てたあとで呼ぶ）
   onAgentChange?: (change: AgentChange) => void
+  // 変更と一緒に、まだ一覧にないかもしれない Asset が届いたとき（当てる前に呼ぶ）
+  onAssets?: (assets: RemoteAsset[]) => void
   // 見ている範囲を、カメラが止まってから何ミリ秒後に送るか
   presenceDelayMs?: number
 }
@@ -103,6 +116,7 @@ export class SyncClient {
       delayMs: options.delayMs ?? SEND_DELAY_MS,
       onImported: options.onImported ?? (() => {}),
       onAgentChange: options.onAgentChange ?? (() => {}),
+      onAssets: options.onAssets ?? (() => {}),
       presenceDelayMs: options.presenceDelayMs ?? PRESENCE_DELAY_MS,
     }
     this.rev = initial.rev
@@ -122,10 +136,11 @@ export class SyncClient {
   }
 
   // あとから知らせる先を決める（画面を作る前に同期を始めるため）
-  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported' | 'onAgentChange'>): void {
+  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported' | 'onAgentChange' | 'onAssets'>): void {
     if (handlers.notify) this.options.notify = handlers.notify
     if (handlers.onImported) this.options.onImported = handlers.onImported
     if (handlers.onAgentChange) this.options.onAgentChange = handlers.onAgentChange
+    if (handlers.onAssets) this.options.onAssets = handlers.onAssets
   }
 
   // まだ保存が済んでいない変更があるか
@@ -238,6 +253,7 @@ export class SyncClient {
       deleted?: string[]
       message?: string
       imported?: unknown
+      assets?: RemoteAsset[]
       origin?: { kind?: unknown; batchId?: unknown; label?: unknown; canvasId?: unknown; count?: unknown }
     }
     try {
@@ -247,6 +263,7 @@ export class SyncClient {
     }
     if (message.type === 'changes') {
       this.rev = Math.max(this.rev, message.rev ?? 0)
+      if (Array.isArray(message.assets) && message.assets.length > 0) this.options.onAssets(message.assets)
       this.applyRemote(message.records ?? [], message.deleted ?? [])
       if (message.imported) this.options.onImported(message.imported)
       const origin = message.origin

@@ -788,13 +788,16 @@ Position (create/move): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40}
 Colours are hex (#rrggbb); fill/stroke also accept "none".
 
 Ops:
-- create: type (text | note | geo | frame | slide | card), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
+- create: type (text | note | geo | frame | slide | card | portal | pdf), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
   text: text, fontSize, color, align (left|center|right), w (wraps; default 240)
   note: text, color (background), fontSize, align, w, h
   geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label), fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize, align, cornerRadius, w, h
   frame: name, w, h
   slide: name, ratio, hidden, template (see Slides below)
-  card: file (document id from list_documents; markdown, code or table), w, h (fixes the height)
+  card: file (document id from list_documents; markdown, code or table) or path (its path as list_documents shows it), w, h (fixes the height)
+  portal: name (or text; the title of the new canvas), w, h. Makes a new empty canvas and its portal here. Fill it with another edit_canvas call whose canvas_id is the new canvas.
+  pdf: path (a PDF file in the workspace folder that list_documents returns: relative to it, or absolute inside it) or url (http/https), name (default: the file name), w, h. Imports the PDF as a canvas of its pages (like dropping it in the UI) and puts its portal here.
+  portal and pdf add "canvases":{"<as or #i>":{"canvas":"canvas:…"}} to the result; pdf also gives "file", "pages" and "textPath" (the text of the PDF, a "=== page N ===" line before each page; absent when the PDF has no text).
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
   arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).

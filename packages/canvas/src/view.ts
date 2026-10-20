@@ -9,6 +9,7 @@ import {
   unionBoxes,
   zoomAt,
   createRefId,
+  isFileRecord,
   linesOfSelection,
   quoteRange,
   type AssetRecord,
@@ -765,7 +766,10 @@ export class CanvasView {
     this.thumbnailRequests.add(canvasId)
     void fetch(`/api/thumbnails/${encodeURIComponent(canvasId)}`)
       .then(async (response) => {
-        if (response.status !== 200 || this.thumbnails.has(canvasId)) return
+        if (this.thumbnails.has(canvasId)) return
+        // サーバーにない（204）とき、PDF のページの Canvas（AI が edit_canvas で取り込んだものなど）なら、ここで 1 ページ目から作る
+        if (response.status === 204) return this.createPdfThumbnail(canvasId)
+        if (response.status !== 200) return
         const image = await createImageBitmap(await response.blob())
         if (this.thumbnails.has(canvasId)) return image.close()
         this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
@@ -2156,19 +2160,7 @@ export class CanvasView {
       )
       if (this.editor !== editor) return null
       const { portalId, canvasId } = editor.importPdf({ title: title || file.name.replace(/\.pdf$/i, '') || 'PDF', asset, pageSizes, center })
-      // 1 ページ目を小さく描いて、Portal のサムネイルにする
-      const first = pageSizes[0]
-      if (first) {
-        const scale = Math.min(THUMBNAIL_MAX.w / first.width, THUMBNAIL_MAX.h / first.height)
-        const image = await this.assets.withPdfDocument(asset.id, (doc) => doc.render(0, scale))
-        this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
-        this.invalidate('scene')
-        const canvas = document.createElement('canvas')
-        canvas.width = image.width
-        canvas.height = image.height
-        canvas.getContext('2d')!.drawImage(image, 0, 0)
-        void this.storeThumbnail(canvasId, canvas)
-      }
+      if (pageSizes[0]) await this.storePdfThumbnail(canvasId, asset.id, pageSizes[0])
       return portalId
     } catch (error) {
       // 壊れた PDF など、ファイルの側の問題が多いので、知らせるだけにする
@@ -2176,6 +2168,28 @@ export class CanvasView {
       this.options.notify(`PDF を読み込めませんでした：${file.name}`)
       return null
     }
+  }
+
+  // 1 ページ目を小さく描いて、PDF のページの Canvas（の Portal）のサムネイルにする
+  private async storePdfThumbnail(canvasId: string, assetId: string, first: { width: number; height: number }): Promise<void> {
+    const scale = Math.min(THUMBNAIL_MAX.w / first.width, THUMBNAIL_MAX.h / first.height)
+    const image = await this.assets.withPdfDocument(assetId, (doc) => doc.render(0, scale))
+    this.thumbnails.set(canvasId, { image, width: image.width, height: image.height, level: 1 })
+    this.invalidate('scene')
+    const canvas = document.createElement('canvas')
+    canvas.width = image.width
+    canvas.height = image.height
+    canvas.getContext('2d')!.drawImage(image, 0, 0)
+    void this.storeThumbnail(canvasId, canvas)
+  }
+
+  // サムネイルのない PDF のページの Canvas の、サムネイルを作る（PDF のページの Canvas でなければ何もしない）
+  private async createPdfThumbnail(canvasId: string): Promise<void> {
+    const file = this.editor.workspace.documents().find((doc) => isFileRecord(doc) && doc.kind === 'pdf' && doc.pagesCanvasId === canvasId)
+    const assetId = file && isFileRecord(file) ? file.assetId : undefined
+    if (!assetId || !this.assets.canOpenPdf || !this.assets.get(assetId)) return
+    const first = await this.assets.withPdfDocument(assetId, (doc) => doc.pageSize(0))
+    if (!this.thumbnails.has(canvasId)) await this.storePdfThumbnail(canvasId, assetId, first)
   }
 
   // CSV・TSV を取り込む：文字にして（Shift_JIS も読む）UTF-8 の File（.csv）に保存し、表に合わせた大きさの表のカードを置く。

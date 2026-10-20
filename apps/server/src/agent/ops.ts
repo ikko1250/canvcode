@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { relative, sep } from 'node:path'
 import {
   applyMat,
   randomIdSuffix,
@@ -13,7 +14,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, GEO_SHAPES, normalizeCrop, richTextFromPlain, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, GEO_SHAPES, normalizeCrop, PORTAL_DEFAULT_SIZE, richTextFromPlain, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
 import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
@@ -26,6 +27,7 @@ import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspac
 import { z } from 'zod'
 import type { AgentOpEntry, StoredRecord } from '../records.ts'
 import type { AgentHost } from './host.ts'
+import type { PreparedPdf } from './pdfSource.ts'
 
 // AI の編集（MCP の edit_canvas、undo_canvas_edit）。
 // - 1 回の呼び出しの操作（ops）をすべて、サーバーの中のワークスペース（host.ts）の 1 つのトランザクション（source: 'user'）で行う。
@@ -52,8 +54,11 @@ const TEXT_DEFAULT_WIDTH = 240
 const MAX_LABEL = 80
 const MAX_LISTED_IDS = 10
 
-// 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る
-const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card'] as const
+// 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る。
+// portal は新しい空の Canvas の、pdf は PDF のページの Canvas（path か url の PDF を取り込む）の持ち主の Portal
+const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf'] as const
+// portal / pdf で使えるもの（Canvas の名前は name か text）
+const PORTAL_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h', 'name', 'text', 'path', 'url'])
 const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
 const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', table: 'table-card' }
 // 矢じり（arrow）。bars は両端に直交する短い線（寸法線 |―|）
@@ -129,6 +134,10 @@ const opSchemas = {
     as: z.string().optional(),
     parent: id.optional(),
     file: id.optional(),
+    // カードの File のワークスペースの中のパス（file の代わり）。pdf では取り込む PDF のファイル
+    path: z.string().min(1).optional(),
+    // pdf：取り込む PDF の URL（path の代わり）
+    url: z.string().min(1).optional(),
     rotation: finite.optional(),
     template: z.enum(SLIDE_TEMPLATES).optional(),
     ...position,
@@ -220,12 +229,22 @@ export interface EditRequest {
   ops: unknown[]
   ifRev?: number
   label?: string
+  // create type pdf の PDF（ops の何番目か → 保存した Asset とページの大きさ。preparePdfs で用意する）
+  pdfs?: ReadonlyMap<number, PreparedPdf>
+}
+
+// portal / pdf で作った Canvas（pdf なら、その File とページの数も）
+export interface CreatedCanvas {
+  canvas: string
+  file?: string
+  pages?: number
 }
 
 export interface EditResult {
   batch: string
   rev: number
   created: Record<string, string>
+  canvases?: Record<string, CreatedCanvas>
   counts: { created: number; updated: number; deleted: number }
   warnings?: string[]
 }
@@ -243,7 +262,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const tx = workspace.store.begin(label, { scope: canvas.id, history: 'ignore', source: 'user', meta })
   // 画面の操作と同じく、commit の直前に slide-layout の子を並べ直す
   editor.arrangeSlideLayoutsOnCommit(tx)
-  const run = new EditRun(host, editor, tx, meta, request.viewport)
+  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs)
   let patch: Patch<WorkspaceRecord>
   try {
     for (const [i, raw] of request.ops.entries()) {
@@ -275,7 +294,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   }
   if (entries.length === 0) {
     host.revert(patch)
-    return { batch: '', rev: records.rev, created: run.created, counts: { created: 0, updated: 0, deleted: 0 }, warnings: ['nothing changed', ...run.warnings] }
+    return { batch: '', rev: records.rev, created: run.created, ...run.canvasResult(), counts: { created: 0, updated: 0, deleted: 0 }, warnings: ['nothing changed', ...run.warnings] }
   }
   if (request.ifRev !== undefined) {
     const revs = records.revsOf(entries.filter((e) => e.before).map((e) => e.id))
@@ -299,13 +318,15 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const counts = countNodes(entries)
   const puts = entries.flatMap((e) => (e.after ? [e.after] : []))
   const deleted = entries.flatMap((e) => (e.after ? [] : [e.id]))
+  // 取り込んだ PDF の Asset は、開いているタブの Asset の一覧にまだないので、レコードと一緒に知らせる
+  const assets = [...(request.pdfs?.values() ?? [])].map(({ asset }) => ({ hash: asset.hash, mime: 'application/pdf', size: asset.size, width: 0, height: 0, variants: [] }))
   host.sync?.broadcast(
     rev,
     puts,
-    { origin: { kind: 'ai', batchId: batch, label, canvasId: canvas.id, count: counts.created + counts.updated + counts.deleted } },
+    { origin: { kind: 'ai', batchId: batch, label, canvasId: canvas.id, count: counts.created + counts.updated + counts.deleted }, ...(assets.length ? { assets } : {}) },
     { deleted, except: host.listener },
   )
-  return { batch, rev, created: run.created, counts, ...(run.warnings.length ? { warnings: run.warnings } : {}) }
+  return { batch, rev, created: run.created, ...run.canvasResult(), counts, ...(run.warnings.length ? { warnings: run.warnings } : {}) }
 }
 
 // AI の編集を取り消す。そのあとに変わったレコードがあれば、何もせずに EditError を投げる
@@ -372,6 +393,7 @@ function listIds(ids: string[]): string {
 // 1 回の edit_canvas の操作を行う
 class EditRun {
   readonly created: Record<string, string> = {}
+  readonly canvases: Record<string, CreatedCanvas> = {}
   readonly warnings: string[] = []
   private readonly refs = new Map<string, string>()
   private readonly host: AgentHost
@@ -381,13 +403,20 @@ class EditRun {
   // 位置を決めずに作るノードを置く所（最初は見ている範囲の中心の近くの空いた所か、Canvas の中身の右）
   private auto: Vec | null = null
   private readonly viewport: Box | undefined
+  private readonly pdfs: ReadonlyMap<number, PreparedPdf> | undefined
 
-  constructor(host: AgentHost, editor: Editor, tx: Transaction<WorkspaceRecord>, meta: HistoryMeta, viewport?: Box) {
+  constructor(host: AgentHost, editor: Editor, tx: Transaction<WorkspaceRecord>, meta: HistoryMeta, viewport?: Box, pdfs?: ReadonlyMap<number, PreparedPdf>) {
     this.host = host
     this.editor = editor
     this.tx = tx
     this.meta = meta
     this.viewport = viewport
+    this.pdfs = pdfs
+  }
+
+  // 結果の canvases（portal / pdf を作ったときだけ）
+  canvasResult(): { canvases?: Record<string, CreatedCanvas> } {
+    return Object.keys(this.canvases).length ? { canvases: this.canvases } : {}
   }
 
   private get canvasId(): string {
@@ -428,16 +457,18 @@ class EditRun {
 
   private create(op: Extract<Op, { op: 'create' }>, i: number): void {
     let type: string = op.type
+    if (type === 'portal' || type === 'pdf') return this.createPortal(op, i)
+    if (op.url !== undefined) throw new EditError('url is only for pdf')
     let file: FileRecord | undefined
     if (type === 'card' || type.endsWith('-card')) {
-      if (!op.file) throw new EditError(`${type} needs file (a document id from list_documents)`)
-      file = this.ensureFile(op.file)
+      if ((op.file === undefined) === (op.path === undefined)) throw new EditError(`${type} needs either file (a document id from list_documents) or path`)
+      file = this.ensureFile(op.file ?? this.fileIdAt(op.path!))
       const cardType = CARD_TYPES[file.kind]
       if (!cardType) throw new EditError(`${op.file} is a ${file.kind} file and cannot be placed as a card`)
       if (type !== 'card' && type !== cardType) throw new EditError(`${op.file} is a ${file.kind} file; use type ${cardType} (or card)`)
       type = cardType
-    } else if (op.file) {
-      throw new EditError(`file is only for cards`)
+    } else if (op.file || op.path !== undefined) {
+      throw new EditError(`${op.file ? 'file' : 'path'} is only for cards${op.file ? '' : ' and pdf'}`)
     }
     const parentId = op.parent ? this.container(op.parent) : this.canvasId
     const def = this.editor.types.get(type)!
@@ -454,6 +485,35 @@ class EditRun {
     this.translateTo(node.id, target.point, target.aabb)
     if (op.template !== undefined) this.applyTemplate(node.id, op.template)
     this.remember(node.id, op.as, i)
+  }
+
+  // 持ち主の Portal と、その先の Canvas を作る。portal は空の Canvas（名前は name か text。なければ「新しいキャンバス N」）、
+  // pdf は preparePdfs が保存した PDF のページの Canvas（名前は name か text。なければファイルの名前）
+  private createPortal(op: Extract<Op, { op: 'create' }>, i: number): void {
+    const rejected = Object.entries(op).flatMap(([key, value]) => (value === undefined || PORTAL_FIELDS.has(key) ? [] : [key]))
+    if (rejected.length) throw new EditError(`${rejected.join(', ')} ${rejected.length > 1 ? 'are' : 'is'} not supported for ${op.type}`)
+    if (op.text !== undefined && op.name !== undefined) throw new EditError('give either text or name')
+    const title = (op.text ?? op.name)?.trim() || undefined
+    let created: CreatedCanvas
+    if (op.type === 'pdf') {
+      if ((op.path === undefined) === (op.url === undefined)) throw new EditError('pdf needs either path (a PDF file in the workspace) or url')
+      const pdf = this.pdfs?.get(i)
+      if (!pdf) throw new EditError('the PDF was not loaded')
+      const { canvasId, fileId } = this.editor.putPdfPages(this.tx, { ...pdf, title: title ?? pdf.title })
+      created = { canvas: canvasId, file: fileId, pages: pdf.pageSizes.length }
+    } else {
+      if (op.path !== undefined || op.url !== undefined) throw new EditError(`${op.path !== undefined ? 'path' : 'url'} is only for pdf`)
+      created = { canvas: this.host.workspace().createCanvas(this.tx, title).id }
+    }
+    const parentId = op.parent ? this.container(op.parent) : this.canvasId
+    const size = { w: op.w ?? PORTAL_DEFAULT_SIZE.w, h: op.h ?? PORTAL_DEFAULT_SIZE.h }
+    const node = this.editor.makeNode('portal', { x: 0, y: 0, parentId, props: { targetId: created.canvas, role: 'owner', ...size } })
+    this.tx.put(node)
+    this.tx.flush()
+    const target = this.targetTopLeft(node.id, op, parentId)
+    this.translateTo(node.id, target.point, target.aabb)
+    this.remember(node.id, op.as, i)
+    this.canvases[op.as ?? `#${i}`] = created
   }
 
   private update(op: Extract<Op, { op: 'update' }>): void {
@@ -911,6 +971,21 @@ class EditRun {
   }
 
   // カードにする File。レコードにまだなければ（外で作った File）、FileStore の情報から入れる
+  // ワークスペースの中のパス（list_documents の path。ワークスペースの中の絶対パスでもよい）の File の id
+  private fileIdAt(path: string): string {
+    const files = this.host.files
+    if (!files) throw new EditError('documents are not available')
+    let rel: string
+    try {
+      rel = relative(files.root, files.resolveWorkspacePath(path)).split(sep).join('/')
+    } catch {
+      throw new EditError(`${path} is outside the workspace`)
+    }
+    const info = files.list().find((f) => f.path === rel && !f.missing)
+    if (!info) throw new EditError(`no document at ${rel} (paths are relative to the workspace folder from list_documents; a file just written appears after a moment)`)
+    return info.id
+  }
+
   private ensureFile(fileId: string): FileRecord {
     const workspace = this.host.workspace()
     const existing = workspace.getFile(fileId)

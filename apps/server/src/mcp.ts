@@ -6,7 +6,8 @@ import { z } from 'zod'
 import { normalizeRefId } from '@canvcode/core'
 import { HttpError, type FileInfo } from './files.ts'
 import type { AgentHost } from './agent/host.ts'
-import { EditError, editCanvas, editCanvasInput, undoCanvasEdit } from './agent/ops.ts'
+import { EditError, editCanvas, editCanvasInput, undoCanvasEdit, type CreatedCanvas } from './agent/ops.ts'
+import { preparePdfs, type PdfSources } from './agent/pdfSource.ts'
 import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } from './agent/outline.ts'
 import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
@@ -22,11 +23,13 @@ import { resolveReference, type RefDeps } from './refs.ts'
 // - 第 3 段で Canvas の上のものを読むツールを足した（agent/outline.ts）
 // - 第 4 段で Canvas のノードを書き換えるツールを足した（agent/ops.ts。サーバーの中のワークスペース agent/host.ts で行う）
 // - 第 5 段で、ユーザーが見ている Canvas と範囲（ブラウザが /api/sync で知らせる presence）を、Canvas のツールの既定にした
+// - 第 6 段で、edit_canvas から PDF（ワークスペースのファイルか URL）を取り込み、空の Canvas の Portal を作れるようにした（agent/pdfSource.ts）
 
 export const MCP_PATH = '/mcp'
 
-// agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）
-export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null }
+// agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）。
+// pdf がなければ、edit_canvas で PDF を取り込めない
+export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null; pdf?: Omit<PdfSources, 'files'> }
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const { files } = deps
@@ -46,7 +49,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
         'Canvas tools default to the canvas the user is viewing ("this", "here").' +
         (deps.agent
           ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
-            ' To make a presentation, put slides on a canvas (edit_canvas: create type "slide" with a template; get_canvas_format explains them).'
+            ' To make a presentation, put slides on a canvas (edit_canvas: create type "slide" with a template; get_canvas_format explains them).' +
+            ' To show a PDF on a canvas, edit_canvas create type "pdf" with a path in the workspace or a url.'
           : ''),
     },
   )
@@ -55,7 +59,9 @@ export function createMcpServer(deps: McpDeps): McpServer {
     'list_documents',
     {
       title: 'List documents',
-      description: 'List Markdown, Python and table (CSV) documents in the workspace. Filter by a substring of the title or path, and by kind.',
+      description:
+        'List Markdown, Python and table (CSV) documents in the workspace. Filter by a substring of the title or path, and by kind. ' +
+        'Also returns the absolute path of the workspace folder: .md / .py / .csv files written under it (subfolders too) appear as documents.',
       inputSchema: {
         query: z.string().optional().describe('Case-insensitive substring of the title or path'),
         kind: z.enum(['markdown', 'code', 'table']).optional().describe('markdown (.md), code (.py) or table (.csv / .tsv)'),
@@ -70,7 +76,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         .filter((f) => !needle || f.title.toLowerCase().includes(needle) || f.path.toLowerCase().includes(needle))
         .sort((a, b) => a.path.localeCompare(b.path))
         .map(summary)
-      return json({ documents: found })
+      return json({ workspace: files.root, documents: found })
     },
   )
 
@@ -193,14 +199,14 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
   )
 
-  registerCanvasTools(server, deps.records, deps.agent, deps.presence)
+  registerCanvasTools(server, deps.records, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf })
   return server
 }
 
 // ---- Canvas の上のもの ----
 
 // 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
-function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null): void {
+function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources): void {
   // ユーザーが見ている所（その Canvas がまだあるときだけ）
   const viewing = (): Presence | null => {
     const current = presence?.() ?? null
@@ -275,17 +281,29 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
     'edit_canvas',
     {
       title: 'Edit a canvas',
-      description: 'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, scale, reparent, add_row) atomically. World coordinates.',
+      description:
+        'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, scale, reparent, add_row) atomically. World coordinates. ' +
+        'create can also make a portal to a new canvas, or import a PDF (workspace file or URL) as a portal.',
       inputSchema: editCanvasInput,
       annotations: { destructiveHint: true },
     },
     ({ canvas_id, ops, if_rev, label }) =>
-      editGuard(() => {
+      editGuard(async () => {
         const user = viewing()
         const canvasId = canvas_id ?? user?.canvasId
         if (!canvasId) throw new EditError('No canvas_id, and no open CanvCode tab reports which canvas the user is viewing. Pass canvas_id (see list_canvases).')
         const viewport = user?.canvasId === canvasId ? user.viewport : undefined
-        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport })
+        const pdfs = await preparePdfs(ops, pdf)
+        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport, pdfs })
+        // 取り込んだ PDF の文字（ページごとに「=== page N ===」）のファイル。AI が grep して、どのページかを探せる
+        if (result.batch && result.canvases && pdf) {
+          for (const [key, created] of Object.entries(result.canvases) as [string, CreatedCanvas & { textPath?: string }][]) {
+            const index = key.startsWith('#') ? Number(key.slice(1)) : ops.findIndex((op) => (op as { as?: unknown }).as === key)
+            const prepared = pdfs.get(index)
+            const textFile = prepared && (await pdf.assets.pdfTextFile(prepared.asset.hash))
+            if (textFile && !textFile.textless) created.textPath = textFile.path
+          }
+        }
         // 既定の Canvas を使ったときは、どこを変えたかを返す
         return text(JSON.stringify(canvas_id ? result : { canvas: canvasId, ...result }))
       }),
@@ -299,13 +317,13 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
       inputSchema: { batch_id: z.string().describe('batch from edit_canvas') },
       annotations: { destructiveHint: true },
     },
-    ({ batch_id }) => editGuard(() => text(JSON.stringify(undoCanvasEdit(agent, batch_id)))),
+    ({ batch_id }) => editGuard(async () => text(JSON.stringify(undoCanvasEdit(agent, batch_id)))),
   )
 }
 
-function editGuard(run: () => CallToolResult): CallToolResult {
+async function editGuard(run: () => Promise<CallToolResult>): Promise<CallToolResult> {
   try {
-    return run()
+    return await run()
   } catch (err) {
     if (err instanceof EditError) return error(err.message)
     throw err

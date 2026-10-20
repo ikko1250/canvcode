@@ -51,11 +51,15 @@ interface AssetMeta {
 }
 
 export class AssetStore {
+  private readonly dataDir: string
   private readonly dir: string
+  // テキストを取り出している途中の PDF（ハッシュ → 終わる Promise）
+  private readonly extracting = new Map<string, Promise<void>>()
   // 検索のために揃えておいたページのテキスト（ハッシュ → ページごと）
   private readonly searchCache = new Map<string, { pages: string[]; normalized: NormalizedText[] }>()
 
   constructor(dataDir: string) {
+    this.dataDir = dataDir
     this.dir = join(dataDir, 'assets')
   }
 
@@ -115,9 +119,18 @@ export class AssetStore {
       await writeAtomic(join(this.dir, `${hash}.${ext}`), body)
       await this.writeMeta(hash, { mime, size: body.length, width, height, variants: {} })
       // 応答を待たせないよう、裏で行う
-      if (mime === 'application/pdf') void this.extractPdfText(hash, body)
+      if (mime === 'application/pdf') {
+        const job = this.extractPdfText(hash, body).finally(() => this.extracting.delete(hash))
+        this.extracting.set(hash, job)
+      }
     }
     return hash
+  }
+
+  // PDF のテキストファイル（ensurePdfTextFile）。取り出している途中なら、終わるまで待つ（MCP の edit_canvas で取り込んだ PDF を AI が読むため）
+  async pdfTextFile(hash: string): Promise<{ path: string; textless: boolean } | null> {
+    await this.extracting.get(hash)
+    return ensurePdfTextFile(this.dataDir, hash)
   }
 
   // PDF の中の単語を探す。'pending' はテキストをまだ取り出していない（取り込んだ直後）か、取り出せなかったとき。

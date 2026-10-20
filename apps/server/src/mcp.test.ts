@@ -8,7 +8,9 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { afterEach, describe, expect, it } from 'vitest'
 import { canvasSlideLayout } from '@canvcode/slides'
 import { AgentHost } from './agent/host.ts'
+import { AssetStore } from './assets.ts'
 import { FileStore, type FileEvent } from './files.ts'
+import { LinkPreviewService, type RemoteResponse } from './linkPreview.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
@@ -32,6 +34,8 @@ async function setup(): Promise<{
   workspace: string
   // ユーザーが見ている所（ブラウザが知らせるものの代わり）
   view: { current: Presence | null }
+  // URL → 外のサーバーの応答（edit_canvas の create type pdf の url）
+  remote: Map<string, RemoteResponse>
 }> {
   const workspace = mkdtempSync(join(tmpdir(), 'canvcode-mcp-'))
   cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
@@ -46,10 +50,19 @@ async function setup(): Promise<{
   const agent = new AgentHost({ records, files })
   cleanups.push(() => agent.dispose())
   const view: { current: Presence | null } = { current: null }
+  const assets = new AssetStore(dataDir)
+  await assets.init()
+  const remote = new Map<string, RemoteResponse>()
+  const links = new LinkPreviewService(async (url) => {
+    const response = remote.get(url)
+    if (!response) throw new Error(`no route to ${url}`)
+    return response
+  })
+  const pdf = { assets, links }
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     void (async () => {
-      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, refImages, agent, presence: () => view.current }))) res.writeHead(404).end()
+      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, refImages, agent, presence: () => view.current, pdf }))) res.writeHead(404).end()
     })()
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -58,7 +71,31 @@ async function setup(): Promise<{
   const client = new Client({ name: 'test', version: '0.0.0' })
   await client.connect(new StreamableHTTPClientTransport(url))
   cleanups.push(() => client.close())
-  return { client, files, records, refImages, dataDir, events, url, workspace, view }
+  return { client, files, records, refImages, dataDir, events, url, workspace, view, remote }
+}
+
+// 595×842 のページが 2 つの PDF。1 ページ目にだけ text を書く
+function samplePdf(text: string): Buffer {
+  const content = `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+  ]
+  let pdf = '%PDF-1.4\n'
+  const offsets = objects.map((body, i) => {
+    const offset = pdf.length
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`
+    return offset
+  })
+  const xref = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(pdf, 'latin1')
 }
 
 async function call(client: Client, name: string, args: Record<string, unknown>): Promise<{ data: any; isError: boolean; text: string }> {
@@ -96,13 +133,15 @@ describe('MCP server', () => {
   })
 
   it('creates, lists and reads a document, and tells open tabs', async () => {
-    const { client, events } = await setup()
+    const { client, events, workspace } = await setup()
     const created = await call(client, 'create_document', { kind: 'markdown', title: 'メモ', content: '# 見出し\n' })
     expect(created.data.document).toMatchObject({ kind: 'markdown', title: 'メモ', path: 'メモ.md' })
     expect(events).toContainEqual(expect.objectContaining({ type: 'file-added' }))
 
     const listed = await call(client, 'list_documents', { query: 'メ' })
     expect(listed.data.documents).toEqual([created.data.document])
+    // ワークスペースのフォルダ（AI がファイルを書く先）
+    expect(listed.data.workspace).toBe(workspace)
     expect((await call(client, 'list_documents', { kind: 'code' })).data.documents).toEqual([])
 
     const read = await call(client, 'read_document', { id: created.data.document.id })
@@ -201,6 +240,83 @@ describe('MCP server', () => {
     const undone = await call(client, 'undo_canvas_edit', { batch_id: edited.data.batch })
     expect(undone.data).toMatchObject({ restored: 3 })
     expect(records.get(edited.data.created.n)).toBeUndefined()
+  })
+
+  // ワークスペースの PDF を edit_canvas で取り込む：ページの Canvas と File と持ち主の Portal ができ、取り出した文字のパスが返る。Undo で消える
+  it('imports a PDF in the workspace as a portal through edit_canvas', async () => {
+    const { client, records, workspace } = await setup()
+    mkdirSync(join(workspace, 'research', 'sources'), { recursive: true })
+    writeFileSync(join(workspace, 'research', 'sources', 'paper.pdf'), samplePdf('Hello imozuru'))
+    const edited = await call(client, 'edit_canvas', {
+      canvas_id: records.rootCanvasId,
+      ops: [
+        { op: 'create', type: 'note', as: 'n', text: '原文', x: 0, y: 0 },
+        { op: 'create', type: 'pdf', as: 'p', path: 'research/sources/paper.pdf', place: { rightOf: '$n' } },
+      ],
+    })
+    expect(edited.isError).toBe(false)
+    const portal = records.get(edited.data.created.p) as any
+    const { canvas, file, pages, textPath } = edited.data.canvases.p
+    expect(pages).toBe(2)
+    expect(portal).toMatchObject({ type: 'portal', parentId: records.rootCanvasId, props: { targetId: canvas, role: 'owner' } })
+    expect(records.get(canvas)).toMatchObject({ typeName: 'canvas', title: 'paper', ownerNodeId: portal.id })
+    expect(records.get(file)).toMatchObject({ typeName: 'file', kind: 'pdf', title: 'paper', pagesCanvasId: canvas, pageCount: 2 })
+    const pageNodes = records.childrenOf(canvas) as any[]
+    expect(pageNodes.map((p) => [p.props.pageIndex, Math.round(p.props.w), Math.round(p.props.h), p.locked])).toEqual([
+      [0, 793, 1123, true],
+      [1, 793, 1123, true],
+    ])
+    expect(readFileSync(textPath, 'utf8')).toMatch(/^=== page 1 ===\nHello imozuru/)
+    // 画面と同じ形の 1 回の編集なので、まとめて取り消せる
+    await call(client, 'undo_canvas_edit', { batch_id: edited.data.batch })
+    expect(records.get(portal.id)).toBeUndefined()
+    expect(records.get(file)).toBeUndefined()
+    expect(records.get(canvas)).toBeUndefined()
+  })
+
+  it('imports a PDF from a URL, names it after the file and refuses what is not a PDF', async () => {
+    const { client, records, workspace, remote } = await setup()
+    remote.set('https://example.com/papers/bates-1989.pdf', { url: 'https://example.com/papers/bates-1989.pdf', contentType: 'application/octet-stream', body: samplePdf('Berrypicking') })
+    remote.set('https://example.com/page.pdf', { url: 'https://example.com/page.pdf', contentType: 'text/html', body: Buffer.from('<html>login</html>') })
+    const edited = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'create', type: 'pdf', url: 'https://example.com/papers/bates-1989.pdf' }] })
+    expect(edited.isError).toBe(false)
+    expect(records.get(edited.data.canvases['#0'].canvas)).toMatchObject({ title: 'bates-1989' })
+    const before = records.rev
+    writeFileSync(join(workspace, 'fake.pdf'), 'not a pdf')
+    for (const op of [
+      { op: 'create', type: 'pdf', url: 'https://example.com/page.pdf' },
+      { op: 'create', type: 'pdf', url: 'http://127.0.0.1:8787/api/records' },
+      { op: 'create', type: 'pdf', path: 'fake.pdf' },
+      { op: 'create', type: 'pdf', path: '../outside.pdf' },
+      { op: 'create', type: 'pdf', path: 'fake.pdf', url: 'https://example.com/papers/bates-1989.pdf' },
+      { op: 'create', type: 'pdf', path: 'fake.pdf', rotation: 10 },
+    ]) {
+      const failed = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'create', type: 'note', text: 'x' }, op] })
+      expect(failed.isError, JSON.stringify(op)).toBe(true)
+      expect(failed.text).toMatch(/^ops\[1\] \(create\): .*Nothing was changed\.$/)
+    }
+    expect(records.rev).toBe(before)
+  })
+
+  // 空の Canvas の Portal を作り、その Canvas に、ワークスペースのパスで指したカードを置く（AI が直接書いたサブフォルダのファイル）
+  it('makes a portal to a new canvas and places a card by its path', async () => {
+    const { client, records, files, workspace } = await setup()
+    mkdirSync(join(workspace, 'research', 'topic'), { recursive: true })
+    writeFileSync(join(workspace, 'research', 'topic', 'map.md'), '# map\n')
+    const path = 'research/topic/map.md'
+    await expect.poll(() => files.list().some((f) => f.path === path), { timeout: 5000 }).toBe(true)
+    const made = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'create', type: 'portal', as: 'r', name: 'research: topic', w: 320, h: 200 }] })
+    expect(made.isError).toBe(false)
+    const canvas = made.data.canvases.r.canvas
+    expect(records.get(canvas)).toMatchObject({ typeName: 'canvas', title: 'research: topic', ownerNodeId: made.data.created.r })
+    expect(records.get(made.data.created.r)).toMatchObject({ props: { targetId: canvas, w: 320, h: 200 } })
+    const placed = await call(client, 'edit_canvas', { canvas_id: canvas, ops: [{ op: 'create', type: 'card', as: 'm', path, x: 0, y: 0 }] })
+    expect(placed.isError).toBe(false)
+    expect(records.get(placed.data.created.m)).toMatchObject({ type: 'markdown-card', parentId: canvas })
+    const missing = await call(client, 'edit_canvas', { canvas_id: canvas, ops: [{ op: 'create', type: 'card', path: 'nope.md' }] })
+    expect(missing.text).toMatch(/no document at nope\.md/)
+    const both = await call(client, 'edit_canvas', { canvas_id: canvas, ops: [{ op: 'create', type: 'portal', path: 'x.pdf' }] })
+    expect(both.text).toMatch(/path is only for pdf/)
   })
 
   // スライド（スライド v2）を edit_canvas で置き、テンプレートと行を足すと並べ直される。read_canvas に番号が出て、Undo で消える

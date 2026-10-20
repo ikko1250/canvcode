@@ -75,6 +75,33 @@ describe('sync', () => {
     sync.dispose()
   })
 
+  it('hands over the assets that come with a change before applying its records (a PDF the AI imported)', () => {
+    const sockets: { onmessage?: (event: { data: string }) => void; send(text: string): void }[] = []
+    class FakeWebSocket {
+      onmessage?: (event: { data: string }) => void
+      constructor() {
+        sockets.push(this)
+      }
+      send(): void {}
+      close(): void {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const seen: { assets: unknown[]; nodeThen: boolean }[] = []
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [] }, {
+      baseUrl: 'http://127.0.0.1',
+      onAssets: (assets) => seen.push({ assets, nodeThen: workspace.getNode('node:n') !== undefined }),
+    })
+    const note = { typeName: 'node', id: 'node:n', type: 'note', parentId: 'canvas:root', x: 0, y: 0, rotation: 0, index: 'a0', opacity: 1, locked: false, meta: {}, version: 2, props: { paragraphs: richTextFromPlain('AI'), w: 100, h: 100, color: '#fff3bf', fontSize: 12, align: 'left' } }
+    const asset = { hash: 'a'.repeat(64), mime: 'application/pdf', size: 10, width: 0, height: 0, variants: [] }
+    const receive = (message: unknown) => sockets[0]!.onmessage!({ data: JSON.stringify(message) })
+    receive({ type: 'changes', rev: 1, records: [note], deleted: [], assets: [asset], origin: { kind: 'ai', batchId: 'ai-1', label: 'PDF', canvasId: 'canvas:root', count: 1 } })
+    receive({ type: 'changes', rev: 2, records: [], deleted: [] })
+    expect(seen).toEqual([{ assets: [asset], nodeThen: false }])
+    expect(workspace.getNode('node:n')).toBeDefined()
+    sync.dispose()
+  })
+
   it('reports the view after the camera stops, at once on a canvas switch, and again after reconnecting', () => {
     vi.useFakeTimers()
     const sockets: { sent: Record<string, unknown>[]; onopen?: () => void; onclose?: () => void }[] = []

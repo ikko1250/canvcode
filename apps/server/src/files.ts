@@ -116,6 +116,11 @@ export class FileStore {
     return this.get(id)
   }
 
+  // ワークスペースのフォルダの絶対パス（MCP の list_documents が返す。AI がそこにファイルを書けば、文書として一覧に入る）
+  get root(): string {
+    return this.workspace
+  }
+
   resolveWorkspacePath(path: string): string {
     return this.abs(path)
   }
