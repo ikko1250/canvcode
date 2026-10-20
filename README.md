@@ -183,6 +183,36 @@ AI が受け取るのは、行ならそのときの本文（ファイルが変�
 - Markdown / Python：`absPath` にファイルの絶対パスが入る（行の ref と、キャンバスの範囲の中のカード）。
 - PDF：`textPath` に、PDF から取り出したテキストのファイル（`.canvcode/assets/<ハッシュ>.txt`）の絶対パスが入る。各ページは `=== page N ===` の行で始まり、PDF を読めないモデルでも読める。ファイルは PDF を読み込んだときに作る。それより前に読み込んだ PDF の分は、初めて ref を解決したときに作る。どのページにも文字がない PDF（スキャンした画像など）は、そのことを知らせる。
 
+### 画面から Claude Code に頼む
+
+ID をコピーして貼り付けなくても、画面の右のパネルから頼める。サーバーが、同じマシンの Claude Code を [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) で動かす（`apps/server/src/claude/`）。Claude Code は上の MCP（`/mcp`）で Canvas と文書を読み書きするので、Canvas の編集にはいつもの「AI：…［元に戻す］」が出る。
+
+| 入口 | 操作 |
+| --- | --- |
+| パネルを開け閉めする | 右上の「Claude」 |
+| 選んでいる所を添えて頼む | ノードを選ぶか範囲選択 → 右クリックの「Claude に頼む…」（Ctrl+Alt+Enter）。パネルの「＋ 選んでいる所を添える」でも |
+| PDF・Markdown の引用の範囲 | 「範囲を選んで引用」で囲み、「Claude に頼む…」 |
+| Markdown / Python の行 | 全画面のエディタで行を選び、「Claude に頼む」 |
+
+- 添えた所は、「AIに渡す」と同じ `ref:` にしてプロンプトに付ける（Claude は `resolve_reference` で読む）
+- 送ると（Ctrl+Enter）、今の会話の続きとして頼む。「新規」で新しい会話を始める。パネルの上の一覧で、前の会話に戻れる
+- 進み具合（使ったツール・答え・かかった時間と費用の見積もり）は、SSE（`/api/claude/events`）で届く。タブを閉じても、頼んだことはサーバーで続く。ジョブはメモリにだけ持つので、サーバーを再起動すると消える
+- 同時に動かせるのは 2 つまで。1 回の依頼は 30 ターンまで
+
+アプリにログインがないので、画面を開ける人なら誰でも頼める。そのため、できることを絞ってある（`apps/server/src/claude/permissions.ts`）：
+
+- 使えるツールは、ファイルを読む・探す・書く（Read・Glob・Grep・Write・Edit）、WebSearch・WebFetch、canvcode の MCP だけ。シェル（Bash）・サブエージェント・スキルは使えない
+- ファイルの読み書きはワークスペースの中だけ。`.canvcode/` と `.claude/` には書けない。断った操作はパネルに出る
+- 読む設定は、ワークスペースの `CLAUDE.md` と `.claude/` だけ（`~/.claude` の MCP や許可の設定は使わない）
+
+認証は、サーバーを動かしているユーザーの Claude Code のログイン（`claude` を起動してログイン）か、環境変数 `ANTHROPIC_API_KEY`。環境変数で変えられる：
+
+| 変数 | 内容 |
+| --- | --- |
+| `CANVCODE_CLAUDE=0` | この機能を切る（パネルと入口が出なくなる） |
+| `CANVCODE_CLAUDE_MODEL` | モデル（既定は Claude Code の既定） |
+| `CANVCODE_CLAUDE_MAX_TURNS` | 1 回の依頼のターン数の上限（既定 30） |
+
 ## 操作
 
 | 操作 | 入力 |

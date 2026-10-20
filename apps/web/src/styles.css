@@ -2417,3 +2417,318 @@ body,
   font-size: 14px;
   color: #1f2328;
 }
+
+/* Claude に頼むパネル（claude/ClaudePanel.tsx）。キャンバスの右に並べる（右上のデザインパネルと重ならない）。
+   狭い画面（スマホ）では、画面いっぱいに重ねる */
+.claude-panel {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex-shrink: 0;
+  min-height: 0;
+  background: #f6f7f9;
+  border-left: 1px solid var(--panel-border);
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .claude-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: auto;
+    border-left: none;
+  }
+}
+
+.claude-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 8px 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.claude-panel-header strong {
+  margin-right: auto;
+}
+
+.claude-panel button,
+.claude-thread-select {
+  padding: 3px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.claude-thread-select {
+  max-width: 170px;
+}
+
+.claude-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.claude-panel .claude-close {
+  border-color: transparent;
+  background: transparent;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.claude-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+}
+
+.claude-hint {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.claude-job + .claude-job {
+  margin-top: 16px;
+}
+
+.claude-prompt {
+  margin-left: 32px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #e7efff;
+  line-height: 1.5;
+}
+
+.claude-prompt-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.claude-prompt-ref {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.claude-text {
+  margin: 6px 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.claude-text > :first-child {
+  margin-top: 0;
+}
+
+.claude-text > :last-child {
+  margin-bottom: 0;
+}
+
+.claude-text p,
+.claude-text ul,
+.claude-text ol,
+.claude-text pre {
+  margin: 6px 0;
+}
+
+.claude-text ul,
+.claude-text ol {
+  padding-left: 20px;
+}
+
+.claude-text h1,
+.claude-text h2,
+.claude-text h3 {
+  margin: 10px 0 4px;
+  font-size: 14px;
+}
+
+.claude-text code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #eaecf0;
+  font-size: 12px;
+}
+
+.claude-text pre {
+  padding: 8px;
+  border-radius: 6px;
+  background: #eaecf0;
+  overflow-x: auto;
+}
+
+.claude-text pre code {
+  padding: 0;
+}
+
+.claude-text table {
+  border-collapse: collapse;
+}
+
+.claude-text th,
+.claude-text td {
+  padding: 2px 6px;
+  border: 1px solid var(--panel-border);
+}
+
+.claude-tool {
+  margin: 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-tool::before {
+  content: '・';
+}
+
+.claude-tool-detail {
+  margin-left: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.claude-tool.denied {
+  color: #9a6700;
+  white-space: normal;
+}
+
+.claude-error {
+  margin: 6px 0;
+  color: #cf222e;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.claude-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.claude-status.failed {
+  color: #cf222e;
+}
+
+.claude-panel .claude-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+}
+
+.claude-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--panel-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: claude-spin 0.8s linear infinite;
+}
+
+@keyframes claude-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.claude-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--panel-border);
+}
+
+.claude-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  background: #e7efff;
+  font-size: 12px;
+}
+
+.claude-attachment span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-panel .claude-attachment button {
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+}
+
+.claude-panel .claude-attach {
+  align-self: flex-start;
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
+.claude-compose textarea {
+  resize: vertical;
+  min-height: 56px;
+  padding: 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  font: inherit;
+  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする */
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+@media (pointer: fine) {
+  .claude-compose textarea {
+    font-size: 13px;
+  }
+}
+
+.claude-compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.claude-panel .claude-send {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 右上の「Claude」を開くボタン（.status-bar の中） */
+.claude-toggle {
+  padding: 3px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.claude-toggle.running {
+  border-color: var(--accent);
+  color: var(--accent);
+}

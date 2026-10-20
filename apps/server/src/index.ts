@@ -9,6 +9,8 @@ import { AgentHost } from './agent/host.ts'
 import { handleAgentOps } from './agent/ops.ts'
 import { AssetStore } from './assets.ts'
 import { handleBackupStatus } from './backupStatus.ts'
+import { handleClaude } from './claude/http.ts'
+import { ClaudeJobs } from './claude/jobs.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
@@ -31,6 +33,8 @@ import { ThumbnailStore } from './thumbnails.ts'
 // - AI からは /mcp（MCP の Streamable HTTP）で File を読み書きする（MAI-59）。
 //   Canvas のノードの書き換え（スライドもここで作る）は、サーバーの中のワークスペース（agent/host.ts）で行い、画面から取り消せる（/api/agent-ops）
 // - 定期バックアップ（npm run backup:sync）の状態（.canvcode/backup-status.json）を /api/backup-status で画面に渡す
+// - 画面のパネルから Claude Code に頼める（/api/claude。claude/jobs.ts）。Claude Code は canvcode の /mcp を通して Canvas を読み書きする。
+//   CANVCODE_CLAUDE=0 で切る。CANVCODE_CLAUDE_MODEL でモデルを、CANVCODE_CLAUDE_MAX_TURNS でターン数の上限（既定 30）を変える
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
 const HOST = '127.0.0.1'
@@ -90,6 +94,17 @@ await files.init()
 const markdownPdf = new MarkdownPdf(files, WORKSPACE, DATA_DIR)
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
+// 画面から頼む Claude Code
+const maxTurns = Number(process.env.CANVCODE_CLAUDE_MAX_TURNS)
+const claude =
+  process.env.CANVCODE_CLAUDE === '0'
+    ? null
+    : new ClaudeJobs({
+        workspace: WORKSPACE,
+        mcpUrl: `http://${HOST}:${PORT}${MCP_PATH}`,
+        ...(process.env.CANVCODE_CLAUDE_MODEL ? { model: process.env.CANVCODE_CLAUDE_MODEL } : {}),
+        ...(Number.isInteger(maxTurns) && maxTurns > 0 ? { maxTurns } : {}),
+      })
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
@@ -173,6 +188,7 @@ const server = createServer(async (req, res) => {
   if (sync.handle(req, res, url.pathname)) return
   if (await handleBackupStatus(req, res, url.pathname, DATA_DIR)) return
   if (handleAgentOps(req, res, url.pathname, agent)) return
+  if (handleClaude(req, res, url.pathname, claude)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname, url.searchParams)) return

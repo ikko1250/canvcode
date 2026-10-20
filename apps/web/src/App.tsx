@@ -56,6 +56,8 @@ import { DesignPanel } from './design/DesignPanel.tsx'
 import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
+import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
+import { ClaudeClient, useClaudeState } from './claude/claudeClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
@@ -322,6 +324,23 @@ export function App(props: { initial: InitialRecords }) {
   const viewRef = useRef<CanvasView | null>(null)
   // パイメニューを開いた位置（ウィンドウの座標）。図形 › スライドは、ここを中心に置く
   const [pieOrigin, setPieOrigin] = useState<{ x: number; y: number } | null>(null)
+
+  // 画面から Claude Code に頼む（claude/）。パネルはキャンバスの右に並べる。
+  // クライアントは画面を開いている間ずっと使う（SSE はパネルを初めて開いたときにつなぐ）
+  const [claude] = useState(() => new ClaudeClient())
+  const claudeState = useClaudeState(claude)
+  const [claudeOpen, setClaudeOpen] = useState(false)
+  const [claudeAttachment, setClaudeAttachment] = useState<ClaudeAttachment | null>(null)
+  const [claudeFocus, setClaudeFocus] = useState(0)
+  // パネルを開く。save があれば、その場所（ref）を保存して添える（保存できなければ添付を外す）
+  const askClaude = useCallback((label: string, save?: () => Promise<string | null>) => {
+    setClaudeOpen(true)
+    setClaudeFocus((n) => n + 1)
+    if (!save) return
+    const attachment: ClaudeAttachment = { label, refId: null }
+    setClaudeAttachment(attachment)
+    void save().then((refId) => setClaudeAttachment((current) => (current === attachment ? (refId ? { label, refId } : null) : current)))
+  }, [])
   // スライドの非表示を変えたら描き直し、パイメニューの「非表示にする／表示する」を決め直す（選択は変わらないので、session では描き直らない）
   const [, setSlideEdits] = useState(0)
 
@@ -702,11 +721,46 @@ export function App(props: { initial: InitialRecords }) {
               else if (loc.kind === 'markdown') void view.copyReference(view.linesReference(d.fileId, d.quote, loc.line))
             },
           },
+          ...(claude.state.availability === 'on'
+            ? [
+                {
+                  label: 'Claude に頼む…',
+                  onSelect: () => {
+                    const loc = d.locator
+                    if (loc.kind === 'pdf') {
+                      const figure = d.figure ? { figure: true as const } : {}
+                      askClaude(`PDF の ${loc.pageIndex + 1} ページの範囲`, () =>
+                        view.saveReference({ kind: 'pdf', fileId: d.fileId, pageIndex: loc.pageIndex, rect: loc.rect, text: d.quote, ...figure }),
+                      )
+                    } else if (loc.kind === 'markdown') {
+                      askClaude(`引用「${d.quote.replace(/\s+/g, ' ').slice(0, 16)}…」`, () => view.saveReference(view.linesReference(d.fileId, d.quote, loc.line)))
+                    }
+                  },
+                },
+              ]
+            : []),
         ],
         onClose: () => view.clearQuoteRegion(),
       })
     },
-    [setMenu],
+    [setMenu, claude, askClaude],
+  )
+
+  // 選んでいるノード（直前の範囲選択なら、その枠）を添えて Claude のパネルを開く。
+  // 選んでいなければ、添えずに開く（required なら、選ぶよう知らせる）
+  const askClaudeAboutSelection = useCallback(
+    (required = false) => {
+      const view = viewRef.current
+      const target = view?.canvasReference()
+      if (!view || !target) {
+        if (required) notify('添える所を、選ぶか範囲選択で囲んでください')
+        else askClaude('')
+        return
+      }
+      const label = target.nodes.length > 0 ? `${target.nodes.length} 個のノード` : 'キャンバスの範囲'
+      askClaude(label, () => view.saveCanvasReference())
+    },
+    [askClaude, notify],
   )
 
   // 右クリックメニューの項目（MAI-29）。右クリックしたときの選択に合わせる
@@ -843,6 +897,7 @@ export function App(props: { initial: InitialRecords }) {
       if (selected.length > 0) {
         // AI に見てほしい場所として、選んでいるノード（直前の範囲選択なら、その枠）を指す ID をコピーする
         items.push({ label: 'AIに渡すIDをコピー', shortcut: 'Ctrl+Alt+A', onSelect: () => void view.copyCanvasReference() })
+        if (claude.state.availability === 'on') items.push({ label: 'Claude に頼む…', shortcut: 'Ctrl+Alt+Enter', onSelect: () => askClaudeAboutSelection() })
         items.push({ label: 'キャンバスに昇格', shortcut: 'Ctrl+Alt+P', onSelect: () => view.promoteSelection() })
         // 子キャンバスに移動（MAI-38）：この Canvas の子の Canvas から、移す先を選ばせる
         items.push({
@@ -986,6 +1041,9 @@ export function App(props: { initial: InitialRecords }) {
         // 何もない所を範囲選択した直後なら、その範囲を AI に渡せる
         if (editor.session.get().lastBrush) {
           items.push({ label: 'この範囲をAIに渡す', shortcut: 'Ctrl+Alt+A', onSelect: () => void view.copyCanvasReference() })
+          if (claude.state.availability === 'on') {
+            items.push({ label: 'この範囲を Claude に頼む…', shortcut: 'Ctrl+Alt+Enter', onSelect: () => askClaudeAboutSelection() })
+          }
         }
         // 親キャンバスに戻る（MAI-47）。ルートや未配置のキャンバスでは出さない
         const parentId = workspace.getCanvas(editor.canvasId)?.parentCanvasId
@@ -993,7 +1051,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate, exportPdf, createPdfPortal],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection],
   )
 
 
@@ -1130,6 +1188,18 @@ export function App(props: { initial: InitialRecords }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [openFileId, dialog])
+
+  // Ctrl（⌘）+Alt+Enter で、選んでいる所を添えて Claude に頼む（パネルの入力欄の中では送るキーなので、ここでは見ない）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.altKey || e.key !== 'Enter' || claude.state.availability !== 'on') return
+      if (e.target instanceof Element && e.target.closest('.claude-panel')) return
+      e.preventDefault()
+      askClaudeAboutSelection()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [claude, askClaudeAboutSelection])
 
   // Ctrl+\ でサイドバーを開け閉めする
   useEffect(() => {
@@ -1660,6 +1730,16 @@ export function App(props: { initial: InitialRecords }) {
         )}
 
         <div className="status-bar">
+          {claudeState.availability === 'on' && (
+            <button
+              type="button"
+              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') ? ' running' : ''}`}
+              onClick={() => (claudeOpen ? setClaudeOpen(false) : askClaude(''))}
+              title="Claude に頼むパネルを開け閉めする（Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
+            >
+              Claude
+            </button>
+          )}
           <BackupStatus serverOnline={syncStatus !== 'offline'} />
           <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
             {syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
@@ -1715,6 +1795,14 @@ export function App(props: { initial: InitialRecords }) {
             focus={fileFocus}
             onQuote={(draft) => void view?.copyQuote(draft)}
             onReference={(lines) => void view?.copyReference({ kind: 'lines', ...lines })}
+            onAskClaude={
+              claudeState.availability === 'on' && view
+                ? (lines) =>
+                    askClaude(`${workspace.getFile(lines.fileId)?.title ?? '文書'} の ${lines.startLine}〜${lines.endLine} 行`, () =>
+                      view.saveReference({ kind: 'lines', ...lines }),
+                    )
+                : undefined
+            }
             onExportPdf={exportPdf}
             onLost={() => notify('引用した文字列が見つかりません（位置不明）。覚えていた行を開きました')}
             onClose={closeFile}
@@ -1744,6 +1832,20 @@ export function App(props: { initial: InitialRecords }) {
           />
         )}
       </div>
+      {claudeOpen && claudeState.availability === 'on' && (
+        <ClaudePanel
+          client={claude}
+          canvasId={canvasId}
+          attachment={claudeAttachment}
+          focusRequest={claudeFocus}
+          onAttachSelection={() => askClaudeAboutSelection(true)}
+          onClearAttachment={() => setClaudeAttachment(null)}
+          onClose={() => {
+            setClaudeOpen(false)
+            view?.root.focus({ preventScroll: true })
+          }}
+        />
+      )}
     </div>
   )
 }
