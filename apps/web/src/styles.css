@@ -2709,6 +2709,12 @@ body,
   gap: 6px;
 }
 
+.claude-panel .claude-danger {
+  border-color: #cf222e;
+  background: #cf222e;
+  color: #fff;
+}
+
 .claude-panel .claude-send {
   border-color: var(--accent);
   background: var(--accent);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { applyStreamMessage, threadsOf, type ClaudeJob } from './claudeClient.ts'
+import { applyStreamMessage, jobsOfThread, type ClaudeJob, type ClaudeState, type ThreadSummary } from './claudeClient.ts'
 
-// Claude のジョブの表に、SSE のメッセージを当てる
+// Claude の会話の状態に、SSE のメッセージを当てる
 
 const job = (id: string, extra: Partial<ClaudeJob> = {}): ClaudeJob => ({
   id,
@@ -13,46 +13,68 @@ const job = (id: string, extra: Partial<ClaudeJob> = {}): ClaudeJob => ({
   events: [],
   ...extra,
 })
+const thread = (threadId: string, updatedAt: number, extra: Partial<ThreadSummary> = {}): ThreadSummary => ({
+  threadId,
+  title: threadId,
+  createdAt: 0,
+  updatedAt,
+  jobCount: 1,
+  running: false,
+  ...extra,
+})
 const summary = ({ events: _events, ...rest }: ClaudeJob) => rest
+const state = (extra: Partial<ClaudeState> = {}): ClaudeState => ({ availability: 'on', threads: [], jobs: new Map(), loaded: new Set(), ...extra })
 
 describe('applyStreamMessage', () => {
-  it('replaces everything with a snapshot', () => {
-    const { jobs } = applyStreamMessage(new Map([['old', job('old')]]), { type: 'snapshot', jobs: [job('a')] })
-    expect([...jobs.keys()]).toEqual(['a'])
+  it('replaces the threads and the running jobs with a snapshot, and forgets what was loaded', () => {
+    const before = state({ jobs: new Map([['old', job('old')]]), loaded: new Set(['old']) })
+    const { state: after } = applyStreamMessage(before, { type: 'snapshot', threads: [thread('a', 1)], running: [job('a')] })
+    expect(after.threads.map((t) => t.threadId)).toEqual(['a'])
+    expect([...after.jobs.keys()]).toEqual(['a'])
+    expect(after.loaded.size).toBe(0)
   })
 
-  it('appends new events from their position, without doubling ones it already has', () => {
+  it('appends new events from their position, without doubling ones it already has, and moves the thread to the top', () => {
     const a = job('a', { events: [{ kind: 'text', text: '1' }] })
-    let { jobs } = applyStreamMessage(new Map([['a', a]]), { type: 'job', job: summary(a), events: [{ kind: 'text', text: '2' }], from: 1 })
-    expect(jobs.get('a')!.events).toEqual([
+    let { state: s } = applyStreamMessage(state({ threads: [thread('b', 5), thread('a', 1)], jobs: new Map([['a', a]]) }), {
+      type: 'job',
+      job: summary(a),
+      events: [{ kind: 'text', text: '2' }],
+      from: 1,
+      thread: thread('a', 9, { running: true }),
+    })
+    expect(s.jobs.get('a')!.events).toEqual([
       { kind: 'text', text: '1' },
       { kind: 'text', text: '2' },
     ])
+    expect(s.threads.map((t) => [t.threadId, t.running])).toEqual([
+      ['a', true],
+      ['b', false],
+    ])
     // 先に応答で入れたジョブに、同じ出来事がもう一度届いても重ならない
-    ;({ jobs } = applyStreamMessage(jobs, { type: 'job', job: { ...summary(a), status: 'done' }, events: [{ kind: 'text', text: '2' }], from: 1 }))
-    expect(jobs.get('a')!.events).toHaveLength(2)
-    expect(jobs.get('a')!.status).toBe('done')
+    ;({ state: s } = applyStreamMessage(s, { type: 'job', job: { ...summary(a), status: 'done' }, events: [{ kind: 'text', text: '2' }], from: 1, thread: thread('a', 10) }))
+    expect(s.jobs.get('a')!.events).toHaveLength(2)
+    expect(s.jobs.get('a')!.status).toBe('done')
   })
 
   it('reports a job whose earlier events it missed', () => {
-    const { jobs, missing } = applyStreamMessage(new Map(), { type: 'job', job: summary(job('a')), events: [{ kind: 'text', text: '3' }], from: 2 })
+    const { state: s, missing } = applyStreamMessage(state(), { type: 'job', job: summary(job('a')), events: [{ kind: 'text', text: '3' }], from: 2, thread: thread('a', 1) })
     expect(missing).toBe('a')
-    expect(jobs.get('a')!.events).toEqual([])
+    expect(s.jobs.get('a')!.events).toEqual([])
+  })
+
+  it('removes a deleted thread and its jobs', () => {
+    const before = state({ threads: [thread('a', 1), thread('b', 2)], jobs: new Map([['a', job('a')], ['b', job('b')]]), loaded: new Set(['a']) })
+    const { state: s } = applyStreamMessage(before, { type: 'thread-deleted', threadId: 'a' })
+    expect(s.threads.map((t) => t.threadId)).toEqual(['b'])
+    expect([...s.jobs.keys()]).toEqual(['b'])
+    expect(s.loaded.has('a')).toBe(false)
   })
 })
 
-describe('threadsOf', () => {
-  it('groups jobs by thread, oldest first, with the latest thread first', () => {
-    const threads = threadsOf([
-      job('b2', { threadId: 'b', createdAt: 4 }),
-      job('a', { createdAt: 1 }),
-      job('b', { createdAt: 2 }),
-      job('c', { createdAt: 3 }),
-    ])
-    expect(threads.map((t) => [t.threadId, t.jobs.map((j) => j.id)])).toEqual([
-      ['b', ['b', 'b2']],
-      ['c', ['c']],
-      ['a', ['a']],
-    ])
+describe('jobsOfThread', () => {
+  it('returns the jobs of a thread, oldest first', () => {
+    const s = state({ jobs: new Map([['b2', job('b2', { threadId: 'b', createdAt: 4 })], ['a', job('a', { createdAt: 1 })], ['b', job('b', { createdAt: 2 })]]) })
+    expect(jobsOfThread(s, 'b').map((j) => j.id)).toEqual(['b', 'b2'])
   })
 })

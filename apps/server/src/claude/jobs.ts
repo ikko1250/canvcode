@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { relative } from 'node:path'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { CANVCODE_MCP_PREFIX, CLAUDE_TOOLS, decideTool, inside } from './permissions.ts'
+import { askTool, CANVCODE_MCP_PREFIX, CLAUDE_TOOLS, inside, preToolUseHook } from './permissions.ts'
+import type { ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
 
 // 画面から頼んだ Claude Code の仕事（ジョブ）。
 // - Claude Agent SDK の query() で、サーバーと同じマシンの Claude Code を動かす（認証は、そのマシンの claude のログインか API キー）
-// - cwd はワークスペース。MCP は自分の /mcp（canvcode）だけをつなぐ。使えるツールは claude/permissions.ts で絞る
+// - cwd はワークスペース。MCP は自分の /mcp（canvcode）だけをつなぐ。許し方は auto mode と claude/permissions.ts
 // - ユーザーが選んだ場所は ref:XXXX としてプロンプトに添える（AI は resolve_reference で読む。手で貼り付けたときと同じ）
-// - 届いたメッセージを、画面に見せる出来事（JobEvent）にして貯め、購読者（/api/claude/events の SSE）に知らせる
-// - 同じ会話（thread）の続きは、前のジョブの session_id を resume に渡して続ける
-// - ジョブはメモリにだけ持つ（サーバーを止めれば消える）。新しいものから MAX_JOBS 個を残す
+// - 届いたメッセージを、画面に見せる出来事（JobEvent）にして claude/store.ts（SQLite）に書き、購読者（/api/claude/events の SSE）に知らせる
+// - 同じ会話（thread）の続きは、前のジョブの session_id を resume に渡して続ける（サーバーを再起動しても続けられる）
+// - 動いているジョブはメモリにも持つ（止めるための AbortController）。起動したときに、途切れたジョブを止まったものにする
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -17,7 +18,7 @@ export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 export type JobEvent =
   // Claude の文章（Markdown）
   | { kind: 'text'; text: string }
-  // ツールを使った（detail は読んだファイル・検索の語・Canvas の編集の label など）
+  // ツールを使った（detail は読んだファイル・コマンド・検索の語・Canvas の編集の label など）
   | { kind: 'tool'; name: string; detail?: string }
   // ツールを断った
   | { kind: 'denied'; name: string; reason: string }
@@ -51,8 +52,12 @@ export interface StartRequest {
   threadId?: string
 }
 
-// job が変わった。events はその変化で足した出来事（from 番目から）
-export type JobListener = (job: JobSummary, events: JobEvent[], from: number) => void
+// 変化。job は、ジョブが変わった（events はその変化で足した出来事。from 番目から）。thread-deleted は、会話を消した
+export type JobChange =
+  | { type: 'job'; job: JobSummary; events: JobEvent[]; from: number; thread: ThreadSummary }
+  | { type: 'thread-deleted'; threadId: string }
+
+export type JobListener = (change: JobChange) => void
 
 export type RunQuery = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>
 
@@ -64,41 +69,59 @@ export class JobError extends Error {
   }
 }
 
-export const MAX_JOBS = 100
 export const MAX_RUNNING = 2
 export const MAX_PROMPT_LENGTH = 20_000
+export const INTERRUPTED_MESSAGE = 'サーバーが止まったので途切れました'
 
 export interface ClaudeJobsDeps {
   workspace: string
   // canvcode の MCP の URL（http://127.0.0.1:8787/mcp）
   mcpUrl: string
+  store: ClaudeStore
   // 既定は Agent SDK の query（使うときに読み込む）
   run?: RunQuery
+  // 会話を消したときに、Claude Code の session（~/.claude/projects/ の transcript）も消す。既定は Agent SDK の deleteSession
+  deleteSession?: (sessionId: string, dir: string) => Promise<void>
   model?: string
   maxTurns?: number
 }
 
-interface JobState extends Job {
-  sessionId?: string
+interface JobState extends StoredJob {
   abort: AbortController
 }
 
 export class ClaudeJobs {
   private readonly deps: ClaudeJobsDeps
-  private readonly jobs = new Map<string, JobState>()
+  private readonly store: ClaudeStore
+  private readonly running = new Map<string, JobState>()
+  // 動いている query（止めたあと、終わるのを待つため）
+  private readonly executions = new Set<Promise<void>>()
   private readonly listeners = new Set<JobListener>()
 
   constructor(deps: ClaudeJobsDeps) {
     this.deps = deps
+    this.store = deps.store
+    const interrupted = this.store.interruptRunning(INTERRUPTED_MESSAGE)
+    if (interrupted > 0) console.log(`途切れた Claude のジョブを止まったものにしました：${interrupted} 個`)
   }
 
-  // 新しいものから
-  list(): Job[] {
-    return [...this.jobs.values()].reverse().map(publicJob)
+  threads(): ThreadSummary[] {
+    return this.store.threads()
+  }
+
+  thread(threadId: string): { thread: ThreadSummary; jobs: Job[] } | undefined {
+    const thread = this.store.thread(threadId)
+    if (!thread) return undefined
+    return { thread, jobs: this.store.threadJobs(threadId).map((job) => publicJob(this.running.get(job.id) ?? job)) }
+  }
+
+  // 動いているジョブ（出来事も含む）
+  runningJobs(): Job[] {
+    return [...this.running.values()].map(publicJob)
   }
 
   get(id: string): Job | undefined {
-    const job = this.jobs.get(id)
+    const job = this.running.get(id) ?? this.store.job(id)
     return job && publicJob(job)
   }
 
@@ -113,14 +136,12 @@ export class ClaudeJobs {
     if (prompt.length > MAX_PROMPT_LENGTH) throw new JobError(400, `プロンプトが長すぎます（${MAX_PROMPT_LENGTH} 文字まで）`)
     let resume: string | undefined
     if (request.threadId) {
-      const last = this.lastOfThread(request.threadId)
-      if (!last) throw new JobError(404, 'その会話はもうありません（サーバーを再起動すると消えます）')
+      const last = this.store.lastOfThread(request.threadId)
+      if (!last) throw new JobError(404, 'その会話はもうありません')
       if (last.status === 'running') throw new JobError(409, '前の依頼がまだ終わっていません')
       resume = last.sessionId
     }
-    if ([...this.jobs.values()].filter((job) => job.status === 'running').length >= MAX_RUNNING) {
-      throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです`)
-    }
+    if (this.running.size >= MAX_RUNNING) throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです`)
     const id = randomUUID()
     const job: JobState = {
       id,
@@ -134,38 +155,63 @@ export class ClaudeJobs {
       events: [],
       abort: new AbortController(),
     }
-    this.jobs.set(id, job)
-    this.prune()
+    this.store.insertJob(job)
+    this.running.set(id, job)
     this.notify(job, 0)
-    void this.execute(job, resume)
+    const execution = this.execute(job, resume).finally(() => this.executions.delete(execution))
+    this.executions.add(execution)
     return publicJob(job)
   }
 
   cancel(id: string): Job {
-    const job = this.jobs.get(id)
-    if (!job) throw new JobError(404, 'job not found')
-    if (job.status === 'running') job.abort.abort()
-    return publicJob(job)
+    const job = this.running.get(id)
+    if (job) {
+      job.abort.abort()
+      return publicJob(job)
+    }
+    const stored = this.store.job(id)
+    if (!stored) throw new JobError(404, 'job not found')
+    return publicJob(stored)
   }
 
-  // 動いているものを止める（サーバーを止めるとき）
-  dispose(): void {
-    for (const job of this.jobs.values()) if (job.status === 'running') job.abort.abort()
+  // 会話を消す（動いているジョブがあれば断る）。Claude Code の session も消す（消せなくても会話は消す）
+  async deleteThread(threadId: string): Promise<void> {
+    if (!this.store.thread(threadId)) throw new JobError(404, 'その会話はもうありません')
+    if ([...this.running.values()].some((job) => job.threadId === threadId)) throw new JobError(409, '動いている依頼があります。止めてから消してください')
+    const sessions = this.store.deleteThread(threadId)
+    for (const listener of this.listeners) safely(() => listener({ type: 'thread-deleted', threadId }))
+    const remove = this.deps.deleteSession ?? defaultDeleteSession
+    for (const session of sessions) {
+      try {
+        await remove(session, this.deps.workspace)
+      } catch (error) {
+        console.warn(`Claude Code の session ${session} を消せませんでした`, error)
+      }
+    }
+  }
+
+  // 動いているものを止め、終わる（止めたことを書き終える）のを待つ（サーバーを止めるとき）
+  async dispose(): Promise<void> {
+    for (const job of this.running.values()) job.abort.abort()
+    await Promise.all(this.executions)
   }
 
   private async execute(job: JobState, resume: string | undefined): Promise<void> {
     const { workspace } = this.deps
+    const denied = (name: string, reason: string) => this.push(job, { kind: 'denied', name, reason })
     const options: Options = {
       cwd: workspace,
       abortController: job.abort,
       ...(resume ? { resume } : {}),
       tools: CLAUDE_TOOLS,
-      permissionMode: 'default',
+      // 分類のモデルが許すか決める。決められなければ canUseTool に来る
+      permissionMode: 'auto',
       canUseTool: async (name, input) => {
-        const decision = decideTool(name, input, workspace)
-        if (decision.behavior === 'deny') this.push(job, { kind: 'denied', name, reason: decision.message })
+        const decision = askTool(name, input, workspace)
+        if (decision.behavior === 'deny') denied(name, decision.message)
         return decision
       },
+      hooks: { PreToolUse: [{ hooks: [preToolUseHook(workspace, denied)] }] },
       mcpServers: { canvcode: { type: 'http', url: this.deps.mcpUrl, alwaysLoad: true } },
       strictMcpConfig: true,
       // ワークスペースの CLAUDE.md と .claude/ の設定だけを読む（ユーザーの ~/.claude の MCP・許可の設定は使わない）
@@ -193,12 +239,23 @@ export class ClaudeJobs {
   }
 
   private receive(job: JobState, message: SDKMessage): void {
-    if ('session_id' in message && typeof message.session_id === 'string') job.sessionId = message.session_id
+    if ('session_id' in message && typeof message.session_id === 'string' && message.session_id !== job.sessionId) {
+      job.sessionId = message.session_id
+      this.store.setSession(job.id, message.session_id)
+    }
     if (message.type === 'system' && message.subtype === 'init') {
       const canvcode = message.mcp_servers.find((server) => server.name === 'canvcode')
       if (canvcode && canvcode.status !== 'connected') {
         this.push(job, { kind: 'error', message: `CanvCode の MCP につながりませんでした（${canvcode.status}）` })
       }
+      if (message.permissionMode !== 'auto') {
+        this.push(job, { kind: 'error', message: `auto mode が使えないので、Bash は使えません（${message.permissionMode} で動いています）` })
+      }
+      return
+    }
+    // auto mode の判定で断られた
+    if (message.type === 'system' && message.subtype === 'permission_denied') {
+      if (!message.agent_id) this.push(job, { kind: 'denied', name: message.tool_name, reason: message.decision_reason || message.message })
       return
     }
     if (message.type === 'assistant') {
@@ -236,6 +293,7 @@ export class ClaudeJobs {
     const from = job.events.length
     job.events.push(event)
     job.eventCount = job.events.length
+    this.store.appendEvent(job.id, from, event)
     this.notify(job, from)
   }
 
@@ -243,33 +301,24 @@ export class ClaudeJobs {
     if (job.status !== 'running') return
     job.status = status
     job.finishedAt = Date.now()
+    this.store.finishJob(job)
+    this.running.delete(job.id)
     this.notify(job, job.events.length)
   }
 
   private notify(job: JobState, from: number): void {
-    const summary = summaryOf(job)
-    const events = job.events.slice(from)
-    for (const listener of this.listeners) {
-      try {
-        listener(summary, events, from)
-      } catch (error) {
-        console.error('a Claude job listener failed', error)
-      }
-    }
+    const thread = this.store.thread(job.threadId)
+    if (!thread) return
+    const change: JobChange = { type: 'job', job: summaryOf(job), events: job.events.slice(from), from, thread }
+    for (const listener of this.listeners) safely(() => listener(change))
   }
+}
 
-  private lastOfThread(threadId: string): JobState | undefined {
-    let last: JobState | undefined
-    for (const job of this.jobs.values()) if (job.threadId === threadId) last = job
-    return last
-  }
-
-  // 古いものから捨てる（動いているものは残す）
-  private prune(): void {
-    for (const [id, job] of this.jobs) {
-      if (this.jobs.size <= MAX_JOBS) return
-      if (job.status !== 'running') this.jobs.delete(id)
-    }
+function safely(fn: () => void): void {
+  try {
+    fn()
+  } catch (error) {
+    console.error('a Claude job listener failed', error)
   }
 }
 
@@ -278,12 +327,17 @@ async function defaultRun(): Promise<RunQuery> {
   return query
 }
 
-function summaryOf(job: JobState): JobSummary {
+async function defaultDeleteSession(sessionId: string, dir: string): Promise<void> {
+  const { deleteSession } = await import('@anthropic-ai/claude-agent-sdk')
+  await deleteSession(sessionId, { dir })
+}
+
+function summaryOf(job: StoredJob & { abort?: AbortController }): JobSummary {
   const { events: _events, sessionId: _sessionId, abort: _abort, ...summary } = job
   return summary
 }
 
-function publicJob(job: JobState): Job {
+function publicJob(job: StoredJob): Job {
   return { ...summaryOf(job), events: [...job.events] }
 }
 
@@ -295,7 +349,8 @@ export function systemPromptAppend(canvasId: string | undefined): string {
       ? `The user is viewing canvas ${canvasId}. Pass canvas_id: "${canvasId}" to canvas tools unless the user names another canvas.`
       : '',
     'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
-    'There is no shell (Bash). You can read and write files only inside the workspace (the current directory); files there are CanvCode documents.',
+    'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
+    'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; nobody is watching to approve the ones that are not.',
   ]
     .filter(Boolean)
     .join('\n')
@@ -310,6 +365,7 @@ export function toolDetail(name: string, input: Record<string, unknown>, workspa
   }
   if (name === 'Read' || name === 'Write' || name === 'Edit') return path(input.file_path)
   if (name === 'Glob' || name === 'Grep') return str(input.pattern)
+  if (name === 'Bash') return str(input.command)
   if (name === 'WebSearch') return str(input.query)
   if (name === 'WebFetch') return str(input.url)
   if (name.startsWith(CANVCODE_MCP_PREFIX)) return str(input.label) ?? str(input.ref) ?? str(input.id) ?? str(input.query)

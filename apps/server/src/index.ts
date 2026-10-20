@@ -11,6 +11,7 @@ import { AssetStore } from './assets.ts'
 import { handleBackupStatus } from './backupStatus.ts'
 import { handleClaude } from './claude/http.ts'
 import { ClaudeJobs } from './claude/jobs.ts'
+import { ClaudeStore } from './claude/store.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
@@ -102,6 +103,8 @@ const claude =
     : new ClaudeJobs({
         workspace: WORKSPACE,
         mcpUrl: `http://${HOST}:${PORT}${MCP_PATH}`,
+        // 会話は .canvcode/claude.db に残す（再起動しても続けられる）
+        store: new ClaudeStore(DATA_DIR),
         ...(process.env.CANVCODE_CLAUDE_MODEL ? { model: process.env.CANVCODE_CLAUDE_MODEL } : {}),
         ...(Number.isInteger(maxTurns) && maxTurns > 0 ? { maxTurns } : {}),
       })

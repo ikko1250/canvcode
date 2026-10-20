@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { decideTool } from './permissions.ts'
+import { askTool, guardTool } from './permissions.ts'
 
-// 画面から頼んだ Claude Code に許すツール
+// 画面から頼んだ Claude Code の許し方
 
 const dirs: string[] = []
 afterEach(() => {
@@ -20,46 +20,51 @@ function workspace(): string {
   return ws
 }
 
-const behavior = (name: string, input: Record<string, unknown>, ws: string) => decideTool(name, input, ws).behavior
+const guarded = (name: string, input: Record<string, unknown>, ws: string) => guardTool(name, input, ws) !== null
 
-describe('decideTool', () => {
-  it('allows the canvcode MCP tools and web tools', () => {
+describe('guardTool', () => {
+  it('leaves the canvcode MCP, Bash and web tools to auto mode, and refuses other MCP servers', () => {
     const ws = workspace()
-    expect(behavior('mcp__canvcode__edit_canvas', { ops: [] }, ws)).toBe('allow')
-    expect(behavior('WebSearch', { query: 'x' }, ws)).toBe('allow')
-    expect(behavior('WebFetch', { url: 'https://example.com' }, ws)).toBe('allow')
-  })
-
-  it('denies tools that are not listed, and other MCP servers', () => {
-    const ws = workspace()
-    expect(behavior('Bash', { command: 'ls' }, ws)).toBe('deny')
-    expect(behavior('Agent', {}, ws)).toBe('deny')
-    expect(behavior('mcp__other__run', {}, ws)).toBe('deny')
+    expect(guarded('mcp__canvcode__edit_canvas', { ops: [] }, ws)).toBe(false)
+    expect(guarded('Bash', { command: 'rm -rf /' }, ws)).toBe(false)
+    expect(guarded('WebFetch', { url: 'https://example.com' }, ws)).toBe(false)
+    expect(guarded('mcp__other__run', {}, ws)).toBe(true)
   })
 
   it('reads only inside the workspace (the data folder too)', () => {
     const ws = workspace()
-    expect(behavior('Read', { file_path: join(ws, 'notes', 'a.md') }, ws)).toBe('allow')
-    expect(behavior('Read', { file_path: join(ws, '.canvcode', 'assets', 'x.txt') }, ws)).toBe('allow')
-    expect(behavior('Grep', { pattern: 'x' }, ws)).toBe('allow')
-    expect(behavior('Read', { file_path: join(ws, '..', 'outside', 'secret') }, ws)).toBe('deny')
-    expect(behavior('Glob', { pattern: '*', path: '/etc' }, ws)).toBe('deny')
+    expect(guarded('Read', { file_path: join(ws, 'notes', 'a.md') }, ws)).toBe(false)
+    expect(guarded('Read', { file_path: join(ws, '.canvcode', 'assets', 'x.txt') }, ws)).toBe(false)
+    expect(guarded('Grep', { pattern: 'x' }, ws)).toBe(false)
+    expect(guarded('Read', { file_path: join(ws, '..', 'outside', 'secret') }, ws)).toBe(true)
+    expect(guarded('Glob', { pattern: '*', path: '/etc' }, ws)).toBe(true)
   })
 
   it('writes only inside the workspace, and not into .canvcode or .claude', () => {
     const ws = workspace()
-    expect(behavior('Write', { file_path: join(ws, 'notes', 'new', 'b.md'), content: '' }, ws)).toBe('allow')
-    expect(behavior('Edit', { file_path: 'notes/a.md' }, ws)).toBe('allow')
-    expect(behavior('Write', { file_path: join(ws, '.canvcode', 'workspace.db') }, ws)).toBe('deny')
-    expect(behavior('Write', { file_path: join(ws, '.claude', 'settings.json') }, ws)).toBe('deny')
-    expect(behavior('Write', { file_path: join(ws, '..', 'outside', 'x') }, ws)).toBe('deny')
-    expect(behavior('Write', {}, ws)).toBe('deny')
+    expect(guarded('Write', { file_path: join(ws, 'notes', 'new', 'b.md'), content: '' }, ws)).toBe(false)
+    expect(guarded('Edit', { file_path: 'notes/a.md' }, ws)).toBe(false)
+    expect(guarded('Write', { file_path: join(ws, '.canvcode', 'workspace.db') }, ws)).toBe(true)
+    expect(guarded('Write', { file_path: join(ws, '.claude', 'settings.json') }, ws)).toBe(true)
+    expect(guarded('Write', { file_path: join(ws, '..', 'outside', 'x') }, ws)).toBe(true)
+    expect(guarded('Write', {}, ws)).toBe(true)
   })
 
   it('treats a symlink that points outside as outside', () => {
     const ws = workspace()
     symlinkSync(join(ws, '..', 'outside'), join(ws, 'link'))
-    expect(behavior('Write', { file_path: join(ws, 'link', 'x.md') }, ws)).toBe('deny')
-    expect(behavior('Read', { file_path: join(ws, 'link', 'x.md') }, ws)).toBe('deny')
+    expect(guarded('Write', { file_path: join(ws, 'link', 'x.md') }, ws)).toBe(true)
+    expect(guarded('Read', { file_path: join(ws, 'link', 'x.md') }, ws)).toBe(true)
+  })
+})
+
+describe('askTool', () => {
+  it('denies Bash that auto mode could not decide (nobody can approve it), and allows the other listed tools inside the guard', () => {
+    const ws = workspace()
+    expect(askTool('Bash', { command: 'ls' }, ws).behavior).toBe('deny')
+    expect(askTool('Write', { file_path: join(ws, 'a.md') }, ws).behavior).toBe('allow')
+    expect(askTool('Write', { file_path: '/etc/passwd' }, ws).behavior).toBe('deny')
+    expect(askTool('mcp__canvcode__edit_canvas', {}, ws).behavior).toBe('allow')
+    expect(askTool('Agent', {}, ws).behavior).toBe('deny')
   })
 })

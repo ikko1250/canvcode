@@ -3,12 +3,15 @@ import { normalizeRefId } from '@canvcode/core'
 import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
 
 // 画面から Claude Code に頼む API（claude/jobs.ts）。
+// - GET /api/claude/threads：会話の一覧（最後に動いたものから）{ threads }
+// - GET /api/claude/threads/<id>：会話とそのジョブ（出来事も含む）{ thread, jobs }
+// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼があれば 409）
 // - POST /api/claude/jobs { prompt, refId?, canvasId?, threadId? }：頼む（threadId があれば、その会話の続き）。201 { job }
-// - GET /api/claude/jobs：ジョブの一覧（新しいものから。出来事も含む）
 // - GET /api/claude/jobs/<id>：1 つのジョブ
 // - POST /api/claude/jobs/<id>/cancel：止める
-// - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', jobs }、そのあと変わるたびに
-//   { type: 'job', job, events, from }（events はジョブの from 番目からの出来事）
+// - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running }（running は動いているジョブ）、
+//   そのあと変わるたびに { type: 'job', job, events, from, thread }（events はジョブの from 番目からの出来事）か
+//   { type: 'thread-deleted', threadId }
 // jobs がなければ（CANVCODE_CLAUDE=0）、どれも 404 を返す。画面はそれを見て入口を出さない
 
 const PREFIX = '/api/claude'
@@ -27,9 +30,33 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
     streamEvents(req, res, jobs)
     return true
   }
+  if (path === `${PREFIX}/threads`) {
+    if (req.method !== 'GET') return methodNotAllowed(res)
+    sendJson(res, 200, { threads: jobs.threads() })
+    return true
+  }
+  const thread = /^\/api\/claude\/threads\/([0-9a-f-]{36})$/.exec(path)
+  if (thread) {
+    const [, threadId] = thread
+    if (req.method === 'GET') {
+      const found = jobs.thread(threadId)
+      if (found) sendJson(res, 200, found)
+      else sendJson(res, 404, { error: 'thread not found' })
+    } else if (req.method === 'DELETE') {
+      jobs.deleteThread(threadId).then(
+        () => {
+          res.writeHead(204)
+          res.end()
+        },
+        (error: unknown) => sendError(res, error),
+      )
+    } else {
+      methodNotAllowed(res)
+    }
+    return true
+  }
   if (path === `${PREFIX}/jobs`) {
-    if (req.method === 'GET') sendJson(res, 200, { jobs: jobs.list() })
-    else if (req.method === 'POST') void startJob(req, res, jobs)
+    if (req.method === 'POST') void startJob(req, res, jobs)
     else methodNotAllowed(res)
     return true
   }
@@ -95,8 +122,8 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJob
     'x-accel-buffering': 'no',
   })
   const send = (data: unknown) => res.write(`data: ${JSON.stringify(data)}\n\n`)
-  send({ type: 'snapshot', jobs: jobs.list() })
-  const unsubscribe = jobs.subscribe((job, events, from) => send({ type: 'job', job, events, from }))
+  send({ type: 'snapshot', threads: jobs.threads(), running: jobs.runningJobs() })
+  const unsubscribe = jobs.subscribe(send)
   const heartbeat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS)
   heartbeat.unref()
   req.on('close', () => {

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
-import { threadsOf, useClaudeState, type ClaudeClient, type ClaudeJob, type JobEvent } from './claudeClient.ts'
+import { jobsOfThread, useClaudeState, type ClaudeClient, type ClaudeJob, type JobEvent } from './claudeClient.ts'
 
 // 画面から Claude Code に頼むパネル（キャンバスの右に並べる）。
-// - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新しい会話」で切る）
+// - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新規」で切る）。会話はサーバーの SQLite に残り、
+//   上の一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
 // - Canvas の編集は、ほかの AI の編集と同じく画面の下に「AI：…［元に戻す］」が出る（AgentToasts）
 
@@ -12,6 +13,8 @@ export interface ClaudeAttachment {
   label: string
   refId: string | null
 }
+
+const RECENT_MS = 30 * 60_000
 
 interface Props {
   client: ClaudeClient
@@ -26,29 +29,41 @@ interface Props {
 
 export function ClaudePanel(props: Props) {
   const { client, canvasId, attachment, focusRequest, onAttachSelection, onClearAttachment, onClose } = props
-  const { jobs } = useClaudeState(client)
-  const threads = useMemo(() => threadsOf(jobs.values()), [jobs])
-  // 見ている会話。null は新しい会話
-  const [threadId, setThreadId] = useState<string | null>(() => threads[0]?.threadId ?? null)
+  const state = useClaudeState(client)
+  const { threads } = state
+  // 選んだ会話。null は新しい会話
+  const [chosenId, setThreadId] = useState<string | null>(() => {
+    const latest = client.state.threads[0]
+    return latest && (latest.running || Date.now() - latest.updatedAt < RECENT_MS) ? latest.threadId : null
+  })
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 「削除」を 1 回押した会話（もう 1 回押すと消す）
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => client.connect(), [client])
   useEffect(() => inputRef.current?.focus({ preventScroll: true }), [focusRequest])
 
-  const thread = threads.find((t) => t.threadId === threadId)
-  const running = thread?.jobs.find((job) => job.status === 'running')
-  const eventTotal = thread?.jobs.reduce((n, job) => n + job.events.length, 0) ?? 0
+  // 見ている会話。選んだ会話が消されていれば、新しい会話
+  const thread = threads.find((t) => t.threadId === chosenId)
+  const threadId = thread ? thread.threadId : null
+  // 見ている会話の中身を読む（つなぎ直したあとも読み直す）
+  useEffect(() => {
+    if (threadId && !state.loaded.has(threadId)) void client.loadThread(threadId)
+  }, [client, threadId, state.loaded])
+  const jobs = useMemo(() => (threadId ? jobsOfThread(state, threadId) : []), [state, threadId])
+  const running = jobs.find((job) => job.status === 'running')
+  const eventTotal = jobs.reduce((n, job) => n + job.events.length, 0)
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
   const stick = useRef(true)
   useEffect(() => {
     const log = logRef.current
     if (log && stick.current) log.scrollTop = log.scrollHeight
-  }, [eventTotal, thread?.jobs.length, threadId])
+  }, [eventTotal, jobs.length, threadId])
 
   const send = () => {
     const text = prompt.trim()
@@ -65,6 +80,19 @@ export function ClaudePanel(props: Props) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setSending(false))
+  }
+
+  const remove = () => {
+    if (!thread) return
+    if (confirmDelete !== thread.threadId) {
+      setConfirmDelete(thread.threadId)
+      return
+    }
+    setConfirmDelete(null)
+    client
+      .deleteThread(thread.threadId)
+      .then(() => setThreadId(null))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -85,19 +113,36 @@ export function ClaudePanel(props: Props) {
         <select
           className="claude-thread-select"
           value={threadId ?? ''}
-          onChange={(e) => setThreadId(e.target.value || null)}
-          title="会話を選ぶ（サーバーを再起動すると消えます）"
+          onChange={(e) => {
+            setThreadId(e.target.value || null)
+            setConfirmDelete(null)
+            stick.current = true
+          }}
+          title="前の会話に戻る"
         >
           <option value="">新しい会話</option>
           {threads.map((t) => (
             <option key={t.threadId} value={t.threadId}>
-              {truncate(t.jobs[0].prompt, 28)}
+              {t.running ? '● ' : ''}
+              {truncate(t.title, 28)}
             </option>
           ))}
         </select>
         <button type="button" onClick={() => setThreadId(null)} title="新しい会話を始める">
           新規
         </button>
+        {thread && (
+          <button
+            type="button"
+            className={confirmDelete === thread.threadId ? 'claude-danger' : undefined}
+            disabled={thread.running}
+            onClick={remove}
+            onBlur={() => setConfirmDelete(null)}
+            title={thread.running ? '動いている依頼を止めてから消せます' : 'この会話を消す（もう一度押すと消します）'}
+          >
+            {confirmDelete === thread.threadId ? '消す' : '削除'}
+          </button>
+        )}
         <button type="button" className="claude-close" onClick={onClose} title="閉じる（Esc）" aria-label="閉じる">
           ×
         </button>
@@ -114,10 +159,12 @@ export function ClaudePanel(props: Props) {
         {!thread && (
           <p className="claude-hint">
             キャンバスを選んで右クリックの「Claude に頼む…」（Ctrl+Alt+Enter）で、選んだ場所を添えて頼めます。
-            Claude は CanvCode の MCP で Canvas と文書を読み書きします（シェルは使えません）。
+            Claude は CanvCode の MCP で Canvas と文書を読み書きします。コマンド（Bash）は、Claude Code の auto mode
+            が危なくないと判断したものだけを動かします。
           </p>
         )}
-        {thread?.jobs.map((job) => <JobView key={job.id} job={job} onCancel={() => void client.cancel(job.id)} />)}
+        {thread && jobs.length === 0 && <p className="claude-hint">読み込んでいます…</p>}
+        {jobs.map((job) => <JobView key={job.id} job={job} onCancel={() => void client.cancel(job.id)} />)}
       </div>
 
       <div className="claude-compose">
