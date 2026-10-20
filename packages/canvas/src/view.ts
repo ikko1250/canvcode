@@ -74,7 +74,7 @@ import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
 import { isMacPlatform, linkHintText } from './linkHint.ts'
 import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
 import { cropEditingTarget, startCropEditing, stopCropEditing } from './cropHandles.ts'
-import { clearCanvas, drawNodes, drawOverlay, drawScene, visibleIds, type Viewport } from './renderer.ts'
+import { clearCanvas, drawNodes, drawOverlay, drawScene, drawSceneRegion, visibleIds, type Viewport } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
 import { ImageCache, MissingImageRecorder } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
@@ -153,11 +153,15 @@ const DUPLICATE_OFFSET_PX = 16
 // 押してから離すまでに、これより動かさなければクリックとみなす（CSS ピクセル）
 const CLICK_SLOP_PX = 3
 // タッチの 1 本目の指は、この間（ミリ秒）だけツールに渡さずに待つ。そのうちに 2 本目が触れたら、2 本指の操作にする
-// （渡してしまうと、指を置いたところのノードが選ばれるので）。その前に、この距離（CSS ピクセル）より動いたか離したら、すぐ渡す
-const TOUCH_HOLD_MS = 150
+// （渡してしまうと、指を置いたところのノードが選ばれるので）。その前に、この距離（CSS ピクセル）より動いたか離したら、すぐ渡す。
+// 待つのは、指を置いたまま動かさないときだけ（叩く・ドラッグは待たない）。2 本の指はふつう数十 ms のうちに触れる
+const TOUCH_HOLD_MS = 100
 const TOUCH_SLOP_PX = 6
 // 2 本指で、中点がこれだけ動いたらパン、指の間がこれだけ変わったらズームに決める（決めたら、指を離すまでもう一方はしない）
 const PINCH_LOCK_PX = 12
+// パンでシーンをずらして描いたあと、これだけ（ミリ秒）カメラが止まっていたら、シーン全体を描き直す
+// （ずらしている間は、見えてきた端のノードしか画像を頼まないので、作りかけの画像を頼み直す）
+const SCENE_SETTLE_MS = 200
 
 interface PinchFrame {
   center: Vec
@@ -208,6 +212,11 @@ export class CanvasView {
   private dpr = 1
   private readonly dirty = new Set<Layer>(['grid', 'scene', 'overlay'])
   private frameHandle: number | null = null
+  // シーンの Canvas が今描いているカメラ（画素の格子に合わせたもの）。中身が変わったら null にして、全体を描き直す。
+  // 中身が変わらず、倍率も同じまま動いた（パン）なら、前の絵をずらして、見えてきた端だけを描く（大量のノードのため）
+  private sceneCamera: Camera | null = null
+  private sceneBuffer: HTMLCanvasElement | null = null
+  private sceneSettleTimer: ReturnType<typeof setTimeout> | null = null
   private lifted = new Set<string>()
   private tools!: Map<ToolId, Tool>
   private tool!: Tool
@@ -388,6 +397,9 @@ export class CanvasView {
         }),
       )
     }
+    // 画面を作る前に（エディタが索引を作るときに頼んだ）本文を読み込み終えていると、その知らせは届いていない。
+    // 遅い端末（iPad など）ではこうなりやすく、高さを中身に合わせるカードが、仮の高さのままになっていた
+    this.editor.refreshAllReferences()
     // フォント（Web フォント）を読み込み終えたら、測った文字の幅を捨ててレイアウトし直す（MAI-75）
     const fonts = typeof document !== 'undefined' ? document.fonts : undefined
     if (fonts && typeof fonts.addEventListener === 'function') {
@@ -454,6 +466,7 @@ export class CanvasView {
 
   dispose(): void {
     this.dropPendingTouch()
+    if (this.sceneSettleTimer !== null) clearTimeout(this.sceneSettleTimer)
     this.textEditor.finish()
     this.documentEditor?.finish()
     this.tool.onExit?.()
@@ -505,6 +518,8 @@ export class CanvasView {
     this.attachEditor()
     // 離れている間にフォントを読み込んでいたら、この Canvas のノードの形も測り直す（MAI-75）
     this.refreshTextLayout(editor, false)
+    // 離れている間に本文を読み込んだ・変わったカードも、高さを測り直す（知らせは、見ている Canvas にしか届かないので）
+    editor.refreshAllReferences()
     this.updateCursor()
     this.invalidate('all')
   }
@@ -1442,6 +1457,14 @@ export class CanvasView {
     } else {
       this.dirty.add(layer)
     }
+    // シーンの中身が変わったので、ずらして使えない
+    if (layer === 'all' || layer === 'scene') this.sceneCamera = null
+    this.requestFrame()
+  }
+
+  // カメラだけが動いた：全部の層を描き直すが、シーンは（倍率が同じなら）前の絵をずらして使える
+  private invalidateForCamera(): void {
+    this.dirty.add('grid').add('scene').add('overlay')
     this.requestFrame()
   }
 
@@ -1465,11 +1488,7 @@ export class CanvasView {
       clearCanvas(this.gridCtx)
       drawGrid(this.gridCtx, view.camera, view.width, view.height, view.dpr, this.options.gridColors)
     }
-    if (this.dirty.has('scene')) {
-      this.images.beginFrame()
-      drawn += drawScene(this.sceneCtx, this.editor, view, this.lifted)
-      this.images.endFrame()
-    }
+    if (this.dirty.has('scene')) drawn += this.drawSceneLayer(view)
     if (this.dirty.has('overlay')) {
       const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides, gapGuides, hoveredSpacing, spacingDrag } =
         this.editor.session.get()
@@ -1490,6 +1509,70 @@ export class CanvasView {
     if (this.dirty.has('scene')) this.lastDrawnNodes = drawn
     this.dirty.clear()
     this.stats.record(now, performance.now() - start, this.lastDrawnNodes)
+  }
+
+  // シーンを描く。カメラは画素の格子に合わせる（ずらす量を整数の画素にするため。ずれは 0.5 画素まで）
+  private drawSceneLayer(view: Viewport): number {
+    const s = view.camera.zoom * view.dpr
+    const camera = { x: Math.round(view.camera.x * s) / s, y: Math.round(view.camera.y * s) / s, zoom: view.camera.zoom }
+    const sceneView = { ...view, camera }
+    const previous = this.sceneCamera
+    this.sceneCamera = camera
+    const canvas = this.sceneCanvas
+    if (previous && previous.zoom === camera.zoom) {
+      const dx = Math.round((previous.x - camera.x) * s)
+      const dy = Math.round((previous.y - camera.y) * s)
+      if (dx === 0 && dy === 0) return 0
+      if (Math.abs(dx) < canvas.width && Math.abs(dy) < canvas.height) {
+        this.shiftScene(dx, dy)
+        // 見えてきた端（左右の帯と上下の帯）だけを描く。頼んだ画像は、今のフレームのものとして扱う（beginFrame しない）
+        const rects = []
+        if (dx > 0) rects.push({ x: 0, y: 0, w: dx, h: canvas.height })
+        if (dx < 0) rects.push({ x: canvas.width + dx, y: 0, w: -dx, h: canvas.height })
+        if (dy > 0) rects.push({ x: 0, y: 0, w: canvas.width, h: dy })
+        if (dy < 0) rects.push({ x: 0, y: canvas.height + dy, w: canvas.width, h: -dy })
+        const drawn = drawSceneRegion(this.sceneCtx, this.editor, sceneView, this.lifted, rects)
+        this.images.endFrame()
+        this.scheduleSceneSettle()
+        return drawn
+      }
+    }
+    if (this.sceneSettleTimer !== null) clearTimeout(this.sceneSettleTimer)
+    this.sceneSettleTimer = null
+    this.images.beginFrame()
+    const drawn = drawScene(this.sceneCtx, this.editor, sceneView, this.lifted)
+    this.images.endFrame()
+    return drawn
+  }
+
+  // シーンの絵を (dx, dy) 画素ずらす。同じ Canvas の上では写せないので、控えの Canvas を通す
+  private shiftScene(dx: number, dy: number): void {
+    const canvas = this.sceneCanvas
+    if (!this.sceneBuffer) this.sceneBuffer = document.createElement('canvas')
+    const buffer = this.sceneBuffer
+    if (buffer.width !== canvas.width || buffer.height !== canvas.height) {
+      buffer.width = canvas.width
+      buffer.height = canvas.height
+    }
+    const bufferCtx = buffer.getContext('2d')
+    if (!bufferCtx) return
+    bufferCtx.clearRect(0, 0, buffer.width, buffer.height)
+    bufferCtx.drawImage(canvas, 0, 0)
+    const ctx = this.sceneCtx
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.globalAlpha = 1
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(buffer, dx, dy)
+    ctx.restore()
+  }
+
+  private scheduleSceneSettle(): void {
+    if (this.sceneSettleTimer !== null) clearTimeout(this.sceneSettleTimer)
+    this.sceneSettleTimer = setTimeout(() => {
+      this.sceneSettleTimer = null
+      this.invalidate('scene')
+    }, SCENE_SETTLE_MS)
   }
 
   private viewport(): Viewport {
@@ -1546,7 +1629,7 @@ export class CanvasView {
     if (state.camera !== prev.camera) {
       // カメラが動いている間は、画像を作り直さない（MAI-22）
       this.images.notifyMotion()
-      this.invalidate('all')
+      this.invalidateForCamera()
       this.textEditor.layout()
       this.documentEditor?.layout()
     }

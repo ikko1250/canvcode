@@ -116,6 +116,8 @@ export function drawNodes(
   ids: string[],
   view: Viewport,
   skip?: ReadonlySet<string>,
+  // 影などの効果を省くか。省かなければ ids の数で決める（画面の一部だけを描くときは、画面全体の数で決めて渡す）
+  noEffects = ids.length > EFFECTS_NODE_LIMIT,
 ): number {
   const info: RenderInfo = {
     zoom: view.camera.zoom,
@@ -130,7 +132,7 @@ export function drawNodes(
     // スライドの番号は Editor が計算する（スライド v2）
     slides: editor.slides,
     print: view.print,
-    noEffects: ids.length > EFFECTS_NODE_LIMIT,
+    noEffects,
   }
   let drawn = 0
   let lastRoughColor = ''
@@ -215,6 +217,37 @@ export function drawScene(
 ): number {
   clearCanvas(ctx)
   return drawNodes(ctx, editor, visibleIds(editor, view), view, hidden)
+}
+
+// シーンのうち、rects（描き先の画素の矩形）の中だけを描き直す（パンで新しく見えてきた端。view.ts の frame）。
+// 矩形の外は触らない。影などの効果を省くかは、画面全体に見えているノードの数で決める（描き直した部分だけ違って見えないように）
+export function drawSceneRegion(
+  ctx: CanvasRenderingContext2D,
+  editor: Editor,
+  view: Viewport,
+  hidden: ReadonlySet<string>,
+  rects: readonly Box[],
+): number {
+  if (rects.length === 0) return 0
+  const s = view.camera.zoom * view.dpr
+  const margin = CULL_MARGIN_PX / view.camera.zoom
+  const ids = new Set<string>()
+  for (const r of rects) {
+    const world = { x: view.camera.x + r.x / s, y: view.camera.y + r.y / s, w: r.w / s, h: r.h / s }
+    for (const id of editor.index.search(expandBox(world, margin))) ids.add(id)
+  }
+  const visibleCount = editor.index.search(expandBox(viewportBounds(view.camera, view.width, view.height), margin)).length
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.beginPath()
+  for (const r of rects) {
+    ctx.rect(r.x, r.y, r.w, r.h)
+    ctx.clearRect(r.x, r.y, r.w, r.h)
+  }
+  ctx.clip()
+  const drawn = drawNodes(ctx, editor, editor.index.sortByOrder([...ids]), view, hidden, visibleCount > EFFECTS_NODE_LIMIT)
+  ctx.restore()
+  return drawn
 }
 
 export interface OverlayState {

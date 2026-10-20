@@ -523,6 +523,16 @@ export class Editor {
   }
 
   // documentId を参照しているノード（Portal やカード）の形を計算し直す。変わったものの id を返す（MAI-30）
+  // 参照先（File）を持つノードの形を、すべて測り直す。本文を読み込めたという知らせを受け取れなかったとき
+  // （画面を作る前に読み込み終えた・ほかの Canvas を見ていた間に変わった）の代わり
+  refreshAllReferences(): void {
+    const ids = [...this.index.nodeIds()].filter((id) => {
+      const node = this.getNode(id)
+      return node !== undefined && this.workspace.referenceOf(node) !== null
+    })
+    if (ids.length > 0) this.index.refresh(ids)
+  }
+
   refreshReferences(documentId: string): string[] {
     const ids: string[] = []
     for (const id of this.index.nodeIds()) {
