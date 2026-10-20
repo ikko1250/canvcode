@@ -5,7 +5,7 @@ import { hitLink, measureCardHeight, measureLinks, type LinkRegion } from './lay
 import { measureLinksInImage } from './linkMap.ts'
 import { drawHtmlTile, loadHtmlImage, rasterizeHtml, type HtmlImage } from './rasterize.ts'
 import { renderMarkdown } from './renderMarkdown.ts'
-import { fullImageLevel, tilesInRect, visibleLocalRect } from './tiles.ts'
+import { fullImageLevel, fullImageScale, tilesInRect, visibleLocalRect } from './tiles.ts'
 
 // Markdown カード（MAI-7 の `markdown-card`、MAI-9、MAI-30）。
 // - 本文は File（ワークスペースの .md ファイル）にあり、カードは fileId で参照する。本文のコピーは持たない
@@ -163,12 +163,13 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
       const version = `${w}x${h}:${hashString(html)}`
       if (drawnHtml.get(node.id)?.version !== version) remember(drawnHtml, node.id, { version, html, w, h }, DRAWN_HTML_LIMIT)
       const level = pickImageLevel(info.zoom * info.devicePixelRatio)
-      // 全体の画像は、1 枚で作っても解像度が抑えられない段階までにする。それより高い解像度は、タイルで重ねる
+      // 全体の画像は、1 枚で作っても解像度が抑えられず、作る時間が長すぎない段階までにする。それより高い解像度は、タイルで重ねる
       const fullLevel = Math.min(level, fullImageLevel(w, h))
       // キーはノードごと。中身や大きさが変わっても、作り直すまでは古い画像を引き伸ばして描く
       const image = info.images?.get(node.id, version, fullLevel, async (): Promise<RasterImage> => {
         const css = await options.embedCss(html)
-        const result = await rasterizeHtml({ html, css: css + MARKDOWN_CARD_CSS, width: w, height: h, scale: fullLevel, output: imageOutput })
+        const scale = fullImageScale(w, h, fullLevel)
+        const result = await rasterizeHtml({ html, css: css + MARKDOWN_CARD_CSS, width: w, height: h, scale, output: imageOutput })
         // Canvas のままより ImageBitmap のほうが、描くときに速い（特に Chromium）
         const bitmap = result.canvas instanceof ImageBitmap ? result.canvas : await createImageBitmap(result.canvas)
         // 大きすぎて解像度を抑えた場合も、頼んだ段階として記録する（そうしないと、同じ段階を頼み続けてしまう）

@@ -1,19 +1,40 @@
 import { describe, expect, it } from 'vitest'
-import { fullImageLevel, tilesInRect, visibleLocalRect } from './tiles.ts'
+import { fullImageLevel, fullImageScale, tilesInRect, visibleLocalRect } from './tiles.ts'
 
 describe('fullImageLevel', () => {
-  it('短いカードは、最も高い段階まで 1 枚で作れる', () => {
-    expect(fullImageLevel(480, 600)).toBe(4)
+  it('小さいカードは、最も高い段階まで 1 枚で作れる', () => {
+    expect(fullImageLevel(200, 300)).toBe(4)
   })
 
-  it('長いカードは、1 辺の上限に収まる段階までにする', () => {
-    // 8192 / 13858 = 0.59 なので、0.5 までは抑えられない
-    expect(fullImageLevel(907, 13858)).toBe(0.5)
-    expect(fullImageLevel(907, 4000)).toBe(2)
+  it('画素数が上限（150 万）に収まる段階までにする', () => {
+    // 480 × 600 は、2 倍で 115 万画素、4 倍で 461 万画素
+    expect(fullImageLevel(480, 600)).toBe(2)
+    expect(fullImageLevel(907, 4000)).toBe(0.5)
   })
 
-  it('どの段階でも抑えられるなら、最も低い段階', () => {
+  it('1 辺の上限にも収める', () => {
+    // 8192 / 13858 = 0.59 なので、画素数の上限がなければ 0.5 まで
+    expect(fullImageLevel(907, 13858, Infinity)).toBe(0.5)
+    expect(fullImageLevel(907, 4000, Infinity)).toBe(2)
+  })
+
+  it('どの段階でも収まらないなら、最も低い段階', () => {
     expect(fullImageLevel(900, 100000)).toBe(0.25)
+    expect(fullImageLevel(907, 13858)).toBe(0.25)
+  })
+})
+
+describe('fullImageScale', () => {
+  it('収まる段階なら、段階のまま', () => {
+    expect(fullImageScale(480, 600, 2)).toBe(2)
+  })
+
+  it('最も低い段階でも収まらない長いカードは、画素数を上限に収める', () => {
+    // 839 × 14010 は 0.25 倍で 73 万画素なので収まる。900 × 100000 は 0.25 倍でも 563 万画素
+    expect(fullImageScale(839, 14010, 0.25)).toBe(0.25)
+    const scale = fullImageScale(900, 100000, 0.25)
+    expect(scale).toBeLessThan(0.25)
+    expect(900 * 100000 * scale * scale).toBeCloseTo(1_500_000, -3)
   })
 })
 

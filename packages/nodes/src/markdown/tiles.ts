@@ -20,11 +20,25 @@ export interface Tile {
   h: number
 }
 
-// カード全体を 1 枚の画像にしても、解像度が抑えられない最も高い段階。どの段階でも抑えられるなら最も低い段階
-export function fullImageLevel(width: number, height: number): number {
+// カード全体の 1 枚の画像の画素数の上限。全体の画像を作る時間は画素数にほぼ比例し、その間はメインスレッドが止まる
+// （iPad の Safari で、839×14010 の 0.5 倍（290 万画素）に 364ms、ふつうのカードでも 100ms 近く）。
+// それより高い解像度は、タイルで重ねる（タイルは 1 枚 1〜数 ms で済む）
+export const FULL_IMAGE_MAX_PIXELS = 1_500_000
+
+// カード全体を 1 枚の画像にしても、解像度が抑えられず、画素数も FULL_IMAGE_MAX_PIXELS に収まる最も高い段階。
+// どの段階でも収まらないなら最も低い段階（実際の解像度は fullImageScale で下げる）
+export function fullImageLevel(width: number, height: number, maxPixels = FULL_IMAGE_MAX_PIXELS): number {
   let best: number = IMAGE_LEVELS[0]
-  for (const level of IMAGE_LEVELS) if (clampScale(width, height, level) >= level) best = level
+  for (const level of IMAGE_LEVELS) {
+    if (clampScale(width, height, level) >= level && width * height * level * level <= maxPixels) best = level
+  }
   return best
+}
+
+// 段階 level で全体の画像を作るときの、実際の解像度の倍率（画素数を FULL_IMAGE_MAX_PIXELS に収める）。
+// 最も低い段階でも収まらない長いカードは、段階より粗くする（下に敷くだけで、見えている部分はタイルで描く）
+export function fullImageScale(width: number, height: number, level: number, maxPixels = FULL_IMAGE_MAX_PIXELS): number {
+  return Math.min(level, Math.sqrt(maxPixels / (width * height)))
 }
 
 // rect（カードのローカル座標）にかかるタイル。rect の中心に近いものから並べる（近いものから作る）

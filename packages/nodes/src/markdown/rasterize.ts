@@ -51,6 +51,21 @@ export function clampScale(width: number, height: number, scale: number): number
 // どの方法で画像を作れたかの回数（MAI-22 の比較用）
 export const rasterizeCounters = { bitmap: 0, canvas: 0, bitmapFallback: 0 }
 
+// 直近に作った画像の大きさと時間の内訳（端末での性能の記録に使う。新しいものから RASTERIZE_LOG_LIMIT 件）
+export interface RasterizeLogEntry extends RasterizeTimings {
+  kind: 'full' | 'tile-source' | 'tile'
+  width: number
+  height: number
+  scale: number
+  svgBytes: number
+}
+export const rasterizeLog: RasterizeLogEntry[] = []
+const RASTERIZE_LOG_LIMIT = 64
+function logRasterize(entry: RasterizeLogEntry): void {
+  rasterizeLog.unshift(entry)
+  if (rasterizeLog.length > RASTERIZE_LOG_LIMIT) rasterizeLog.length = RASTERIZE_LOG_LIMIT
+}
+
 // Markdown の中の画像（src → data URL）。Map の順番は「最近使った順」で、MAX_INLINE_IMAGES を超えたら古いものから捨てる（MAI-66）
 const imageCache = new Map<string, Promise<string | null>>()
 // 読み終えた data URL の長さ（メモリーのベンチマーク用。MAI-67）
@@ -161,16 +176,22 @@ async function prepareBody(html: string): Promise<Element> {
   return container
 }
 
-// foreignObject に HTML を入れた SVG。中身は width × height（CSS ピクセル）、画像の大きさは pixelW × pixelH
+// foreignObject に HTML を入れた SVG。中身は width × height（CSS ピクセル）、画像の大きさは pixelW × pixelH。
+// 拡大は viewBox ではなく、中身の CSS の transform で行う。WebKit（Safari）は、foreignObject の中の層を作る要素
+// （position: relative・isolation など。KaTeX の数式も使う）には viewBox の拡大を効かせず、倍率 2 なら半分の大きさで描くため、
+// ズームすると本文の文字だけが小さくなった。transform なら、Chromium・Firefox でも同じ画素になる
 function svgOf(container: Element, css: string, width: number, height: number, pixelW: number, pixelH: number): string {
   // XMLSerializer は、HTML の要素を XHTML の名前空間付きで書き出す
   const serializer = new XMLSerializer()
   const body = [...container.childNodes].map((node) => serializer.serializeToString(node)).join('')
   const styleText = (css + RASTER_SUBSTITUTE_CSS).replaceAll(']]>', ']]]]><![CDATA[>')
+  const sx = pixelW / width
+  const sy = pixelH / height
+  const transform = sx === 1 && sy === 1 ? '' : `;transform:scale(${sx},${sy});transform-origin:0 0`
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelW}" height="${pixelH}" viewBox="0 0 ${width} ${height}">` +
-    `<foreignObject x="0" y="0" width="${width}" height="${height}">` +
-    `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelW}" height="${pixelH}" viewBox="0 0 ${pixelW} ${pixelH}">` +
+    `<foreignObject x="0" y="0" width="${pixelW}" height="${pixelH}">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px${transform}">` +
     `<style><![CDATA[${styleText}]]></style>${body}</div>` +
     `</foreignObject></svg>`
   )
@@ -240,20 +261,16 @@ export async function rasterizeHtml(options: RasterizeOptions): Promise<Rasteriz
     rasterizeCounters.canvas++
   }
   const end = performance.now()
-
-  return {
-    canvas: output,
-    scale,
-    svgBytes: svg.length,
-    tainted,
-    timings: {
-      inlineImagesMs: afterInline - start,
-      serializeMs: afterSerialize - afterInline,
-      decodeMs: afterDecode - afterSerialize,
-      drawMs: end - afterDecode,
-      totalMs: end - start,
-    },
+  const timings = {
+    inlineImagesMs: afterInline - start,
+    serializeMs: afterSerialize - afterInline,
+    decodeMs: afterDecode - afterSerialize,
+    drawMs: end - afterDecode,
+    totalMs: end - start,
   }
+  logRasterize({ kind: 'full', width, height, scale, svgBytes: svg.length, ...timings })
+
+  return { canvas: output, scale, svgBytes: svg.length, tainted, timings }
 }
 
 // ---- 長いカードのタイル（tiles.ts） ----
@@ -269,10 +286,20 @@ export interface HtmlImage {
 
 // HTML を SVG の画像として読み込む（等倍の大きさ）
 export async function loadHtmlImage(options: { html: string; css: string; width: number; height: number }): Promise<HtmlImage> {
+  const start = performance.now()
   const { width, height } = options
-  const svg = svgOf(await prepareBody(options.html), options.css, width, height, width, height)
+  const body = await prepareBody(options.html)
+  const afterInline = performance.now()
+  const svg = svgOf(body, options.css, width, height, width, height)
+  const afterSerialize = performance.now()
   // カード全体の画像（rasterizeHtml の既定）と同じく data: URL で読む（blob: だと Canvas を汚染するブラウザがある）
-  return { image: await loadImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`), width, height }
+  const image = await loadImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`)
+  const end = performance.now()
+  logRasterize({
+    kind: 'tile-source', width, height, scale: 1, svgBytes: svg.length,
+    inlineImagesMs: afterInline - start, serializeMs: afterSerialize - afterInline, decodeMs: end - afterSerialize, drawMs: 0, totalMs: end - start,
+  })
+  return { image, width, height }
 }
 
 // 読み込んだ HTML の画像のうち、rect（CSS ピクセル）を scale 倍の解像度で描いた Canvas
@@ -282,6 +309,9 @@ export function drawHtmlTile(source: HtmlImage, rect: { x: number; y: number; w:
   canvas.height = Math.max(1, Math.round(rect.h * scale))
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas2D is not available')
+  const start = performance.now()
   ctx.drawImage(source.image, rect.x, rect.y, rect.w, rect.h, 0, 0, canvas.width, canvas.height)
+  const drawMs = performance.now() - start
+  logRasterize({ kind: 'tile', width: rect.w, height: rect.h, scale, svgBytes: 0, inlineImagesMs: 0, serializeMs: 0, decodeMs: 0, drawMs, totalMs: drawMs })
   return canvas
 }
