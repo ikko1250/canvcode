@@ -1,98 +1,20 @@
-import type { PdfDocument, PdfService, PdfTextItem } from '@canvcode/canvas'
-// 古いブラウザ向けの版（legacy）を使う。ふつうの版は新しい機能（Iterator など）を前提にしていて、
-// iPad の Safari 17 では読み込んだだけで止まり、画面が白紙になった。legacy は足りない機能を補ってから動く
-import { GlobalWorkerOptions, Util, getDocument, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
-import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+import type { PdfService } from '@canvcode/canvas'
 
-// PDF.js（MAI-5、MAI-32）。解析は Web Worker（pdf.worker）で行い、ページを描くのはメインスレッドの Canvas。
-// 描く回数は画像キャッシュが抑える（カメラが止まってから、画面に見えるページを 1 枚ずつ）。
-// Vite の機能（?url）で Worker を読み込むので、packages/canvas ではなくここに置いている。
-GlobalWorkerOptions.workerSrc = workerUrl
-
-// フォントを埋め込んでいない PDF（日本語の CID フォントなど）を読むための CMap と標準フォント、
-// スキャンした PDF の画像（CCITT / JBIG2 / JPEG2000）のデコーダ（wasm。ないと画像が捨てられ白紙になる）。
-// vite.config.ts が /pdfjs/ から配る。字の形は OS のフォントで描く
-const PDFJS_DATA = `${import.meta.env.BASE_URL}pdfjs/`
-const DATA_OPTIONS = {
-  cMapUrl: `${PDFJS_DATA}cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS_DATA}standard_fonts/`,
-  wasmUrl: `${PDFJS_DATA}wasm/`,
-}
-
-class PdfJsDocument implements PdfDocument {
-  private readonly doc: PDFDocumentProxy
-  private readonly texts = new Map<number, Promise<PdfTextItem[]>>()
-
-  constructor(doc: PDFDocumentProxy) {
-    this.doc = doc
-  }
-
-  get numPages(): number {
-    return this.doc.numPages
-  }
-
-  async pageSize(pageIndex: number): Promise<{ width: number; height: number }> {
-    const viewport = (await this.doc.getPage(pageIndex + 1)).getViewport({ scale: 1 })
-    return { width: viewport.width, height: viewport.height }
-  }
-
-  async render(pageIndex: number, scale: number): Promise<ImageBitmap> {
-    const page = await this.doc.getPage(pageIndex + 1)
-    const viewport = page.getViewport({ scale })
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.ceil(viewport.width))
-    canvas.height = Math.max(1, Math.ceil(viewport.height))
-    await page.render({ canvas, viewport }).promise
-    const bitmap = await createImageBitmap(canvas)
-    // 描き終えたら、ページが使っていたメモリを返す
-    page.cleanup()
-    return bitmap
-  }
-
-  // 閉じる。PDF.js は開くたびに Worker を 1 つ作るので、それも止める（MAI-66）
-  async destroy(): Promise<void> {
-    this.texts.clear()
-    await this.doc.loadingTask.destroy()
-  }
-
-  // ページの文字の断片（引用に使う。MAI-33）。ページごとに一度だけ読む
-  textItems(pageIndex: number): Promise<PdfTextItem[]> {
-    let pending = this.texts.get(pageIndex)
-    if (!pending) {
-      pending = this.readText(pageIndex)
-      pending.catch(() => this.texts.delete(pageIndex))
-      this.texts.set(pageIndex, pending)
-    }
-    return pending
-  }
-
-  private async readText(pageIndex: number): Promise<PdfTextItem[]> {
-    const page = await this.doc.getPage(pageIndex + 1)
-    // 大きさ 1 の viewport で、PDF の座標（左下が原点）を、ページの左上が原点のポイントに直す
-    const viewport = page.getViewport({ scale: 1 })
-    const content = await page.getTextContent()
-    const items: PdfTextItem[] = []
-    for (const item of content.items) {
-      if (!('str' in item)) continue
-      // 行の終わり。文字のない断片で知らせることが多いので、直前の断片に付ける
-      if (item.hasEOL && !item.str) {
-        const last = items.at(-1)
-        if (last) last.eol = true
-        continue
-      }
-      if (!item.str) continue
-      const m = Util.transform(viewport.transform, item.transform)
-      const size = Math.hypot(m[2], m[3])
-      if (size <= 0) continue
-      // m[5] は文字の並ぶ線（ベースライン）。上端はそこから字の高さの 8 割ほど上
-      items.push({ text: item.str, x: m[4], y: m[5] - size * 0.85, w: item.width * viewport.scale, h: size, ...(item.hasEOL ? { eol: true } : {}) })
-    }
-    return items
-  }
-}
+// PDF を開く（MAI-5、MAI-32）。PDF.js は大きいので、最初に PDF を開くときに読み込む（pdfjs.ts）。
+// 開いた直後の画面に要るコードを減らし、遅い端末（iPad など）で画面が出るまでを短くするため
+let pdfjs: Promise<typeof import('./pdfjs.ts')> | null = null
+const loadPdfJs = () => (pdfjs ??= import('./pdfjs.ts'))
 
 export const pdfService: PdfService = {
   async open(source) {
-    const task = getDocument({ ...('data' in source ? { data: new Uint8Array(source.data) } : { url: source.url }), ...DATA_OPTIONS })
-    return new PdfJsDocument(await task.promise)
+    const { openPdfDocument } = await loadPdfJs()
+    return openPdfDocument(source)
   },
+}
+
+// 画面を出したあとに、PDF.js を先に読み込んでおく（PDF のページのある Canvas で、ページが出るのが遅れないように）
+export function preloadPdfJs(): void {
+  void loadPdfJs().catch(() => {
+    pdfjs = null
+  })
 }

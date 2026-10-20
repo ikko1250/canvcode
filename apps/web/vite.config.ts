@@ -46,6 +46,12 @@ const API_TARGET = process.env.CANVCODE_API_TARGET ?? 'http://127.0.0.1:8787'
 
 export default defineConfig({
   plugins: [react(), pdfjsData()],
+  build: {
+    // フォントは CSS に埋め込まない。既定では 4KB 未満のファイルを data: URL で埋め込むので、文字の範囲ごとに分かれた
+    // 日本語フォントの多くが入り、画面を描く前に読む CSS が 3MB になっていた（遅い端末で起動が遅い）。
+    // 別のファイルにすれば、ブラウザは使う文字の範囲のフォントだけを読む
+    assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf)$/i.test(file) ? false : undefined),
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,

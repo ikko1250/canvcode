@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { createServer, type ServerResponse } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { AgentHost } from './agent/host.ts'
 import { handleAgentOps } from './agent/ops.ts'
 import { AssetStore } from './assets.ts'
+import { CompressedFiles, isCompressible, pickEncoding } from './compress.ts'
 import { handleBackupStatus } from './backupStatus.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
@@ -128,15 +129,25 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
-async function sendFile(res: ServerResponse, path: string, cache: string): Promise<boolean> {
+// ビルドした画面のファイルを、ブラウザが受け取れれば圧縮して送る（compress.ts）
+const compressedFiles = new CompressedFiles()
+
+async function sendFile(req: IncomingMessage, res: ServerResponse, path: string, cache: string): Promise<boolean> {
   try {
     const info = await stat(path)
     if (!info.isFile()) return false
-    res.writeHead(200, {
+    const headers = {
       'content-type': MIME_TYPES[extname(path)] ?? 'application/octet-stream',
-      'content-length': info.size,
       'cache-control': cache,
-    })
+    }
+    const encoding = isCompressible(path, info.size) ? pickEncoding(req.headers['accept-encoding']) : null
+    if (encoding) {
+      const data = await compressedFiles.get(path, info.mtimeMs, encoding)
+      res.writeHead(200, { ...headers, 'content-encoding': encoding, 'content-length': data.length, vary: 'Accept-Encoding' })
+      res.end(req.method === 'HEAD' ? undefined : data)
+      return true
+    }
+    res.writeHead(200, { ...headers, 'content-length': info.size, ...(isCompressible(path, info.size) ? { vary: 'Accept-Encoding' } : {}) })
     createReadStream(path).pipe(res)
     return true
   } catch {
@@ -198,9 +209,9 @@ const server = createServer(async (req, res) => {
   }
   // ファイル名にハッシュが付く assets/ は長くキャッシュさせ、それ以外は毎回確認させる
   const cache = url.pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
-  if (url.pathname !== '/' && (await sendFile(res, requested, cache))) return
+  if (url.pathname !== '/' && (await sendFile(req, res, requested, cache))) return
   // それ以外は画面のルーティングに任せる（/c/<id> など。MAI-8）
-  if (await sendFile(res, join(WEB_DIST, 'index.html'), 'no-cache')) return
+  if (await sendFile(req, res, join(WEB_DIST, 'index.html'), 'no-cache')) return
   res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' })
   res.end('画面がビルドされていません。先に npm run build を実行してください。\n')
 })
@@ -217,6 +228,8 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 server.listen(PORT, HOST, () => {
+  // 画面のファイルを、裏で前もって圧縮しておく（compress.ts）
+  void compressedFiles.warm(WEB_DIST).catch(() => {})
   console.log(`CanvCode server: http://${HOST}:${PORT}`)
   console.log(`ワークスペース: ${WORKSPACE}`)
   console.log(`AI（MCP）から使うとき: claude mcp add --transport http canvcode http://${HOST}:${PORT}${MCP_PATH}`)

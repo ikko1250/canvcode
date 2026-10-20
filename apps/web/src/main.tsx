@@ -9,27 +9,10 @@ import './styles.css'
 import '@fontsource-variable/noto-sans-jp'
 import '@fontsource-variable/noto-serif-jp'
 import '@fontsource-variable/m-plus-1-code'
-// スライドと同じ M PLUS 1p（200・600 はない）
-import '@fontsource/m-plus-1p/100.css'
-import '@fontsource/m-plus-1p/300.css'
-import '@fontsource/m-plus-1p/400.css'
-import '@fontsource/m-plus-1p/500.css'
-import '@fontsource/m-plus-1p/700.css'
-import '@fontsource/m-plus-1p/800.css'
-import '@fontsource/m-plus-1p/900.css'
-import '@fontsource/biz-udpgothic/400.css'
-import '@fontsource/biz-udpgothic/700.css'
-import '@fontsource/biz-udpmincho/400.css'
-import '@fontsource/biz-udpmincho/700.css'
-import '@fontsource/zen-maru-gothic/300.css'
-import '@fontsource/zen-maru-gothic/400.css'
-import '@fontsource/zen-maru-gothic/500.css'
-import '@fontsource/zen-maru-gothic/700.css'
-import '@fontsource/zen-maru-gothic/900.css'
-import '@fontsource/klee-one/400.css'
-import '@fontsource/klee-one/600.css'
-import '@fontsource/yomogi/400.css'
-import '@fontsource/dela-gothic-one/400.css'
+// ほかの選べるフォント（M PLUS 1p・BIZ UDP・Zen Maru Gothic など）の宣言は、文字の範囲ごとの @font-face が 2000 を超え、
+// CSS が 2MB になるので、画面を出すのを待たせないよう、あとから読み込む（extraFonts.ts）。読み込めたフォントで描き直すのは、
+// フォントの loadingdone で行う（MAI-75）
+void import('./extraFonts.ts')
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

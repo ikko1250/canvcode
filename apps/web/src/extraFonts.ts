@@ -1,0 +1,23 @@
+// 選べる日本語フォントのうち、既定（Noto Sans JP・Noto Serif JP・M PLUS 1 Code。main.tsx）のほかのもの。
+// @font-face の宣言だけで 2MB ほどあるので、main.tsx が画面を出すのと並行して読み込む（画面を描く前に読む CSS を小さくするため）
+// スライドと同じ M PLUS 1p（200・600 はない）
+import '@fontsource/m-plus-1p/100.css'
+import '@fontsource/m-plus-1p/300.css'
+import '@fontsource/m-plus-1p/400.css'
+import '@fontsource/m-plus-1p/500.css'
+import '@fontsource/m-plus-1p/700.css'
+import '@fontsource/m-plus-1p/800.css'
+import '@fontsource/m-plus-1p/900.css'
+import '@fontsource/biz-udpgothic/400.css'
+import '@fontsource/biz-udpgothic/700.css'
+import '@fontsource/biz-udpmincho/400.css'
+import '@fontsource/biz-udpmincho/700.css'
+import '@fontsource/zen-maru-gothic/300.css'
+import '@fontsource/zen-maru-gothic/400.css'
+import '@fontsource/zen-maru-gothic/500.css'
+import '@fontsource/zen-maru-gothic/700.css'
+import '@fontsource/zen-maru-gothic/900.css'
+import '@fontsource/klee-one/400.css'
+import '@fontsource/klee-one/600.css'
+import '@fontsource/yomogi/400.css'
+import '@fontsource/dela-gothic-one/400.css'

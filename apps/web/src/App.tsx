@@ -47,8 +47,9 @@ import { clearNodes, generateNodes, runBenchmark, type PhaseResult } from './ben
 import { memoryBreakdown } from './memoryStats.ts'
 import { CARD_COUNT, generateMarkdownCards, runCardBenchmark, type CardBenchmarkResult } from './cardBenchmark.ts'
 import { createAppMarkdownCardType } from './markdown/markdownCard.ts'
-import { pdfService } from './pdf.ts'
+import { pdfService, preloadPdfJs } from './pdf.ts'
 import { buildPieMenus, PIE_BUTTONS, type PieMenuContext } from './pie/menus.ts'
+import { runPerfReport } from './perfReport.ts'
 import { PieMenus } from './pie/PieMenu.tsx'
 import { ArrangePalette } from './palette/ArrangePalette.tsx'
 import { DrawPalette } from './palette/DrawPalette.tsx'
@@ -1043,6 +1044,16 @@ export function App(props: { initial: InitialRecords }) {
     viewRef.current = created
     visited.add(workspace.rootCanvasId)
     setView(created)
+    // 画面を出したら、PDF.js を裏で読み込み始める（PDF を開くときに待たないように）
+    setTimeout(preloadPdfJs, 0)
+    // ?perf を付けて開いたら、性能を測ってサーバーのログに送る（開発者ツールを開けない端末のため。perfReport.ts）
+    if (new URLSearchParams(location.search).has('perf')) {
+      const bootMs = performance.now()
+      notify('性能を測っています（30 秒ほど触らずに待ってください）…')
+      void runPerfReport(created, { bootMs })
+        .then(() => notify('性能の記録をサーバーに送りました'))
+        .catch((error: unknown) => notify(`性能の記録を送れませんでした：${String(error)}`))
+    }
     // 開発者ツールや自動テストから状態を調べるための入口
     ;(window as unknown as { canvcode: unknown }).canvcode = {
       workspace,
@@ -1366,6 +1377,13 @@ export function App(props: { initial: InitialRecords }) {
       },
       clearNodes: () => clearNodes(editor),
       runBenchmark: startBenchmark,
+      sendPerfReport: () => {
+        if (!view) return
+        notify('性能を測っています（30 秒ほど触らずに待ってください）…')
+        void runPerfReport(view)
+          .then(() => notify('性能の記録をサーバーに送りました'))
+          .catch((error: unknown) => notify(`性能の記録を送れませんでした：${String(error)}`))
+      },
       addMarkdownCards: () => {
         generateMarkdownCards(editor)
         view?.zoomToFit()

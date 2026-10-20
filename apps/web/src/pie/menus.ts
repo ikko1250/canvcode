@@ -62,6 +62,8 @@ export interface PieMenuContext {
   addBenchShadowNodes(): void
   clearNodes(): void
   runBenchmark(): void
+  // 今の Canvas で性能を測って、サーバーのログに送る（perfReport.ts）
+  sendPerfReport(): void
   addMarkdownCards(): void
   runCardBenchmark(): void
   markdownCardCount: number
@@ -352,6 +354,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
           label: 'ベンチマーク',
           items: [
             { label: ctx.benchRunning ? 'ベンチマーク実行中…' : 'ベンチマーク', disabled: ctx.benchRunning, onSelect: ctx.runBenchmark },
+            { label: '性能を測ってサーバーに送る', onSelect: ctx.sendPerfReport },
             {
               label: ctx.cardBenchRunning ? 'カードのベンチマーク実行中…' : 'カードのズームのベンチマーク',
               disabled: ctx.cardBenchRunning,
