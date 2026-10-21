@@ -11,7 +11,7 @@ import { AssetStore } from './assets.ts'
 import { CompressedFiles, isCompressible, pickEncoding } from './compress.ts'
 import { handleBackupStatus } from './backupStatus.ts'
 import { handleClaude } from './claude/http.ts'
-import { ClaudeJobs } from './claude/jobs.ts'
+import { ClaudeJobs, claudeLimitsFromEnv } from './claude/jobs.ts'
 import { ClaudeStore } from './claude/store.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
@@ -36,7 +36,8 @@ import { ThumbnailStore } from './thumbnails.ts'
 //   Canvas のノードの書き換え（スライドもここで作る）は、サーバーの中のワークスペース（agent/host.ts）で行い、画面から取り消せる（/api/agent-ops）
 // - 定期バックアップ（npm run backup:sync）の状態（.canvcode/backup-status.json）を /api/backup-status で画面に渡す
 // - 画面のパネルから Claude Code に頼める（/api/claude。claude/jobs.ts）。Claude Code は canvcode の /mcp を通して Canvas を読み書きする。
-//   CANVCODE_CLAUDE=0 で切る。CANVCODE_CLAUDE_MODEL でモデルを、CANVCODE_CLAUDE_MAX_TURNS でターン数の上限（既定 30）を変える
+//   CANVCODE_CLAUDE=0 で切る。CANVCODE_CLAUDE_MODEL でモデルを、CANVCODE_CLAUDE_MAX_TURNS でターン数の上限（既定 100。claude/jobs.ts の DEFAULT_MAX_TURNS）を、
+//   CANVCODE_CLAUDE_MAX_BUDGET_USD で 1 回の依頼の費用の上限（ドル。既定はなし）を変える
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
 const HOST = '127.0.0.1'
@@ -97,7 +98,6 @@ const markdownPdf = new MarkdownPdf(files, WORKSPACE, DATA_DIR)
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
 // 画面から頼む Claude Code
-const maxTurns = Number(process.env.CANVCODE_CLAUDE_MAX_TURNS)
 const claude =
   process.env.CANVCODE_CLAUDE === '0'
     ? null
@@ -107,7 +107,7 @@ const claude =
         // 会話は .canvcode/claude.db に残す（再起動しても続けられる）
         store: new ClaudeStore(DATA_DIR),
         ...(process.env.CANVCODE_CLAUDE_MODEL ? { model: process.env.CANVCODE_CLAUDE_MODEL } : {}),
-        ...(Number.isInteger(maxTurns) && maxTurns > 0 ? { maxTurns } : {}),
+        ...claudeLimitsFromEnv(process.env),
       })
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。

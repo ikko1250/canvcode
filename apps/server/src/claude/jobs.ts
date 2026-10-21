@@ -72,6 +72,8 @@ export class JobError extends Error {
 export const MAX_RUNNING = 2
 export const MAX_PROMPT_LENGTH = 20_000
 export const INTERRUPTED_MESSAGE = 'サーバーが止まったので途切れました'
+// 1 回の依頼のターン数の上限（ツールを呼ぶたびに 1 ターン）。canvcode の MCP は 1 つの作業で何度も呼ぶので多めにする
+export const DEFAULT_MAX_TURNS = 100
 
 export interface ClaudeJobsDeps {
   workspace: string
@@ -83,7 +85,20 @@ export interface ClaudeJobsDeps {
   // 会話を消したときに、Claude Code の session（~/.claude/projects/ の transcript）も消す。既定は Agent SDK の deleteSession
   deleteSession?: (sessionId: string, dir: string) => Promise<void>
   model?: string
+  // 既定は DEFAULT_MAX_TURNS
   maxTurns?: number
+  // 1 回の依頼の費用の上限（ドル）。既定は付けない
+  maxBudgetUsd?: number
+}
+
+// CANVCODE_CLAUDE_MAX_TURNS（正の整数）と CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）。使えない値なら既定のまま
+export function claudeLimitsFromEnv(env: NodeJS.ProcessEnv): Pick<ClaudeJobsDeps, 'maxTurns' | 'maxBudgetUsd'> {
+  const maxTurns = Number(env.CANVCODE_CLAUDE_MAX_TURNS)
+  const maxBudgetUsd = Number(env.CANVCODE_CLAUDE_MAX_BUDGET_USD)
+  return {
+    ...(Number.isInteger(maxTurns) && maxTurns > 0 ? { maxTurns } : {}),
+    ...(Number.isFinite(maxBudgetUsd) && maxBudgetUsd > 0 ? { maxBudgetUsd } : {}),
+  }
 }
 
 interface JobState extends StoredJob {
@@ -218,7 +233,8 @@ export class ClaudeJobs {
       settingSources: ['project'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(job.canvasId) },
       ...(this.deps.model ? { model: this.deps.model } : {}),
-      maxTurns: this.deps.maxTurns ?? 30,
+      maxTurns: this.maxTurns(),
+      ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
     }
     const prompt = job.refId ? `${job.prompt}\n\n（選んだ場所：${job.refId}）` : job.prompt
@@ -236,6 +252,10 @@ export class ClaudeJobs {
       this.push(job, { kind: 'error', message: error instanceof Error ? error.message : String(error) })
       this.finish(job, 'failed')
     }
+  }
+
+  private maxTurns(): number {
+    return this.deps.maxTurns ?? DEFAULT_MAX_TURNS
   }
 
   private receive(job: JobState, message: SDKMessage): void {
@@ -282,7 +302,7 @@ export class ClaudeJobs {
         this.finish(job, 'cancelled')
         return
       }
-      const text = message.subtype === 'success' ? message.result : resultErrorText(message.subtype, message.errors)
+      const text = message.subtype === 'success' ? message.result : resultErrorText(message.subtype, message.errors, this.maxTurns(), this.deps.maxBudgetUsd)
       this.push(job, { kind: 'error', message: text })
       this.finish(job, 'failed')
     }
@@ -379,12 +399,15 @@ function assistantErrorText(error: string): string {
   return `Claude の応答でエラーが起きました（${error}）`
 }
 
-function resultErrorText(subtype: string, errors: readonly string[] | undefined): string {
+// 上限で止めたときは、同じ会話で頼めば resume して続きから進められる
+const CONTINUE_HINT = '同じ会話で続けて頼めば、続きから進めます'
+
+function resultErrorText(subtype: string, errors: readonly string[] | undefined, maxTurns: number, maxBudgetUsd: number | undefined): string {
   const base =
     subtype === 'error_max_turns'
-      ? 'ターン数の上限に達したので止めました'
+      ? `ターン数の上限（${maxTurns}）に達したので止めました。${CONTINUE_HINT}`
       : subtype === 'error_max_budget_usd'
-        ? '費用の上限に達したので止めました'
+        ? `費用の上限${maxBudgetUsd !== undefined ? `（$${maxBudgetUsd}）` : ''}に達したので止めました。${CONTINUE_HINT}`
         : '途中でエラーが起きました'
   return errors && errors.length > 0 ? `${base}：${errors.join(' / ')}` : base
 }

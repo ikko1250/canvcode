@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ClaudeJobs, INTERRUPTED_MESSAGE, MAX_RUNNING, type ClaudeJobsDeps, type Job, type JobChange, type RunQuery } from './jobs.ts'
+import { ClaudeJobs, claudeLimitsFromEnv, DEFAULT_MAX_TURNS, INTERRUPTED_MESSAGE, MAX_RUNNING, type ClaudeJobsDeps, type Job, type JobChange, type RunQuery } from './jobs.ts'
 import { ClaudeStore } from './store.ts'
 
 // 画面から頼んだ Claude Code のジョブ（Agent SDK の query は偽物に差し替え、保存は本物の SQLite）
@@ -122,6 +122,8 @@ describe('ClaudeJobs', () => {
     expect(call.options.strictMcpConfig).toBe(true)
     expect(call.options.hooks?.PreToolUse).toHaveLength(1)
     expect(call.options.resume).toBeUndefined()
+    expect(call.options.maxTurns).toBe(100)
+    expect(call.options.maxBudgetUsd).toBeUndefined()
     expect((call.options.systemPrompt as { append: string }).append).toContain('canvas:x')
   })
 
@@ -222,8 +224,30 @@ describe('ClaudeJobs', () => {
       expect.stringContaining('MCP につながりませんでした'),
       expect.stringContaining('auto mode が使えない'),
       expect.stringContaining('ログインしていません'),
-      expect.stringContaining('ターン数の上限'),
+      'ターン数の上限（100）に達したので止めました。同じ会話で続けて頼めば、続きから進めます',
     ])
+  })
+
+  it('passes the turn and budget limits, from the deps or the environment, and names them when a job hits one', async () => {
+    expect(DEFAULT_MAX_TURNS).toBe(100)
+    expect(claudeLimitsFromEnv({})).toEqual({})
+    expect(claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '250', CANVCODE_CLAUDE_MAX_BUDGET_USD: '2.5' })).toEqual({ maxTurns: 250, maxBudgetUsd: 2.5 })
+    expect(claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '1.5', CANVCODE_CLAUDE_MAX_BUDGET_USD: '0' })).toEqual({})
+    expect(claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '-3', CANVCODE_CLAUDE_MAX_BUDGET_USD: 'abc' })).toEqual({})
+
+    const overBudget = { type: 'result', subtype: 'error_max_budget_usd', is_error: true, session_id: 's1', total_cost_usd: 2.6, duration_ms: 1, errors: [] }
+    const fake = fakeRun([init('s1'), overBudget as unknown as SDKMessage])
+    const jobs = makeJobs({ run: fake.run, ...claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '250', CANVCODE_CLAUDE_MAX_BUDGET_USD: '2.5' }) })
+    const done = await finished(jobs, jobs.start({ prompt: 'x' }).id)
+    expect(fake.calls[0].options.maxTurns).toBe(250)
+    expect(fake.calls[0].options.maxBudgetUsd).toBe(2.5)
+    expect(done.status).toBe('failed')
+    expect(done.events).toEqual([{ kind: 'error', message: '費用の上限（$2.5）に達したので止めました。同じ会話で続けて頼めば、続きから進めます' }])
+
+    const maxTurns = { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 's2', total_cost_usd: 0, duration_ms: 1, errors: [] }
+    const turns = makeJobs({ run: fakeRun([init('s2'), maxTurns as unknown as SDKMessage]).run, maxTurns: 250 })
+    const stopped = await finished(turns, turns.start({ prompt: 'x' }).id)
+    expect(stopped.events).toEqual([{ kind: 'error', message: 'ターン数の上限（250）に達したので止めました。同じ会話で続けて頼めば、続きから進めます' }])
   })
 
   it('records denials: by the guard hook, by the auto mode classifier, and when nobody can approve', async () => {
