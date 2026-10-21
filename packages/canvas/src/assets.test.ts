@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AssetManager, type PdfDocument, type PdfService } from './assets.ts'
 
 // 開いている PDF の数を抑える（MAI-66）
@@ -92,5 +92,89 @@ describe('AssetManager PDF documents', () => {
     for (const release of releases.slice(1)) release()
     await Promise.all(inUse)
     expect(destroyed()).toEqual(['/api/assets/a'])
+  })
+})
+
+// サーバーが前もって作ったページの画像（Issue #26）
+describe('AssetManager PDF page images', () => {
+  const manifest = {
+    version: 1,
+    // 2 ページ目は横長
+    pages: [
+      { w: 600, h: 800 },
+      { w: 800, h: 600 },
+    ],
+    sheets: [{ width: 448, height: 256 }],
+    thumbs: [
+      { sheet: 0, x: 0, y: 0, w: 192, h: 256 },
+      { sheet: 0, x: 192, y: 0, w: 256, h: 192 },
+    ],
+    mid: { size: 1024 },
+  }
+
+  function setupPreviews(response: { status: number; body: unknown } = { status: 200, body: manifest }) {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      requests.push(url)
+      if (url.endsWith('/preview')) return new Response(JSON.stringify(response.body), { status: response.status })
+      return new Response(new Blob([url]))
+    })
+    const crops: unknown[][] = []
+    vi.stubGlobal('createImageBitmap', async (...args: unknown[]) => {
+      crops.push(args.slice(1))
+      const [w, h] = args.length > 1 ? [args[3] as number, args[4] as number] : [100, 100]
+      return { width: w, height: h, close() {} }
+    })
+    const { service, opened } = fakePdfService()
+    const assets = new AssetManager({ pdf: service, baseUrl: '/api/assets' })
+    assets.register({ typeName: 'asset', id: 'asset:p', mime: 'application/pdf', size: 1, hash: 'p', width: 0, height: 0, variants: [] })
+    let changes = 0
+    assets.onPdfPreviewChange(() => changes++)
+    return { assets, requests, crops, opened, changes: () => changes }
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('tells it is still checking, then gives the levels of the sheet and the page images', async () => {
+    const { assets, changes } = setupPreviews()
+    expect(assets.pdfPreviewLevels('asset:p', 0)).toBeNull()
+    await assets.preparePdfPreview('asset:p')
+    expect(changes()).toBe(1)
+    // 192 / (600 × 96/72) と 1024 / 800 / (96/72)
+    for (const pageIndex of [0, 1]) {
+      const levels = assets.pdfPreviewLevels('asset:p', pageIndex)!
+      expect(levels).toHaveLength(2)
+      expect(levels[0]).toBeCloseTo(0.24)
+      expect(levels[1]).toBeCloseTo(0.96)
+    }
+    expect(assets.pdfPreviewLevels('asset:p', 2)).toEqual([])
+  })
+
+  it('has no levels when the server has not made them', async () => {
+    const { assets, changes } = setupPreviews({ status: 404, body: { status: 'pending' } })
+    await assets.preparePdfPreview('asset:p')
+    expect(assets.pdfPreviewLevels('asset:p', 0)).toEqual([])
+    expect(changes()).toBe(1)
+  })
+
+  it('cuts the page out of the sheet, reading the sheet once, and reads the page image for the larger level', async () => {
+    const { assets, requests, crops, opened } = setupPreviews()
+    await assets.preparePdfPreview('asset:p')
+    const [thumb, large] = assets.pdfPreviewLevels('asset:p', 1)!
+    const first = await assets.loadPdfPreview('asset:p', 0, thumb)
+    const second = await assets.loadPdfPreview('asset:p', 1, thumb)
+    expect([first.level, first.width, first.height]).toEqual([thumb, 192, 256])
+    expect(second.width).toBe(256)
+    expect(crops.filter((args) => args.length > 0)).toEqual([
+      [0, 0, 192, 256],
+      [192, 0, 256, 192],
+    ])
+    const mid = await assets.loadPdfPreview('asset:p', 1, large)
+    expect(mid.level).toBe(large)
+    expect(requests).toEqual(['/api/assets/p/preview', '/api/assets/p/preview/v1/sheet/0', '/api/assets/p/preview/v1/page/1'])
+    // PDF は開かない
+    expect(opened).toEqual([])
   })
 })

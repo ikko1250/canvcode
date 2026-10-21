@@ -324,6 +324,8 @@ export class CanvasView {
       },
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
+    // PDF のページの、前もって作った画像の一覧が届いたら描き直す（Issue #26）
+    this.disposers.push(this.assets.onPdfPreviewChange(() => this.invalidate('scene')))
     this.linkPreviews = new LinkPreviewer(this.assets)
 
     this.root = document.createElement('div')
@@ -684,6 +686,8 @@ export class CanvasView {
   // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
   // （上限を超えれば、いつもどおり古いものから捨てる）
   private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>, print = false): Promise<HTMLCanvasElement> {
+    // PDF のページは、前もって作った画像があるかを確かめている間は描かないので、確かめ終えてから描く
+    await Promise.all([...new Set(this.pdfPagesIn(editor, box).map((page) => page.assetId))].map((assetId) => this.assets.preparePdfPreview(assetId)))
     const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:') || isTableTileKey(key))
     const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
     if (recorder.size === 0) return canvas
