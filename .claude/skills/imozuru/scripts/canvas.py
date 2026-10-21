@@ -122,7 +122,8 @@ def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
 
     # 原文の持ち主の列（右端）：map.md・log.md のカード、原文（PDF は Portal、Markdown はカード）。
     # 列のショートカットより先に作る（$s<N> で指すため。Markdown は、持ち主のあとに置いたカードがショートカットになる）
-    x_src = (len(claims) + len(disagreements) + (1 if unreached else 0)) * COL_STEP
+    # 届かなかったものの列には帯がない
+    x_src = (len(claims) + len(disagreements)) * COL_STEP + (COL_W + COL_GAP if unreached else 0)
     ops.append({"op": "create", "type": "text", "as": "src", "text": "原文（sources/）と map.md・log.md", "fontSize": 18, "x": x_src, "y": TOP, "w": COL_W})
     prev = "src"
     for name in ("map.md", "log.md"):

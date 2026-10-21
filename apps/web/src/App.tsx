@@ -30,6 +30,7 @@ import {
   type LinkCardProps,
   type PortalProps,
   PORTAL_DEFAULT_SIZE,
+  SHORTCUT_CARD_HEIGHT,
   type NoteProps,
   type QuoteCardProps,
   type TableCardProps,
@@ -598,6 +599,8 @@ export function App(props: { initial: InitialRecords }) {
       const status = workspace.targetStatus(ref.targetId)
       if (status === 'missing') return notify('元の場所はありません（参照先は完全に削除されています）')
       if (status === 'trashed') return notify('元の場所はゴミ箱の中にあります。サイドバーから元に戻せます')
+      // ルートの Canvas には持ち主がいないので、そのまま移る
+      if (ref.targetId === workspace.rootCanvasId) return navigate(ref.targetId)
       const ownerId = workspace.getDocument(ref.targetId)?.ownerNodeId
       const canvas = ownerId ? workspace.canvasOf(ownerId) : null
       if (!ownerId || !canvas) return notify('元の場所はありません（参照先はどのキャンバスにも置かれていません）')
@@ -892,8 +895,9 @@ export function App(props: { initial: InitialRecords }) {
                 const entry = editor.index.get(single.id)
                 if (!node || !entry) return
                 const current = node.props as MarkdownCardProps
-                // 固定にするときは、今の高さのまま固定する（見た目が変わらないように）
-                const next = current.sizing === 'auto' ? { ...current, sizing: 'fixed', h: entry.localBounds.h } : { ...current, sizing: 'auto' }
+                // 固定にするときは、今の高さのまま固定する（見た目が変わらないように）。ショートカットは小さく固定する（#28）
+                const h = current.role === 'shortcut' ? Math.min(entry.localBounds.h, SHORTCUT_CARD_HEIGHT) : entry.localBounds.h
+                const next = current.sizing === 'auto' ? { ...current, sizing: 'fixed', h } : { ...current, sizing: 'auto' }
                 editor.transact('card sizing', (tx) => tx.put({ ...node, props: next }))
               },
             })

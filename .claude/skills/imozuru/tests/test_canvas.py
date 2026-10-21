@@ -51,8 +51,8 @@ class CanvasTests(unittest.TestCase):
         self.assertIn("sample-paper.txt:6-8（p.2）", by_as["c0q1"]["text"])
         self.assertIn("訳: 12件中9件で", by_as["c0q1"]["text"])
         # 原文の持ち主は右端の列に1つずつ。Markdown はカード、PDF の .txt は PDF の Portal。どちらもワークスペースの中のパスで指す
-        # 2つの主張・1つの食い違い・届かなかったものの4列の右
-        self.assertEqual((by_as["src"]["x"], by_as["src"]["y"]), (4 * canvas.COL_STEP, 260))
+        # 2つの主張・1つの食い違い（どれも右に帯がある）と、届かなかったもの（帯はない）の列の右
+        self.assertEqual((by_as["src"]["x"], by_as["src"]["y"]), (3 * canvas.COL_STEP + canvas.COL_W + canvas.COL_GAP, 260))
         self.assertEqual(by_as["map"], {"op": "create", "type": "card", "as": "map", "path": "research/demo/map.md",
                                         "place": {"below": "$src", "gap": 24}, "w": 360, "h": 420})
         self.assertNotIn("log", by_as)

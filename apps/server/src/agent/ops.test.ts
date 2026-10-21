@@ -362,7 +362,7 @@ describe('edit_canvas', () => {
   })
 
   it('refuses a shortcut portal with name, path or a type other than portal, and to a canvas in the trash', () => {
-    const { records, edit } = setup()
+    const { records, host, edit } = setup()
     const owner = edit([{ op: 'create', type: 'portal', as: 'p', x: 0, y: 0 }])
     const target = owner.canvases!.p!.canvas
     expect(() => edit([{ op: 'create', type: 'portal', target, name: 'x' }])).toThrow(/target cannot be used with name/)
@@ -374,6 +374,11 @@ describe('edit_canvas', () => {
     edit([{ op: 'delete', ids: [owner.created.p] }])
     expect(records.get(target)!.deletedAt).not.toBeNull()
     expect(() => edit([{ op: 'create', type: 'portal', target }])).toThrow(/is in the trash/)
+    // 参照先が完全に削除された Portal（リンク切れ）を target にしたとき
+    const dangling = node('node:dangling', 'portal', records.rootCanvasId, 'a9', { targetId: 'canvas:gone', role: 'shortcut' })
+    records.apply([dangling], [])
+    host.applyRemote([dangling as never], [])
+    expect(() => edit([{ op: 'create', type: 'portal', target: 'node:dangling' }])).toThrow(/canvas:gone has been deleted/)
   })
 
   it('fails atomically and names the failing op', () => {

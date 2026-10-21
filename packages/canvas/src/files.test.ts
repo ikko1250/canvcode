@@ -67,6 +67,10 @@ describe('cards', () => {
     root.setSelection([owner])
     const [pasted] = insertPayloadWithResult(root, copySelection(root)!, { offset: { x: 1200, y: 0 } }).ids
     expect(card(pasted).props).toMatchObject({ role: 'shortcut', sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT })
+    // 中央に貼るときは、縮んだあとのカードが中央に来る
+    const [centered] = insertPayloadWithResult(root, copySelection(root)!, { center: { x: 3000, y: 3000 } }).ids
+    const box = root.index.get(centered)!.worldBounds
+    expect(box.y + box.h / 2).toBeCloseTo(3000)
     // ショートカットをコピーして貼ったときは、元の大きさのまま
     root.transact('resize', (tx) => tx.put({ ...card(second), props: { ...card(second).props, h: 320 } }))
     root.setSelection([second])
