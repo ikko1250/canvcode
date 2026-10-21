@@ -57,6 +57,8 @@ const assets = new AssetStore(DATA_DIR)
 await assets.init()
 // フォントを埋め込んでいない PDF の、空のまま取り出したテキストを作り直す（裏で行う）
 void assets.reextractEmptyPdfTexts()
+// PDF のページの画像（縮小画像のシートと長辺 1024px の画像）のない PDF の分を、裏で作る（pdfPreview.ts。pdftoppm がなければ作らない）
+void assets.previews.init()
 const thumbnails = new ThumbnailStore(DATA_DIR)
 // リンクのカードのタイトル・サムネイル（リンク先のページを取ってくる）
 const linkPreviews = new LinkPreviewService()

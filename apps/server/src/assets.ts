@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { normalizeForSearch, searchPages, type NormalizedText, type PdfSearchPage } from '@canvcode/core'
+import { PdfPreviews, type PdfPreviewOptions } from './pdfPreview.ts'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // 画像の Asset の保存と配信（MAI-10、MAI-13、MAI-26）。
@@ -19,6 +20,8 @@ import { writeViaTemp } from './writeAtomic.ts'
 //   （PDF をそのまま読めないモデルもあるので。ファイルがない古い PDF は ensurePdfTextFile が pages.json から作る）
 // - フォントを埋め込んでいない PDF（日本語の CID フォントなど）は、PDF.js に付いている CMap と標準フォントで読む。
 //   これを渡していなかったころ（pages.json の version 1）の空のテキストは、reextractEmptyPdfTexts が作り直す
+// - PDF は、ページの縮小画像（長辺 256px のシート・1024px のページごと）も裏で作る（pdfPreview.ts。Issue #26）。
+//   GET /api/assets/<ハッシュ>/preview でマニフェストを、…/preview/v1/sheet/<N>・…/preview/v1/page/<ページ> で画像を返す
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -57,10 +60,13 @@ export class AssetStore {
   private readonly extracting = new Map<string, Promise<void>>()
   // 検索のために揃えておいたページのテキスト（ハッシュ → ページごと）
   private readonly searchCache = new Map<string, { pages: string[]; normalized: NormalizedText[] }>()
+  // PDF のページの画像
+  readonly previews: PdfPreviews
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, previewOptions?: PdfPreviewOptions) {
     this.dataDir = dataDir
     this.dir = join(dataDir, 'assets')
+    this.previews = new PdfPreviews(this.dir, previewOptions)
   }
 
   async init(): Promise<void> {
@@ -78,6 +84,8 @@ export class AssetStore {
         sendJson(res, 200, { assets: await this.list() })
       } else if (req.method === 'POST' && parts.length === 2) {
         await this.receiveOriginal(req, res)
+      } else if ((req.method === 'GET' || req.method === 'HEAD') && parts.length >= 4 && size === 'preview') {
+        await this.previews.handle(req, res, hash, parts.slice(4))
       } else if (req.method === 'GET' && parts.length === 4 && size === 'search') {
         sendJson(res, 200, await this.search(hash, params?.get('q') ?? ''))
       } else if (req.method === 'PUT' && parts.length === 4) {
@@ -122,6 +130,7 @@ export class AssetStore {
       if (mime === 'application/pdf') {
         const job = this.extractPdfText(hash, body).finally(() => this.extracting.delete(hash))
         this.extracting.set(hash, job)
+        this.previews.enqueue(hash)
       }
     }
     return hash

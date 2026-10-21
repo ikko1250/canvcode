@@ -40,6 +40,8 @@ function workspace(): { dir: string; store: RecordStore } {
   write(join(dir, '.canvcode', 'assets', `${HASH}.pdf`), 'pdf')
   write(join(dir, '.canvcode', 'assets', `${HASH}.json`), '{}')
   write(join(dir, '.canvcode', 'assets', `${HASH}.json.1.2.tmp`), '{')
+  // PDF のページの画像（サーバーが作り直す）
+  write(join(dir, '.canvcode', 'assets', `${HASH}.preview-v1.sheet0.webp`), 'webp')
   write(join(dir, '.canvcode', 'thumbnails', 'canvas_x.png'), 'thumb')
   write(join(dir, '.canvcode', 'ref-images', 'ref_Ab12Cd34Ef.png'), 'ref')
   write(join(dir, '.canvcode', 'texmf', 'luatex-cache', 'x'), 'cache')
@@ -73,7 +75,7 @@ describe('createBackup / restoreBackup', () => {
     expect(existsSync(join(target, '.canvcode', 'ref-images', 'ref_Ab12Cd34Ef.png'))).toBe(true)
     expect(existsSync(join(target, '.canvcode', 'files.json'))).toBe(true)
     // 入れないもの
-    for (const path of ['.メモ.md.1.2.tmp', '.canvcode/texmf', '.canvcode/imports', '.canvcode/workspace.db.before-v2-1.bak', '.canvcode/workspace.db-wal', `.canvcode/assets/${HASH}.json.1.2.tmp`, 'canvcode-backup.json']) {
+    for (const path of ['.メモ.md.1.2.tmp', '.canvcode/texmf', '.canvcode/imports', '.canvcode/workspace.db.before-v2-1.bak', '.canvcode/workspace.db-wal', `.canvcode/assets/${HASH}.json.1.2.tmp`, `.canvcode/assets/${HASH}.preview-v1.sheet0.webp`, 'canvcode-backup.json']) {
       expect(existsSync(join(target, path)), path).toBe(false)
     }
     // 復元した db は、そのままサーバーで開ける
