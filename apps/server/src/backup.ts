@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
+import { isPdfPreviewFile } from './pdfPreview.ts'
 import { extractTar, tarChunks, type TarEntry } from './tar.ts'
 
 // ワークスペースのバックアップと復元（MAI-13 の「8. バックアップと書き出し」）。
@@ -17,7 +18,7 @@ import { extractTar, tarChunks, type TarEntry } from './tar.ts'
 // - .md / .py などのファイルは、一時ファイルに書いてから名前を変えて置かれる（files.ts）ので、書きかけを読むことはない。
 //   書きかけの一時ファイル（.tmp、. で始まる名前）は入れない
 // - 作り直せるもの・復元に要らないものは入れない：texmf（LuaTeX のキャッシュ）、v1 のスライドのキャッシュ、
-//   移行のときの写し（*.bak）、snapshots・backups、db の -wal / -shm。
+//   移行のときの写し（*.bak）、snapshots・backups、db の -wal / -shm、PDF のページの画像（<ハッシュ>.preview-v*。サーバーが作り直す）。
 //   取り込んだ元の .ricbackup（imports）は大きいので、imports: true のときだけ入れる
 // - assets: false にすると Asset（.canvcode/assets）を入れず、名前の一覧だけを入れる。Asset は書き換わらないので、
 //   別に（rclone copy などで）増えた分だけ送っておき、復元するときにそのフォルダを渡す
@@ -136,7 +137,7 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     const db = snapshotDb(dbPath, dbCopy)
     // 2. ほかのファイルを集める
     const files = await listWorkspace(workspace, outDir, includeAssets, includeImports)
-    const assetFiles = includeAssets ? [] : (await readdir(join(dataDir, 'assets')).catch(() => [] as string[])).filter((name) => !isTemp(name)).sort()
+    const assetFiles = includeAssets ? [] : (await readdir(join(dataDir, 'assets')).catch(() => [] as string[])).filter((name) => !isTemp(name) && !isPdfPreviewFile(name)).sort()
     if (includeAssets) for (const file of files) if (file.startsWith('.canvcode/assets/')) assetFiles.push(file.slice('.canvcode/assets/'.length))
     const manifest: BackupManifest = {
       app: 'canvcode',
@@ -309,7 +310,7 @@ function keep(rel: string, name: string, assets: boolean, imports: boolean): boo
   if (parts.length === 1) return true
   const top = parts[1]
   if (EXCLUDED_DATA.has(top) || top.endsWith('.bak')) return false
-  if (top === 'assets' && !assets) return false
+  if (top === 'assets' && (!assets || isPdfPreviewFile(name))) return false
   if (top === 'imports' && !imports) return false
   return true
 }

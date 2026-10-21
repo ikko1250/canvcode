@@ -88,6 +88,11 @@ export interface AssetResolver {
   load(assetId: string, size: number): Promise<RasterImage>
   // PDF の Asset のページ（0 から）を、1 単位あたり scale 画素で描く。返す RasterImage の level は scale にする（MAI-32）
   renderPdfPage?(assetId: string, pageIndex: number, scale: number): Promise<RasterImage>
+  // PDF のページの、サーバーが前もって作った画像（Issue #26）の解像度（renderPdfPage の scale と同じ単位）。小さい順。
+  // ないなら []、あるかどうかをまだ確かめているところなら null（確かめ終えたら描き直される）
+  pdfPreviewLevels?(assetId: string, pageIndex: number): number[] | null
+  // 前もって作った画像を読み込む。level は pdfPreviewLevels が返したもの。返す RasterImage の level は level にする
+  loadPdfPreview?(assetId: string, pageIndex: number, level: number): Promise<RasterImage>
 }
 
 // 作ってある画像。level は解像度の倍率（CSS ピクセル 1 つあたりの画素数）
@@ -104,6 +109,8 @@ export interface ImageRequester {
   // 中身が変わった（version が違う）ときも、新しいものができるまでは古いものを返す（リサイズ中の引き伸ばしなど）。
   // 何もなければ null。
   get(key: string, version: string, level: number, produce: () => Promise<RasterImage>): RasterImage | null
+  // 手元にある、level にいちばん近い画像を返す。get と違い、なくても作らない
+  peek?(key: string, version: string, level: number): RasterImage | null
 }
 
 // 箱の外へのはみ出しの幅（辺ごと。ローカル座標。MAI-86）

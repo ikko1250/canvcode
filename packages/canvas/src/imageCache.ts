@@ -110,6 +110,15 @@ export class ImageCache implements ImageRequester {
     return nearestLevel(entry.levels, level)
   }
 
+  // 手元にある、level にいちばん近い画像を返す（get と違い、なくても作らない）。中身が変わった（version が違う）ものは返さない。
+  // 見えているものとして扱い、捨てにくくする
+  peek(key: string, version: string, level: number): RasterImage | null {
+    const entry = this.images.get(key)
+    if (entry?.version !== version) return null
+    entry.frame = this.frame
+    return nearestLevel(entry.levels, level)
+  }
+
   // その解像度の画像を、順番待ちをせずにすぐ作る（なければ）。オフスクリーンで描く前に、くっきりした画像を用意するのに使う
   // （AI に渡す ref の画像。MAI-64）。作れなければ null
   async load(key: string, version: string, level: number, produce: () => Promise<RasterImage>): Promise<RasterImage | null> {
@@ -295,6 +304,10 @@ export class MissingImageRecorder implements ImageRequester {
     const image = this.cache.get(key, version, level, produce)
     if (this.filter(key) && image?.level !== level) this.missing.set(`${key}@${level}`, { key, version, level, produce })
     return image
+  }
+
+  peek(key: string, version: string, level: number): RasterImage | null {
+    return this.cache.peek(key, version, level)
   }
 
   get size(): number {

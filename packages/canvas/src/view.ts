@@ -7,6 +7,7 @@ import {
   panBy,
   screenToWorld,
   unionBoxes,
+  viewportBounds,
   zoomAt,
   createRefId,
   isFileRecord,
@@ -174,6 +175,11 @@ const THUMBNAIL_MAX = { w: 480, h: 320 }
 // Canvas を移るとき、画像のキャッシュに残す量（MAI-66）。残りは移った先の Canvas で使う（上限は ImageCache の budgetBytes）
 const IMAGE_CACHE_KEEP_ON_SWITCH_BYTES = 64 * 1024 * 1024
 const CAMERA_ANIMATION_MS = 300
+// 読んでいる PDF のページの画像をブラウザに置く（Issue #26）。カメラが止まり、画像を作り終えてからこれだけ経ったら、
+// 画面の REMEMBER_PAGE_MIN_SHARE 以上を占めるページを、多い順に REMEMBER_PAGES_MAX 枚まで置く
+const REMEMBER_PAGES_DELAY_MS = 1500
+const REMEMBER_PAGE_MIN_SHARE = 0.25
+const REMEMBER_PAGES_MAX = 4
 
 type Layer = 'grid' | 'scene' | 'overlay'
 
@@ -253,7 +259,13 @@ export class CanvasView {
   // まだツールに渡していない、1 本目の指の pointerdown（TOUCH_HOLD_MS）
   private pendingTouch: { event: PointerEvent; timer: ReturnType<typeof setTimeout> } | null = null
   // 時間のかかる画像（Markdown カードなど）のキャッシュ。作れたらシーンを描き直す（MAI-22）
-  readonly images = new ImageCache({ onReady: () => this.invalidate('scene') })
+  readonly images = new ImageCache({
+    onReady: () => {
+      this.invalidate('scene')
+      this.scheduleRememberPages()
+    },
+  })
+  private rememberPagesTimer: ReturnType<typeof setTimeout> | null = null
   private readonly stats = new FrameStats()
   private lastDrawnNodes = 0
   private readonly frameCallbacks = new Set<(now: number) => void>()
@@ -324,6 +336,8 @@ export class CanvasView {
       },
     }
     this.assets = options.assets ?? new AssetManager({ notify: this.options.notify, pdf: options.pdf })
+    // PDF のページの、前もって作った画像の一覧が届いたら描き直す（Issue #26）
+    this.disposers.push(this.assets.onPdfPreviewChange(() => this.invalidate('scene')))
     this.linkPreviews = new LinkPreviewer(this.assets)
 
     this.root = document.createElement('div')
@@ -467,6 +481,7 @@ export class CanvasView {
   dispose(): void {
     this.dropPendingTouch()
     if (this.sceneSettleTimer !== null) clearTimeout(this.sceneSettleTimer)
+    if (this.rememberPagesTimer !== null) clearTimeout(this.rememberPagesTimer)
     this.textEditor.finish()
     this.documentEditor?.finish()
     this.tool.onExit?.()
@@ -684,6 +699,8 @@ export class CanvasView {
   // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
   // （上限を超えれば、いつもどおり古いものから捨てる）
   private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>, print = false): Promise<HTMLCanvasElement> {
+    // PDF のページは、前もって作った画像があるかを確かめている間は描かないので、確かめ終えてから描く
+    await Promise.all([...new Set(this.pdfPagesIn(editor, box).map((page) => page.assetId))].map((assetId) => this.assets.preparePdfPreview(assetId)))
     const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:') || isTableTileKey(key))
     const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
     if (recorder.size === 0) return canvas
@@ -747,6 +764,38 @@ export class CanvasView {
         this.images.load(`${assetId}#${pageIndex}`, 'v1', level, () => assets.renderPdfPage(assetId, pageIndex, level)),
       ),
     )
+  }
+
+  private scheduleRememberPages(): void {
+    if (this.rememberPagesTimer !== null) clearTimeout(this.rememberPagesTimer)
+    this.rememberPagesTimer = setTimeout(() => {
+      this.rememberPagesTimer = null
+      this.rememberPages()
+    }, REMEMBER_PAGES_DELAY_MS)
+  }
+
+  // 読んでいる PDF のページの、PDF.js で描いた画像（level 1 以上）をブラウザに置く（Issue #26）。
+  // 戻ってきたとき（タブを開き直したあとでも）、PDF を受け取らずにすぐ出せるように。画像を作っている途中なら、作り終えたときにまた呼ばれる
+  private rememberPages(): void {
+    if (!this.images.idle || this.width <= 0 || this.height <= 0) return
+    const { camera } = this.editor.session.get()
+    const level = pickImageLevel(camera.zoom * this.dpr)
+    if (level < 1) return
+    const view = viewportBounds(camera, this.width, this.height)
+    const area = view.w * view.h
+    const pages = this.pdfPagesIn(this.editor, view)
+      .map((page) => {
+        const w = Math.min(view.x + view.w, page.bounds.x + page.bounds.w) - Math.max(view.x, page.bounds.x)
+        const h = Math.min(view.y + view.h, page.bounds.y + page.bounds.h) - Math.max(view.y, page.bounds.y)
+        return { page, share: w > 0 && h > 0 ? (w * h) / area : 0 }
+      })
+      .filter(({ share }) => share >= REMEMBER_PAGE_MIN_SHARE)
+      .sort((a, b) => b.share - a.share)
+      .slice(0, REMEMBER_PAGES_MAX)
+    for (const { page } of pages) {
+      const image = this.images.peek(`${page.assetId}#${page.pageIndex}`, 'v1', level)
+      if (image?.level === level) void this.assets.rememberPdfPage(page.assetId, page.pageIndex, image)
+    }
   }
 
   // 範囲に触れた PDF のページ（固定したページも、グループやフレームの中も含めて）
@@ -1659,6 +1708,7 @@ export class CanvasView {
     if (state.camera !== prev.camera) {
       // カメラが動いている間は、画像を作り直さない（MAI-22）
       this.images.notifyMotion()
+      this.scheduleRememberPages()
       this.invalidateForCamera()
       this.textEditor.layout()
       this.documentEditor?.layout()

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { backupTime, BACKUP_NAME_PATTERN, createBackup, fingerprintWorkspace, isTemp } from './backup.ts'
+import { isPdfPreviewFile } from './pdfPreview.ts'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // 定期バックアップと Google Drive へのアップロード（npm run backup:sync。systemd のタイマーから 5 分ごとに呼ぶ）。
@@ -11,7 +12,8 @@ import { writeViaTemp } from './writeAtomic.ts'
 // 2. rclone about で Drive につながるか確かめる（つながらなければ、ここで終えて状態ファイルに書く）
 // 3. 手元と Drive のアーカイブの一覧から、Drive に残すものを決め（planArchives）、まだ送っていないものを rclone copy で送り、
 //    残さないものを Drive から消す。前に送れなかった分は、変わっていなくても毎回ここで送り直す
-// 4. Asset（.canvcode/assets）を、Drive の assets に追加だけで写す（消さない）。前に写したときから変わっていなければ写さない
+// 4. Asset（.canvcode/assets）を、Drive の assets に追加だけで写す（消さない）。前に写したときから変わっていなければ写さない。
+//    PDF のページの画像（<ハッシュ>.preview-v*）はサーバーが作り直せるので写さない
 // 5. 結果を .canvcode/backup-status.json に書く。サーバーがそれを読んで、画面に Drive の未接続などを出す（backupStatus.ts）
 // rclone はテストで差し替えられるように、引数を受け取る関数（RcloneRunner）で呼ぶ
 
@@ -171,7 +173,7 @@ export async function runBackupSync(options: BackupSyncOptions): Promise<BackupS
           const assetsDir = join(dataDir, 'assets')
           const fingerprint = await fingerprintAssets(assetsDir)
           if (fingerprint !== null && fingerprint !== status.assetsFingerprint) {
-            await rclone(['copy', assetsDir, `${remote}/assets`, '--exclude', '*.tmp', '--exclude', '*.partial', '--exclude', '.*'], { timeoutMs: 60 * 60_000 })
+            await rclone(['copy', assetsDir, `${remote}/assets`, '--exclude', '*.tmp', '--exclude', '*.partial', '--exclude', '.*', '--exclude', '*.preview-v*'], { timeoutMs: 60 * 60_000 })
             status.assetsFingerprint = fingerprint
             log('Asset を Drive に写しました')
           }
@@ -265,7 +267,7 @@ async function fingerprintAssets(dir: string): Promise<string | null> {
   const names = await readdir(dir).catch(() => null)
   if (!names) return null
   const hash = createHash('sha256')
-  for (const name of names.filter((name) => !isTemp(name) && !name.startsWith('.')).sort()) {
+  for (const name of names.filter((name) => !isTemp(name) && !name.startsWith('.') && !isPdfPreviewFile(name)).sort()) {
     const info = await stat(join(dir, name)).catch(() => null)
     if (info?.isFile()) hash.update(`${name}\t${info.size}\t${Math.round(info.mtimeMs)}\n`)
   }
