@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { defineNodeType, pickImageLevel, type FileContentSource, type RasterImage } from '../defineNodeType.ts'
+import { defineNodeType, SHORTCUT_CARD_HEIGHT, pickImageLevel, type FileContentSource, type RasterImage } from '../defineNodeType.ts'
 import { MARKDOWN_CARD_CSS, buildMarkdownCardHtml } from './cardHtml.ts'
 import { hitLink, measureCardHeight, measureLinks, type LinkRegion } from './layout.ts'
 import { measureLinksInImage } from './linkMap.ts'
@@ -208,7 +208,8 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
     minSize: { w: 200, h: MIN_HEIGHT },
 
     reference: (node) => (node.props.fileId ? { targetId: node.props.fileId, role: node.props.role } : null),
-    withRole: (node, role) => ({ ...node.props, role }),
+    // 貼り付けでショートカットに変わるときは、小さく固定する（#28）
+    withRole: (node, role) => (role === 'shortcut' ? { ...node.props, role, sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT } : { ...node.props, role }),
 
     linkAt(node, point) {
       const props = node.props

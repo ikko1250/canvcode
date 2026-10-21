@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { defineNodeType, pickImageLevel, type FileContentSource, type ImageRequester } from '../defineNodeType.ts'
+import { defineNodeType, SHORTCUT_CARD_HEIGHT, pickImageLevel, type FileContentSource, type ImageRequester } from '../defineNodeType.ts'
 import { tilesInRect, visibleLocalRect } from '../markdown/tiles.ts'
 import { requestFontLoad, textMetricsGeneration, TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { parseDelimited } from './delimited.ts'
@@ -225,7 +225,8 @@ export function createTableCardType(options: TableCardOptions = {}) {
     minSize: { w: 200, h: MIN_HEIGHT },
 
     reference: (node) => (node.props.fileId ? { targetId: node.props.fileId, role: node.props.role } : null),
-    withRole: (node, role) => ({ ...node.props, role }),
+    // 貼り付けでショートカットに変わるときは、小さく固定する（#28）
+    withRole: (node, role) => (role === 'shortcut' ? { ...node.props, role, sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT } : { ...node.props, role }),
   })
   return Object.assign(def, { columnAt })
 }

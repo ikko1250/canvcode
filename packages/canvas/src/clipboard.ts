@@ -235,7 +235,12 @@ export function insertPayloadWithResult(editor: Editor, payload: ClipboardPayloa
     for (const [parentId, roots] of rootsByParent) {
       const indices = indicesBetween(editor.index.topmost(parentId)?.index ?? null, null, roots.length)
       for (const [i, root] of roots.entries()) {
-        const world = { ...withIds(withRole(root)), id: idMap.get(root.id)!, x: root.x + offset.x, y: root.y + offset.y }
+        const placed = withIds(withRole(root))
+        // 中央に貼るとき、持ち主からショートカットに変わって低くなったカード（#28）は、縮んだ分の半分だけ下げる（中央から外れないように）
+        let dy = 0
+        const type = editor.types.get(root.type)
+        if (options.center && type && placed.props !== root.props) dy = (type.getBounds(root).h - type.getBounds(placed).h) / 2
+        const world = { ...placed, id: idMap.get(root.id)!, x: root.x + offset.x, y: root.y + offset.y + dy }
         tx.put({ ...editor.fromWorld(world, parentId), index: indices[i] })
         inserted.push(world.id)
       }

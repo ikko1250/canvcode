@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { builtinNodeTypes, richTextFromPlain } from '@canvcode/nodes'
+import { builtinNodeTypes, richTextFromPlain, SHORTCUT_CARD_HEIGHT } from '@canvcode/nodes'
 import { canvasSlideLayout } from '@canvcode/slides'
 import { Editor } from '@canvcode/canvas/editor'
 import { RecordStore, type StoredRecord } from '../records.ts'
@@ -315,6 +315,70 @@ describe('edit_canvas', () => {
     const made = edit([{ op: 'create', type: 'card', as: 'c', file: 'file:csv', x: 0, y: 0, w: 800 }]).created
     expect(records.get(made.c!)).toMatchObject({ type: 'table-card', props: { fileId: 'file:csv', role: 'owner', w: 800, header: true } })
     expect(() => edit([{ op: 'create', type: 'markdown-card', file: 'file:csv', x: 0, y: 0 }])).toThrow(/use type table-card/)
+  })
+
+  it('places a second card of a document as a small fixed shortcut (h overrides the height)', () => {
+    const { records, edit } = setup()
+    const now = Date.now()
+    const file = { typeName: 'file', id: 'file:md', kind: 'markdown', title: 'メモ', path: 'メモ.md', size: 1, mtime: now, hash: 'h', missing: false, parentCanvasId: null, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null }
+    records.apply([file], [])
+    const made = edit([
+      { op: 'create', type: 'card', as: 'o', file: 'file:md', x: 0, y: 0 },
+      { op: 'create', type: 'card', as: 's', file: 'file:md', x: 600, y: 0 },
+      { op: 'create', type: 'card', as: 't', file: 'file:md', x: 1200, y: 0, h: 120 },
+    ]).created
+    expect(records.get(made.o!)).toMatchObject({ props: { role: 'owner', sizing: 'auto' } })
+    expect(records.get(made.s!)).toMatchObject({ props: { role: 'shortcut', sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT } })
+    expect(records.get(made.t!)).toMatchObject({ props: { role: 'shortcut', sizing: 'fixed', h: 120 } })
+  })
+
+  it('puts a shortcut portal to a canvas given by "$ref", a portal id or a canvas id, without making a canvas', () => {
+    const { records, host, edit, root } = setup()
+    const canvasCount = () => records.ofTypeName('canvas').length
+    const owner = edit([{ op: 'create', type: 'portal', as: 'p', name: '原文', x: 0, y: 0 }])
+    const target = owner.canvases!.p!.canvas
+    const before = canvasCount()
+    const result = edit([
+      { op: 'create', type: 'portal', as: 'a', name: 'もう 1 つ', x: 0, y: 400 },
+      { op: 'create', type: 'portal', as: 'b', target: '$a', place: { rightOf: '$a' } },
+      { op: 'create', type: 'portal', as: 'c', target: owner.created.p, x: 600, y: 0, w: 120, h: 90 },
+      { op: 'create', type: 'portal', as: 'd', target, x: 900, y: 0 },
+    ])
+    // 新しい Canvas は $a の 1 つだけ。ショートカットは結果の canvases に入らない
+    expect(canvasCount()).toBe(before + 1)
+    expect(Object.keys(result.canvases!)).toEqual(['a'])
+    const second = result.canvases!.a!.canvas
+    expect(records.get(result.created.b!)).toMatchObject({ type: 'portal', parentId: root, props: { targetId: second, role: 'shortcut', w: 240, h: 170 } })
+    expect(records.get(result.created.c!)).toMatchObject({ props: { targetId: target, role: 'shortcut', w: 120, h: 90 } })
+    expect(records.get(result.created.d!)).toMatchObject({ props: { targetId: target, role: 'shortcut' } })
+    expect(world(records, result.created.b!)).toMatchObject({ x: 280, y: 400 })
+    // 持ち主は変わらない
+    expect(records.get(target)).toMatchObject({ ownerNodeId: owner.created.p })
+    expect(records.get(second)).toMatchObject({ ownerNodeId: result.created.a })
+    // Undo でショートカットも消える
+    undoCanvasEdit(host, result.batch)
+    for (const ref of ['a', 'b', 'c', 'd']) expect(records.get(result.created[ref]!)).toBeUndefined()
+    expect(canvasCount()).toBe(before)
+  })
+
+  it('refuses a shortcut portal with name, path or a type other than portal, and to a canvas in the trash', () => {
+    const { records, host, edit } = setup()
+    const owner = edit([{ op: 'create', type: 'portal', as: 'p', x: 0, y: 0 }])
+    const target = owner.canvases!.p!.canvas
+    expect(() => edit([{ op: 'create', type: 'portal', target, name: 'x' }])).toThrow(/target cannot be used with name/)
+    expect(() => edit([{ op: 'create', type: 'portal', target, path: 'x.pdf' }])).toThrow(/target cannot be used with path/)
+    expect(() => edit([{ op: 'create', type: 'pdf', target, path: 'x.pdf' }])).toThrow(/target is only for portal/)
+    expect(() => edit([{ op: 'create', type: 'note', target }])).toThrow(/target is only for portal/)
+    expect(() => edit([{ op: 'create', type: 'note', as: 'n' }, { op: 'create', type: 'portal', target: '$n' }])).toThrow(/is a note, not a portal or canvas/)
+    expect(() => edit([{ op: 'create', type: 'portal', target: 'canvas:nope' }])).toThrow(/unknown target canvas:nope/)
+    edit([{ op: 'delete', ids: [owner.created.p] }])
+    expect(records.get(target)!.deletedAt).not.toBeNull()
+    expect(() => edit([{ op: 'create', type: 'portal', target }])).toThrow(/is in the trash/)
+    // 参照先が完全に削除された Portal（リンク切れ）を target にしたとき
+    const dangling = node('node:dangling', 'portal', records.rootCanvasId, 'a9', { targetId: 'canvas:gone', role: 'shortcut' })
+    records.apply([dangling], [])
+    host.applyRemote([dangling as never], [])
+    expect(() => edit([{ op: 'create', type: 'portal', target: 'node:dangling' }])).toThrow(/canvas:gone has been deleted/)
   })
 
   it('fails atomically and names the failing op', () => {

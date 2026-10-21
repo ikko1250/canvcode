@@ -76,6 +76,10 @@ export interface DocumentReference {
   role: 'owner' | 'shortcut'
 }
 
+// ショートカットのカード（Markdown・コード・表）の高さ。持ち主と同じ長いカードが 2 枚あると、どちらを読み・編集するのか
+// わからなくなるので、ショートカットとして作る・貼り付けでショートカットに変わるカードは、この高さに固定する（#28）
+export const SHORTCUT_CARD_HEIGHT = 200
+
 export interface DocumentResolver {
   get(id: string): DocumentInfo
   // 親の Canvas で見せるサムネイル。まだなければ null（MAI-8 の「4. 親の Canvas 上でのプレビュー」）

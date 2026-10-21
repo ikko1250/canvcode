@@ -33,7 +33,9 @@ SKILL.md の「抜き書きのページ」で `report.py` の照合が通り rep
 
 - 左から主張ごとの列。列の頭の付箋に主張・状態（付いた／一部だけ／付かなかった で色が変わる）・注記、その下に抜き書きの付箋（印・「原文」・訳・`file:行`。PDF の .txt なら何ページ目か）
 - 食い違いの列、届かなかったものの付箋
-- 右の列に map.md・log.md のカードと原文。Markdown の原文はカード、PDF は Portal（その PDF を取り込み、ページの Canvas を作る。`edit_canvas` の create type `pdf`）。抜き書きの付箋から原文へ点線の矢印
+- 右端の列に map.md・log.md のカードと、原文の持ち主を原文ごとに1つずつ。Markdown の原文はカード、PDF は Portal（その PDF を取り込み、ページの Canvas を作る。`edit_canvas` の create type `pdf`）
+- 主張・食い違いの列の右の帯に、その列が引く原文のショートカット（名前に ↗ が付き、枠が点線）を、列の中で初めて出てきた順に上から積む。PDF は持ち主の Portal を `target` にした create type `portal`、Markdown は同じパスのカード（持ち主があとにあるので、自動でショートカットになり、小さく固定される）
+- 抜き書きの付箋から、同じ列の帯のショートカットへ点線の矢印。持ち主へは引かない（1つの原文を多くの列が引いても、長い矢印がほかの列を横切らないように）。ショートカットの右クリックの「元の場所へ移動」で、右端の持ち主へ移れる
 - 取り込んだ PDF の結果には `textPath`（CanvCode が取り出した文字。ページごとに `=== page N ===`）が付く。pdftotext の .txt と行がずれるので、抜き書きの行番号は今までどおり `sources/` の .txt で数える
 
 Canvas に置いたあとは、ユーザーが付箋を動かしたり書き足したりしてよい。エージェントは canvas.json を流し直さない（同じものがもう1組できる）。やり直すときは、結果の `batch` を `undo_canvas_edit` で取り消してから流す。
@@ -44,5 +46,6 @@ Canvas に置いたあとは、ユーザーが付箋を動かしたり書き足�
 
 ## 使えないとき
 
+- `edit_canvas` が `portal` の `target` を受け付けない（古い CanvCode）なら、canvas.json は流せない。CanvCode を新しくするか、report.html だけを渡す
 - MCP がつながっていない、または `edit_canvas` が `pdf` / `portal` を受け付けない（古い CanvCode）なら、SKILL.md のとおり `~/research/` に置き、report.html だけを渡す
 - `canvas.py` が「操作が 500 個を超える」と止まったら、主張を半分ずつにした extracts.json を2つ作り、Canvas を2つにする

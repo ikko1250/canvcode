@@ -30,6 +30,7 @@ import {
   type LinkCardProps,
   type PortalProps,
   PORTAL_DEFAULT_SIZE,
+  SHORTCUT_CARD_HEIGHT,
   type NoteProps,
   type QuoteCardProps,
   type TableCardProps,
@@ -589,6 +590,27 @@ export function App(props: { initial: InitialRecords }) {
     [workspace, notify],
   )
 
+  // ショートカット（Portal・File のカード）から、元の場所（参照先の持ち主の Portal・カード）へ移る（#28）
+  const goToOwner = useCallback(
+    async (nodeId: string) => {
+      const node = viewRef.current?.editor.getNode(nodeId)
+      const ref = node && viewRef.current?.editor.getType(node).reference?.(node)
+      if (!ref) return
+      const status = workspace.targetStatus(ref.targetId)
+      if (status === 'missing') return notify('元の場所はありません（参照先は完全に削除されています）')
+      if (status === 'trashed') return notify('元の場所はゴミ箱の中にあります。サイドバーから元に戻せます')
+      // ルートの Canvas には持ち主がいないので、そのまま移る
+      if (ref.targetId === workspace.rootCanvasId) return navigate(ref.targetId)
+      const ownerId = workspace.getDocument(ref.targetId)?.ownerNodeId
+      const canvas = ownerId ? workspace.canvasOf(ownerId) : null
+      if (!ownerId || !canvas) return notify('元の場所はありません（参照先はどのキャンバスにも置かれていません）')
+      await navigate(canvas)
+      const view = viewRef.current
+      if (view && view.editor.canvasId === canvas) await view.focusNode(ownerId)
+    },
+    [workspace, navigate, notify],
+  )
+
   // ---- 引用（MAI-33） ----
 
   // 引用ノートへ移る（逆リンク）。別の Canvas にあれば、そこへ移ってから見せる
@@ -791,6 +813,7 @@ export function App(props: { initial: InitialRecords }) {
       if (single?.type === 'portal') {
         items.push({ label: '開く', shortcut: 'Enter', onSelect: () => openPortal(single.id) })
         items.push({ label: '新しいタブで開く', shortcut: 'Ctrl+クリック', onSelect: () => openNodeInNewTab(single.id) })
+        if ((single.props as PortalProps).role === 'shortcut') items.push({ label: '元の場所へ移動', onSelect: () => void goToOwner(single.id) })
         const target = workspace.getCanvas((single.props as PortalProps).targetId)
         if (target) {
           items.push({
@@ -846,6 +869,7 @@ export function App(props: { initial: InitialRecords }) {
           if (!table) items.push({ label: '編集', shortcut: 'Enter', onSelect: () => view.editDocument(single.id) })
           items.push({ label: '全画面で開く', shortcut: table ? 'Enter' : 'Ctrl+Enter', onSelect: () => openFile(file.id) })
           items.push({ label: '新しいタブで開く', onSelect: () => openNodeInNewTab(single.id) })
+          if (props.role === 'shortcut') items.push({ label: '元の場所へ移動', onSelect: () => void goToOwner(single.id) })
           if (file.kind === 'markdown') items.push({ label: 'PDF で出力', onSelect: () => void exportPdf(file.id) })
           if (table) {
             const header = (single.props as TableCardProps).header
@@ -862,18 +886,22 @@ export function App(props: { initial: InitialRecords }) {
           if (cited.length > 0) {
             items.push({ label: `引用しているノート（${cited.length}）`, onSelect: () => setMenu({ x: at.x, y: at.y, items: cited }) })
           }
-          items.push({
-            label: props.sizing === 'auto' ? '大きさを固定' : '高さを中身に合わせる',
-            onSelect: () => {
-              const node = editor.getNode(single.id)
-              const entry = editor.index.get(single.id)
-              if (!node || !entry) return
-              const current = node.props as MarkdownCardProps
-              // 固定にするときは、今の高さのまま固定する（見た目が変わらないように）
-              const next = current.sizing === 'auto' ? { ...current, sizing: 'fixed', h: entry.localBounds.h } : { ...current, sizing: 'auto' }
-              editor.transact('card sizing', (tx) => tx.put({ ...node, props: next }))
-            },
-          })
+          // ショートカットは小さく固定しておく（#28）。高さが中身に合わせてある前のショートカットには「大きさを固定」だけを出す
+          if (props.role !== 'shortcut' || props.sizing === 'auto') {
+            items.push({
+              label: props.sizing === 'auto' ? '大きさを固定' : '高さを中身に合わせる',
+              onSelect: () => {
+                const node = editor.getNode(single.id)
+                const entry = editor.index.get(single.id)
+                if (!node || !entry) return
+                const current = node.props as MarkdownCardProps
+                // 固定にするときは、今の高さのまま固定する（見た目が変わらないように）。ショートカットは小さく固定する（#28）
+                const h = current.role === 'shortcut' ? Math.min(entry.localBounds.h, SHORTCUT_CARD_HEIGHT) : entry.localBounds.h
+                const next = current.sizing === 'auto' ? { ...current, sizing: 'fixed', h } : { ...current, sizing: 'auto' }
+                editor.transact('card sizing', (tx) => tx.put({ ...node, props: next }))
+              },
+            })
+          }
           items.push({
             label: '名前を変更',
             onSelect: () => {
@@ -1052,7 +1080,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection],
   )
 
 

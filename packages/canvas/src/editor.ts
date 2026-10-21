@@ -23,6 +23,7 @@ import {
   PDF_POINT_SCALE,
   PORTAL_DEFAULT_SIZE,
   QUOTE_CARD_DEFAULT_WIDTH,
+  SHORTCUT_CARD_HEIGHT,
   adjustOf,
   slideSize,
   slotsOf,
@@ -680,7 +681,8 @@ export class Editor {
     const role = file.ownerNodeId === null && file.deletedAt === null ? 'owner' : 'shortcut'
     return this.transact(`create ${file.kind} canvas`, (tx) => {
       const canvas = this.workspace.createCanvas(tx, options.title ?? file.title)
-      const card = this.makeNode(type, { x: 0, y: 0, parentId: canvas.id, props: { fileId, role, sizing: 'auto' } })
+      const size = role === 'shortcut' ? { sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT } : { sizing: 'auto' }
+      const card = this.makeNode(type, { x: 0, y: 0, parentId: canvas.id, props: { fileId, role, ...size } })
       tx.put(card)
       const portalId = this.putPortal(tx, canvas.id, 'owner', center, PORTAL_DEFAULT_SIZE)
       this.setSelection([portalId])
@@ -778,7 +780,7 @@ export class Editor {
   }
 
   // File のカード（Markdown カードなど）を、上端の中央が top になるように置く（MAI-30）。
-  // 参照先にまだ持ち主がいなければ持ち主、いればショートカットになる。フレームの上なら、フレームの中に置く。
+  // 参照先にまだ持ち主がいなければ持ち主、いればショートカットになる（ショートカットは小さく固定する。#28）。フレームの上なら、フレームの中に置く。
   // props は、型の既定に重ねる値（取り込んだ表の大きさなど）
   createFileCard(fileId: string, top: Vec, options: { width?: number; props?: Record<string, unknown> } = {}): string | null {
     const file = this.workspace.getFile(fileId)
@@ -789,7 +791,8 @@ export class Editor {
     return this.transact('create card', (tx) => {
       const parentId = this.frameAt(top) ?? this.canvasId
       const local = this.worldToParent(parentId, top)
-      const node = this.makeNode(type, { x: local.x - w / 2, y: local.y, parentId, props: { ...options.props, fileId, w, role } })
+      const size = role === 'shortcut' ? { sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT } : {}
+      const node = this.makeNode(type, { x: local.x - w / 2, y: local.y, parentId, props: { ...options.props, ...size, fileId, w, role } })
       tx.put(node)
       this.setSelection([node.id])
       return node.id

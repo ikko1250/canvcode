@@ -14,7 +14,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, GEO_SHAPES, normalizeCrop, PORTAL_DEFAULT_SIZE, richTextFromPlain, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, GEO_SHAPES, normalizeCrop, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -54,10 +54,11 @@ const MAX_LABEL = 80
 const MAX_LISTED_IDS = 10
 
 // 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る。
-// portal は新しい空の Canvas の、pdf は PDF のページの Canvas（path か url の PDF を取り込む）の持ち主の Portal
+// portal は新しい空の Canvas の、pdf は PDF のページの Canvas（path か url の PDF を取り込む）の持ち主の Portal。
+// portal に target を渡したら、その Canvas のショートカットの Portal（#28）
 const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf'] as const
 // portal / pdf で使えるもの（Canvas の名前は name か text）
-const PORTAL_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h', 'name', 'text', 'path', 'url'])
+const PORTAL_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h', 'name', 'text', 'path', 'url', 'target'])
 const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
 const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', table: 'table-card' }
 // 矢じり（arrow）。bars は両端に直交する短い線（寸法線 |―|）
@@ -137,6 +138,8 @@ const opSchemas = {
     path: z.string().min(1).optional(),
     // pdf：取り込む PDF の URL（path の代わり）
     url: z.string().min(1).optional(),
+    // portal：ショートカットにする Canvas（"$ref" の Portal、Portal のノードの id、Canvas の id）
+    target: id.optional(),
     rotation: finite.optional(),
     template: z.enum(SLIDE_TEMPLATES).optional(),
     ...position,
@@ -458,6 +461,7 @@ class EditRun {
     let type: string = op.type
     if (type === 'portal' || type === 'pdf') return this.createPortal(op, i)
     if (op.url !== undefined) throw new EditError('url is only for pdf')
+    if (op.target !== undefined) throw new EditError('target is only for portal')
     let file: FileRecord | undefined
     if (type === 'card' || type.endsWith('-card')) {
       if ((op.file === undefined) === (op.path === undefined)) throw new EditError(`${type} needs either file (a document id from list_documents) or path`)
@@ -472,7 +476,12 @@ class EditRun {
     const parentId = op.parent ? this.container(op.parent) : this.canvasId
     const def = this.editor.types.get(type)!
     let props = applyStyle(type, def.defaultProps() as Record<string, unknown>, op, true)
-    if (file) props = { ...props, fileId: file.id, role: file.ownerNodeId === null ? 'owner' : 'shortcut' }
+    if (file) {
+      const role = file.ownerNodeId === null ? 'owner' : 'shortcut'
+      props = { ...props, fileId: file.id, role }
+      // ショートカットは小さく固定する（h を渡したらその高さ。#28）
+      if (role === 'shortcut' && op.h === undefined) props = { ...props, sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT }
+    }
     if (op.as !== undefined && this.refs.has(op.as)) throw new EditError(`"as": "${op.as}" is already used`)
     if (op.template !== undefined && type !== 'slide') throw new EditError('template is only for slides')
     if (op.rotation && (def.canRotate === false || def.container === 'group')) throw new EditError(`${type} cannot be rotated`)
@@ -487,10 +496,12 @@ class EditRun {
   }
 
   // 持ち主の Portal と、その先の Canvas を作る。portal は空の Canvas（名前は name か text。なければ「新しいキャンバス N」）、
-  // pdf は preparePdfs が保存した PDF のページの Canvas（名前は name か text。なければファイルの名前）
+  // pdf は preparePdfs が保存した PDF のページの Canvas（名前は name か text。なければファイルの名前）。
+  // portal に target を渡したら、Canvas は作らず、その Canvas のショートカットの Portal を置く（#28）
   private createPortal(op: Extract<Op, { op: 'create' }>, i: number): void {
     const rejected = Object.entries(op).flatMap(([key, value]) => (value === undefined || PORTAL_FIELDS.has(key) ? [] : [key]))
     if (rejected.length) throw new EditError(`${rejected.join(', ')} ${rejected.length > 1 ? 'are' : 'is'} not supported for ${op.type}`)
+    if (op.target !== undefined) return this.createShortcutPortal(op, i)
     if (op.text !== undefined && op.name !== undefined) throw new EditError('give either text or name')
     const title = (op.text ?? op.name)?.trim() || undefined
     let created: CreatedCanvas
@@ -504,15 +515,43 @@ class EditRun {
       if (op.path !== undefined || op.url !== undefined) throw new EditError(`${op.path !== undefined ? 'path' : 'url'} is only for pdf`)
       created = { canvas: this.host.workspace().createCanvas(this.tx, title).id }
     }
+    this.putPortal(op, i, created.canvas, 'owner')
+    this.canvases[op.as ?? `#${i}`] = created
+  }
+
+  // target の Canvas のショートカットの Portal を置く。新しい Canvas はできないので、結果の canvases には入れない
+  private createShortcutPortal(op: Extract<Op, { op: 'create' }>, i: number): void {
+    if (op.type !== 'portal') throw new EditError('target is only for portal')
+    const other = (['name', 'text', 'path', 'url'] as const).filter((key) => op[key] !== undefined)
+    if (other.length) throw new EditError(`target cannot be used with ${other.join(', ')} (a shortcut makes no new canvas)`)
+    const canvasId = this.portalTarget(op.target!)
+    const status = this.host.workspace().targetStatus(canvasId)
+    if (status === 'missing') throw new EditError(`canvas ${canvasId} has been deleted`)
+    if (status === 'trashed') throw new EditError(`canvas ${canvasId} is in the trash`)
+    this.putPortal(op, i, canvasId, 'shortcut')
+  }
+
+  // target（"$ref" の Portal、Portal のノードの id、Canvas の id）が指す Canvas の id
+  private portalTarget(ref: string): string {
+    const targetId = ref.startsWith('$') ? this.node(ref) : ref
+    const record = this.tx.get(targetId)
+    if (record?.typeName === 'canvas') return record.id
+    if (record?.typeName === 'node') {
+      if (record.type !== 'portal') throw new EditError(`target ${targetId} is a ${record.type}, not a portal or canvas`)
+      return (record.props as { targetId: string }).targetId
+    }
+    throw new EditError(`unknown target ${targetId} (give a portal, "$ref" of a portal made earlier in this call, or a canvas id)`)
+  }
+
+  private putPortal(op: Extract<Op, { op: 'create' }>, i: number, targetId: string, role: 'owner' | 'shortcut'): void {
     const parentId = op.parent ? this.container(op.parent) : this.canvasId
     const size = { w: op.w ?? PORTAL_DEFAULT_SIZE.w, h: op.h ?? PORTAL_DEFAULT_SIZE.h }
-    const node = this.editor.makeNode('portal', { x: 0, y: 0, parentId, props: { targetId: created.canvas, role: 'owner', ...size } })
+    const node = this.editor.makeNode('portal', { x: 0, y: 0, parentId, props: { targetId, role, ...size } })
     this.tx.put(node)
     this.tx.flush()
     const target = this.targetTopLeft(node.id, op, parentId)
     this.translateTo(node.id, target.point, target.aabb)
     this.remember(node.id, op.as, i)
-    this.canvases[op.as ?? `#${i}`] = created
   }
 
   private update(op: Extract<Op, { op: 'update' }>): void {
