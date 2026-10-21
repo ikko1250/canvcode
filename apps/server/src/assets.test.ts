@@ -1,8 +1,10 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AssetStore, ensurePdfTextFile, pdfTextFile } from './assets.ts'
+import { AssetStore, ensurePdfTextFile, parseRange, pdfTextFile } from './assets.ts'
 
 // PDF から取り出したテキストのファイル（AI に渡す ref に付ける）
 
@@ -121,5 +123,70 @@ describe('AssetStore.search', () => {
     expect((await store.search(scanned, 'dx')).status).toBe('textless')
     await expect(store.search('../x', 'dx')).rejects.toThrow()
     await expect(store.search(hash, 'x'.repeat(201))).rejects.toThrow()
+  })
+})
+
+describe('parseRange', () => {
+  it('reads one range of a-b, a- and -n, and cuts the end at the file size', () => {
+    expect(parseRange('bytes=0-9', 100)).toEqual({ start: 0, end: 9 })
+    expect(parseRange('bytes=90-200', 100)).toEqual({ start: 90, end: 99 })
+    expect(parseRange('bytes=50-', 100)).toEqual({ start: 50, end: 99 })
+    expect(parseRange('bytes=-10', 100)).toEqual({ start: 90, end: 99 })
+    expect(parseRange('bytes=-200', 100)).toEqual({ start: 0, end: 99 })
+  })
+
+  it('ignores missing, malformed and multiple ranges, and rejects ranges past the end', () => {
+    expect(parseRange(undefined, 100)).toBeNull()
+    expect(parseRange('bytes=0-1,5-6', 100)).toBeNull()
+    expect(parseRange('items=0-1', 100)).toBeNull()
+    expect(parseRange('bytes=-', 100)).toBeNull()
+    expect(parseRange('bytes=9-1', 100)).toBeNull()
+    expect(parseRange('bytes=100-', 100)).toBe('unsatisfiable')
+    expect(parseRange('bytes=-0', 100)).toBe('unsatisfiable')
+  })
+})
+
+describe('AssetStore range requests', () => {
+  it('answers 206 with the range, 416 past the end, and 200 for a stale If-Range', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-assets-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const store = new AssetStore(dir, { pdftoppm: join(dir, 'no-pdftoppm'), log: () => {} })
+    await store.init()
+    const body = Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256))
+    const hash = await store.storeOriginal(body, 'image/png', 10, 10)
+    const server = createServer((req, res) => void store.handle(req, res, new URL(req.url ?? '/', 'http://localhost').pathname))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanups.push(() => server.close())
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assets/${hash}`
+
+    const full = await fetch(url)
+    expect(full.status).toBe(200)
+    expect(full.headers.get('accept-ranges')).toBe('bytes')
+    expect(full.headers.get('etag')).toBe(`"${hash}"`)
+    expect(Buffer.from(await full.arrayBuffer())).toEqual(body)
+
+    const part = await fetch(url, { headers: { range: 'bytes=100-199' } })
+    expect(part.status).toBe(206)
+    expect(part.headers.get('content-range')).toBe('bytes 100-199/1000')
+    expect(part.headers.get('content-length')).toBe('100')
+    expect(Buffer.from(await part.arrayBuffer())).toEqual(body.subarray(100, 200))
+
+    const tail = await fetch(url, { headers: { range: 'bytes=-10' } })
+    expect(Buffer.from(await tail.arrayBuffer())).toEqual(body.subarray(990))
+
+    const outside = await fetch(url, { headers: { range: 'bytes=1000-' } })
+    expect(outside.status).toBe(416)
+    expect(outside.headers.get('content-range')).toBe('bytes */1000')
+
+    const multiple = await fetch(url, { headers: { range: 'bytes=0-1,5-6' } })
+    expect(multiple.status).toBe(200)
+    await multiple.arrayBuffer()
+
+    const sameVersion = await fetch(url, { headers: { range: 'bytes=0-9', 'if-range': `"${hash}"` } })
+    expect(sameVersion.status).toBe(206)
+    await sameVersion.arrayBuffer()
+    const stale = await fetch(url, { headers: { range: 'bytes=0-9', 'if-range': '"other"' } })
+    expect(stale.status).toBe(200)
+    expect((await stale.arrayBuffer()).byteLength).toBe(1000)
   })
 })

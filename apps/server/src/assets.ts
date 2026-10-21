@@ -22,6 +22,7 @@ import { writeViaTemp } from './writeAtomic.ts'
 //   これを渡していなかったころ（pages.json の version 1）の空のテキストは、reextractEmptyPdfTexts が作り直す
 // - PDF は、ページの縮小画像（長辺 256px のシート・1024px のページごと）も裏で作る（pdfPreview.ts。Issue #26）。
 //   GET /api/assets/<ハッシュ>/preview でマニフェストを、…/preview/v1/sheet/<N>・…/preview/v1/page/<ページ> で画像を返す
+// - 原本と縮小版の配信は Range リクエスト（1 つの範囲）に答える。PDF.js が、大きい PDF の要る部分だけを読んで描き始められるように
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -207,19 +208,34 @@ export class AssetStore {
     const path = join(this.dir, file)
     const info = await stat(path).catch(() => null)
     if (!info) throw new HttpError(404, 'not found')
-    res.writeHead(200, {
+    const etag = size === null ? `"${hash}"` : `"${hash}.${size}"`
+    const headers = {
       'content-type': mime,
-      'content-length': info.size,
       // 名前が中身のハッシュなので、中身は変わらない
       'cache-control': 'private, max-age=31536000, immutable',
+      'accept-ranges': 'bytes',
+      etag,
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; sandbox",
-    })
+    }
+    // If-Range が違う版を指していれば（中身は変わらないので、ふつうは起きない）、全体を返す
+    const ifRange = req.headers['if-range']
+    const range = ifRange === undefined || ifRange === etag ? parseRange(req.headers.range, info.size) : null
+    if (range === 'unsatisfiable') {
+      res.writeHead(416, { ...headers, 'content-range': `bytes */${info.size}`, 'content-length': 0 })
+      res.end()
+      return
+    }
+    if (range) {
+      res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${info.size}`, 'content-length': range.end - range.start + 1 })
+    } else {
+      res.writeHead(200, { ...headers, 'content-length': info.size })
+    }
     if (req.method === 'HEAD') {
       res.end()
       return
     }
-    createReadStream(path).pipe(res)
+    createReadStream(path, range ?? {}).pipe(res)
   }
 
   private async extractPdfText(hash: string, data: Buffer): Promise<void> {
@@ -298,6 +314,24 @@ class HttpError extends Error {
     super(message)
     this.status = status
   }
+}
+
+// Range ヘッダーの 1 つの範囲（bytes=a-b・bytes=a-・bytes=-n）を読む。範囲の終わりはファイルの大きさまでに縮める。
+// ない・書き方が違う・2 つ以上の範囲なら null（Range を無視して全体を返す。HTTP の決まりで許されている）。
+// 始まりがファイルの大きさ以上（-0 も）なら 'unsatisfiable'（416 を返す）
+export function parseRange(header: string | undefined, size: number): { start: number; end: number } | 'unsatisfiable' | null {
+  const match = header === undefined ? null : /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+  if (!match || (!match[1] && !match[2])) return null
+  if (!match[1]) {
+    const length = Number(match[2])
+    if (length === 0 || size === 0) return 'unsatisfiable'
+    return { start: Math.max(0, size - length), end: size - 1 }
+  }
+  const start = Number(match[1])
+  if (match[2] && Number(match[2]) < start) return null
+  if (start >= size) return 'unsatisfiable'
+  const end = match[2] ? Number(match[2]) : size - 1
+  return { start, end: Math.min(end, size - 1) }
 }
 
 function headerNumber(req: IncomingMessage, name: string): number {
