@@ -37,7 +37,6 @@ import {
   type SlideProps,
   type SlideRatio,
 } from '@canvcode/nodes'
-import { getMaxRowCount } from '@canvcode/slides'
 import {
   alignBoxes,
   distributeBoxes,
@@ -57,7 +56,7 @@ import { reorderSiblings, type ReorderDirection } from './reorder.ts'
 import { Session } from './session.ts'
 import { slideTopLeft, toggledSlideRatio, toggledSlidesHidden } from './slideEdit.ts'
 import { adjustWithMovedChildren } from './slideLayoutAdjust.ts'
-import { arrangeSlideLayout, presentRows, pruneSlideLayoutRows } from './slideLayoutArrange.ts'
+import { arrangeSlideLayout, presentRows, pruneSlideLayoutRows, slideLayoutMaxRows } from './slideLayoutArrange.ts'
 import {
   emptiedCellProps,
   hasSlideLayoutRows,
@@ -148,7 +147,7 @@ export interface SlideLayoutRowState {
   canRemove: boolean
   // 選んでいるセルの行が、手で決めた高さ（h）を持つか（「行の高さを自動に戻す」を出す）
   manualHeight: boolean
-  // 今の行の数と、そのレイアウトの行数の上限（getMaxRowCount）
+  // 今の行の数と、そのレイアウトの行数の上限（slideLayoutMaxRows。セルの文字の大きさで決まる）
   rowCount: number
   maxRows: number
 }
@@ -1377,7 +1376,7 @@ export class Editor {
   slideLayoutRowState(): SlideLayoutRowState | null {
     const target = this.slideLayoutRowTarget()
     if (!target) return null
-    const maxRows = getMaxRowCount((target.layout.props as Record<string, unknown>).layout as SlideLayoutRowKind)
+    const maxRows = this.slideLayoutMaxRowsOf(target.layout, target.rows)
     return {
       canAdd: target.rows.length > 0 && target.rows.length < maxRows,
       canRemove: target.row !== null && target.rows.length > 1,
@@ -1394,13 +1393,17 @@ export class Editor {
     const target = this.slideLayoutRowTarget()
     if (!target) return false
     const { layout, rows, row } = target
-    const max = getMaxRowCount((layout.props as Record<string, unknown>).layout as SlideLayoutRowKind)
-    if (rows.length === 0 || rows.length >= max) return false
+    if (rows.length === 0 || rows.length >= this.slideLayoutMaxRowsOf(layout, rows)) return false
     this.transact('add slide row', (tx) => {
       const added = this.putSlideLayoutRow(tx, layout.id, row ?? rows.length - 1)
       this.setSelection([added.body])
     })
     return true
+  }
+
+  // slide-layout の行数の上限。今の行のセルの文字の大きさで決まる（足す行は隣の行の書式を写すので、今の行で決める）
+  private slideLayoutMaxRowsOf(layout: NodeRecord, rows: SlideLayoutSlots['rows']): number {
+    return slideLayoutMaxRows((layout.props as Record<string, unknown>).layout as SlideLayoutRowKind, rows, (id) => (id ? this.getNode(id) ?? undefined : undefined))
   }
 
   // slide-layout の行（本文の子が今もある行）の at 番目の下に、行を 1 つ tx に書き、足したセルの id を返す

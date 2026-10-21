@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { adjustOf, geoFitHeight, slotsOf, type GeoProps, type SlideLayoutSlots, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, geoFitHeight, geoLabelParagraphs, slotsOf, type GeoProps, type SlideLayoutSlots, type SlideRatio, type TextRun } from '@canvcode/nodes'
 import {
   CANVAS_SLIDE_LAYOUTS,
   canvasSlideBodyFill,
@@ -26,6 +26,8 @@ import { emptiedCellProps } from './slideLayoutRows.ts'
 //   compact の表・箇条書きはタイトルとパネルをまとめて上下中央に寄せ直す（本文と重ならない）。タイトルは 2 行（SLIDE_TITLE_MAX_LINES）まで。
 //   3 行以上でも伸ばすのは 2 行分までにし（パネルの位置は 2 行のときと同じ）、収まらない分はあふれとして知らせる（slideOverflow.ts）
 // - 表紙以外のタイトルの幅は、パネルの横枠（表紙のタイトルと同じ 150〜1810）。折り返しもこの幅で測る
+// - 行数の上限は、行のセルの文字 1 行分の高さ（slideRowFloorPx）で決まる（slideLayoutMaxRows）。標準の配置に入らない行数の
+//   表・箇条書きは、詰めた配置（v1 の TABLE_SPEC.tight）にする
 
 export interface SlideLayoutArrangeInput {
   // slide-layout のレコード（props は SlideLayoutProps。壊れた値も読む）
@@ -120,9 +122,9 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   // 行が 0 のとき（本文をすべて消した）は、行の箱は作らず、タイトルとパネルを 1 行分の幾何で置く。
   // 上限を超えた行は例外にせず、上限までを並べて、超えた分は位置を変えない
   const rows = presentRows(slots, (id) => children.has(id))
-  const max = getMaxRowCount(kind)
-  const rowCount = Math.min(rows.length, max)
-  const manual = adjustLayoutOptions(adjustOf(props.adjust))
+  const rowFloorPx = slideRowFloorPx(rows, child)
+  const rowCount = Math.min(rows.length, getMaxRowCount(kind, rowFloorPx))
+  const manual = { ...adjustLayoutOptions(adjustOf(props.adjust)), ...(rowFloorPx !== undefined ? { rowFloorPx } : {}) }
   const base = canvasSlideLayout(kind, Math.max(1, rowCount), ratio, manual)
   // タイトルの幅は行の数・高さによらないので、一律の幾何の箱の幅で測る
   const titleExtraPx = titleExtraHeight(child(slots.title), base.title.w, textHeight)
@@ -133,7 +135,8 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
   const required = placed.map((row, i) =>
     Math.max(cellFitHeight(child(row.label), sized.rows[i].label?.w), cellFitHeight(child(row.body), sized.rows[i].body.w)),
   )
-  const heights = rowCount > 0 ? canvasSlideRowHeights(kind, required, placed.map((row) => row.h), { tableHeight: adjusted.tableHeight }) : null
+  const heights =
+    rowCount > 0 ? canvasSlideRowHeights(kind, required, placed.map((row) => row.h), { tableHeight: adjusted.tableHeight, rowFloorPx }) : null
   const boxes = heights ? canvasSlideLayout(kind, rowCount, ratio, { ...adjusted, forceFull: heights.forceFull, rowHeights: heights.rowHeights }) : sized
   place(slots.title, boxes.title)
   place(slots.panel, boxes.panel)
@@ -144,6 +147,43 @@ export function arrangeSlideLayout(input: SlideLayoutArrangeInput): SlideLayoutA
     place(rows[i].body, boxes.rows[i].body, i)
   }
   return { updates, rowCount, overflowRows: rows.length - rowCount, rowHeights: heights?.rowHeights ?? [] }
+}
+
+// 1 行の最低の高さ（詰めた配置の行数の上限と、行の高さの下限）。行の見出し・本文の geo のセルを、文字 1 行だけにしたときの高さ
+// （文字の高さ＋上下の余白。geoFitHeight。描画と同じ配置で測る）の最大。1 行には、セルの段落の書式（run の書式）をすべて並べる
+// （行の中でいちばん大きい文字で決まる）。geo のセルが無ければ undefined（v1 の minRowPx を使う）
+export function slideRowFloorPx(rows: SlideLayoutSlots['rows'], child: (id: string | undefined) => NodeRecord | undefined): number | undefined {
+  let floor: number | undefined
+  for (const row of rows) {
+    for (const id of [row.label, row.body]) {
+      const node = child(id)
+      if (node?.type !== 'geo') continue
+      const height = oneLineFitHeight(node.props as GeoProps)
+      floor = floor === undefined ? height : Math.max(floor, height)
+    }
+  }
+  return floor
+}
+
+// slide-layout の行数の上限（slots の行のうち、子が今もある行のセルの文字の大きさで決まる。getMaxRowCount）
+export function slideLayoutMaxRows(kind: Parameters<typeof getMaxRowCount>[0], rows: SlideLayoutSlots['rows'], child: (id: string | undefined) => NodeRecord | undefined): number {
+  return getMaxRowCount(kind, slideRowFloorPx(rows, child))
+}
+
+// 折り返さない幅（1 行の文字が収まる）
+const ONE_LINE_WIDTH = 100_000
+
+// geo の文字を 1 行にしたときの、文字が収まる高さ。段落の run の書式ごとに 1 文字ずつ並べる（書式が無ければ図形の既定の書式で 1 文字）
+function oneLineFitHeight(props: GeoProps): number {
+  const paragraphs = geoLabelParagraphs(props)
+  const formats = new Map<string, TextRun['format']>()
+  for (const run of paragraphs.flatMap((paragraph) => paragraph.runs)) {
+    if (run.text !== '') formats.set(JSON.stringify(run.format ?? {}), run.format)
+  }
+  const runs: TextRun[] = formats.size > 0 ? [...formats.values()].map((format) => (format ? { text: 'あ', format } : { text: 'あ' })) : [{ text: 'あ' }]
+  const list = paragraphs[0]?.list
+  const line = [{ runs, ...(list ? { list } : {}) }]
+  return geoFitHeight({ ...props, label: 'あ'.repeat(runs.length), labelParagraphs: line, w: ONE_LINE_WIDTH }, ONE_LINE_WIDTH)
 }
 
 // 表紙以外のタイトルの行の上限。超えた分は上へ伸ばさず、あふれとして知らせる

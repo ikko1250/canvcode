@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
 import { richTextFromPlain, solidPaint, type SlideLayoutKind, type SlideLayoutProps } from '@canvcode/nodes'
-import { canvasSlideBodyFill, canvasSlideLayout, getMaxRowCount } from '@canvcode/slides'
+import { canvasSlideBodyFill, canvasSlideLayout } from '@canvcode/slides'
 import { Editor } from './editor.ts'
+import { slideLayoutMaxRows } from './slideLayoutArrange.ts'
 import { emptiedCellProps, insertSlideLayoutRow, slideLayoutRowOf } from './slideLayoutRows.ts'
 
 // slide-layout（スライド v2）の行を足す・消す。並べ直しと地の色の付け直しは、コミットフックが同じ 1 歩で行う
@@ -53,6 +54,12 @@ function setup(n = 3, layout: SlideLayoutKind = 'table') {
   return { editor, slide, layout: node, title: title.id, panel: panel.id, slots, get, box }
 }
 
+// 行数の上限（セルの文字の大きさで決まる。行はみな同じ書式なので、1 行で測る）
+function maxRows(layout: SlideLayoutKind = 'table'): number {
+  const { editor, slots } = setup(1, layout)
+  return slideLayoutMaxRows(layout, slots().rows, (id) => (id ? (editor.getNode(id) ?? undefined) : undefined))
+}
+
 const selected = (editor: Editor) => [...editor.session.get().selectedIds]
 const fillColor = (node: NodeRecord) => (node.props as { fill: { color: string } }).fill.color
 
@@ -81,7 +88,7 @@ describe('addSlideLayoutRow', () => {
     expect(box(title)).toEqual({ x: three.title.x, y: three.title.y, w: three.title.w })
     const before = slots().rows
     editor.setSelection([before[0].label!])
-    expect(editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: true, manualHeight: false, rowCount: 3, maxRows: getMaxRowCount('table') })
+    expect(editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: true, manualHeight: false, rowCount: 3, maxRows: maxRows() })
     expect(editor.addSlideLayoutRow()).toBe(true)
 
     const rows = slots().rows
@@ -134,7 +141,7 @@ describe('addSlideLayoutRow', () => {
   })
 
   it('returns false at the maximum, and does nothing for the cover or outside a slide-layout', () => {
-    const max = getMaxRowCount('table')
+    const max = maxRows()
     const full = setup(max)
     full.editor.setSelection([full.slots().rows[0].body])
     expect(full.editor.slideLayoutRowState()).toEqual({ canAdd: false, canRemove: true, manualHeight: false, rowCount: max, maxRows: max })
@@ -204,7 +211,7 @@ describe('removeSlideLayoutRow', () => {
   it('does not remove the last row, nor without a selected cell', () => {
     const one = setup(1)
     one.editor.setSelection([one.slots().rows[0].body])
-    expect(one.editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: false, manualHeight: false, rowCount: 1, maxRows: getMaxRowCount('table') })
+    expect(one.editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: false, manualHeight: false, rowCount: 1, maxRows: maxRows() })
     expect(one.editor.removeSlideLayoutRow()).toBe(false)
     expect(one.slots().rows).toHaveLength(1)
 

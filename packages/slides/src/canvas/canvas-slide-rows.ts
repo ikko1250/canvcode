@@ -10,10 +10,11 @@
  * - 手で決めた行（fixed）：その高さを優先し、残りを自動の行で分ける。全高にするかは、手で決めた行の必要高さを
  *   その高さとして、上の規則で決める。配分の規則は distributeWithFixed に書く。
  * - 表パネルの高さを手で決めた（options.tableHeight）ときは、compact / 全高を選ばず、その高さの予算で同じ規則で配分する。
+ * - 標準の配置に入らない行数（詰めた配置）では、行の高さの下限は 1 行の最低の高さ（options.rowFloorPx）。標準の配置では minRowPx。
  */
 
 import { analyzeMeasuredRows, type RowCapacityClassification } from "../core/slide-row-capacity.ts";
-import { getLayoutProfile, minRowPx, type GeometryOptions, type LayoutProfile } from "../core/slide-layout-spec.ts";
+import { getLayoutProfile, type GeometryOptions, type LayoutProfile } from "../core/slide-layout-spec.ts";
 import type { CanvasGridSlideLayout } from "./canvas-slide-layout.ts";
 
 export type CanvasSlideRowHeights = {
@@ -27,21 +28,21 @@ export type CanvasSlideRowHeights = {
 
 /**
  * 行の高さを配分する。required は行ごとの必要高さ（自動の行に使う）、fixed は手で決めた高さ（無い行は undefined）。
- * options.tableHeight は手で決めた表パネルの高さ（canvasSlideLayout にも同じ値を渡す）。
- * 行数は 1 から getMaxRowCount(layout) まで（幾何と同じく、外れれば例外）
+ * options.tableHeight は手で決めた表パネルの高さ、options.rowFloorPx は 1 行の最低の高さ（canvasSlideLayout にも同じ値を渡す）。
+ * 行数は 1 から getMaxRowCount(layout, rowFloorPx) まで（幾何と同じく、外れれば例外）
  */
 export function canvasSlideRowHeights(
   layout: CanvasGridSlideLayout,
   required: readonly number[],
   fixed: readonly (number | undefined)[] = [],
-  options: Pick<GeometryOptions, "tableHeight"> = {},
+  options: Pick<GeometryOptions, "tableHeight" | "rowFloorPx"> = {},
 ): CanvasSlideRowHeights {
   const manual = required.map((_, i) => validHeight(fixed[i]));
   const needs = required.map((value, i) => manual[i] ?? value);
-  const { tableHeight } = options;
-  const analysis = analyzeMeasuredRows(layout, required.length, () => needs, undefined, { tableHeight });
+  const { tableHeight, rowFloorPx } = options;
+  const analysis = analyzeMeasuredRows(layout, required.length, () => needs, undefined, { tableHeight, rowFloorPx });
   const forceFull = analysis.fullPanel;
-  const profile = getLayoutProfile(layout, required.length, { forceFull, tableHeight });
+  const profile = getLayoutProfile(layout, required.length, { forceFull, tableHeight, rowFloorPx });
   const { classification } = analysis;
   if (manual.every((h) => h === undefined)) {
     const rowHeights =
@@ -59,10 +60,10 @@ function validHeight(value: number | undefined): number | undefined {
 
 /**
  * 手で決めた行があるときの配分。行に使える高さ（予算 − 行の間隔）を、次の順に分ける。
- * 1. 手で決めた行はその高さ、自動の行は必要高さ（v1 の minRowPx より低くはしない）。余りは自動の行で等しく分ける
+ * 1. 手で決めた行はその高さ、自動の行は必要高さ（行の高さの下限 profile.rowFloorPx より低くはしない）。余りは自動の行で等しく分ける
  *    （v1 の再配分と同じく 1px 単位で、端数は上の行から足す）。自動の行が無ければ、余りは下に空けておく
- * 2. 入らなければ、自動の行を必要高さの大きい行から縮める（低い行は必要高さのまま、高い行をそろえて詰める）。最小は minRowPx
- * 3. 自動の行をすべて minRowPx にしても入らなければ、手で決めた行を高さの比で縮めて収める（文字のあふれは警告に任せる）
+ * 2. 入らなければ、自動の行を必要高さの大きい行から縮める（低い行は必要高さのまま、高い行をそろえて詰める）。最小は下限
+ * 3. 自動の行をすべて下限にしても入らなければ、手で決めた行を高さの比で縮めて収める（文字のあふれは警告に任せる）
  */
 function distributeWithFixed(
   profile: LayoutProfile,
@@ -70,7 +71,7 @@ function distributeWithFixed(
   manual: readonly (number | undefined)[],
 ): number[] {
   const budget = profile.budgetPx - (required.length - 1) * profile.gapPx;
-  const floor = minRowPx();
+  const floor = profile.rowFloorPx;
   const auto = required.flatMap((_, i) => (manual[i] === undefined ? [i] : []));
   const manualSum = manual.reduce<number>((sum, h) => sum + (h ?? 0), 0);
   const heights = required.map((value, i) => manual[i] ?? Math.max(Math.ceil(value), floor));

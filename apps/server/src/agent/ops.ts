@@ -15,13 +15,12 @@ import {
   type WorkspaceRecord,
 } from '@canvcode/core'
 import { adjustOf, GEO_SHAPES, normalizeCrop, PORTAL_DEFAULT_SIZE, richTextFromPlain, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
-import { getMaxRowCount } from '@canvcode/slides'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
 import { nodeIn, type Editor } from '@canvcode/canvas/editor'
 import { patchAdjust, tableHeightPatch } from '@canvcode/canvas/slideLayoutAdjust'
-import { presentRows } from '@canvcode/canvas/slideLayoutArrange'
+import { presentRows, slideLayoutMaxRows } from '@canvcode/canvas/slideLayoutArrange'
 import { hasSlideLayoutRows, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
 import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspace'
 import { z } from 'zod'
@@ -811,7 +810,8 @@ class EditRun {
     const props = layout.props as Record<string, unknown>
     if (!hasSlideLayoutRows(props.layout)) throw new EditError(`a ${String(props.layout)} slide has no rows`)
     const rows = presentRows(slotsOf(props.slots), (id) => nodeIn(this.tx, id)?.parentId === layout.id)
-    const max = getMaxRowCount(props.layout)
+    // 上限は今の行のセルの文字の大きさで決まる（足す行は隣の行の書式を写す）
+    const max = slideLayoutMaxRows(props.layout, rows, (id) => (id ? nodeIn(this.tx, id) : undefined))
     if (rows.length >= max) throw new EditError(`a ${props.layout} slide has at most ${max} rows`)
     if (rows.length === 0) throw new EditError(`${layout.id} has no row to copy`)
     let at = rows.length - 1

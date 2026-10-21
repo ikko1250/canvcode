@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { resetTextMetrics, richTextFromPlain, solidPaint, type SlideLayoutKind, type SlideLayoutProps } from '@canvcode/nodes'
-import { getMaxRowCount } from '@canvcode/slides'
+import { resetTextMetrics, richTextFromPlain, slotsOf, solidPaint, type SlideLayoutKind, type SlideLayoutProps } from '@canvcode/nodes'
 import { Editor, nodeIn } from './editor.ts'
 import { drawOverlay, type Viewport } from './renderer.ts'
+import { slideLayoutMaxRows } from './slideLayoutArrange.ts'
 import { slideLayoutOverflow } from './slideOverflow.ts'
 
 // スライドの中のあふれ（スライド v2）。文字は縮めずに折り返し、セルからあふれたら印と警告を出す
@@ -47,9 +47,16 @@ function setup(n = 3, layout: SlideLayoutKind = 'table', editor = new Editor({ c
   return { editor, slide: slide.id, layout: node.id, title: title.id, rows, setText, setTitle }
 }
 
+// 行数の上限（セルの文字の大きさで決まる。行はみな同じ書式なので、1 行で測る）
+function maxRows(layout: SlideLayoutKind): number {
+  const { editor, layout: id } = setup(1, layout)
+  const rows = slotsOf((editor.getNode(id)!.props as Record<string, unknown>).slots).rows
+  return slideLayoutMaxRows(layout, rows, (x) => (x ? (editor.getNode(x) ?? undefined) : undefined))
+}
+
 describe('slideLayoutOverflow', () => {
   it('reports the geo cells whose text does not fit, and the rows over the limit', () => {
-    const { editor, layout, rows } = setup(getMaxRowCount('table') + 2)
+    const { editor, layout, rows } = setup(maxRows('table') + 2)
     const children = new Map(editor.index.childrenOf(layout).map((id) => [id, editor.getNode(id)!]))
     expect(slideLayoutOverflow(editor.getNode(layout)!, children)).toEqual({ nodes: [], extraRows: 2 })
     // 並べなかった行のセルは測らない
@@ -133,7 +140,7 @@ describe('Editor.slideOverflows', () => {
   })
 
   it('counts the rows over the limit', () => {
-    const { editor, slide } = setup(getMaxRowCount('bullets') + 1, 'bullets')
+    const { editor, slide } = setup(maxRows('bullets') + 1, 'bullets')
     expect(editor.slideOverflows().get(slide)).toEqual({ nodes: [], extraRows: 1 })
     expect(editor.slides.overflows?.(slide)).toBe(true)
   })
@@ -154,7 +161,7 @@ describe('Editor.slideOverflows', () => {
     const { editor } = setup()
     const { canvasId } = editor.createPortal({ x: -3000, y: 0 })
     const child = new Editor({ workspace: editor.workspace, canvasId })
-    const other = setup(getMaxRowCount('table') + 1, 'table', child)
+    const other = setup(maxRows('table') + 1, 'table', child)
     const before = editor.slideOverflows()
     other.setText(other.rows[0].body, lines(8))
     expect(editor.slideOverflows()).toBe(before)

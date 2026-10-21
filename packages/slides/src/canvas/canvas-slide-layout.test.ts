@@ -5,7 +5,7 @@ import {
   placeCoverHeading,
   type CanvasGridSlideBoxes,
 } from './canvas-slide-layout.ts'
-import { computeSlideGeometry, getMaxRowCount, tablePanelHeightRange } from '../core/slide-layout-spec.ts'
+import { computeSlideGeometry, getMaxRowCount, getStandardMaxRowCount, tablePanelHeightRange } from '../core/slide-layout-spec.ts'
 
 // スライド v2 の幾何：v1（computeSlideGeometry・computeCoverGeometry・slide.css）と同じ位置になること
 
@@ -52,10 +52,11 @@ describe('canvasSlideLayout table', () => {
     expect(rowYs(four)).toEqual([261, 433, 605, 777])
   })
 
-  it('handles the maximum row count', () => {
-    const max = getMaxRowCount('table')
+  it('handles the maximum row count of the standard layout', () => {
+    const max = getStandardMaxRowCount('table')
     expect(max).toBe(6)
     const boxes = canvasSlideLayout('table', max)
+    expect(boxes.tight).toBe(false)
     expect(boxes.rowPx).toBe(74)
     expect(boxes.gapPx).toBe(41)
     expect(rowYs(boxes)).toEqual([261, 376, 491, 606, 721, 836])
@@ -78,11 +79,59 @@ describe('canvasSlideLayout table', () => {
     }
   })
 
-  it('throws beyond the maximum row count like v1', () => {
-    expect(() => canvasSlideLayout('table', 7)).toThrow()
-    expect(() => canvasSlideLayout('bullets', 7)).toThrow()
+  it('uses the tight layout for more rows than the standard layout holds', () => {
+    const seven = canvasSlideLayout('table', 7)
+    expect(seven.tight).toBe(true)
+    expect(seven.compact).toBe(false)
+    expect(seven.title.y).toBe(58)
+    expect(seven.panel).toEqual({ x: 150, y: 126, w: 1660, h: 880 })
+    expect(seven.grid).toEqual({ x: 220, y: 166, w: 1520, h: 800 })
+    expect(seven.gapPx).toBe(17)
+    expect(seven.rowPx).toBe(100)
+    const nine = canvasSlideLayout('table', 9)
+    expect(nine.rowPx).toBe(74)
+    expect(rowYs(nine)).toEqual([166, 257, 348, 439, 530, 621, 712, 803, 894])
+    const last = nine.rows[8]!
+    expect(last.body.y + last.body.h).toBeLessThanOrEqual(nine.panel.y + nine.panel.h)
+    // 箇条書きも同じ（見出しの列なし）
+    const bullets = canvasSlideLayout('bullets', 8)
+    expect(bullets.tight).toBe(true)
+    expect(bullets.rows[0]).toEqual({ label: null, body: { x: 220, y: 166, w: 1520, h: 85 } })
+    // タイトルが 2 行なら上へ伸ばす（パネルは動かさない）
+    const tall = canvasSlideLayout('table', 7, '16:9', { titleExtraPx: 40 })
+    expect(tall.title.y).toBe(18)
+    expect(tall.panel.y).toBe(126)
+  })
+
+  it('derives the row limit from the height of one line in the cells', () => {
+    // 1 行の最低の高さ 68（既定の文字の大きさ）：floor((800 + 17) / (68 + 17)) = 9
+    expect(getMaxRowCount('table')).toBe(9)
+    expect(getMaxRowCount('bullets')).toBe(9)
+    // 本文 22px（12 × 2 + 22 × 1.38 = 54.36 → 55）：floor(817 / 72) = 11
+    expect(getMaxRowCount('table', 54.36)).toBe(11)
+    const eleven = canvasSlideLayout('table', 11, '16:9', { rowFloorPx: 54.36 })
+    expect(eleven.rowPx).toBe(57)
+    // 大きい文字でも、標準の配置に入る行数（6）より減らさない
+    expect(getMaxRowCount('table', 200)).toBe(6)
+    // table-image・table-images は文字の大きさによらない
+    expect(getMaxRowCount('table-image', 40)).toBe(getStandardMaxRowCount('table-image'))
+    expect(getMaxRowCount('table-images', 40)).toBe(getStandardMaxRowCount('table-images'))
+  })
+
+  it('throws beyond the maximum row count', () => {
+    expect(() => canvasSlideLayout('table', 10)).toThrow()
+    expect(() => canvasSlideLayout('bullets', 10)).toThrow()
+    expect(() => canvasSlideLayout('table', 12, '16:9', { rowFloorPx: 54.36 })).toThrow()
     expect(() => canvasSlideLayout('table-image', 7)).toThrow()
     expect(() => canvasSlideLayout('table', 0)).toThrow()
+  })
+
+  it('keeps a fixed panel height of the tight layout from the tight panel top', () => {
+    expect(tablePanelHeightRange('table', 9)).toEqual({ min: 9 * 68 + 8 * 17 + 80, max: 1080 - 126 })
+    const boxes = canvasSlideLayout('table', 8, '16:9', { tableHeight: 900 })
+    expect(boxes.panel).toEqual({ x: 150, y: 126, w: 1660, h: 900 })
+    expect(boxes.gapPx).toBe(17)
+    expect(boxes.rowPx).toBe(Math.round((900 - 80 - 7 * 17) / 8))
   })
 
   it('uses the full panel when forceFull is set', () => {

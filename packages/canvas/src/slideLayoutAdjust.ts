@@ -57,7 +57,7 @@ export function tableHeightPatch(kind: unknown, rowCount: number, panelY: number
   if (!isSlideLayout(kind) || !layoutUsesRowGrid(kind)) return null
   if (h === undefined) return { h: undefined }
   const height = clampTablePanelHeight(kind, rowCount, h)!
-  return panelY === undefined ? { h: height } : { h: height, dy: tidy(panelY - tablePanelTop(kind)) }
+  return panelY === undefined ? { h: height } : { h: height, dy: tidy(panelY - tablePanelTop(kind, rowCount)) }
 }
 
 // 表パネルか右図枠を手で動かした・表パネルの大きさを変えたときの、新しい adjust。変えるものが無ければ null。

@@ -8,7 +8,6 @@
 
 import {
   getLayoutProfile,
-  minRowPx,
   type GeometryOptions,
   type LayoutProfile,
   type SlideLayout,
@@ -115,7 +114,7 @@ function buildWarnings(
   }
 
   if (classification === "over_budget") {
-    const minSum = minimumRequiredSum(requiredPx, minRowPx()) + totalGapsPx(profile);
+    const minSum = minimumRequiredSum(requiredPx, profile.rowFloorPx) + totalGapsPx(profile);
     warnings.push(
       `警告: スライド${ref} — 合計必要高さ ${minSum}px が予算 ${profile.budgetPx}px を超過しています。文案の短縮を検討してください。`,
     );
@@ -150,7 +149,7 @@ function classifyRowCapacity(
   requiredPx: number[],
   slideName: string | undefined,
 ): AnalyzeSlideRowsResult {
-  const minRowPxValue = minRowPx();
+  const minRowPxValue = profile.rowFloorPx;
 
   const base = {
     requiredPx,
@@ -216,14 +215,14 @@ function classifyWithFullPanelFallback(
   rowCount: number,
   estimate: (profile: LayoutProfile) => number[],
   slideName: string | undefined,
-  options: Pick<GeometryOptions, "tableHeight">,
+  options: Pick<GeometryOptions, "tableHeight" | "rowFloorPx">,
 ): AnalyzeSlideRowsResult {
   const profile = getLayoutProfile(layout, rowCount, options);
   const result = classifyRowCapacity(profile, estimate(profile), slideName);
   if (fitsGrid(result) || !profile.compact) {
     return result;
   }
-  const fullProfile = getLayoutProfile(layout, rowCount, { forceFull: true });
+  const fullProfile = getLayoutProfile(layout, rowCount, { forceFull: true, rowFloorPx: options.rowFloorPx });
   const fullResult = classifyRowCapacity(fullProfile, estimate(fullProfile), slideName);
   if (!fitsGrid(fullResult)) {
     return result;
@@ -243,14 +242,15 @@ function classifyWithFullPanelFallback(
  * 行ごとの必要高さを呼び出し側が測って渡し、分類・partial の再配分・全高パネルへの切り替えの規則を通す。
  * スライド v2（キャンバスのスライド）が、描画と同じ配置で測った高さで使う。
  * measure は幾何（compact / 全高）ごとに呼ばれる。行の幅はどちらも同じなので、同じ値を返してよい。
- * options.tableHeight は手で決めた表パネルの高さ（決めれば、その高さの予算で分類する）
+ * options.tableHeight は手で決めた表パネルの高さ（決めれば、その高さの予算で分類する）。
+ * options.rowFloorPx は 1 行の最低の高さ（詰めた配置の行数の上限と、行の高さの下限に使う）
  */
 export function analyzeMeasuredRows(
   layout: SlideLayout,
   rowCount: number,
   measure: (profile: LayoutProfile) => number[],
   slideName?: string,
-  options: Pick<GeometryOptions, "tableHeight"> = {},
+  options: Pick<GeometryOptions, "tableHeight" | "rowFloorPx"> = {},
 ): AnalyzeSlideRowsResult {
   return classifyWithFullPanelFallback(layout, rowCount, measure, slideName, options);
 }

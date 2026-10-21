@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
 import { richTextFromPlain, type SlideLayoutKind, type SlideLayoutProps, type SlideLayoutSlots, type SlideRatio } from '@canvcode/nodes'
-import { canvasSlideBodyFill, canvasSlideLayout, getMaxRowCount, placeCoverHeading, type CanvasBox } from '@canvcode/slides'
+import { CANVAS_SLIDE_LABEL_STYLE, canvasSlideBodyFill, canvasSlideBodyStyle, canvasSlideLayout, placeCoverHeading, type CanvasBox } from '@canvcode/slides'
 import { Editor } from './editor.ts'
-import { arrangeSlideLayout, pruneSlideLayoutRows, slideBodyFillFor, titleExtraHeight, type SlideLayoutArrangement } from './slideLayoutArrange.ts'
+import { slideCellProps } from './slideTemplate.ts'
+import { arrangeSlideLayout, pruneSlideLayoutRows, slideBodyFillFor, slideLayoutMaxRows, slideRowFloorPx, titleExtraHeight, type SlideLayoutArrangement } from './slideLayoutArrange.ts'
 
 // slide-layout（スライド v2）の子の並べ直し。純粋な計算と、Editor がトランザクションの終わりに並べ直すこと
 
@@ -46,8 +47,8 @@ const at = (n: NodeRecord) => ({ x: n.x, y: n.y, ...(n.type === 'text' ? { w: (n
 const geoBox = (b: CanvasBox) => ({ x: b.x, y: b.y, w: b.w, h: b.h })
 const textBox = (b: CanvasBox) => ({ x: b.x, y: b.y, w: b.w })
 
-function expectGrid(children: Map<string, NodeRecord>, rowCount: number, ratio: SlideRatio = '16:9') {
-  const boxes = canvasSlideLayout('table', rowCount, ratio)
+function expectGrid(children: Map<string, NodeRecord>, rowCount: number, ratio: SlideRatio = '16:9', rowFloorPx?: number) {
+  const boxes = canvasSlideLayout('table', rowCount, ratio, { rowFloorPx })
   expect(at(children.get('title')!)).toEqual(textBox(boxes.title))
   expect(at(children.get('panel')!)).toEqual(geoBox(boxes.panel))
   for (let i = 0; i < rowCount; i++) {
@@ -100,7 +101,12 @@ describe('arrangeSlideLayout', () => {
   })
 
   it('places up to the maximum rows and leaves the rest where they are', () => {
-    const max = getMaxRowCount('table')
+    // 上限はセルの文字の大きさで決まる（行はみな同じ書式なので、1 行で測る）
+    const one = tableChildren(1)
+    const floor = slideRowFloorPx(one.slots.rows, (id) => (id ? one.children.get(id) : undefined))
+    const max = slideLayoutMaxRows('table', one.slots.rows, (id) => (id ? one.children.get(id) : undefined))
+    // 標準の配置（6 行）に入らない行数なので、詰めた配置になる
+    expect(max).toBeGreaterThan(6)
     const { slots, children } = tableChildren(max + 2)
     const result = arrange(layoutNode('table', slots), children)
     expect(result.rowCount).toBe(max)
@@ -108,7 +114,7 @@ describe('arrangeSlideLayout', () => {
     const ids = result.updates.map((u) => u.id)
     expect(ids).not.toContain(`body${max}`)
     expect(ids).not.toContain(`label${max + 1}`)
-    expectGrid(applied(children, result), max)
+    expectGrid(applied(children, result), max, '16:9', floor)
   })
 
   it('places the title and the panel for one row when there are no rows', () => {
@@ -193,6 +199,57 @@ describe('arrangeSlideLayout', () => {
   it('does nothing for an unknown layout', () => {
     const { slots, children } = tableChildren(1)
     expect(arrange(layoutNode('nope' as SlideLayoutKind, slots), children).updates).toEqual([])
+  })
+})
+
+describe('slideRowFloorPx', () => {
+  // テンプレートのセル（見出し・本文の余白と行の高さ 1.38）を、文字の大きさを変えて n 行
+  function cells(n: number, labelSize: number, bodySize: number) {
+    const list: NodeRecord[] = []
+    const rows: SlideLayoutSlots['rows'] = []
+    for (let i = 0; i < n; i++) {
+      list.push(node(`label${i}`, 'geo', { ...slideCellProps(CANVAS_SLIDE_LABEL_STYLE, `見出し${i}`), labelFontSize: labelSize }))
+      list.push(node(`body${i}`, 'geo', { ...slideCellProps(canvasSlideBodyStyle(i), `本文${i}`), labelFontSize: bodySize }))
+      rows.push({ label: `label${i}`, body: `body${i}` })
+    }
+    const children = new Map(list.map((n) => [n.id, n]))
+    return { rows, children, child: (id: string | undefined) => (id ? children.get(id) : undefined) }
+  }
+
+  it('is the height of one line of the largest text in the cells, with the padding', () => {
+    // 既定（見出し 37px・本文 31px）：見出しの 8 × 2 + 37 × 1.38 = 67.06。上限は 9 行
+    const base = cells(3, 37, 31)
+    expect(slideRowFloorPx(base.rows, base.child)).toBeCloseTo(67.06)
+    expect(slideLayoutMaxRows('table', base.rows, base.child)).toBe(9)
+    // 見出しも本文も 22px：本文の 12 × 2 + 22 × 1.38 = 54.36。上限は 11 行
+    const small = cells(3, 22, 22)
+    expect(slideRowFloorPx(small.rows, small.child)).toBeCloseTo(54.36)
+    expect(slideLayoutMaxRows('table', small.rows, small.child)).toBe(11)
+    // 本文だけ 22px なら、見出し（37px）で決まる
+    const bodyOnly = cells(3, 37, 22)
+    expect(slideLayoutMaxRows('table', bodyOnly.rows, bodyOnly.child)).toBe(9)
+  })
+
+  it('uses the largest run of a cell and of any row', () => {
+    const small = cells(3, 22, 22)
+    const body = small.children.get('body1')!
+    // 本文の一部の文字だけ 40px：12 × 2 + 40 × 1.38 = 79.2
+    small.children.set('body1', { ...body, props: { ...body.props, label: '本文大', labelParagraphs: [{ runs: [{ text: '本文' }, { text: '大', format: { fontSize: 40 } }] }] } })
+    expect(slideRowFloorPx(small.rows, small.child)).toBeCloseTo(79.2)
+    expect(slideLayoutMaxRows('table', small.rows, small.child)).toBe(Math.max(6, Math.floor(817 / (80 + 17))))
+  })
+
+  it('places 11 rows of 22px text in the tight layout', () => {
+    const small = cells(11, 22, 22)
+    const children = new Map(small.children)
+    children.set('title', text('title'))
+    children.set('panel', geo('panel'))
+    const result = arrange(layoutNode('table', { title: 'title', panel: 'panel', rows: small.rows }), children)
+    expect(result.rowCount).toBe(11)
+    expect(result.overflowRows).toBe(0)
+    const placed = applied(children, result)
+    expect(at(placed.get('panel')!)).toMatchObject({ y: 126 })
+    expect(result.rowHeights.every((h) => h >= 55)).toBe(true)
   })
 })
 

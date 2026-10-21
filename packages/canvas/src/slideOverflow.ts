@@ -1,13 +1,12 @@
 import type { NodeRecord } from '@canvcode/core'
 import { slotIds, slotsOf, textLayout, textOverflow, type TextProps } from '@canvcode/nodes'
-import { getMaxRowCount } from '@canvcode/slides'
-import { emptiedLinesProps, presentRows, SLIDE_TITLE_MAX_LINES } from './slideLayoutArrange.ts'
+import { emptiedLinesProps, presentRows, SLIDE_TITLE_MAX_LINES, slideLayoutMaxRows } from './slideLayoutArrange.ts'
 import { hasSlideLayoutRows } from './slideLayoutRows.ts'
 
 // slide-layout（スライド v2）の中のあふれの計算。DOM に依存しない純粋な関数だけを置く。
 // 文字は縮めずに折り返すので、折り返した文字がセルに収まらなければ、あふれとして知らせる（印を出すのは呼び出し側）。
 // - 対象は slots に入っている子のうち geo（行の見出し・本文、credits、panel など）。測るのは描画と同じレイアウト（textOverflow）
-// - 上限（getMaxRowCount）を超えて並べなかった行は、セルを測らずに、行の数（extraRows）だけを数える（並べ直しの overflowRows と同じ）
+// - 上限（slideLayoutMaxRows。セルの文字の大きさで決まる）を超えて並べなかった行は、セルを測らずに、行の数（extraRows）だけを数える（並べ直しの overflowRows と同じ）
 // - 表紙以外のタイトル（text）は、同じ書式の SLIDE_TITLE_MAX_LINES 行（2 行）の高さを上限として測る（3 行以上はあふれ）
 
 export interface SlideOverflow {
@@ -24,7 +23,7 @@ export function slideLayoutOverflow(layout: NodeRecord, children: ReadonlyMap<st
   const slots = slotsOf(props.slots)
   // 行を持たないレイアウト（表紙）は、行を並べない（並べ直しと同じ）
   const rows = hasSlideLayoutRows(props.layout) ? presentRows(slots, (id) => children.has(id)) : []
-  const max = hasSlideLayoutRows(props.layout) ? getMaxRowCount(props.layout) : 0
+  const max = hasSlideLayoutRows(props.layout) ? slideLayoutMaxRows(props.layout, rows, (id) => (id ? children.get(id) : undefined)) : 0
   const placed = rows.slice(0, max)
   const nodes = slotIds({ ...slots, rows: placed }).filter((id) => {
     const child = children.get(id)

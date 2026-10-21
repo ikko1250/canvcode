@@ -102,6 +102,11 @@ export const TABLE_SPEC = {
   fullGapPx: 41,
   labelWidthPx: 394,
   columnGapPx: 21,
+  /**
+   * 詰めた配置（table・bullets）。標準の配置（compact・全高）に入らない行数のときだけ使う。
+   * パネルを上下に広げ、上下の余白と行の間隔を詰める。入る行数は 1 行の最低の高さ（文字の大きさで決まる）から出す（maxTightRowCount）
+   */
+  tight: { titleTop: 58, panelTop: 126, panelHeight: 880, paddingV: 40, gapPx: 17 },
 } as const;
 
 /** 左表・右図（layout: "table-image"） */
@@ -257,6 +262,11 @@ export type GeometryOptions = {
    * タイトルとパネルをまとめて上下中央に寄せ直す（パネルも増えた分の半分だけ下がる）。タイトルの上端はスライドの上端（0）より上に出さない
    */
   titleExtraPx?: number;
+  /**
+   * 1 行の最低の高さ（行のセルの文字 1 行分の高さ＋上下の余白。呼び出し側が描画と同じ配置で測る）。無ければ minRowPx。
+   * 詰めた配置に入る行数の上限と、詰めた配置での行の高さの下限に使う（標準の配置の行数・幾何には使わない）
+   */
+  rowFloorPx?: number;
 };
 
 /** タイトルの増えた高さ（数でない・負のものは 0） */
@@ -269,6 +279,8 @@ export type SlideGeometry = {
   layout: SlideLayout;
   rowCount: number;
   compact: boolean;
+  /** 詰めた配置（TABLE_SPEC.tight）か。table・bullets で標準の配置に入らない行数のとき */
+  tight: boolean;
   /** タイトルの上端。titleExtraPx があれば、その分だけ上（compact の table / bullets は上下中央に寄せ直した位置） */
   titleTop: number;
   /** 灰色表パネルのスライド座標での上端・高さ */
@@ -295,7 +307,8 @@ export function minRowPx(): number {
 }
 
 /** 表パネルの上下の padding（パネルの高さ − 行グリッドの予算） */
-function panelPaddingV(layout: SlideLayout): number {
+function panelPaddingV(layout: SlideLayout, rowCount: number): number {
+  if (isTightRowCount(layout, rowCount)) return TABLE_SPEC.tight.paddingV * 2;
   switch (layout) {
     case "table-image":
       return TABLE_IMAGE_SPEC.panelPadding * 2;
@@ -306,8 +319,9 @@ function panelPaddingV(layout: SlideLayout): number {
   }
 }
 
-/** 高さを手で決めた表パネルの行の間隔（全高パネルの間隔） */
-function fixedHeightGapPx(layout: SlideLayout): number {
+/** 高さを手で決めた表パネルの行の間隔（全高パネルの間隔。詰めた配置なら詰めた間隔） */
+function fixedHeightGapPx(layout: SlideLayout, rowCount: number): number {
+  if (isTightRowCount(layout, rowCount)) return TABLE_SPEC.tight.gapPx;
   switch (layout) {
     case "table-image":
       return TABLE_IMAGE_SPEC.fullGapPx;
@@ -318,8 +332,12 @@ function fixedHeightGapPx(layout: SlideLayout): number {
   }
 }
 
-/** 高さを手で決めた表パネルの上端（全高パネルの上端。ずらす前）。行グリッドを持たないレイアウトでは例外 */
-export function tablePanelTop(layout: SlideLayout): number {
+/**
+ * 高さを手で決めた表パネルの上端（全高パネルの上端。ずらす前。詰めた配置の行数なら詰めた配置の上端）。
+ * 行グリッドを持たないレイアウトでは例外
+ */
+export function tablePanelTop(layout: SlideLayout, rowCount = 1): number {
+  if (isTightRowCount(layout, rowCount)) return TABLE_SPEC.tight.panelTop;
   switch (layout) {
     case "table":
     case "bullets":
@@ -340,11 +358,11 @@ export function tablePanelTop(layout: SlideLayout): number {
  */
 export function tablePanelHeightRange(layout: SlideLayout, rowCount: number): { min: number; max: number } {
   const rows = Math.max(1, rowCount);
-  const min = rows * minRowPx() + (rows - 1) * fixedHeightGapPx(layout) + panelPaddingV(layout);
+  const min = rows * minRowPx() + (rows - 1) * fixedHeightGapPx(layout, rows) + panelPaddingV(layout, rows);
   const max =
     layout === "table-images"
       ? TABLE_IMAGES_SPEC.height - TABLE_IMAGES_SPEC.minFiguresHeightPx
-      : SLIDE_HEIGHT - tablePanelTop(layout);
+      : SLIDE_HEIGHT - tablePanelTop(layout, rows);
   return { min: Math.min(min, max), max };
 }
 
@@ -365,8 +383,8 @@ function fixedHeightRows(
   rowCount: number,
   panelHeight: number,
 ): { budgetPx: number; gapPx: number; rowPx: number } {
-  const gapPx = fixedHeightGapPx(layout);
-  const budgetPx = panelHeight - panelPaddingV(layout);
+  const gapPx = fixedHeightGapPx(layout, rowCount);
+  const budgetPx = panelHeight - panelPaddingV(layout, rowCount);
   const rowPx = Math.round((budgetPx - (rowCount - 1) * gapPx) / rowCount);
   return { budgetPx, gapPx, rowPx };
 }
@@ -418,6 +436,7 @@ function panelGeometry(
     layout,
     rowCount,
     compact,
+    tight: false,
     titleTop,
     panelTop,
     panelHeight,
@@ -426,6 +445,46 @@ function panelGeometry(
       defaultRowPx: rowPx,
       gapPx,
       budgetPx: panelHeight - padV,
+      contentWidthPx,
+      labelWidthPx,
+      bodyWidthPx: contentWidthPx - labelWidthPx - columnGapPx,
+      columnGapPx,
+    },
+  };
+}
+
+/**
+ * 詰めた配置（TABLE_SPEC.tight）の全幅パネルの幾何。標準の配置に入らない行数の table・bullets で使う。
+ * タイトル・パネルの位置は固定（compact のように上下中央に寄せない）。タイトルが 2 行以上なら上へ伸ばす。
+ * 高さを手で決めれば、パネルは詰めた配置の上端から下へその高さになる（上下の余白・行の間隔は詰めた配置のまま）
+ */
+function tightPanelGeometry(
+  layout: "table" | "bullets",
+  rowCount: number,
+  options: GeometryOptions = {},
+): SlideGeometry {
+  const s = TABLE_SPEC;
+  const t = s.tight;
+  const padV = t.paddingV * 2;
+  const panelHeight = clampTablePanelHeight(layout, rowCount, options.tableHeight) ?? t.panelHeight;
+  const budgetPx = panelHeight - padV;
+  const rowPx = Math.round((budgetPx - (rowCount - 1) * t.gapPx) / rowCount);
+  const contentWidthPx = s.width - s.padding.x * 2;
+  const labelWidthPx = layout === "bullets" ? 0 : s.labelWidthPx;
+  const columnGapPx = layout === "bullets" ? 0 : s.columnGapPx;
+  return {
+    layout,
+    rowCount,
+    compact: false,
+    tight: true,
+    titleTop: Math.max(0, t.titleTop - titleExtraOf(options)),
+    panelTop: t.panelTop,
+    panelHeight,
+    grid: {
+      rowCount,
+      defaultRowPx: rowPx,
+      gapPx: t.gapPx,
+      budgetPx,
       contentWidthPx,
       labelWidthPx,
       bodyWidthPx: contentWidthPx - labelWidthPx - columnGapPx,
@@ -466,6 +525,7 @@ function tableImageGeometry(rowCount: number, options: GeometryOptions = {}): Sl
     layout: "table-image",
     rowCount,
     compact,
+    tight: false,
     titleTop,
     panelTop,
     panelHeight,
@@ -494,6 +554,7 @@ function tableImagesGeometry(rowCount: number, options: GeometryOptions = {}): S
     layout: "table-images",
     rowCount,
     compact: false,
+    tight: false,
     titleTop: Math.max(0, s.titleTop - titleExtraOf(options)),
     panelTop: s.top,
     panelHeight,
@@ -511,7 +572,8 @@ function tableImagesGeometry(rowCount: number, options: GeometryOptions = {}): S
   };
 }
 
-function rawGeometry(
+/** 標準の配置（compact・全高）の幾何 */
+function standardGeometry(
   layout: SlideLayout,
   rowCount: number,
   options: GeometryOptions = {},
@@ -530,6 +592,19 @@ function rawGeometry(
   }
 }
 
+/** 標準の配置に入らない行数なら、詰めた配置（table・bullets だけ） */
+function rawGeometry(
+  layout: SlideLayout,
+  rowCount: number,
+  options: GeometryOptions = {},
+): SlideGeometry {
+  if ((layout === "table" || layout === "bullets") && isTightRowCount(layout, rowCount)) {
+    return tightPanelGeometry(layout, rowCount, options);
+  }
+  return standardGeometry(layout, rowCount, options);
+}
+
+/** 標準の配置で、行がみな 1 視覚行分（minRowPx）の高さで入るか */
 function isFeasible(geometry: SlideGeometry): boolean {
   if (geometry.grid.defaultRowPx < minRowPx()) {
     return false;
@@ -544,38 +619,67 @@ function isFeasible(geometry: SlideGeometry): boolean {
 }
 
 const MAX_ROW_COUNT_SEARCH = 20;
-const maxRowCountCache = new Map<SlideLayout, number>();
+const standardMaxCache = new Map<SlideLayout, number>();
 
-/** レイアウトごとに幾何上許容できる最大行数（列挙ではなく計算で導出） */
-export function getMaxRowCount(layout: SlideLayout): number {
+/** 標準の配置（compact・全高）に入る最大行数（列挙ではなく計算で導出。文字の大きさによらない） */
+export function getStandardMaxRowCount(layout: SlideLayout): number {
   if (!layoutUsesRowGrid(layout)) {
     return 0;
   }
-  const cached = maxRowCountCache.get(layout);
+  const cached = standardMaxCache.get(layout);
   if (cached !== undefined) {
     return cached;
   }
   let max = 0;
   for (let n = 1; n <= MAX_ROW_COUNT_SEARCH; n += 1) {
-    if (!isFeasible(rawGeometry(layout, n))) {
+    if (!isFeasible(standardGeometry(layout, n))) {
       break;
     }
     max = n;
   }
-  maxRowCountCache.set(layout, max);
+  standardMaxCache.set(layout, max);
   return max;
 }
 
-export function isValidRowCount(layout: SlideLayout, rowCount: number): boolean {
-  return Number.isInteger(rowCount) && rowCount >= 1 && rowCount <= getMaxRowCount(layout);
+/** 標準の配置に入らず、詰めた配置にする行数か（table・bullets だけ） */
+export function isTightRowCount(layout: SlideLayout, rowCount: number): boolean {
+  return (layout === "table" || layout === "bullets") && rowCount > getStandardMaxRowCount(layout);
+}
+
+/** 1 行の最低の高さ（rowFloorPx。無い・数でないものは minRowPx）。1px に切り上げる */
+export function rowFloorOf(rowFloorPx: number | undefined): number {
+  return typeof rowFloorPx === "number" && Number.isFinite(rowFloorPx) && rowFloorPx > 0 ? Math.ceil(rowFloorPx) : minRowPx();
+}
+
+/** 詰めた配置に入る行数：floor((行に使える高さ + 間隔) / (1 行の最低の高さ + 間隔)) */
+export function maxTightRowCount(rowFloorPx?: number): number {
+  const t = TABLE_SPEC.tight;
+  return Math.floor((t.panelHeight - t.paddingV * 2 + t.gapPx) / (rowFloorOf(rowFloorPx) + t.gapPx));
+}
+
+/**
+ * レイアウトの最大行数。table・bullets は、標準の配置に入る行数と、詰めた配置に入る行数（1 行の最低の高さ rowFloorPx で決まる）の
+ * 大きい方（標準の配置に入る行数より減らさない）。table-image・table-images は標準の配置に入る行数
+ */
+export function getMaxRowCount(layout: SlideLayout, rowFloorPx?: number): number {
+  const standard = getStandardMaxRowCount(layout);
+  if (layout !== "table" && layout !== "bullets") {
+    return standard;
+  }
+  return Math.max(standard, maxTightRowCount(rowFloorPx));
+}
+
+export function isValidRowCount(layout: SlideLayout, rowCount: number, rowFloorPx?: number): boolean {
+  return Number.isInteger(rowCount) && rowCount >= 1 && rowCount <= getMaxRowCount(layout, rowFloorPx);
 }
 
 export function rowCountRangeMessage(
   layout: SlideLayout,
   rowCount: number,
   keyName = "rows",
+  rowFloorPx?: number,
 ): string {
-  return `${layout} レイアウトでは ${keyName} は 1〜${getMaxRowCount(layout)} 件にしてください（現在 ${rowCount} 件）。`;
+  return `${layout} レイアウトでは ${keyName} は 1〜${getMaxRowCount(layout, rowFloorPx)} 件にしてください（現在 ${rowCount} 件）。`;
 }
 
 export function computeSlideGeometry(
@@ -586,8 +690,8 @@ export function computeSlideGeometry(
   if (!layoutUsesRowGrid(layout)) {
     throw new Error(`${layout} レイアウトは行グリッドを持ちません。`);
   }
-  if (!isValidRowCount(layout, rowCount)) {
-    throw new Error(rowCountRangeMessage(layout, rowCount));
+  if (!isValidRowCount(layout, rowCount, options.rowFloorPx)) {
+    throw new Error(rowCountRangeMessage(layout, rowCount, "rows", options.rowFloorPx));
   }
   return rawGeometry(layout, rowCount, options);
 }
@@ -605,6 +709,8 @@ export type LayoutProfile = {
   defaultRowPx: number;
   gapPx: number;
   budgetPx: number;
+  /** 行の高さの下限。標準の配置は minRowPx、詰めた配置は 1 行の最低の高さ（GeometryOptions の rowFloorPx） */
+  rowFloorPx: number;
   labelTypography: TypographySpec;
   bodyTypography: TypographySpec;
 };
@@ -628,6 +734,7 @@ export function getLayoutProfile(
     defaultRowPx: grid.defaultRowPx,
     gapPx: grid.gapPx,
     budgetPx: grid.budgetPx,
+    rowFloorPx: geometry.tight ? rowFloorOf(options.rowFloorPx) : minRowPx(),
     labelTypography: LABEL_TYPOGRAPHY,
     bodyTypography: BODY_TYPOGRAPHY,
   };

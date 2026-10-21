@@ -68,6 +68,8 @@ export type CanvasGridSlideBoxes = {
   rowCount: number;
   /** v1 の compact 規則（行が少ないときにタイトルとパネルを上下中央に寄せる）が効いているか */
   compact: boolean;
+  /** 詰めた配置（標準の配置に入らない行数の table・bullets）か */
+  tight: boolean;
   /** スライドのタイトル（v1 の h1）。高さは 1 行分＋titleExtraPx（2 行以上のときの増えた分） */
   title: CanvasBox;
   /** 灰色の地のパネル */
@@ -132,6 +134,11 @@ export type CanvasSlideLayoutOptions = {
    * タイトルは下端を変えずに上へ伸ばす（compact の table / bullets はタイトルとパネルをまとめて上下中央に寄せ直す）。computeSlideGeometry の titleExtraPx
    */
   titleExtraPx?: number;
+  /**
+   * 1 行の最低の高さ（呼び出し側が行のセルを描画と同じ配置で測る）。table・bullets の行数の上限（詰めた配置に入る行数）を決める。
+   * computeSlideGeometry の rowFloorPx
+   */
+  rowFloorPx?: number;
 };
 
 /** 手でずらした量（右・下が正） */
@@ -167,7 +174,13 @@ function gridBoxes(
   const panelTop = geometry.panelTop + table.dy;
   const panelWidth = isTableImage ? tableWidth : isTableImages ? TABLE_IMAGES_SPEC.width : TABLE_SPEC.width;
   const padLeft = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : isTableImages ? TABLE_IMAGES_SPEC.padding.x : TABLE_SPEC.padding.x;
-  const padTop = isTableImage ? TABLE_IMAGE_SPEC.panelPadding : isTableImages ? TABLE_IMAGES_SPEC.padding.top : TABLE_SPEC.padding.top;
+  const padTop = isTableImage
+    ? TABLE_IMAGE_SPEC.panelPadding
+    : isTableImages
+      ? TABLE_IMAGES_SPEC.padding.top
+      : geometry.tight
+        ? TABLE_SPEC.tight.paddingV
+        : TABLE_SPEC.padding.top;
 
   const gridLeft = panelLeft + padLeft;
   const gridTop = panelTop + padTop;
@@ -239,6 +252,7 @@ function gridBoxes(
     size: { ...CANVAS_SLIDE_SIZES[ratio] },
     rowCount: geometry.rowCount,
     compact: geometry.compact,
+    tight: geometry.tight,
     title: box(
       titleLeft,
       titleTop,
@@ -303,7 +317,7 @@ export function placeCoverHeading(
 
 /**
  * レイアウトの箱をスライドのローカル座標で返す。
- * 行数が v1 の getMaxRowCount(layout) を超える（または 1 未満の）ときは例外にする。title は rowCount を見ない。
+ * 行数が v1 の getMaxRowCount(layout, options.rowFloorPx) を超える（または 1 未満の）ときは例外にする。title は rowCount を見ない。
  */
 export function canvasSlideLayout(
   layout: "title",
@@ -337,6 +351,7 @@ export function canvasSlideLayout(
     tableWidth: options.tableWidth,
     tableHeight: options.tableHeight,
     titleExtraPx: options.titleExtraPx,
+    rowFloorPx: options.rowFloorPx,
   });
   return gridBoxes(layout, geometry, ratio, options);
 }
