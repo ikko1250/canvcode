@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AssetManager, type PdfDocument, type PdfService } from './assets.ts'
+import { MemoryPdfPageBackend, PdfPageStore } from './pdfPageStore.ts'
 
 // 開いている PDF の数を抑える（MAI-66）
 
@@ -95,7 +96,7 @@ describe('AssetManager PDF documents', () => {
   })
 })
 
-// サーバーが前もって作ったページの画像（Issue #26）
+// サーバーが前もって作ったページの画像と、ブラウザに置いたページの画像（Issue #26）
 describe('AssetManager PDF page images', () => {
   const manifest = {
     version: 1,
@@ -126,11 +127,12 @@ describe('AssetManager PDF page images', () => {
       return { width: w, height: h, close() {} }
     })
     const { service, opened } = fakePdfService()
-    const assets = new AssetManager({ pdf: service, baseUrl: '/api/assets' })
+    const backend = new MemoryPdfPageBackend()
+    const assets = new AssetManager({ pdf: service, baseUrl: '/api/assets', pageStore: new PdfPageStore(backend) })
     assets.register({ typeName: 'asset', id: 'asset:p', mime: 'application/pdf', size: 1, hash: 'p', width: 0, height: 0, variants: [] })
     let changes = 0
     assets.onPdfPreviewChange(() => changes++)
-    return { assets, requests, crops, opened, changes: () => changes }
+    return { assets, requests, crops, opened, backend, changes: () => changes }
   }
 
   afterEach(() => {
@@ -176,5 +178,32 @@ describe('AssetManager PDF page images', () => {
     expect(requests).toEqual(['/api/assets/p/preview', '/api/assets/p/preview/v1/sheet/0', '/api/assets/p/preview/v1/page/1'])
     // PDF は開かない
     expect(opened).toEqual([])
+  })
+
+  it('returns a kept page image of the same level without opening the PDF, and keeps each page once', async () => {
+    const { assets, opened, backend } = setupPreviews()
+    vi.stubGlobal(
+      'OffscreenCanvas',
+      class {
+        getContext() {
+          return { drawImage() {} }
+        }
+        async convertToBlob() {
+          return new Blob(['webp'])
+        }
+      },
+    )
+    const raster = { image: {} as ImageBitmap, width: 100, height: 100, level: 2 }
+    await assets.rememberPdfPage('asset:p', 0, raster)
+    await assets.rememberPdfPage('asset:p', 0, raster)
+    // level 1 より下は置かない
+    await assets.rememberPdfPage('asset:p', 1, { ...raster, level: 0.5 })
+    expect([...backend.pages.keys()]).toEqual(['p#0@2'])
+
+    expect((await assets.renderPdfPage('asset:p', 0, 2)).level).toBe(2)
+    expect(opened).toEqual([])
+    // 違う level は、PDF を開いて描く
+    await assets.renderPdfPage('asset:p', 0, 4)
+    expect(opened).toEqual(['/api/assets/p'])
   })
 })

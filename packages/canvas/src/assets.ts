@@ -2,6 +2,7 @@ import { assetIdFromHash, type AssetRecord } from '@canvcode/core'
 import { IMAGE_VARIANT_SIZES, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
 import type { PdfTextItem } from './quotes.ts'
 import type { PdfSearchResponse } from './pdfSearch.ts'
+import { indexedDbPdfPageBackend, pdfPageKey, PdfPageStore } from './pdfPageStore.ts'
 import { sha256HexSync } from './sha256.ts'
 
 // 画像の Asset の取り込み・アップロード・読み込み（MAI-10、MAI-14、MAI-26）。
@@ -10,7 +11,8 @@ import { sha256HexSync } from './sha256.ts'
 // - アップロードが済むまでは手元の Blob から、済んだらサーバーから読む
 // - レコードはサーバーの <ハッシュ>.json が正本。画面を開いたときに一覧（GET /api/assets）を読む（段階 11）
 // - PDF のページは、サーバーが前もって作った画像（長辺 256px のシートと 1024px のページごと。Issue #26）があれば、それも出す
-//   （pdfPreviewLevels・loadPdfPreview）
+//   （pdfPreviewLevels・loadPdfPreview）。PDF.js で描いた level 1 以上の画像は、読んでいたページの分をブラウザに置いておき
+//   （rememberPdfPage・pdfPageStore.ts）、次に同じ解像度を頼まれたら PDF を開かずにそれを返す
 
 export interface AssetManagerOptions {
   // API の場所（既定は /api/assets）
@@ -19,6 +21,8 @@ export interface AssetManagerOptions {
   notify?: (message: string) => void
   // PDF を開いて描く先（PDF.js。Vite の機能で Worker を読み込むので、アプリ側から渡す。MAI-32）
   pdf?: PdfService
+  // 最後に見た PDF のページの画像を置いておく先。既定は IndexedDB（使えなければ置かない）。null なら置かない
+  pageStore?: PdfPageStore | null
 }
 
 // PDF のページの、サーバーが前もって作った画像の一覧（GET /api/assets/<ハッシュ>/preview。apps/server/src/pdfPreview.ts）
@@ -62,6 +66,8 @@ const MAX_OPEN_PDFS = 3
 const PREVIEW_RETRY_MS = 60_000
 // 読んでおく縮小画像のシートの数（RESONAC の 1 枚は、展開して 13 MB）
 const MAX_PREVIEW_SHEETS = 2
+// ブラウザに置いておくページの画像の画質
+const STORED_PAGE_QUALITY = 0.92
 
 interface PdfPreviewState {
   manifest: PdfPreviewManifest | null
@@ -93,11 +99,20 @@ export class AssetManager implements AssetResolver {
   private readonly previews = new Map<string, PdfPreviewState>()
   private readonly previewSheets = new Map<string, Promise<ImageBitmap>>()
   private readonly previewListeners = new Set<() => void>()
+  private readonly pageStore: PdfPageStore | null
+  // このタブでブラウザに置いた（置いてあると分かった）ページの画像のキー。同じものを 2 度書かない
+  private readonly storedPages = new Set<string>()
 
   constructor(options: AssetManagerOptions = {}) {
     this.baseUrl = options.baseUrl ?? '/api/assets'
     this.notify = options.notify ?? ((message) => console.warn(message))
     this.pdf = options.pdf ?? null
+    if (options.pageStore !== undefined) {
+      this.pageStore = options.pageStore
+    } else {
+      const backend = indexedDbPdfPageBackend()
+      this.pageStore = backend ? new PdfPageStore(backend) : null
+    }
   }
 
   get canOpenPdf(): boolean {
@@ -180,6 +195,20 @@ export class AssetManager implements AssetResolver {
   }
 
   async renderPdfPage(assetId: string, pageIndex: number, scale: number): Promise<RasterImage> {
+    // 前に読んでいたページなら、ブラウザに置いておいた画像を返す（PDF を開かない）
+    const record = this.records.get(assetId)
+    if (record && this.pageStore && scale >= 1) {
+      const stored = await this.pageStore.load(record.hash, pageIndex, scale)
+      if (stored) {
+        try {
+          const image = await createImageBitmap(stored.blob)
+          this.storedPages.add(stored.key)
+          return { image, width: image.width, height: image.height, level: scale }
+        } catch (error) {
+          console.warn('Failed to read a kept PDF page image', stored.key, error)
+        }
+      }
+    }
     return this.withPdfDocument(assetId, async (doc) => {
       const size = await doc.pageSize(pageIndex)
       // ワールド座標の 1 単位あたり scale 画素 → ポイントあたりの画素。大きすぎるときは抑える
@@ -188,6 +217,22 @@ export class AssetManager implements AssetResolver {
       const image = await doc.render(pageIndex, pointScale)
       return { image, width: image.width, height: image.height, level: scale }
     })
+  }
+
+  // PDF.js で描いたページの画像（level 1 以上）を、ブラウザに置いておく（読んでいるページ。View が頼む）。
+  // このタブで置いたものは、もう一度は書かない
+  async rememberPdfPage(assetId: string, pageIndex: number, raster: RasterImage): Promise<void> {
+    const record = this.records.get(assetId)
+    if (!record || !this.pageStore || raster.level < 1) return
+    const key = pdfPageKey(record.hash, pageIndex, raster.level)
+    if (this.storedPages.has(key)) return
+    this.storedPages.add(key)
+    const blob = await encodeImage(raster).catch(() => null)
+    if (!blob) {
+      this.storedPages.delete(key)
+      return
+    }
+    await this.pageStore.save({ hash: record.hash, pageIndex, level: raster.level, width: raster.width, height: raster.height, blob })
   }
 
   // 前もって作った画像の解像度（renderPdfPage の scale と同じ単位）。小さい順。ないなら []、まだ確かめているところなら null。
@@ -419,6 +464,19 @@ function previewLevels(manifest: PdfPreviewManifest, pageIndex: number): number[
   const levels = [thumb.w / (page.w * PDF_POINT_SCALE)]
   if (manifest.mid) levels.push(manifest.mid.size / Math.max(page.w, page.h) / PDF_POINT_SCALE)
   return levels
+}
+
+// ページの画像を WebP（できなければ PNG）にする
+async function encodeImage(raster: RasterImage): Promise<Blob | null> {
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const canvas = new OffscreenCanvas(raster.width, raster.height)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(raster.image, 0, 0)
+    return canvas.convertToBlob({ type: 'image/webp', quality: STORED_PAGE_QUALITY })
+  }
+  const canvas = drawScaled(raster.image, raster.width, raster.height)
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', STORED_PAGE_QUALITY))
 }
 
 export async function sha256Hex(blob: Blob): Promise<string> {
