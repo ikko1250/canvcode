@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { builtinNodeTypes, createCodeCardType } from '@canvcode/nodes'
+import { builtinNodeTypes, createCodeCardType, SHORTCUT_CARD_HEIGHT } from '@canvcode/nodes'
 import { createMarkdownCardType, type MarkdownCardProps } from '@canvcode/nodes/markdown'
 import { copySelection, insertPayloadWithResult } from './clipboard.ts'
 import { Editor } from './editor.ts'
@@ -52,6 +52,27 @@ describe('cards', () => {
     const second = root.createFileCard('file:a', { x: 600, y: 0 })!
     expect(card(first).props.role).toBe('owner')
     expect(card(second).props.role).toBe('shortcut')
+  })
+
+  it('makes shortcut cards small and fixed, however they are made (#28)', () => {
+    const { workspace, root, file, card } = setup()
+    file('file:a')
+    const owner = root.createFileCard('file:a', { x: 0, y: 0 }, { props: { h: 900, sizing: 'auto' } })!
+    expect(card(owner).props).toMatchObject({ role: 'owner', sizing: 'auto' })
+    const second = root.createFileCard('file:a', { x: 600, y: 0 }, { props: { h: 900, sizing: 'auto' } })!
+    expect(card(second).props).toMatchObject({ role: 'shortcut', sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT })
+    const { cardId } = root.createFileCanvas('file:a', { x: 0, y: 600 })!
+    expect(card(cardId).props).toMatchObject({ role: 'shortcut', sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT })
+    // 貼り付けで持ち主からショートカットに変わるとき
+    root.setSelection([owner])
+    const [pasted] = insertPayloadWithResult(root, copySelection(root)!, { offset: { x: 1200, y: 0 } }).ids
+    expect(card(pasted).props).toMatchObject({ role: 'shortcut', sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT })
+    // ショートカットをコピーして貼ったときは、元の大きさのまま
+    root.transact('resize', (tx) => tx.put({ ...card(second), props: { ...card(second).props, h: 320 } }))
+    root.setSelection([second])
+    const [copied] = insertPayloadWithResult(root, copySelection(root)!, { offset: { x: 1800, y: 0 } }).ids
+    expect(card(copied).props).toMatchObject({ role: 'shortcut', sizing: 'fixed', h: 320 })
+    expect(workspace.getFile('file:a')!.ownerNodeId).toBe(owner)
   })
 
   it('sends the file to the trash with its owner card, and restores both', () => {

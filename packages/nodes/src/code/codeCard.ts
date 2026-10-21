@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { defineNodeType, type FileContentSource } from '../defineNodeType.ts'
+import { defineNodeType, SHORTCUT_CARD_HEIGHT, type FileContentSource } from '../defineNodeType.ts'
 import { TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { layoutCode, type CodeLayout, type CodeMetrics } from './codeLayout.ts'
 
@@ -172,7 +172,8 @@ export function createCodeCardType(options: CodeCardOptions = {}) {
     minSize: { w: 200, h: MIN_HEIGHT },
 
     reference: (node) => (node.props.fileId ? { targetId: node.props.fileId, role: node.props.role } : null),
-    withRole: (node, role) => ({ ...node.props, role }),
+    // 貼り付けでショートカットに変わるときは、小さく固定する（#28）
+    withRole: (node, role) => (role === 'shortcut' ? { ...node.props, role, sizing: 'fixed', h: SHORTCUT_CARD_HEIGHT } : { ...node.props, role }),
   })
 }
 

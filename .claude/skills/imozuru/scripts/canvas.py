@@ -2,7 +2,9 @@
 """抜き書き（extracts.json）を、CanvCode の Canvas に並べる操作（MCP の edit_canvas の ops）にする。
 
 report.html は縦に長い1枚のページ。CanvCode では同じ抜き書きを Canvas に置き、主張ごとの列に
-抜き書きの付箋を並べ、付箋から原文（Markdown のカード・PDF の Portal）へ矢印を引く。
+抜き書きの付箋を並べる。原文（Markdown のカード・PDF の Portal）の持ち主は右の列に1つずつ置き、
+各列の右の帯に、その列が引く原文のショートカットを置いて、付箋からそのショートカットへ矢印を引く
+（1つの原文に多くの列から長い矢印が集まって、ほかの列を横切らないように）。
 原文はワークスペースの中のファイルのままなので、カードや Portal からそのまま開いて前後を読める。
 
 report.py と同じ照合を先に行い、1つでも合わなければ ops を作らずに止まる（言い換えが Canvas に紛れ込むのを防ぐ）。
@@ -26,7 +28,11 @@ from pathlib import Path
 COL_W = 360
 COL_GAP = 80
 TOP = 260
-# 原文のカードの高さ（中身に合わせると、字幕などで長くなりすぎる）
+# 列の右の、原文のショートカットを積む帯の幅と、列との間
+SIDE_W = 240
+SIDE_GAP = 40
+COL_STEP = COL_W + SIDE_GAP + SIDE_W + COL_GAP
+# 原文のカードの高さ（中身に合わせると、字幕などで長くなりすぎる）。ショートカットのカードは CanvCode が小さく固定する
 CARD_H = 420
 PORTAL_W, PORTAL_H = 240, 320
 GAP = 24
@@ -99,36 +105,25 @@ def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
          "付箋の「」の中は原文をそのまま切り出したもの（機械で照合済み）。要約はしていない。",
          "fontSize": 16, "place": {"below": "$title", "gap": GAP}, "w": 1200},
     ]
+    claims = data["claims"]
+    disagreements = data.get("disagreements", [])
+    unreached = data.get("unreached", [])
+
+    # 原文に、抜き書きに出てきた順で s0, s1, … の名前を付ける
     sources: dict[Path, str] = {}
-    arrows: list[tuple[str, str]] = []
+    for g, _ in groups:
+        for q in g.get("quotes", []):
+            sources.setdefault((src / q["file"]).resolve(), f"s{len(sources)}")
 
-    def column(x: int, head: str, color: str, quotes: list[dict], key: str) -> None:
-        ops.append({"op": "create", "type": "note", "as": key, "text": head, "color": color, "x": x, "y": TOP, "w": COL_W})
-        prev = key
-        for j, q in enumerate(quotes):
-            path = (src / q["file"]).resolve()
-            ref = f"{key}q{j}"
-            ops.append({"op": "create", "type": "note", "as": ref, "text": quote_text(q, page_of(path, q["line"])),
-                        "color": QUOTE_COLOR, "place": {"below": f"${prev}", "gap": GAP}, "w": COL_W})
-            sources.setdefault(path, f"s{len(sources)}")
-            arrows.append((ref, sources[path]))
-            prev = ref
+    def kind(path: Path) -> str:
+        if path.suffix == ".txt" and path.with_suffix(".pdf").is_file():
+            return "pdf"
+        return "md" if path.suffix in (".md", ".markdown") else "other"
 
-    x = 0
-    for i, c in enumerate(data["claims"]):
-        head = f"{c['claim']}\n［{c['status']}］" + (f"\n{c['note']}" if c.get("note") else "")
-        column(x, head, STATUS_COLORS.get(c["status"], QUOTE_COLOR), c.get("quotes", []), f"c{i}")
-        x += COL_W + COL_GAP
-    for i, d in enumerate(data.get("disagreements", [])):
-        column(x, f"食い違い: {d['topic']}\nどれが正しいかは書かない。並べるだけ。", DISAGREE_COLOR, d.get("quotes", []), f"d{i}")
-        x += COL_W + COL_GAP
-    if data.get("unreached"):
-        ops.append({"op": "create", "type": "note", "text": "届かなかったもの\n" + "\n".join(f"・{u}" for u in data["unreached"]),
-                    "color": UNREACHED_COLOR, "x": x, "y": TOP, "w": COL_W})
-        x += COL_W + COL_GAP
-
-    # 原文の列：map.md・log.md のカード、抜き書きに出てきた順の原文（PDF は Portal、Markdown はカード）
-    ops.append({"op": "create", "type": "text", "as": "src", "text": "原文（sources/）と map.md・log.md", "fontSize": 18, "x": x, "y": TOP, "w": COL_W})
+    # 原文の持ち主の列（右端）：map.md・log.md のカード、原文（PDF は Portal、Markdown はカード）。
+    # 列のショートカットより先に作る（$s<N> で指すため。Markdown は、持ち主のあとに置いたカードがショートカットになる）
+    x_src = (len(claims) + len(disagreements) + (1 if unreached else 0)) * COL_STEP
+    ops.append({"op": "create", "type": "text", "as": "src", "text": "原文（sources/）と map.md・log.md", "fontSize": 18, "x": x_src, "y": TOP, "w": COL_W})
     prev = "src"
     for name in ("map.md", "log.md"):
         if (topic / name).is_file():
@@ -136,16 +131,60 @@ def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
                         "place": {"below": f"${prev}", "gap": GAP}, "w": COL_W, "h": CARD_H})
             prev = name.split(".")[0]
     for path, ref in sources.items():
-        pdf = path.with_suffix(".pdf")
-        if path.suffix == ".txt" and pdf.is_file():
+        if kind(path) == "pdf":
+            pdf = path.with_suffix(".pdf")
             op = {"op": "create", "type": "pdf", "as": ref, "path": rel(pdf), "name": pdf.stem, "w": PORTAL_W, "h": PORTAL_H}
-        elif path.suffix in (".md", ".markdown"):
+        elif kind(path) == "md":
             op = {"op": "create", "type": "card", "as": ref, "path": rel(path), "w": COL_W, "h": CARD_H}
         else:
             # CanvCode で開けない種類（PDF の無い .txt など）は、場所だけを書く
             op = {"op": "create", "type": "note", "as": ref, "text": f"sources/{path.name}", "color": QUOTE_COLOR, "w": COL_W}
         ops.append({**op, "place": {"below": f"${prev}", "gap": GAP}})
         prev = ref
+
+    arrows: list[tuple[str, str]] = []
+
+    def shortcut(path: Path, ref: str, name: str, place: dict) -> dict:
+        """列の帯に置く、原文 ref のショートカット。"""
+        if kind(path) == "pdf":
+            op = {"op": "create", "type": "portal", "target": f"${ref}", "w": SIDE_W, "h": PORTAL_H}
+        elif kind(path) == "md":
+            # 持ち主がもうあるので、ショートカットのカードになる
+            op = {"op": "create", "type": "card", "path": rel(path), "w": SIDE_W}
+        else:
+            op = {"op": "create", "type": "note", "text": f"sources/{path.name}", "color": QUOTE_COLOR, "w": SIDE_W}
+        return {**op, "as": name, "place": place}
+
+    def column(x: int, head: str, color: str, quotes: list[dict], key: str) -> None:
+        ops.append({"op": "create", "type": "note", "as": key, "text": head, "color": color, "x": x, "y": TOP, "w": COL_W})
+        prev = key
+        # 帯のショートカット（原文の名前 → as）。列の中で初めて出てきた順に、列の頭の右から下へ積む
+        side: dict[str, str] = {}
+        for j, q in enumerate(quotes):
+            path = (src / q["file"]).resolve()
+            ref = f"{key}q{j}"
+            ops.append({"op": "create", "type": "note", "as": ref, "text": quote_text(q, page_of(path, q["line"])),
+                        "color": QUOTE_COLOR, "place": {"below": f"${prev}", "gap": GAP}, "w": COL_W})
+            source = sources[path]
+            if source not in side:
+                name = f"{key}_{source}"
+                place = {"below": f"${list(side.values())[-1]}", "gap": GAP} if side else {"rightOf": f"${key}", "gap": SIDE_GAP}
+                ops.append(shortcut(path, source, name, place))
+                side[source] = name
+            arrows.append((ref, side[source]))
+            prev = ref
+
+    x = 0
+    for i, c in enumerate(claims):
+        head = f"{c['claim']}\n［{c['status']}］" + (f"\n{c['note']}" if c.get("note") else "")
+        column(x, head, STATUS_COLORS.get(c["status"], QUOTE_COLOR), c.get("quotes", []), f"c{i}")
+        x += COL_STEP
+    for i, d in enumerate(disagreements):
+        column(x, f"食い違い: {d['topic']}\nどれが正しいかは書かない。並べるだけ。", DISAGREE_COLOR, d.get("quotes", []), f"d{i}")
+        x += COL_STEP
+    if unreached:
+        ops.append({"op": "create", "type": "note", "text": "届かなかったもの\n" + "\n".join(f"・{u}" for u in unreached),
+                    "color": UNREACHED_COLOR, "x": x, "y": TOP, "w": COL_W})
     for frm, to in arrows:
         ops.append({"op": "connect", "from": f"${frm}", "to": f"${to}", "color": ARROW_COLOR, "dash": "dashed"})
     return ops, []

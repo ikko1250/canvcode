@@ -283,7 +283,7 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
       title: 'Edit a canvas',
       description:
         'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, scale, reparent, add_row) atomically. World coordinates. ' +
-        'create can also make a portal to a new canvas, or import a PDF (workspace file or URL) as a portal.',
+        'create can also make a portal to a new canvas, a shortcut portal to an existing one, or import a PDF (workspace file or URL) as a portal.',
       inputSchema: editCanvasInput,
       annotations: { destructiveHint: true },
     },
