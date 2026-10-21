@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readdir, readFile, rm, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // PDF のページの画像（Issue #26、docs/pdf-page-images-plan.md の「1」）。
@@ -15,16 +17,20 @@ import { writeViaTemp } from './writeAtomic.ts'
 //   OS のフォントで描けるため。別のプロセスで動くので、サーバーのイベントループも止めない
 // - pdftoppm がなければ（起動したときに pdftoppm -v で確かめる）一度だけログに出し、何も作らない（画面は今までどおり PDF.js で描く）
 // - nice -n 10 で動かし、1 度に 1 つの PDF だけ扱う。1 つの PDF に PREVIEW_TIMEOUT_MS 以上かかったら止める
-// - ファイルは <ハッシュ>.preview-v1.json（マニフェスト）・<ハッシュ>.preview-v1.sheet<N>.webp・<ハッシュ>.preview-v1.p<ページ>.webp。
+// - ファイルは <ハッシュ>.preview-v<版>.json（マニフェスト）・<ハッシュ>.preview-v<版>.sheet<N>.webp・<ハッシュ>.preview-v<版>.p<ページ>.webp。
 //   <ハッシュ>. で始まるので、Asset の片付け（assetGc.ts）が原本と一緒に消す。作り直せるので、バックアップには入れない（isPdfPreviewFile）
 // - 描き方を変えて作り直すときは PREVIEW_VERSION を上げる。古い版のファイルは、起動したとき（init）に消す
+//   （版 2：ページの大きさ（pdfinfo・PDF.js）と同じ CropBox で描く。版 1 は MediaBox で描いていて、裁ち落としの外まで写っていた）
+// - 同じ版でも、作り直すとシートの並びが変わりうる（poppler の版で縮小画像の大きさが 1px 違うなど）。画像の URL は長く
+//   キャッシュさせるので、作るたびに rev を変え、画面は URL に付けて読む（バックアップから戻したあとなどに、古いシートを切り出さない）
 
-export const PREVIEW_VERSION = 1
+export const PREVIEW_VERSION = 2
 export const PREVIEW_THUMB_SIZE = 256
 export const PREVIEW_MID_SIZE = 1024
 const SHEET_MAX = 4096
 const WEBP_QUALITY = 80
 const PREVIEW_TIMEOUT_MS = 10 * 60_000
+const WORK_DIR_PREFIX = 'canvcode-preview-work-'
 const HASH_PATTERN = /^[0-9a-f]{64}$/
 const PREVIEW_FILE = /^[0-9a-f]{64}\.preview-v(\d+)\./
 
@@ -36,6 +42,8 @@ export interface PdfPreviewManifest {
   thumbs: { sheet: number; x: number; y: number; w: number; h: number }[]
   // 段 2（長辺 1024px のページごとの画像）ができていれば付ける
   mid?: { size: number }
+  // 作るたびに変わる印。画像の URL に付ける
+  rev: string
 }
 
 export type PdfPreviewStatus = { status: 'ready'; manifest: PdfPreviewManifest } | { status: 'pending' } | { status: 'unavailable' }
@@ -99,6 +107,7 @@ export class PdfPreviews {
       const match = PREVIEW_FILE.exec(name)
       if (match && Number(match[1]) !== PREVIEW_VERSION) await rm(join(this.dir, name), { force: true }).catch(() => {})
     }
+    await removeStaleWorkDirs()
     for (const name of names) {
       const match = /^([0-9a-f]{64})\.json$/.exec(name)
       if (!match) continue
@@ -122,8 +131,14 @@ export class PdfPreviews {
     }
     if (front) this.queue.unshift(hash)
     else this.queue.push(hash)
+    this.startPump()
+  }
+
+  private startPump(): void {
     this.pump ??= this.drain().finally(() => {
       this.pump = null
+      // drain が終わってから、ここまでの間に入ったもの
+      if (this.queue.length > 0) this.startPump()
     })
   }
 
@@ -152,8 +167,9 @@ export class PdfPreviews {
     if (rest.length === 0) {
       const result = await this.status(hash)
       if (result.status !== 'ready') return sendJson(res, 404, { status: result.status }, 'no-cache')
-      // 段 2 があとで足されるので、毎回確かめさせる。まだなら pending を付けて、聞き直させる
-      return sendJson(res, 200, this.mid && !result.manifest.mid ? { ...result.manifest, pending: true } : result.manifest, 'no-cache')
+      // 段 2 があとで足されるので、毎回確かめさせる。まだ作っているなら pending を付けて、聞き直させる（作れなかったものには付けない）
+      const pending = this.mid && !result.manifest.mid && !this.failed.has(hash)
+      return sendJson(res, 200, pending ? { ...result.manifest, pending: true } : result.manifest, 'no-cache')
     }
     const [version, kind, index] = rest
     if (rest.length !== 3 || version !== `v${PREVIEW_VERSION}` || !/^\d+$/.test(index) || (kind !== 'sheet' && (kind !== 'page' || !this.mid))) {
@@ -173,7 +189,8 @@ export class PdfPreviews {
       res.end()
       return
     }
-    createReadStream(path).pipe(res)
+    // stat のあとに消えていたら（Asset の片付けなど）、応答を途中で切る（サーバーは落とさない）
+    await pipeline(createReadStream(path), res).catch(() => res.destroy())
   }
 
   async readManifest(hash: string): Promise<PdfPreviewManifest | null> {
@@ -217,25 +234,25 @@ export class PdfPreviews {
     if (manifest?.mid || (manifest && !this.mid)) return
     const deadline = Date.now() + PREVIEW_TIMEOUT_MS
     const { createCanvas, loadImage } = await import('@napi-rs/canvas')
-    const work = await mkdtemp(join(tmpdir(), 'canvcode-preview-'))
+    const work = await mkdtemp(join(tmpdir(), WORK_DIR_PREFIX))
     try {
       if (!manifest) {
         const pages = await this.pageSizes(pdf, deadline)
         const thumbs = await this.renderPages(pdf, PREVIEW_THUMB_SIZE, join(work, 't'), deadline)
         if (thumbs.length !== pages.length) throw new Error(`pdftoppm made ${thumbs.length} pages, but the PDF has ${pages.length}`)
-        const images = await Promise.all(thumbs.map(async (path) => loadImage(await readFile(path))))
-        const layout = packSheets(images.map((image) => ({ w: image.width, h: image.height })))
+        // 大きさは PNG の頭から読み、展開するのは 1 枚のシートに載る分だけにする（ページの多い PDF でメモリーを使いすぎない）
+        const layout = packSheets(await Promise.all(thumbs.map(pngSize)))
         for (const [index, sheet] of layout.sheets.entries()) {
           const canvas = createCanvas(sheet.width, sheet.height)
           const ctx = canvas.getContext('2d')
           ctx.fillStyle = '#ffffff'
           ctx.fillRect(0, 0, sheet.width, sheet.height)
-          layout.thumbs.forEach((thumb, i) => {
-            if (thumb.sheet === index) ctx.drawImage(images[i], thumb.x, thumb.y)
-          })
+          for (const [i, thumb] of layout.thumbs.entries()) {
+            if (thumb.sheet === index) ctx.drawImage(await loadImage(await readFile(thumbs[i])), thumb.x, thumb.y)
+          }
           await this.write(this.file(hash, `sheet${index}.webp`), await canvas.encode('webp', WEBP_QUALITY))
         }
-        manifest = { version: PREVIEW_VERSION, pages, sheets: layout.sheets, thumbs: layout.thumbs }
+        manifest = { version: PREVIEW_VERSION, pages, sheets: layout.sheets, thumbs: layout.thumbs, rev: randomUUID().slice(0, 8) }
         await this.write(this.file(hash, 'json'), Buffer.from(JSON.stringify(manifest)))
         await rm(join(work, 't'), { recursive: true, force: true })
       }
@@ -261,10 +278,11 @@ export class PdfPreviews {
     return parsePageSizes(out)
   }
 
-  // 全ページを長辺 size 画素の PNG にして、ページの順に並べたパスを返す
+  // 全ページを長辺 size 画素の PNG にして、ページの順に並べたパスを返す。
+  // pdftoppm は既定では MediaBox を描くので、ページの大きさ（pdfinfo・PDF.js）と同じ CropBox で描かせる
   private async renderPages(pdf: string, size: number, dir: string, deadline: number): Promise<string[]> {
     await mkdir(dir, { recursive: true })
-    await this.run(this.pdftoppm, ['-scale-to', String(size), '-png', pdf, join(dir, 'p')], deadline)
+    await this.run(this.pdftoppm, ['-cropbox', '-scale-to', String(size), '-png', pdf, join(dir, 'p')], deadline)
     const pages = (await readdir(dir))
       .map((name) => ({ name, page: Number(/-(\d+)\.png$/.exec(name)?.[1]) }))
       .filter(({ page }) => Number.isInteger(page))
@@ -286,6 +304,30 @@ export class PdfPreviews {
 
   private async write(path: string, data: Buffer): Promise<void> {
     await writeViaTemp(`${path}.${process.pid}.${Date.now()}.tmp`, path, data)
+  }
+}
+
+// PNG の幅と高さ（IHDR）
+async function pngSize(path: string): Promise<{ w: number; h: number }> {
+  const file = await open(path, 'r')
+  try {
+    const head = Buffer.alloc(24)
+    await file.read(head, 0, 24, 0)
+    return { w: head.readUInt32BE(16), h: head.readUInt32BE(20) }
+  } finally {
+    await file.close()
+  }
+}
+
+// 落ちたり止められたりしたサーバーが残した作業用のフォルダを消す。ほかのサーバー（別のワークスペース）が
+// 使っているかもしれないので、1 つの PDF にかけてよい時間の 2 倍より古いものだけ
+async function removeStaleWorkDirs(): Promise<void> {
+  const names = await readdir(tmpdir()).catch(() => [] as string[])
+  for (const name of names) {
+    if (!name.startsWith(WORK_DIR_PREFIX)) continue
+    const path = join(tmpdir(), name)
+    const info = await stat(path).catch(() => null)
+    if (info?.isDirectory() && Date.now() - info.mtimeMs > PREVIEW_TIMEOUT_MS * 2) await rm(path, { recursive: true, force: true }).catch(() => {})
   }
 }
 

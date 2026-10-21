@@ -4,7 +4,7 @@ import { requestPdfPageImage } from './pdfPage.ts'
 
 // PDF のページの画像を、倍率に応じて前もって作った画像（Issue #26）と PDF.js のどちらに頼むか
 
-function setup(previews: number[] | null) {
+function setup(previews: number[] | null, atHand: number | null = null) {
   const made: string[] = []
   const image = (level: number): RasterImage => ({ image: {} as CanvasImageSource, width: 1, height: 1, level })
   const assets: AssetResolver = {
@@ -30,7 +30,7 @@ function setup(previews: number[] | null) {
     },
     peek(_key, _version, level) {
       peeked.push(level)
-      return null
+      return atHand === null ? null : image(atHand)
     },
   }
   return { assets, images, requested, peeked, made }
@@ -56,6 +56,12 @@ describe('requestPdfPageImage', () => {
     requestPdfPageImage(assets, images, 'asset:a', 0, 1.5)
     expect(requested).toEqual([0.69, 2])
     expect(made).toEqual(['preview 0.69', 'pdf.js 2'])
+  })
+
+  it('does not ask for the page image again when a sharper image is at hand', () => {
+    const { assets, images, requested } = setup([0.17, 0.69], 2)
+    requestPdfPageImage(assets, images, 'asset:a', 0, 1.5)
+    expect(requested).toEqual([2])
   })
 
   it('draws with PDF.js when there are no page images', () => {

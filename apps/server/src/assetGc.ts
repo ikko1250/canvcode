@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs'
 import { readdir, readFile, rm, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { isPdfPreviewFile } from './pdfPreview.ts'
 import { forEachTextInDb, type RecordStore } from './records.ts'
 import { writeViaTemp } from './writeAtomic.ts'
 
@@ -257,7 +258,8 @@ async function readState(path: string): Promise<GcState> {
 
 async function allOlderThan(dir: string, files: string[], cutoff: number): Promise<boolean> {
   for (const name of files) {
-    if (isTemp(name)) continue
+    // PDF のページの画像は、参照されていなくても起動したときなどに作られる（作り直せる）ので、時刻を見ない
+    if (isTemp(name) || isPdfPreviewFile(name)) continue
     const info = await stat(join(dir, name)).catch(() => null)
     if (info && info.mtimeMs > cutoff) return false
   }

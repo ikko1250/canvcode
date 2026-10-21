@@ -157,13 +157,16 @@ describe('AssetManager PDF page images', () => {
   it('asks again after a while only while the server is still making the images', async () => {
     let now = 0
     vi.spyOn(Date, 'now').mockImplementation(() => now)
-    for (const [body, again] of [
-      [{ ...manifest, mid: undefined, pending: true }, true],
-      [{ ...manifest, mid: undefined }, false],
+    for (const [response, again] of [
+      [{ status: 200, body: { ...manifest, mid: undefined, pending: true } }, true],
+      [{ status: 200, body: { ...manifest, mid: undefined } }, false],
+      [{ status: 404, body: { status: 'pending' } }, true],
+      // poppler がない・壊れた PDF
+      [{ status: 404, body: { status: 'unavailable' } }, false],
     ] as const) {
-      const { assets, requests } = setupPreviews({ status: 200, body })
+      const { assets, requests } = setupPreviews(response)
       await assets.preparePdfPreview('asset:p')
-      expect(assets.pdfPreviewLevels('asset:p', 0)).toHaveLength(1)
+      expect(assets.pdfPreviewLevels('asset:p', 0)).toHaveLength(response.status === 200 ? 1 : 0)
       now += 60_000
       assets.pdfPreviewLevels('asset:p', 0)
       expect(requests).toHaveLength(again ? 2 : 1)
@@ -176,6 +179,15 @@ describe('AssetManager PDF page images', () => {
     await assets.preparePdfPreview('asset:p')
     expect(assets.pdfPreviewLevels('asset:p', 0)).toEqual([])
     expect(changes()).toBe(1)
+  })
+
+  it('puts the rev of the manifest in the image URLs', async () => {
+    const { assets, requests } = setupPreviews({ status: 200, body: { ...manifest, rev: 'ab12' } })
+    await assets.preparePdfPreview('asset:p')
+    const [thumb, large] = assets.pdfPreviewLevels('asset:p', 0)!
+    await assets.loadPdfPreview('asset:p', 0, thumb)
+    await assets.loadPdfPreview('asset:p', 0, large)
+    expect(requests).toEqual(['/api/assets/p/preview', '/api/assets/p/preview/v1/sheet/0?r=ab12', '/api/assets/p/preview/v1/page/0?r=ab12'])
   })
 
   it('cuts the page out of the sheet, reading the sheet once, and reads the page image for the larger level', async () => {

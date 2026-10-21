@@ -37,6 +37,8 @@ export interface PdfPreviewManifest {
   mid?: { size: number }
   // ページごとの画像をまだ作っているところなら付く（できたら付かなくなる）
   pending?: boolean
+  // 作るたびに変わる印。画像の URL に付ける（作り直したあとに、キャッシュした古いシートを切り出さない）
+  rev?: string
 }
 
 // PDF を開いて描く（MAI-5、MAI-32）。大きさはポイント（1/72 インチ）
@@ -73,6 +75,8 @@ const STORED_PAGE_QUALITY = 0.92
 
 interface PdfPreviewState {
   manifest: PdfPreviewManifest | null
+  // サーバーが作れない（poppler がない・壊れた PDF）と答えた。聞き直さない
+  unavailable: boolean
   // 最後に確かめ終えた時刻。まだ一度も確かめ終えていなければ null
   checkedAt: number | null
   loading: Promise<void> | null
@@ -239,7 +243,7 @@ export class AssetManager implements AssetResolver {
 
   // 前もって作った画像の解像度（renderPdfPage の scale と同じ単位）。小さい順。ないなら []、まだ確かめているところなら null。
   // 初めて聞かれたら、裏でサーバーに一覧を聞く。確かめ終えたら（変わったら）onPdfPreviewChange で知らせる。
-  // サーバーにまだない・段 2 を作っているところ（pending）なら、PREVIEW_RETRY_MS 経ったら聞き直す
+  // サーバーにまだない（作っているところ）・段 2 を作っているところ（pending）なら、PREVIEW_RETRY_MS 経ったら聞き直す
   pdfPreviewLevels(assetId: string, pageIndex: number): number[] | null {
     const record = this.records.get(assetId)
     // Asset の一覧（loadList）を読み終えるまでは、PDF.js で描き始めないよう、確かめているところとして扱う
@@ -248,10 +252,10 @@ export class AssetManager implements AssetResolver {
     if (record.mime !== 'application/pdf' || this.local.has(assetId) || typeof fetch === 'undefined') return []
     let state = this.previews.get(assetId)
     if (!state) {
-      state = { manifest: null, checkedAt: null, loading: null }
+      state = { manifest: null, unavailable: false, checkedAt: null, loading: null }
       this.previews.set(assetId, state)
       this.fetchPreview(record, state)
-    } else if (!state.loading && (!state.manifest || state.manifest.pending) && state.checkedAt !== null && Date.now() - state.checkedAt >= PREVIEW_RETRY_MS) {
+    } else if (!state.loading && !state.unavailable && (!state.manifest || state.manifest.pending) && state.checkedAt !== null && Date.now() - state.checkedAt >= PREVIEW_RETRY_MS) {
       this.fetchPreview(record, state)
     }
     if (state.checkedAt === null) return null
@@ -276,7 +280,7 @@ export class AssetManager implements AssetResolver {
     if (!record || !manifest || !thumb) throw new Error(`No preview of the PDF page: ${assetId}#${pageIndex}`)
     let image: ImageBitmap
     if (manifest.mid && level === previewLevels(manifest, pageIndex)[1]) {
-      const response = await fetch(`${this.baseUrl}/${record.hash}/preview/v${manifest.version}/page/${pageIndex}`)
+      const response = await fetch(`${this.baseUrl}/${record.hash}/preview/v${manifest.version}/page/${pageIndex}${revQuery(manifest)}`)
       if (!response.ok) throw new Error(`Failed to load the preview of ${assetId}#${pageIndex}: ${response.status}`)
       image = await createImageBitmap(await response.blob())
     } else {
@@ -291,8 +295,9 @@ export class AssetManager implements AssetResolver {
       const before = state.manifest
       try {
         const response = await fetch(`${this.baseUrl}/${record.hash}/preview`)
-        // 404 は、まだ作っていない・作れない
+        // 404 は、まだ作っていない（pending）・作れない（unavailable）
         if (response.ok) state.manifest = (await response.json()) as PdfPreviewManifest
+        else if (response.status === 404) state.unavailable = ((await response.json().catch(() => null)) as { status?: string } | null)?.status === 'unavailable'
       } catch (error) {
         console.warn('Failed to read the preview of a PDF', record.id, error)
       }
@@ -305,14 +310,14 @@ export class AssetManager implements AssetResolver {
 
   // 縮小画像のシートを読む。最近使った MAX_PREVIEW_SHEETS 枚まで持っておく
   private previewSheet(hash: string, manifest: PdfPreviewManifest, index: number): Promise<ImageBitmap> {
-    const key = `${hash}#${manifest.version}#${index}`
+    const key = `${hash}#${manifest.version}#${manifest.rev ?? ''}#${index}`
     let pending = this.previewSheets.get(key)
     if (pending) {
       this.previewSheets.delete(key)
       this.previewSheets.set(key, pending)
       return pending
     }
-    pending = fetch(`${this.baseUrl}/${hash}/preview/v${manifest.version}/sheet/${index}`).then(async (response) => {
+    pending = fetch(`${this.baseUrl}/${hash}/preview/v${manifest.version}/sheet/${index}${revQuery(manifest)}`).then(async (response) => {
       if (!response.ok) throw new Error(`Failed to load a preview sheet of ${hash}: ${response.status}`)
       return createImageBitmap(await response.blob())
     })
@@ -466,6 +471,10 @@ function previewLevels(manifest: PdfPreviewManifest, pageIndex: number): number[
   const levels = [thumb.w / (page.w * PDF_POINT_SCALE)]
   if (manifest.mid) levels.push(manifest.mid.size / Math.max(page.w, page.h) / PDF_POINT_SCALE)
   return levels
+}
+
+function revQuery(manifest: PdfPreviewManifest): string {
+  return manifest.rev ? `?r=${encodeURIComponent(manifest.rev)}` : ''
 }
 
 // ページの画像を WebP（できなければ PNG）にする

@@ -296,6 +296,17 @@ describe('sweepUnusedAssets', () => {
       expect(assetFiles(e)).toHaveLength(4)
     })
 
+    it('removes a PDF even if its page images were made within 30 days (they are made again on start)', async () => {
+      const e = env()
+      pdf(e, A)
+      const t0 = Date.now()
+      await e.sweep(t0 - ASSET_GRACE_MS - DAY)
+      writeFileSync(join(e.assets, `${A}.preview-v2.json`), '{}')
+      writeFileSync(join(e.assets, `${A}.preview-v2.sheet0.webp`), 'x')
+      expect((await e.sweep(t0)).removed).toEqual([A])
+      expect(assetFiles(e)).toEqual([])
+    })
+
     it('ignores assets that only have files being written, and leaves fresh temporary files alone', async () => {
       const e = env()
       writeFileSync(join(e.assets, `${A}.png.123.456.tmp`), 'x')

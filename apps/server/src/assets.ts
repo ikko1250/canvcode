@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { normalizeForSearch, searchPages, type NormalizedText, type PdfSearchPage } from '@canvcode/core'
 import { PdfPreviews, type PdfPreviewOptions } from './pdfPreview.ts'
 import { writeViaTemp } from './writeAtomic.ts'
@@ -235,7 +236,8 @@ export class AssetStore {
       res.end()
       return
     }
-    createReadStream(path, range ?? {}).pipe(res)
+    // stat のあとに消えていたら（Asset の片付けなど）、応答を途中で切る（サーバーは落とさない）
+    await pipeline(createReadStream(path, range ?? {}), res).catch(() => res.destroy())
   }
 
   private async extractPdfText(hash: string, data: Buffer): Promise<void> {

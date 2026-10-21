@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RasterImage } from '@canvcode/nodes'
+import { requestPdfPageImage, type AssetResolver, type RasterImage } from '@canvcode/nodes'
 import { ImageCache, MissingImageRecorder } from './imageCache.ts'
 
 function fakeImage(level: number, size = 10): RasterImage {
@@ -126,6 +126,41 @@ describe('ImageCache', () => {
     frame(cache, [['d', 1]])
     frame(cache, [['d', 1]])
     expect(cache.stats.bytes).toBeLessThanOrEqual(1000)
+  })
+
+  it('does not keep making the placeholder of a sharp PDF page again over the budget (Issue #26)', async () => {
+    // 1 倍のページは 400 バイトで、上限の 300 バイトを 1 枚で超える。仮の表示の 0.25 倍は 25 バイト。
+    // 前は、見えているページの使わない解像度として仮の画像が捨てられるたびに、次のフレームで頼み直して作り直していた
+    let ready = 0
+    let made = 0
+    const cache = new ImageCache({ onReady: () => ready++, idleDelayMs: 0, budgetBytes: 300 })
+    const assets: AssetResolver = {
+      get: () => undefined,
+      load: async () => fakeImage(1),
+      renderPdfPage: async (_id, _page, scale) => fakeImage(scale),
+      pdfPreviewLevels: () => [0.25],
+      loadPdfPreview: async (_id, _page, level) => {
+        made++
+        return fakeImage(level)
+      },
+    }
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) {
+        cache.beginFrame()
+        requestPdfPageImage(assets, cache, 'asset:a', 0, 1)
+        cache.endFrame()
+        await vi.advanceTimersByTimeAsync(10)
+      }
+    }
+    await frames(10)
+    const settled = ready
+    await frames(20)
+    // 仮の画像は 1 度だけ作り、落ち着いたあとは何も作り直さない
+    expect(made).toBe(1)
+    expect(ready).toBe(settled)
+    cache.beginFrame()
+    expect(requestPdfPageImage(assets, cache, 'asset:a', 0, 1)?.level).toBe(1)
+    cache.endFrame()
   })
 
   it('drops the unused levels of images on screen over the budget', async () => {

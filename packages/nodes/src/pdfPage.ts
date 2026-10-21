@@ -103,9 +103,12 @@ export function requestPdfPageImage(assets: AssetResolver, images: ImageRequeste
   if (previews === null) return images.peek?.(key, 'v1', pickImageLevel(need)) ?? null
   const enough = previews.find((level) => level >= need * PREVIEW_STRETCH)
   if (enough !== undefined) return images.get(key, 'v1', enough, () => assets.loadPdfPreview!(assetId, pageIndex, enough))
-  // PDF.js で描くまでの仮の表示に、いちばん大きい前もって作った画像を先に頼んでおく（画像キャッシュは頼んだ順に作る）
-  const largest = previews.at(-1)
-  if (largest !== undefined) images.get(key, 'v1', largest, () => assets.loadPdfPreview!(assetId, pageIndex, largest))
+  // PDF.js で描くまでの仮の表示に、いちばん大きい前もって作った画像を先に頼んでおく（画像キャッシュは頼んだ順に作る）。
+  // それよりくっきりした画像が手元にあれば頼まない（画像キャッシュがいっぱいだと、仮の画像は入れたそばから捨てられ、
+  // 頼むたびに作り直して描き直すことになる）
   const level = pickImageLevel(need)
+  const largest = previews.at(-1)
+  const have = images.peek?.(key, 'v1', level)
+  if (largest !== undefined && !(have && have.level >= largest)) images.get(key, 'v1', largest, () => assets.loadPdfPreview!(assetId, pageIndex, largest))
   return images.get(key, 'v1', level, () => assets.renderPdfPage!(assetId, pageIndex, level))
 }

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -46,6 +46,21 @@ function samplePdf(): Buffer {
     `<< /Length ${latin.length} >>\nstream\n${latin}\nendstream`,
     `<< /Length ${japanese.length} >>\nstream\n${japanese}\nendstream`,
   ]
+  return buildPdf(objects)
+}
+
+// MediaBox（青で塗る）より小さい CropBox（赤で塗る）を持つ 1 ページの PDF。見えるのは CropBox の中だけ
+function croppedPdf(): Buffer {
+  const content = '0 0 1 rg 0 0 600 800 re f 1 0 0 rg 50 50 300 400 re f'
+  return buildPdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /CropBox [50 50 350 450] /Contents 4 0 R >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+  ])
+}
+
+function buildPdf(objects: string[]): Buffer {
   let pdf = '%PDF-1.4\n'
   const offsets = objects.map((body, i) => {
     const offset = pdf.length
@@ -70,6 +85,17 @@ async function inkedPixels(data: Buffer, box?: { x: number; y: number; w: number
   let dark = 0
   for (let i = 0; i < pixels.length; i += 4) if (pixels[i] + pixels[i + 1] + pixels[i + 2] < 600) dark++
   return dark
+}
+
+async function bluePixels(data: Buffer, box: { x: number; y: number; w: number; h: number }): Promise<number> {
+  const { createCanvas, loadImage } = await import('@napi-rs/canvas')
+  const canvas = createCanvas(box.w, box.h)
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(await loadImage(data), -box.x, -box.y)
+  const pixels = ctx.getImageData(0, 0, box.w, box.h).data
+  let blue = 0
+  for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 2] > 150 && pixels[i] < 100) blue++
+  return blue
 }
 
 describe('packSheets', () => {
@@ -130,8 +156,8 @@ describe('parsePageSizes', () => {
 describe('isPdfPreviewFile', () => {
   it('tells the page images apart from the original and the other derived files', () => {
     const hash = 'a'.repeat(64)
-    expect(isPdfPreviewFile(`${hash}.preview-v1.json`)).toBe(true)
-    expect(isPdfPreviewFile(`${hash}.preview-v1.sheet0.webp`)).toBe(true)
+    expect(isPdfPreviewFile(`${hash}.preview-v2.json`)).toBe(true)
+    expect(isPdfPreviewFile(`${hash}.preview-v2.sheet0.webp`)).toBe(true)
     expect(isPdfPreviewFile(`${hash}.preview-v2.p10.webp`)).toBe(true)
     expect(isPdfPreviewFile(`${hash}.pdf`)).toBe(false)
     expect(isPdfPreviewFile(`${hash}.pages.json`)).toBe(false)
@@ -154,6 +180,7 @@ describe('PdfPreviews', () => {
       { w: 792, h: 612 },
     ])
     expect(manifest.mid).toEqual({ size: 1024 })
+    expect(manifest.rev).toMatch(/^[0-9a-f]{8}$/)
     expect(manifest.sheets).toHaveLength(1)
     // 長辺が 256px で、ページの縦横の比と合う
     for (const [i, thumb] of manifest.thumbs.entries()) {
@@ -167,12 +194,12 @@ describe('PdfPreviews', () => {
       [manifest.thumbs[0].w + manifest.thumbs[1].w, 0],
     ])
     const assets = join(dir, 'assets')
-    const sheet = readFileSync(join(assets, `${hash}.preview-v1.sheet0.webp`))
+    const sheet = readFileSync(join(assets, `${hash}.preview-v2.sheet0.webp`))
     expect(sheet.subarray(8, 12).toString('latin1')).toBe('WEBP')
     // 1 ページ目の左下の青い四角が、シートの 1 ページ目の位置にある
     expect(await inkedPixels(sheet, { ...manifest.thumbs[0], x: 0, y: manifest.thumbs[0].h - 20, w: 20, h: 20 })).toBeGreaterThan(100)
     // 埋め込まれていない日本語フォントの文字が描かれている
-    const mid = readFileSync(join(assets, `${hash}.preview-v1.p1.webp`))
+    const mid = readFileSync(join(assets, `${hash}.preview-v2.p1.webp`))
     expect(await inkedPixels(mid)).toBeGreaterThan(500)
     expect(readdirSync(assets).filter((name) => /\.p\d+\.webp$/.test(name))).toHaveLength(3)
   })
@@ -201,14 +228,14 @@ describe('PdfPreviews', () => {
     expect(ready.status).toBe(200)
     expect(ready.headers.get('cache-control')).toBe('no-cache')
     expect(((await ready.json()) as PdfPreviewManifest).mid).toEqual({ size: 1024 })
-    const sheet = await fetch(`${base}/api/assets/${hash}/preview/v1/sheet/0`)
+    const sheet = await fetch(`${base}/api/assets/${hash}/preview/v2/sheet/0`)
     expect(sheet.status).toBe(200)
     expect(sheet.headers.get('content-type')).toBe('image/webp')
     expect(sheet.headers.get('cache-control')).toContain('immutable')
-    expect((await fetch(`${base}/api/assets/${hash}/preview/v1/page/2`)).status).toBe(200)
-    expect((await fetch(`${base}/api/assets/${hash}/preview/v1/page/3`)).status).toBe(404)
-    expect((await fetch(`${base}/api/assets/${hash}/preview/v2/page/0`)).status).toBe(404)
-    expect((await fetch(`${base}/api/assets/${hash}/preview/v1/page/..`)).status).toBe(404)
+    expect((await fetch(`${base}/api/assets/${hash}/preview/v2/page/2`)).status).toBe(200)
+    expect((await fetch(`${base}/api/assets/${hash}/preview/v2/page/3`)).status).toBe(404)
+    expect((await fetch(`${base}/api/assets/${hash}/preview/v1/page/0`)).status).toBe(404)
+    expect((await fetch(`${base}/api/assets/${hash}/preview/v2/page/..`)).status).toBe(404)
     expect(await (await fetch(`${base}/api/assets/${broken}/preview`)).json()).toEqual({ status: 'unavailable' })
   })
 
@@ -219,7 +246,7 @@ describe('PdfPreviews', () => {
     const hash = await store.storeOriginal(samplePdf(), 'application/pdf', 0, 0)
     await store.previews.idle()
     const assets = join(dir, 'assets')
-    expect(readdirSync(assets).filter(isPdfPreviewFile).sort()).toEqual([`${hash}.preview-v1.json`, `${hash}.preview-v1.sheet0.webp`])
+    expect(readdirSync(assets).filter(isPdfPreviewFile).sort()).toEqual([`${hash}.preview-v2.json`, `${hash}.preview-v2.sheet0.webp`])
     const base = await serve(store)
     const manifest = (await (await fetch(`${base}/api/assets/${hash}/preview`)).json()) as PdfPreviewManifest & { pending?: boolean }
     expect(manifest.thumbs).toHaveLength(3)
@@ -229,10 +256,42 @@ describe('PdfPreviews', () => {
 
     // 段 2 を作ったあとに切っても、ページごとの画像は使わせない
     const made = 'f'.repeat(64)
-    writeFileSync(join(assets, `${made}.preview-v1.json`), JSON.stringify({ ...manifest, mid: { size: 1024 } }))
-    writeFileSync(join(assets, `${made}.preview-v1.p0.webp`), '')
+    writeFileSync(join(assets, `${made}.preview-v2.json`), JSON.stringify({ ...manifest, mid: { size: 1024 } }))
+    writeFileSync(join(assets, `${made}.preview-v2.p0.webp`), '')
     expect((await (await fetch(`${base}/api/assets/${made}/preview`)).json()).mid).toBeUndefined()
-    expect((await fetch(`${base}/api/assets/${made}/preview/v1/page/0`)).status).toBe(404)
+    expect((await fetch(`${base}/api/assets/${made}/preview/v2/page/0`)).status).toBe(404)
+  })
+
+  it.skipIf(!hasPoppler)('draws only what is inside the CropBox, at the size pdfinfo gives', async () => {
+    const dir = dataDir()
+    const store = new AssetStore(dir, { mid: true, log: () => {} })
+    await store.init()
+    const hash = await store.storeOriginal(croppedPdf(), 'application/pdf', 0, 0)
+    await store.previews.idle()
+    const manifest = (await store.previews.readManifest(hash))!
+    expect(manifest.pages).toEqual([{ w: 300, h: 400 }])
+    expect(manifest.thumbs[0]).toMatchObject({ w: 192, h: 256 })
+    const assets = join(dir, 'assets')
+    // MediaBox の青が写っていない
+    expect(await bluePixels(readFileSync(join(assets, `${hash}.preview-v2.sheet0.webp`)), manifest.thumbs[0])).toBe(0)
+    expect(await bluePixels(readFileSync(join(assets, `${hash}.preview-v2.p0.webp`)), { x: 0, y: 0, w: 768, h: 1024 })).toBe(0)
+  })
+
+  it.skipIf(!hasPoppler)('stops telling pending when it could not make the page images', async () => {
+    const dir = dataDir()
+    // 長辺 1024px のときだけ失敗する pdftoppm
+    const pdftoppm = join(dir, 'pdftoppm')
+    writeFileSync(pdftoppm, '#!/bin/sh\ncase " $* " in *" 1024 "*) exit 1;; esac\nexec pdftoppm "$@"\n')
+    chmodSync(pdftoppm, 0o755)
+    const store = new AssetStore(dir, { mid: true, pdftoppm, log: () => {} })
+    await store.init()
+    const hash = await store.storeOriginal(samplePdf(), 'application/pdf', 0, 0)
+    await store.previews.idle()
+    const base = await serve(store)
+    const manifest = (await (await fetch(`${base}/api/assets/${hash}/preview`)).json()) as PdfPreviewManifest & { pending?: boolean }
+    expect(manifest.thumbs).toHaveLength(3)
+    expect(manifest.mid).toBeUndefined()
+    expect(manifest.pending).toBeUndefined()
   })
 
   it('makes nothing and answers unavailable without pdftoppm', async () => {
@@ -253,13 +312,13 @@ describe('PdfPreviews', () => {
     await store.init()
     const assets = join(dir, 'assets')
     const hash = 'e'.repeat(64)
-    writeFileSync(join(assets, `${hash}.preview-v0.json`), '{}')
-    writeFileSync(join(assets, `${hash}.preview-v0.sheet0.webp`), '')
-    writeFileSync(join(assets, `${hash}.preview-v1.json`), JSON.stringify({ version: 1, pages: [], sheets: [], thumbs: [], mid: { size: 1024 } }))
+    writeFileSync(join(assets, `${hash}.preview-v1.json`), '{}')
+    writeFileSync(join(assets, `${hash}.preview-v1.sheet0.webp`), '')
+    writeFileSync(join(assets, `${hash}.preview-v2.json`), JSON.stringify({ version: 2, pages: [], sheets: [], thumbs: [], rev: '0' }))
     await new PdfPreviews(assets, { log: () => {} }).init()
-    expect(existsSync(join(assets, `${hash}.preview-v0.json`))).toBe(false)
-    expect(existsSync(join(assets, `${hash}.preview-v0.sheet0.webp`))).toBe(false)
-    expect(existsSync(join(assets, `${hash}.preview-v1.json`))).toBe(true)
+    expect(existsSync(join(assets, `${hash}.preview-v1.json`))).toBe(false)
+    expect(existsSync(join(assets, `${hash}.preview-v1.sheet0.webp`))).toBe(false)
+    expect(existsSync(join(assets, `${hash}.preview-v2.json`))).toBe(true)
   })
 })
 
