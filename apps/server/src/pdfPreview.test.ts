@@ -142,7 +142,7 @@ describe('isPdfPreviewFile', () => {
 describe('PdfPreviews', () => {
   it.skipIf(!hasPoppler)('makes the sheet and the page images, and draws Japanese text whose font is not embedded', async () => {
     const dir = dataDir()
-    const store = new AssetStore(dir, { log: () => {} })
+    const store = new AssetStore(dir, { mid: true, log: () => {} })
     await store.init()
     const hash = await store.storeOriginal(samplePdf(), 'application/pdf', 0, 0)
     await store.previews.idle()
@@ -179,7 +179,7 @@ describe('PdfPreviews', () => {
 
   it.skipIf(!hasPoppler)('serves the manifest and the images, and tells pending and unavailable apart', async () => {
     const dir = dataDir()
-    const store = new AssetStore(dir, { log: () => {} })
+    const store = new AssetStore(dir, { mid: true, log: () => {} })
     await store.init()
     const assets = join(dir, 'assets')
     // 取り込む前からある PDF（起動したときに順番待ちに入らず、画面が求めたときに作る）
@@ -210,6 +210,29 @@ describe('PdfPreviews', () => {
     expect((await fetch(`${base}/api/assets/${hash}/preview/v2/page/0`)).status).toBe(404)
     expect((await fetch(`${base}/api/assets/${hash}/preview/v1/page/..`)).status).toBe(404)
     expect(await (await fetch(`${base}/api/assets/${broken}/preview`)).json()).toEqual({ status: 'unavailable' })
+  })
+
+  it.skipIf(!hasPoppler)('makes only the sheet without the page images by default, and hides page images made before', async () => {
+    const dir = dataDir()
+    const store = new AssetStore(dir, { log: () => {} })
+    await store.init()
+    const hash = await store.storeOriginal(samplePdf(), 'application/pdf', 0, 0)
+    await store.previews.idle()
+    const assets = join(dir, 'assets')
+    expect(readdirSync(assets).filter(isPdfPreviewFile).sort()).toEqual([`${hash}.preview-v1.json`, `${hash}.preview-v1.sheet0.webp`])
+    const base = await serve(store)
+    const manifest = (await (await fetch(`${base}/api/assets/${hash}/preview`)).json()) as PdfPreviewManifest & { pending?: boolean }
+    expect(manifest.thumbs).toHaveLength(3)
+    expect(manifest.mid).toBeUndefined()
+    // 作り終えているので、聞き直させない
+    expect(manifest.pending).toBeUndefined()
+
+    // 段 2 を作ったあとに切っても、ページごとの画像は使わせない
+    const made = 'f'.repeat(64)
+    writeFileSync(join(assets, `${made}.preview-v1.json`), JSON.stringify({ ...manifest, mid: { size: 1024 } }))
+    writeFileSync(join(assets, `${made}.preview-v1.p0.webp`), '')
+    expect((await (await fetch(`${base}/api/assets/${made}/preview`)).json()).mid).toBeUndefined()
+    expect((await fetch(`${base}/api/assets/${made}/preview/v1/page/0`)).status).toBe(404)
   })
 
   it('makes nothing and answers unavailable without pdftoppm', async () => {

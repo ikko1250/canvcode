@@ -154,6 +154,23 @@ describe('AssetManager PDF page images', () => {
     expect(assets.pdfPreviewLevels('asset:p', 2)).toEqual([])
   })
 
+  it('asks again after a while only while the server is still making the images', async () => {
+    let now = 0
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    for (const [body, again] of [
+      [{ ...manifest, mid: undefined, pending: true }, true],
+      [{ ...manifest, mid: undefined }, false],
+    ] as const) {
+      const { assets, requests } = setupPreviews({ status: 200, body })
+      await assets.preparePdfPreview('asset:p')
+      expect(assets.pdfPreviewLevels('asset:p', 0)).toHaveLength(1)
+      now += 60_000
+      assets.pdfPreviewLevels('asset:p', 0)
+      expect(requests).toHaveLength(again ? 2 : 1)
+    }
+    vi.restoreAllMocks()
+  })
+
   it('has no levels when the server has not made them', async () => {
     const { assets, changes } = setupPreviews({ status: 404, body: { status: 'pending' } })
     await assets.preparePdfPreview('asset:p')

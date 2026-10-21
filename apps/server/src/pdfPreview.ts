@@ -9,7 +9,8 @@ import { writeViaTemp } from './writeAtomic.ts'
 // PDF のページの画像（Issue #26、docs/pdf-page-images-plan.md の「1」）。
 // - PDF を取り込んだあと、裏で全ページを poppler（pdftoppm）で描き、2 通りの画像を作って Asset の隣に置く
 //   1. 長辺 256px の縮小画像を、幅・高さ 4096px までのシートに並べたもの（全体表示で使う）
-//   2. 長辺 1024px のページごとの画像（中くらいの倍率と、PDF.js で描くまでの仮の表示で使う）
+//   2. 長辺 1024px のページごとの画像（中くらいの倍率と、PDF.js で描くまでの仮の表示で使う）。
+//      PDF 1 MB あたり 0.8 MB ほど（1 ページ 75 KB ほど）と容量が大きいので、既定では作らない（mid。サーバーは CANVCODE_PDF_PREVIEW_MID=1 で作る）
 // - サーバーの PDF.js ではなく poppler を使うのは、埋め込まれていない日本語フォント（EDINET の書類など）の文字を
 //   OS のフォントで描けるため。別のプロセスで動くので、サーバーのイベントループも止めない
 // - pdftoppm がなければ（起動したときに pdftoppm -v で確かめる）一度だけログに出し、何も作らない（画面は今までどおり PDF.js で描く）
@@ -44,6 +45,8 @@ export interface PdfPreviewOptions {
   pdfinfo?: string
   // nice -n 10 で動かすか（既定は動かす）
   nice?: boolean
+  // 段 2（長辺 1024px のページごとの画像）を作るか（既定は作らない）。作らないときは、作ってあるものも使わせない
+  mid?: boolean
   log?: (message: string, error?: unknown) => void
 }
 
@@ -57,6 +60,7 @@ export class PdfPreviews {
   private readonly pdftoppm: string
   private readonly pdfinfo: string
   private readonly nice: boolean
+  private readonly mid: boolean
   private readonly log: (message: string, error?: unknown) => void
   private available: Promise<boolean> | null = null
   // 順番待ちのハッシュ（先頭から作る）
@@ -71,6 +75,7 @@ export class PdfPreviews {
     this.pdftoppm = options.pdftoppm ?? 'pdftoppm'
     this.pdfinfo = options.pdfinfo ?? 'pdfinfo'
     this.nice = options.nice ?? true
+    this.mid = options.mid ?? false
     this.log = options.log ?? ((message, error) => (error === undefined ? console.log(message) : console.error(message, error)))
   }
 
@@ -100,7 +105,7 @@ export class PdfPreviews {
       const hash = match[1]
       if (!pdfs.has(`${hash}.pdf`)) continue
       const manifest = await this.readManifest(hash)
-      manifests.set(hash, !!manifest?.mid)
+      manifests.set(hash, this.mid ? !!manifest?.mid : !!manifest)
     }
     if (![...manifests.values()].some((done) => !done)) return
     if (!(await this.isAvailable())) return
@@ -131,7 +136,7 @@ export class PdfPreviews {
     const manifest = await this.readManifest(hash)
     if (manifest) {
       // 段 2 がまだなら、先に作ってもらう
-      if (!manifest.mid && !this.failed.has(hash) && (await this.isAvailable())) this.enqueue(hash, true)
+      if (this.mid && !manifest.mid && !this.failed.has(hash) && (await this.isAvailable())) this.enqueue(hash, true)
       return { status: 'ready', manifest }
     }
     if (this.failed.has(hash) || !(await this.isAvailable())) return { status: 'unavailable' }
@@ -147,11 +152,11 @@ export class PdfPreviews {
     if (rest.length === 0) {
       const result = await this.status(hash)
       if (result.status !== 'ready') return sendJson(res, 404, { status: result.status }, 'no-cache')
-      // 段 2 があとで足されるので、毎回確かめさせる
-      return sendJson(res, 200, result.manifest, 'no-cache')
+      // 段 2 があとで足されるので、毎回確かめさせる。まだなら pending を付けて、聞き直させる
+      return sendJson(res, 200, this.mid && !result.manifest.mid ? { ...result.manifest, pending: true } : result.manifest, 'no-cache')
     }
     const [version, kind, index] = rest
-    if (rest.length !== 3 || version !== `v${PREVIEW_VERSION}` || !/^\d+$/.test(index) || (kind !== 'sheet' && kind !== 'page')) {
+    if (rest.length !== 3 || version !== `v${PREVIEW_VERSION}` || !/^\d+$/.test(index) || (kind !== 'sheet' && (kind !== 'page' || !this.mid))) {
       return sendJson(res, 404, { error: 'not found' })
     }
     const path = join(this.dir, `${hash}.preview-v${PREVIEW_VERSION}.${kind === 'sheet' ? 'sheet' : 'p'}${Number(index)}.webp`)
@@ -174,8 +179,9 @@ export class PdfPreviews {
   async readManifest(hash: string): Promise<PdfPreviewManifest | null> {
     if (!HASH_PATTERN.test(hash)) return null
     try {
-      const manifest = JSON.parse(await readFile(this.file(hash, 'json'), 'utf8')) as PdfPreviewManifest
-      return manifest.version === PREVIEW_VERSION ? manifest : null
+      const { mid, ...manifest } = JSON.parse(await readFile(this.file(hash, 'json'), 'utf8')) as PdfPreviewManifest
+      if (manifest.version !== PREVIEW_VERSION) return null
+      return this.mid && mid ? { ...manifest, mid } : manifest
     } catch {
       return null
     }
@@ -208,7 +214,7 @@ export class PdfPreviews {
     const pdf = join(this.dir, `${hash}.pdf`)
     if (!(await stat(pdf).catch(() => null))) return
     let manifest = await this.readManifest(hash)
-    if (manifest?.mid) return
+    if (manifest?.mid || (manifest && !this.mid)) return
     const deadline = Date.now() + PREVIEW_TIMEOUT_MS
     const { createCanvas, loadImage } = await import('@napi-rs/canvas')
     const work = await mkdtemp(join(tmpdir(), 'canvcode-preview-'))
@@ -233,6 +239,7 @@ export class PdfPreviews {
         await this.write(this.file(hash, 'json'), Buffer.from(JSON.stringify(manifest)))
         await rm(join(work, 't'), { recursive: true, force: true })
       }
+      if (!this.mid) return
       const mids = await this.renderPages(pdf, PREVIEW_MID_SIZE, join(work, 'm'), deadline)
       if (mids.length !== manifest.pages.length) throw new Error(`pdftoppm made ${mids.length} pages, but the PDF has ${manifest.pages.length}`)
       for (const [i, path] of mids.entries()) {

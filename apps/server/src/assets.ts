@@ -20,7 +20,7 @@ import { writeViaTemp } from './writeAtomic.ts'
 //   （PDF をそのまま読めないモデルもあるので。ファイルがない古い PDF は ensurePdfTextFile が pages.json から作る）
 // - フォントを埋め込んでいない PDF（日本語の CID フォントなど）は、PDF.js に付いている CMap と標準フォントで読む。
 //   これを渡していなかったころ（pages.json の version 1）の空のテキストは、reextractEmptyPdfTexts が作り直す
-// - PDF は、ページの縮小画像（長辺 256px のシート・1024px のページごと）も裏で作る（pdfPreview.ts。Issue #26）。
+// - PDF は、ページの縮小画像（長辺 256px のシート。CANVCODE_PDF_PREVIEW_MID=1 なら 1024px のページごとも）も裏で作る（pdfPreview.ts。Issue #26）。
 //   GET /api/assets/<ハッシュ>/preview でマニフェストを、…/preview/v1/sheet/<N>・…/preview/v1/page/<ページ> で画像を返す
 // - 原本と縮小版の配信は Range リクエスト（1 つの範囲）に答える。PDF.js が、大きい PDF の要る部分だけを読んで描き始められるように
 

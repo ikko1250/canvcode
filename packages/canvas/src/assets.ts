@@ -35,6 +35,8 @@ export interface PdfPreviewManifest {
   thumbs: { sheet: number; x: number; y: number; w: number; h: number }[]
   // 長辺 size 画素のページごとの画像があれば付く
   mid?: { size: number }
+  // ページごとの画像をまだ作っているところなら付く（できたら付かなくなる）
+  pending?: boolean
 }
 
 // PDF を開いて描く（MAI-5、MAI-32）。大きさはポイント（1/72 インチ）
@@ -237,7 +239,7 @@ export class AssetManager implements AssetResolver {
 
   // 前もって作った画像の解像度（renderPdfPage の scale と同じ単位）。小さい順。ないなら []、まだ確かめているところなら null。
   // 初めて聞かれたら、裏でサーバーに一覧を聞く。確かめ終えたら（変わったら）onPdfPreviewChange で知らせる。
-  // サーバーにまだない・段 2 がまだのときは、PREVIEW_RETRY_MS 経ったら聞き直す
+  // サーバーにまだない・段 2 を作っているところ（pending）なら、PREVIEW_RETRY_MS 経ったら聞き直す
   pdfPreviewLevels(assetId: string, pageIndex: number): number[] | null {
     const record = this.records.get(assetId)
     // Asset の一覧（loadList）を読み終えるまでは、PDF.js で描き始めないよう、確かめているところとして扱う
@@ -249,7 +251,7 @@ export class AssetManager implements AssetResolver {
       state = { manifest: null, checkedAt: null, loading: null }
       this.previews.set(assetId, state)
       this.fetchPreview(record, state)
-    } else if (!state.loading && !state.manifest?.mid && state.checkedAt !== null && Date.now() - state.checkedAt >= PREVIEW_RETRY_MS) {
+    } else if (!state.loading && (!state.manifest || state.manifest.pending) && state.checkedAt !== null && Date.now() - state.checkedAt >= PREVIEW_RETRY_MS) {
       this.fetchPreview(record, state)
     }
     if (state.checkedAt === null) return null
