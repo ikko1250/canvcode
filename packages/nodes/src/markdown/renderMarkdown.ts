@@ -2,7 +2,13 @@
 // marked で HTML にし、KaTeX で数式を描き、DOMPurify で無害化する（MAI-9）。
 
 import DOMPurify from 'dompurify'
-import { Marked, type Token, type Tokens } from 'marked'
+import {
+  Marked,
+  type RendererThis,
+  type Token,
+  type TokenizerThis,
+  type Tokens,
+} from 'marked'
 import katex from 'katex'
 import { matchBlockMath, matchInlineMath } from './math.ts'
 
@@ -222,6 +228,108 @@ function mathExtension() {
   }
 }
 
+// 脚注（`[^1]` と `[^1]: …`）。番号は numberFootnotes が振り、一覧は最後に footnote-list でまとめて出す。
+// カードはラスタ化して描き、全画面のエディタは複数の HTML が同じ DOM に並ぶので、id と href="#…" のリンクにはしない
+const FOOTNOTE_DEF = /^\[\^([^\]\s]+)\]:[ \t]*([^\n]*(?:\n(?: {4}|\t)[^\n]*)*)\n?/
+const FOOTNOTE_REF = /^\[\^([^\]\s]+)\]/
+
+function footnoteLabel(label: string): string {
+  return label.toLowerCase()
+}
+
+function footnoteExtension() {
+  // 定義のあるラベル。インラインの字句解析はブロックを読み終えてから行うので、参照より後ろの定義もここに入っている
+  const labels = new Set<string>()
+  return {
+    extensions: [
+      {
+        name: 'footnote-def',
+        level: 'block' as const,
+        // 段落の途中の行から始まる定義でも、そこで段落を切る
+        start(src: string) {
+          const match = /\n\[\^[^\]\s]+\]:/.exec(src)
+          return match ? match.index + 1 : undefined
+        },
+        tokenizer(this: TokenizerThis, src: string) {
+          const match = FOOTNOTE_DEF.exec(src)
+          if (!match) return undefined
+          const text = match[2].replace(/\n(?: {4}|\t)/g, '\n').trim()
+          const label = footnoteLabel(match[1])
+          labels.add(label)
+          return {
+            type: 'footnote-def',
+            raw: match[0],
+            label,
+            text,
+            tokens: this.lexer.inline(text),
+          }
+        },
+        // 一覧は最後にまとめて出すので、定義の場所には何も出さない
+        renderer() {
+          return ''
+        },
+        // 定義の中の参照は、本文を数え終えてから数える（numberFootnotes）
+        childTokens: [],
+      },
+      {
+        name: 'footnote-ref',
+        level: 'inline' as const,
+        start(src: string) {
+          const index = src.indexOf('[^')
+          return index < 0 ? undefined : index
+        },
+        // 定義のないラベルと、`[^a](url)` のリンクは拾わず、今までどおり marked に任せる（`[^x]` は文字のまま出る）
+        tokenizer(src: string) {
+          const match = FOOTNOTE_REF.exec(src)
+          if (!match || src[match[0].length] === '(') return undefined
+          const label = footnoteLabel(match[1])
+          if (!labels.has(label)) return undefined
+          return { type: 'footnote-ref', raw: match[0], label }
+        },
+        // 番号が付かなかった参照は、念のためそのまま文字で出す
+        renderer(token: Tokens.Generic) {
+          if (typeof token.index !== 'number') return escapeHtml(token.raw)
+          return `<sup class="md-footnote-ref">${token.index}</sup>`
+        },
+      },
+      {
+        name: 'footnote-list',
+        renderer(this: RendererThis, token: Tokens.Generic) {
+          const items = (token.items as Tokens.Generic[])
+            .map((def) => `<li>${this.parser.parseInline(def.tokens ?? [])}</li>`)
+            .join('')
+          return `<div class="md-footnotes"><ol>${items}</ol></div>`
+        },
+      },
+    ],
+  }
+}
+
+// 定義は文書の全体から集め（同じラベルは先のものを使う）、定義のある参照に、残した部分（kept）で初めて参照した順に
+// 1, 2, 3… を振る。脚注の本文の中の参照は、本文のあとに、その脚注の番号の順に数える。番号の付いた定義を順に返す
+function numberFootnotes(marked: Marked, tokens: Token[], kept: Token[]): Tokens.Generic[] {
+  const defs = new Map<string, Tokens.Generic>()
+  marked.walkTokens(tokens, (token) => {
+    if (token.type === 'footnote-def' && !defs.has(token.label)) defs.set(token.label, token)
+  })
+  const numbered: Tokens.Generic[] = []
+  if (defs.size === 0) return numbered
+  const visit = (list: Token[]) =>
+    marked.walkTokens(list, (token) => {
+      if (token.type !== 'footnote-ref') return
+      const def = defs.get(token.label)
+      if (!def) return
+      if (typeof def.index !== 'number') {
+        numbered.push(def)
+        def.index = numbered.length
+      }
+      token.index = def.index
+    })
+  visit(kept)
+  for (let at = 0; at < numbered.length; at += 1) visit(numbered[at].tokens ?? [])
+  return numbered
+}
+
 function sanitizeHtml(
   html: string,
   options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean; documentPath?: string } = {},
@@ -277,7 +385,7 @@ export function renderMarkdown(
   const marked = new Marked({ gfm: true, breaks: false })
 
   marked.use({
-    ...mathExtension(),
+    extensions: [...mathExtension().extensions, ...footnoteExtension().extensions],
     renderer: {
       link({ href, title, tokens }: Tokens.Link) {
         if (!isSafeUrl(href)) return this.parser.parseInline(tokens)
@@ -308,7 +416,8 @@ export function renderMarkdown(
   let blockCount = 0
   let cutIndex = tokens.length
   for (let index = 0; index < tokens.length; index += 1) {
-    if (tokens[index].type === 'space') continue
+    // 脚注の定義は何も出さないので数えない
+    if (tokens[index].type === 'space' || tokens[index].type === 'footnote-def') continue
     blockCount += 1
     if (blockCount > maxBlocks) {
       cutIndex = index
@@ -317,7 +426,12 @@ export function renderMarkdown(
   }
 
   const kept = tokens.slice(0, cutIndex)
-  const html = options.sourceLines ? renderWithSourceLines(marked, kept) : marked.parser(kept)
+  const footnotes = numberFootnotes(marked, tokens, kept)
+  let html = options.sourceLines ? renderWithSourceLines(marked, kept) : marked.parser(kept)
+  // 一覧には data-line を付けない（スクロール合わせは本文のブロックだけで足りる）
+  if (footnotes.length > 0) {
+    html += marked.parser([{ type: 'footnote-list', raw: '', items: footnotes }])
+  }
   return {
     html: sanitizeHtml(html, { allowKaTeXStyles: true, allowSourceLines: options.sourceLines }),
     truncated: cutIndex < tokens.length,
