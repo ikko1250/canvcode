@@ -105,6 +105,8 @@ export interface PieMenuContext {
   exportSlidesPdf(): void
   // 選んでいるリンクのカード（PDF の URL）の PDF をダウンロードして、PDF の Portal を作る
   createPdfPortal(): void
+  // 選んでいる画像を指す Markdown の画像のリンクをコピーする（#33）
+  copyImageMarkdownLink(): void
 }
 
 export interface PdfMenuContext {
@@ -145,6 +147,8 @@ export interface SelectionMenuContext {
   slideTemplate: boolean
   // PDF の URL のリンクのカードを 1 つだけ選んでいるか（「PDF ポータルを作成」を出す）
   pdfLink: boolean
+  // 画像を 1 つだけ選んでいるか（「Markdown のリンクをコピー」を出す。#33）
+  image: boolean
 }
 
 const ALIGN_EDGES: [AlignEdge, string][] = [
@@ -239,6 +243,7 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   }
   const items: PieEntry[] = []
   if (selection.pdfLink) items.push({ label: 'PDF ポータルを作成', onSelect: ctx.createPdfPortal })
+  if (selection.image) items.push({ label: 'Markdown のリンクをコピー', onSelect: ctx.copyImageMarkdownLink })
   if (selection.arrangeCount >= 2) {
     items.push({ label: '整列', items: ALIGN_EDGES.map(([edge, label]) => ({ label, onSelect: () => ctx.alignSelection(edge) })) })
   }

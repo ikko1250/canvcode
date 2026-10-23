@@ -3,6 +3,7 @@ import { defineNodeType, SHORTCUT_CARD_HEIGHT, pickImageLevel, type FileContentS
 import { MARKDOWN_CARD_CSS, buildMarkdownCardHtml } from './cardHtml.ts'
 import { hitLink, measureCardHeight, measureLinks, type LinkRegion } from './layout.ts'
 import { measureLinksInImage } from './linkMap.ts'
+import { markdownImageSize, onMarkdownImageSize } from './imageSizes.ts'
 import { drawHtmlTile, loadHtmlImage, rasterizeHtml, type HtmlImage } from './rasterize.ts'
 import { renderMarkdown } from './renderMarkdown.ts'
 import { fullImageLevel, fullImageScale, tilesInRect, visibleLocalRect } from './tiles.ts'
@@ -71,6 +72,15 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
 
   // 中身に合わせた高さ（本文の版と幅ごとに一度だけ測る）
   const heightCache = new Map<string, number>()
+  // 大きさのわからない画像があるまま測った高さ。画像の大きさがわかったら捨てて測り直す（#33）。
+  // 画面（packages/canvas の view.ts）も同じ知らせで索引を作り直すので、それより先に捨てられるよう、型を作るときに登録する
+  const pendingHeights = new Set<string>()
+  if (canMeasure) {
+    onMarkdownImageSize(() => {
+      for (const key of pendingHeights) heightCache.delete(key)
+      pendingHeights.clear()
+    })
+  }
   const measuredHeight = (props: MarkdownCardProps): number | null => {
     const content = textOf(props)
     if (!content || !canMeasure) return null
@@ -78,8 +88,15 @@ export function createMarkdownCardType(options: MarkdownCardOptions) {
     let height = heightCache.get(key)
     if (height === undefined) {
       const html = buildMarkdownCardHtml('題名', bodyHtml(content))
-      height = Math.max(MIN_HEIGHT, measureCardHeight({ html, css: options.measureCss, width: props.w }))
+      let pending = false
+      const imageSize = (src: string) => {
+        const size = markdownImageSize(src)
+        if (size === undefined) pending = true
+        return size
+      }
+      height = Math.max(MIN_HEIGHT, measureCardHeight({ html, css: options.measureCss, width: props.w, imageSize }))
       remember(heightCache, key, height)
+      if (pending) pendingHeights.add(key)
     }
     return height
   }

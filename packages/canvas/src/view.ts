@@ -27,11 +27,12 @@ import {
   SOURCE_LINK_PREFIX,
   BLOCK_ARROW_SHAPES,
   fontsSettled,
+  onMarkdownImageSize,
   pickImageLevel,
   resetTextMetrics,
   textMetricsGeneration,
-  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageRequester, type PdfPageProps, type RasterImage, type TableCardProps, type TableCardType, type TableColumnInfo, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
-import { AssetManager, IMAGE_MIME_TYPES, isPdf, isSupportedImage, type PdfService } from './assets.ts'
+  type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageProps, type ImageRequester, type PdfPageProps, type RasterImage, type TableCardProps, type TableCardType, type TableColumnInfo, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
+import { AssetManager, IMAGE_MIME_TYPES, assetMarkdownImage, isPdf, isSupportedImage, type PdfService } from './assets.ts'
 import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
   CLIPBOARD_MIME,
@@ -411,6 +412,16 @@ export class CanvasView {
         }),
       )
     }
+    // Markdown の中の画像の大きさがわかったら、高さを中身に合わせるカードの形を測り直す（#33）
+    this.disposers.push(
+      onMarkdownImageSize(() => {
+        const editor = this.editor
+        editor.index.refresh([...editor.index.nodeIds()].filter((id) => editor.getNode(id)?.type === 'markdown-card'))
+        this.documentEditor?.layout()
+        this.invalidate('scene')
+        this.invalidate('overlay')
+      }),
+    )
     // 画面を作る前に（エディタが索引を作るときに頼んだ）本文を読み込み終えていると、その知らせは届いていない。
     // 遅い端末（iPad など）ではこうなりやすく、高さを中身に合わせるカードが、仮の高さのままになっていた
     this.editor.refreshAllReferences()
@@ -1003,6 +1014,16 @@ export class CanvasView {
       }
     }
     this.options.notify('引用をコピーしました。貼り付けると引用ノートになります')
+  }
+
+  // 画像ノードの画像を指す Markdown の画像のリンクをクリップボードに載せる（Markdown に貼ると画像が出る。#33）
+  async copyImageMarkdownLink(nodeId: string): Promise<void> {
+    const node = this.editor.getNode(nodeId)
+    const asset = node?.type === 'image' ? this.assets.get((node.props as ImageProps).assetId) : undefined
+    const link = asset && !this.assets.isUploading(asset.id) ? assetMarkdownImage(asset) : null
+    if (!link) return this.options.notify('この画像はまだ保存し終えていません。少し待ってからコピーしてください')
+    if (await writeClipboardText(link)) this.options.notify('Markdown のリンクをコピーしました。Markdown に貼り付けると画像が出ます')
+    else this.options.notify(`クリップボードに書けませんでした。Markdown にこれを書いてください：${link}`)
   }
 
   // ノードを画面の中央に見せて選ぶ（逆リンクから、引用ノートへ移ったとき）

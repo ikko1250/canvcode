@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AssetManager, type PdfDocument, type PdfService } from './assets.ts'
+import { AssetManager, assetMarkdownImage, type PdfDocument, type PdfService } from './assets.ts'
 import { MemoryPdfPageBackend, PdfPageStore } from './pdfPageStore.ts'
 
 // 開いている PDF の数を抑える（MAI-66）
@@ -234,5 +234,20 @@ describe('AssetManager PDF page images', () => {
     // 違う level は、PDF を開いて描く
     await assets.renderPdfPage('asset:p', 0, 4)
     expect(opened).toEqual(['/api/assets/p'])
+  })
+})
+
+// 画像の Asset を Markdown から指すリンク（#33）
+describe('assetMarkdownImage', () => {
+  const asset = (mime: string) => ({ typeName: 'asset' as const, id: 'asset:ab12', mime, size: 1, hash: 'ab12', width: 1, height: 1, variants: [] })
+
+  it('points at the original in .canvcode/assets with the extension the server saves it with', () => {
+    expect(assetMarkdownImage(asset('image/png'))).toBe('![](/.canvcode/assets/ab12.png)')
+    expect(assetMarkdownImage(asset('image/jpeg'))).toBe('![](/.canvcode/assets/ab12.jpg)')
+    expect(assetMarkdownImage(asset('image/webp'))).toBe('![](/.canvcode/assets/ab12.webp)')
+  })
+
+  it('returns null for a PDF', () => {
+    expect(assetMarkdownImage(asset('application/pdf'))).toBeNull()
   })
 })

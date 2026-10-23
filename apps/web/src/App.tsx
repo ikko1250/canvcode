@@ -810,6 +810,11 @@ export function App(props: { initial: InitialRecords }) {
         items.push({ label: 'PDF ポータルを作成', onSelect: () => void createPdfPortal(single.id) })
         items.push('separator')
       }
+      // 画像：Markdown に貼る画像のリンク（#33）
+      if (single?.type === 'image') {
+        items.push({ label: 'Markdown のリンクをコピー', onSelect: () => void view.copyImageMarkdownLink(single.id) })
+        items.push('separator')
+      }
       if (single?.type === 'portal') {
         items.push({ label: '開く', shortcut: 'Enter', onSelect: () => openPortal(single.id) })
         items.push({ label: '新しいタブで開く', shortcut: 'Ctrl+クリック', onSelect: () => openNodeInNewTab(single.id) })
@@ -1361,6 +1366,8 @@ export function App(props: { initial: InitialRecords }) {
   const [onlySelectedId] = session.selectedIds.size === 1 ? session.selectedIds : []
   const onlySelected = onlySelectedId ? editor.getNode(onlySelectedId) : undefined
   const pdfLinkId = onlySelected?.type === 'link-card' && isPdfUrl((onlySelected.props as LinkCardProps).url) ? onlySelected.id : null
+  // 画像を 1 つだけ選んでいれば、Markdown のリンクをコピーできる（#33）
+  const imageId = onlySelected?.type === 'image' ? onlySelected.id : null
 
   // 図形 › スライド 16:9 / 4:3：パイメニューを開いた位置（ワールド座標）を中心に置く。分からなければ画面の中央
   const placeSlide = useCallback(
@@ -1509,6 +1516,7 @@ export function App(props: { initial: InitialRecords }) {
         slideRows: slideRows && { canRemove: slideRows.canRemove, manualHeight: slideRows.manualHeight },
         slideTemplate: templateSlideId !== null,
         pdfLink: pdfLinkId !== null,
+        image: imageId !== null,
       },
       panToPage: (direction) => view?.panToPage(direction),
       unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
@@ -1541,6 +1549,9 @@ export function App(props: { initial: InitialRecords }) {
       exportSlidesPdf,
       createPdfPortal: () => {
         if (pdfLinkId) void createPdfPortal(pdfLinkId)
+      },
+      copyImageMarkdownLink: () => {
+        if (imageId) void view?.copyImageMarkdownLink(imageId)
       },
       ...tableMenu(tableUnder, origin),
     })

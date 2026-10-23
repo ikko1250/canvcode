@@ -1,6 +1,9 @@
 // Markdown カードの見た目（MAI-9）。旧実装の markdown-card の CSS を流用している（MAI-3）。
 // DOM で表示するときも、画像に変換するときも、同じ HTML と CSS を使う。
 
+// カードの中の画像の高さの上限（CSS ピクセル）。高さを中身に合わせるカードの計測（layout.ts）でも使う
+export const MARKDOWN_IMAGE_MAX_HEIGHT = 280
+
 export const MARKDOWN_CARD_CSS = `
 .md-card {
   display: flex;
@@ -78,7 +81,7 @@ export const MARKDOWN_CARD_CSS = `
 .md-card-body img {
   display: block;
   max-width: 100%;
-  max-height: 280px;
+  max-height: ${MARKDOWN_IMAGE_MAX_HEIGHT}px;
   margin: 0.5em 0;
   object-fit: contain;
 }
