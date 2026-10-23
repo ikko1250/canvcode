@@ -89,6 +89,23 @@ export function isSupportedImage(file: Blob): boolean {
   return IMAGE_MIME_TYPES.includes(file.type)
 }
 
+// サーバーが原本を保存するときの拡張子（apps/server/src/assets.ts の ORIGINAL_TYPES と同じ）
+const ORIGINAL_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
+  'image/bmp': 'bmp',
+}
+
+// 画像の Asset を Markdown から指す画像のリンク。原本はワークスペースの .canvcode/assets/ にあるので、
+// ルートからのパスで書けば、Markdown のカードも PDF の出力もそのまま読める（#33）。画像でなければ null
+export function assetMarkdownImage(asset: AssetRecord): string | null {
+  const ext = ORIGINAL_EXTENSIONS[asset.mime]
+  return ext ? `![](/.canvcode/assets/${asset.hash}.${ext})` : null
+}
+
 export class AssetManager implements AssetResolver {
   private readonly records = new Map<string, AssetRecord>()
   // アップロードが済むまで持っておく手元の Blob（長辺の画素数 → Blob）
@@ -336,6 +353,11 @@ export class AssetManager implements AssetResolver {
 
   get(assetId: string): AssetRecord | undefined {
     return this.records.get(assetId)
+  }
+
+  // 取り込んだ画像・PDF を、まだサーバーに送っている途中か（送り終えるまでは、サーバーの URL では読めない）
+  isUploading(assetId: string): boolean {
+    return this.uploads.has(assetId)
   }
 
   // 画像の Asset（PDF を除く）。新しく取り込んだもの・あとで登録したものほど後ろ（画像の塗りを選ぶ一覧。MAI-83）

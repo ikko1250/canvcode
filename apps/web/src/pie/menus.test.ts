@@ -5,7 +5,7 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
-const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false, pdfLink: false }
+const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false, pdfLink: false, image: false }
 
 function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false, table: TableMenuContext | null = null): PieMenuContext {
   return {
@@ -50,6 +50,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     hasSlides,
     exportSlidesPdf: vi.fn(),
     createPdfPortal: vi.fn(),
+    copyImageMarkdownLink: vi.fn(),
     table,
     sortTable: vi.fn(),
     filterTable: vi.fn(),
@@ -303,6 +304,15 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(ctx.createPdfPortal).toHaveBeenCalledTimes(1)
     // PDF でないリンクのカード・ほかのノードには出さない
     expect(labels(actionsOf(context({}, { count: 1, reorderCount: 1 }))?.items)).not.toContain('PDF ポータルを作成')
+  })
+
+  it('copies a Markdown link to a single selected image', () => {
+    const ctx = context({}, { count: 1, reorderCount: 1, image: true })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['Markdown のリンクをコピー', '重なり順', '固定する', '複製'])
+    run(menu?.items, 'Markdown のリンクをコピー')
+    expect(ctx.copyImageMarkdownLink).toHaveBeenCalledTimes(1)
+    expect(labels(actionsOf(context({}, { count: 1, reorderCount: 1 }))?.items)).not.toContain('Markdown のリンクをコピー')
   })
 
   it('shows sort and filter for the column under the pointer of a table card, before the selection items', () => {

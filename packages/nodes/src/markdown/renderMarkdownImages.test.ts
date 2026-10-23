@@ -11,6 +11,8 @@ describe('renderMarkdown documentPath', () => {
     expect(render('![a](./x.png)', 'notes/a.md')).toContain('src="/api/workspace/notes/x.png"')
     expect(render('![a](../x.png)', 'notes/a.md')).toContain('src="/api/workspace/x.png"')
     expect(render('![a](/assets/y.png)', 'notes/a.md')).toContain('src="/api/workspace/assets/y.png"')
+    // キャンバスの画像の「Markdown のリンクをコピー」で入るもの（#33）
+    expect(render('![](/.canvcode/assets/ab12.png)', 'notes/a.md')).toContain('src="/api/workspace/.canvcode/assets/ab12.png"')
     expect(render('![a](x.png?v=1#top)', 'a.md')).toContain('src="/api/workspace/x.png"')
     expect(render('![a](<図 1.png>)', 'a.md')).toContain(`src="/api/workspace/${encodeURIComponent('図 1.png')}"`)
   })

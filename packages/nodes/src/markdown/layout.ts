@@ -1,4 +1,6 @@
 import type { Box } from '@canvcode/core'
+import { MARKDOWN_IMAGE_MAX_HEIGHT } from './cardHtml.ts'
+import type { ImageSize } from './imageSizes.ts'
 
 // 画像にしたカードの上で、リンクを押せるようにするための位置の記録（MAI-21）。
 // 画像そのものからはリンクの位置が分からないので、同じ HTML を見えない DOM に置いてレイアウトし、
@@ -75,8 +77,9 @@ export function measureLinks(options: MeasureOptions): LinkRegion[] {
   }
 }
 
-// カードの幅を width にしたとき、中身に合わせた高さ（CSS ピクセル）。高さを中身に合わせるカードで使う（MAI-30）
-export function measureCardHeight(options: { html: string; css: string; width: number }): number {
+// カードの幅を width にしたとき、中身に合わせた高さ（CSS ピクセル）。高さを中身に合わせるカードで使う（MAI-30）。
+// 計測用の DOM では画像を読み込み終えないうちに測るので、imageSize で大きさがわかる画像は、その縦横比の箱にして測る（#33）
+export function measureCardHeight(options: { html: string; css: string; width: number; imageSize?: (src: string) => ImageSize | null | undefined }): number {
   const { root } = getMeasureHost(options.css)
   root.style.width = `${options.width}px`
   root.style.height = 'auto'
@@ -86,6 +89,17 @@ export function measureCardHeight(options: { html: string; css: string; width: n
     if (!card) return 0
     // .md-card は高さ 100% なので、測るときだけ中身の高さにする
     card.style.height = 'auto'
+    if (options.imageSize) {
+      for (const img of root.querySelectorAll('img')) {
+        const size = options.imageSize(img.getAttribute('src') ?? '')
+        if (!size) continue
+        // 読み込んだ画像と同じ箱にする：幅は、高さの上限で縮めた幅（さらに max-width でカードの幅まで）、高さは縦横比から
+        img.width = size.width
+        img.height = size.height
+        img.style.width = `${size.width * Math.min(1, MARKDOWN_IMAGE_MAX_HEIGHT / size.height)}px`
+        img.style.height = 'auto'
+      }
+    }
     return Math.ceil(card.getBoundingClientRect().height)
   } finally {
     root.innerHTML = ''

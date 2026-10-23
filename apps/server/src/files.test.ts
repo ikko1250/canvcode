@@ -57,6 +57,19 @@ describe('GET /api/workspace/<path>', () => {
     expect(again.status).toBe(304)
   })
 
+  // キャンバスに貼った画像の原本（.canvcode/assets/<ハッシュ>.<拡張子>）も、Markdown から指せる（#33）
+  it('returns the originals of pasted images in .canvcode/assets', async () => {
+    const workspace = tempDir()
+    mkdirSync(join(workspace, '.canvcode', 'assets'), { recursive: true })
+    writeFileSync(join(workspace, '.canvcode', 'assets', 'ab12.jpg'), 'JPEG')
+    const base = await serve(workspace)
+
+    const jpeg = await fetch(`${base}/api/workspace/.canvcode/assets/ab12.jpg`)
+    expect(jpeg.status).toBe(200)
+    expect(jpeg.headers.get('content-type')).toBe('image/jpeg')
+    expect(await jpeg.text()).toBe('JPEG')
+  })
+
   it('refuses non-images, missing files, paths outside and symlinks out of the workspace', async () => {
     const outside = tempDir()
     writeFileSync(join(outside, 'secret.png'), 'x')
