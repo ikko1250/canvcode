@@ -116,6 +116,9 @@ export const MARKDOWN_CARD_CSS = `
 }
 .md-card-body pre code { padding: 0; background: transparent; }
 .md-card-body a { color: #6d43bd; text-decoration: underline; }
+.md-card-body .md-footnote-ref { font-size: 0.75em; line-height: 0; vertical-align: super; }
+.md-card-body .md-footnotes { margin-top: 1.4em; padding-top: 0.6em; border-top: 1px solid rgba(80, 66, 45, 0.2); font-size: 0.85em; }
+.md-card-body .md-footnotes ol { margin: 0; padding-left: 1.6em; }
 /* 大きさを固定したカードで、収まらない分は下端をぼかして切る（MAI-30） */
 .md-card-body { position: relative; }
 .md-card.clipped .md-card-body::after {
