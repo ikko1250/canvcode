@@ -39,8 +39,8 @@ JAPANESE_FONTS = [
     "DejaVu Sans",
 ]
 
-# 凡例の配置設定 (set_presentation_style で更新)。set_presentation_style を呼ぶ前の既定も同じ（軸の外側・下中央）
-_legend_style = {"loc": "upper center", "bbox_to_anchor": (0.5, -0.2)}
+# 凡例の配置設定 (set_presentation_style で更新)。set_presentation_style を呼ぶ前の既定も同じ（図の下端・中央。軸の名前の下）
+_legend_style = {"loc": "outside lower center", "bbox_to_anchor": None}
 
 # 文字の大きさ (font_scale 倍する)
 _FONT_SIZES = {
@@ -57,11 +57,11 @@ def set_presentation_style(
     font_family=JAPANESE_FONTS,
     context="talk",
     font_scale=1.15,
-    legend_loc="upper center",
-    legend_bbox_to_anchor=(0.5, -0.2),
+    legend_loc="outside lower center",
+    legend_bbox_to_anchor=None,
     palette="colorblind",
 ):
-    # 凡例: 軸の外側・下中央 (bbox_to_anchor の点に loc の位置を合わせる)
+    # 凡例: "outside ..." なら図の外側 (place_legend が図の凡例にする)。ほかは軸の凡例のまま、bbox_to_anchor の点に loc の位置を合わせる
     _legend_style.update(
         loc=legend_loc,
         bbox_to_anchor=legend_bbox_to_anchor,
@@ -113,10 +113,21 @@ def set_presentation_style(
 
 
 def place_legend(ax, ncol=1, **kwargs):
-    """凡例を outer-lower-center に移動する。ncol は呼出ごとに指定。凡例がなければ何もしない。"""
-    if ax.get_legend() is None:
+    """凡例を移動する (既定は図の下端・中央)。ncol は呼出ごとに指定。凡例がなければ何もしない。"""
+    legend = ax.get_legend()
+    if legend is None:
         return
-    sns.move_legend(ax, **{**_legend_style, "ncol": ncol, **kwargs})
+    style = {**_legend_style, "ncol": ncol, **kwargs}
+    if not str(style["loc"]).startswith("outside "):
+        sns.move_legend(ax, **style)
+        return
+    # 軸の凡例を軸から決まった距離に置くと、長い目盛りの文字 (斜めにしたもの) や軸の名前と重なる。
+    # 図の凡例にして図の外側に置けば、constrained layout が目盛りの文字と軸の名前の外に場所を空ける
+    style.pop("bbox_to_anchor", None)
+    handles, labels = legend.legend_handles, [text.get_text() for text in legend.get_texts()]
+    title = legend.get_title().get_text()
+    legend.remove()
+    ax.figure.legend(handles, labels, title=title or None, **style)
 
 
 def _palette(name):
@@ -125,15 +136,15 @@ def _palette(name):
 
 STYLES = {
     "プレゼン": {
-        "description": "seaborn の talk・whitegrid・colorblind。大きい文字、凡例は軸の下中央。1:1。迷ったらこれ",
+        "description": "seaborn の talk・whitegrid・colorblind。大きい文字、凡例は軸の名前の下。1:1。迷ったらこれ",
         "setup": lambda: set_presentation_style(),
         "legend": place_legend,
         "size": (1440, 1440),
         "colors": _palette("colorblind"),
     },
     "プレゼン（横長）": {
-        "description": "プレゼンと同じ見た目の 16:9。スライドの横幅いっぱいに貼る図向け。凡例は軸の下中央",
-        "setup": lambda: set_presentation_style(legend_bbox_to_anchor=(0.5, -0.25)),
+        "description": "プレゼンと同じ見た目の 16:9。スライドの横幅いっぱいに貼る図向け。凡例は軸の名前の下",
+        "setup": lambda: set_presentation_style(),
         "legend": place_legend,
         "size": (1920, 1080),
         "colors": _palette("colorblind"),
@@ -147,7 +158,7 @@ STYLES = {
         "colors": _palette("colorblind"),
     },
     "白黒": {
-        "description": "灰色の濃淡だけ。白黒で印刷する資料向け。凡例は軸の下中央",
+        "description": "灰色の濃淡だけ。白黒で印刷する資料向け。凡例は軸の名前の下",
         "setup": lambda: set_presentation_style(context="notebook", font_scale=0.9, palette="gray"),
         "legend": place_legend,
         "size": (1280, 1000),
