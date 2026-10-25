@@ -377,8 +377,8 @@ function registerPlotTools(
         ylabel: z.string().nullable().optional().describe('Vertical axis label; null = from the column name, "" = none'),
         legend: z.boolean().nullable().optional().describe('Default: only with 2+ series'),
         header: z.boolean().optional().describe('First row is the header (default true)'),
-        width: z.number().int().min(150).max(4000).optional().describe('Image pixels (default 1280)'),
-        height: z.number().int().min(150).max(4000).optional().describe('Image pixels (default 800)'),
+        width: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size)"),
+        height: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size)"),
         canvas_id: z.string().optional().describe("Canvas id (default: the one the user is viewing)"),
         at: z.object({ x: z.number(), y: z.number() }).optional().describe('World top-left of a new chart'),
         place: z
@@ -419,21 +419,25 @@ function registerPlotTools(
             ? base.y
             : table.columns.filter((c) => c.numeric && c.index !== x).slice(0, 6).map((c) => c.index)
         if (y.length === 0) throw new PlotError(`No numeric column to plot. Pass y. Columns: ${table.columns.map((c) => `${c.index}:${c.name}`).join(', ')}`)
+        // スタイルの既定の大きさ（style.py の size）は、新しく作るときと、スタイルを変えて大きさを渡さなかったとき
+        const styleName = input.style ?? base?.style ?? ''
+        const styles = !styleName || ((!base || input.style) && (input.width === undefined || input.height === undefined)) ? await plot.styles() : []
+        const chosen = styles.find((s) => s.name === styleName) ?? (styleName ? undefined : styles[0])
+        const size = !base || input.style ? chosen?.size : undefined
         const spec: PlotSpec = {
           fileId,
           header,
           x: plotUsesX(kind) ? x : (base?.x ?? x),
           y,
           kind,
-          style: input.style ?? base?.style ?? '',
+          style: styleName || (chosen?.name ?? ''),
           title: input.title ?? base?.title ?? '',
           xlabel: input.xlabel !== undefined ? input.xlabel : (base?.xlabel ?? null),
           ylabel: input.ylabel !== undefined ? input.ylabel : (base?.ylabel ?? null),
           legend: input.legend !== undefined ? input.legend : (base?.legend ?? null),
-          width: input.width ?? base?.width ?? 1280,
-          height: input.height ?? base?.height ?? 800,
+          width: input.width ?? size?.[0] ?? base?.width ?? 1280,
+          height: input.height ?? size?.[1] ?? base?.height ?? 800,
         }
-        if (!spec.style) spec.style = (await plot.styles())[0]?.name ?? ''
         const rendered = await plot.render(spec)
         const hash = await assets.storeOriginal(rendered.png, 'image/png', rendered.width, rendered.height)
         const image: PreparedImage = { hash, size: rendered.png.length, width: rendered.width, height: rendered.height, plot: spec }

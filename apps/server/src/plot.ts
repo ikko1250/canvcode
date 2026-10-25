@@ -34,6 +34,8 @@ export interface PlotStyle {
   name: string
   description: string
   colors: string[]
+  // 新しく作るときの画像の大きさ（画素の [幅, 高さ]。style.py の size）
+  size?: [number, number]
 }
 
 export interface RenderedPlot {
@@ -228,10 +230,14 @@ export class Plotter {
 // plot.py が失敗したときのメッセージ。使う人の誤り（終了コード 2）はそのまま、ほかは標準エラーの最後の行を添える
 export function describeFailure(code: number | null, stderr: string): PlotError {
   const lines = stderr.trim().split('\n').filter((line) => line.trim() && !line.startsWith('findfont:'))
-  if (code === 2) return new PlotError(lines.join('\n') || 'グラフを描けませんでした')
   if (/No module named '(matplotlib|cycler)'/.test(stderr)) {
     return new PlotError('matplotlib が入っていません。サーバーで pip install matplotlib（Ubuntu なら sudo apt install python3-matplotlib）を実行してください', 503)
   }
+  // style.py の読み込みの失敗（終了コード 2）として届く
+  if (/No module named 'seaborn'/.test(stderr)) {
+    return new PlotError('style.py が使う seaborn が入っていません。サーバーで pip install seaborn（Ubuntu なら sudo apt install python3-seaborn）を実行してください', 503)
+  }
+  if (code === 2) return new PlotError(lines.join('\n') || 'グラフを描けませんでした')
   return new PlotError(`グラフを描けませんでした：${lines.at(-1) ?? `終了コード ${code}`}`, 500)
 }
 

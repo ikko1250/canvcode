@@ -17,7 +17,7 @@
 
 ## 使い方
 
-Node 24 以上が必要。PDF のページの縮小画像を作るのに poppler の `pdftoppm`・`pdfinfo` を使う（`sudo apt install poppler-utils`。なければ作らず、ページはいつもブラウザの PDF.js で描く）。CSV からグラフを作るのに Python 3 と matplotlib を使う（`sudo apt install python3-matplotlib` か `pip install matplotlib`。日本語の字には `sudo apt install fonts-noto-cjk` も。なければグラフを作れないだけで、ほかは動く。「グラフ（CSV から）」の節）。
+Node 24 以上が必要。PDF のページの縮小画像を作るのに poppler の `pdftoppm`・`pdfinfo` を使う（`sudo apt install poppler-utils`。なければ作らず、ページはいつもブラウザの PDF.js で描く）。CSV からグラフを作るのに Python 3 と matplotlib・seaborn を使う（`sudo apt install python3-matplotlib python3-seaborn` か `pip install matplotlib seaborn`。日本語の字には `sudo apt install fonts-noto-cjk` も。なければグラフを作れないだけで、ほかは動く。「グラフ（CSV から）」の節）。
 
 ```bash
 npm install
@@ -133,7 +133,7 @@ npx playwright test --project=webkit
 - 作る：表のカードを右クリック →「グラフを作る…」。種類（折れ線・棒・横棒・積み上げ棒・積み上げ面・散布図・円・ヒストグラム・箱ひげ）、横の軸の列（なしなら行の番号）、値の列（いくつでも。数の列が初めから選んである）、スタイル、タイトル、軸の名前（空なら列の名前）、大きさ、1 行目を見出しにするかを選ぶと、右にプレビューが出る。「置く」でカードの右に置く（画像の幅は画素の半分。2 倍に拡大しても粗くならない）
 - 値：`1,200`・`12%`・`¥300`・全角の数字も数として読む。数でないセルは飛ばし、そのことをプレビューの下と置いたあとの知らせに出す。横の軸は、数なら数の軸、日付（`2026-01-31`・`2026/1`・`2026年1月`）なら日付の軸、それ以外は表の順の項目になる。円グラフは最初の値の列だけを、横の軸の列をラベルにして描く
 - 直す：置いたグラフは作り方（ファイル・列・種類・スタイルなど）を覚えている。右クリック →「グラフを編集…」で作り方を変えて「描き直す」、CSV を直したあとは「グラフを描き直す」で同じ作り方のまま描き直す（幅はそのまま、高さは新しい画像の縦横比に合わせる。どちらも Undo 1 回）。表のカードの並び替え・絞り込みは使わず、CSV の全部の行を描く（20 万行まで）
-- スタイル：ワークスペースの直下の `style.py`。ないときは、初めてグラフを作るときに同梱の `apps/server/plot/style.py`（標準・スライド・論文・ダーク）を写す。普通の Python の File なので、サイドバーの「未配置」から開くか、ダイアログの「style.py を開く」で直す。`STYLES` の 1 つが 1 つのスタイルで、`description`（一覧と AI に出す説明）、`colors`（系列の色）、`rc`（matplotlib の rcParams）、`base`（先に当てる matplotlib の組み込みのスタイル）、`after(fig, ax)`（描いたあとに呼ぶ関数）を持つ。書き方は `style.py` の先頭に書いてある。フォントは入っているものだけを使い、欧文のフォントにない日本語の字は、次に並べた日本語のフォントで出す
+- スタイル：ワークスペースの直下の `style.py`。ないときは、初めてグラフを作るときに同梱の `apps/server/plot/style.py` を写す。同梱のものは seaborn の `set_presentation_style`（talk・whitegrid・colorblind、凡例は軸の外）と `place_legend` を土台に、プレゼン（1:1）・プレゼン（横長、16:9）・資料（小さめの文字、凡例は右）・白黒の 4 つのスタイルを持つ（2 つの関数はノートブックなどからもそのまま使える）。普通の Python の File なので、サイドバーの「未配置」から開くか、ダイアログの「style.py を開く」で直す。`STYLES` の 1 つが 1 つのスタイルで、`description`（一覧と AI に出す説明）、`setup`（描く前に呼ぶ関数。rcParams を整える）、`legend`（凡例を置く関数 `legend(ax, ncol)`）、`size`（新しく作るときの画像の画素の大きさ。スタイルを選ぶと大きさもそれになる）、`colors`（一覧に出す色）を持つ。ほかに `rc`・`base`・`after(fig, ax)` も使える。書き方は `style.py` の先頭に書いてある。画像の大きさと解像度は画面で選んだものになる（`figure.figsize`・`figure.dpi`・`savefig.dpi` は上書きする）。フォントは入っているものだけを使い、前のフォントにない字は次に並べたフォントで出す
 - AI に任せる：ダイアログの「Claude におまかせ…」で、表のカードを添えて Claude のパネルを開き、頼み方の下書きを入れる（そのまま Ctrl+Enter で送るか、書き足して送る）。Claude は MCP の `list_plot_styles` でスタイルを読み、表の中身から列・種類・スタイルを選んで `plot_csv` で置く。パネルを使わず、Claude Code から「この CSV をグラフにして」と頼んでもよい
 - `style.py` は Python のコードとして読み込む（画面を開ける人が書き換えられる。Claude のパネルと同じく、サーバーを動かしているユーザーの権限で動く）。python の場所は `CANVCODE_PYTHON` で変える（既定は `python3`）。1 回描くのに 1 秒ほどかかり、60 秒で打ち切る
 

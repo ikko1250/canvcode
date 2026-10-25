@@ -18,6 +18,11 @@ const SIZES: { label: string; width: number; height: number }[] = [
   { label: '縦長（800×1100）', width: 800, height: 1100 },
 ]
 
+// スタイルに大きさ（style.py の size）があれば、その大きさにする（スタイルを選ぶと、大きさもそのスタイルのものになる）
+function withStyleSize<T extends Partial<PlotSpec>>(spec: T, style: PlotStyle | undefined): T {
+  return style?.size ? { ...spec, width: style.size[0], height: style.size[1] } : spec
+}
+
 export interface PlotDialogProps {
   // 表の File の名前（見出しに出す）
   title: string
@@ -68,7 +73,7 @@ export function PlotDialog(props: PlotDialogProps) {
   const parsed: PlotTable | null = useMemo(() => (table ? plotTable(table.text, table.path, header) : null), [table, header])
   // （spec が null の間は header も props.header のままなので、parsed も変わらない）
   const defaults = useMemo(
-    () => (parsed && styles ? defaultPlotSpec(fileId, parsed, props.header, styles[0]?.name ?? '') : null),
+    () => (parsed && styles ? withStyleSize(defaultPlotSpec(fileId, parsed, props.header, styles[0]?.name ?? ''), styles[0]) : null),
     [parsed, styles, fileId, props.header],
   )
   const current = spec ?? defaults
@@ -206,7 +211,7 @@ export function PlotDialog(props: PlotDialogProps) {
             </div>
             <label className="plot-field">
               <span>スタイル</span>
-              <select aria-label="スタイル" value={current?.style ?? ''} disabled={!current || !styles?.length} onChange={(e) => update({ style: e.target.value })}>
+              <select aria-label="スタイル" value={current?.style ?? ''} disabled={!current || !styles?.length} onChange={(e) => update(withStyleSize({ style: e.target.value }, styles?.find((s) => s.name === e.target.value)))}>
                 {styles?.map((s) => (
                   <option key={s.name} value={s.name}>
                     {s.name}

@@ -19,7 +19,8 @@ import type { Presence } from './sync.ts'
 // CSV から作るグラフ（plot.ts・apps/server/plot/plot.py・MCP の plot_csv）。
 // 描くテストは python3 と matplotlib が要る（なければ飛ばす）。matplotlib を読み込むのに 1 回 0.5〜1 秒かかるので、待つ時間を延ばす
 
-const hasMatplotlib = spawnSync('python3', ['-c', 'import matplotlib'], { stdio: 'ignore' }).status === 0
+// 同梱の style.py は seaborn を使う
+const hasMatplotlib = spawnSync('python3', ['-c', 'import matplotlib, seaborn'], { stdio: 'ignore' }).status === 0
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47])
 
 const cleanups: (() => Promise<void> | void)[] = []
@@ -51,6 +52,8 @@ describe('Plotter', () => {
     expect(missing.status).toBe(503)
     expect(missing.message).toContain('pip install matplotlib')
     expect(describeFailure(1, 'Traceback\nValueError: boom\n').message).toBe('グラフを描けませんでした：ValueError: boom')
+    // style.py の読み込みの失敗（終了コード 2）でも、seaborn がないことはそう知らせる
+    expect(describeFailure(2, "style.py の読み込みに失敗しました：ModuleNotFoundError: No module named 'seaborn'\n").message).toContain('pip install seaborn')
   })
 
   it('says so when python is missing', async () => {
@@ -70,8 +73,9 @@ describe('Plotter', () => {
   it.skipIf(!hasMatplotlib)('copies style.py into the workspace once and lists its styles', async () => {
     const { plot, workspace } = await setup()
     const styles = await plot.styles()
-    expect(styles.map((s) => s.name)).toEqual(['標準', 'スライド', '論文', 'ダーク'])
-    expect(styles[0]!.colors[0]).toBe('#1971c2')
+    expect(styles.map((s) => s.name)).toEqual(['プレゼン', 'プレゼン（横長）', '資料', '白黒'])
+    expect(styles[0]).toMatchObject({ size: [1440, 1440] })
+    expect(styles[0]!.colors[0]).toBe('#0173b2')
     expect(readFileSync(join(workspace, 'style.py'), 'utf8')).toBe(readFileSync(DEFAULT_STYLE_FILE, 'utf8'))
     // ユーザーが直した style.py は上書きしない
     writeFileSync(join(workspace, 'style.py'), 'STYLES = {"mine": {"description": "自分の", "rc": {"lines.linewidth": 4}}}\n')
@@ -100,6 +104,11 @@ describe('Plotter', () => {
     await expect(plot.render(spec(table.id, { style: 'ない' }))).rejects.toThrow('スタイル「ない」は style.py にありません')
     writeFileSync(join(workspace, 'style.py'), 'STYLES = {\n')
     await expect(plot.render(spec(table.id))).rejects.toThrow('style.py の読み込みに失敗しました')
+    // setup・legend の中の誤りも、どこで起きたかを添えて知らせる（legend は凡例を出したときだけ呼ぶ）
+    writeFileSync(join(workspace, 'style.py'), 'def boom(*args):\n    raise ValueError("だめ")\nSTYLES = {"a": {"setup": boom}, "b": {"legend": boom}}\n')
+    await expect(plot.render(spec(table.id, { style: 'a' }))).rejects.toThrow('style.py の setup でエラーになりました：ValueError: だめ')
+    await expect(plot.render(spec(table.id, { style: 'b' }))).rejects.toThrow('style.py の legend でエラーになりました：ValueError: だめ')
+    await expect(plot.render(spec(table.id, { style: 'b', y: [1] }))).resolves.toMatchObject({ width: 640 })
   }, 30_000)
 
   it.skipIf(!hasMatplotlib)('serves the styles and the PNG over HTTP', async () => {
@@ -111,7 +120,7 @@ describe('Plotter', () => {
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     const styles = (await (await fetch(`${base}/api/plot/styles`)).json()) as { styles: { name: string }[]; path: string }
     expect(styles.path).toBe('style.py')
-    expect(styles.styles[0]!.name).toBe('標準')
+    expect(styles.styles[0]!.name).toBe('プレゼン')
     const response = await fetch(`${base}/api/plot`, { method: 'POST', body: JSON.stringify(spec(table.id, { kind: 'bar' })) })
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('image/png')
@@ -168,28 +177,29 @@ describe('MCP plot tools', () => {
     expect(missing.isError).toBe(true)
     expect(missing.text).toContain('No column "名古屋". Columns: 0:月 (text), 1:東京, 2:大阪')
 
-    const made = await call('plot_csv', { document: '売上.csv', kind: 'bar', x: '月', y: ['東京', '大阪'], style: 'スライド', canvas_id: records.rootCanvasId, at: { x: 100, y: 50 } })
+    const made = await call('plot_csv', { document: '売上.csv', kind: 'bar', x: '月', y: ['東京', '大阪'], style: 'プレゼン（横長）', canvas_id: records.rootCanvasId, at: { x: 100, y: 50 } })
     expect(made.isError).toBe(false)
-    expect(made.data.spec).toMatchObject({ kind: 'bar', x: '月', y: ['東京', '大阪'], style: 'スライド' })
+    // 大きさを渡さなければ、スタイルの size（1920×1080）
+    expect(made.data.spec).toMatchObject({ kind: 'bar', x: '月', y: ['東京', '大阪'], style: 'プレゼン（横長）', width: 1920, height: 1080 })
     expect(made.data.warnings).toEqual(['列「大阪」の 3 行目「x」は数でないので飛ばしました'])
     const node = records.get(made.data.node) as unknown as { type: string; x: number; y: number; props: ImageProps }
     expect(node).toMatchObject({ type: 'image', x: 100, y: 50 })
-    expect(node.props).toMatchObject({ w: 640, h: 400, crop: null, plot: { fileId: table.id, x: 0, y: [1, 2], kind: 'bar', style: 'スライド' } })
+    expect(node.props).toMatchObject({ w: 960, h: 540, crop: null, plot: { fileId: table.id, x: 0, y: [1, 2], kind: 'bar', style: 'プレゼン（横長）' } })
     const hash = node.props.assetId.replace('asset:', '')
-    expect(JSON.parse(readFileSync(join(dataDir, 'assets', `${hash}.json`), 'utf8'))).toMatchObject({ mime: 'image/png', width: 1280, height: 800 })
+    expect(JSON.parse(readFileSync(join(dataDir, 'assets', `${hash}.json`), 'utf8'))).toMatchObject({ mime: 'image/png', width: 1920, height: 1080 })
 
     // 描き直す：渡さなかったものは今の作り方のまま。幅はそのままで、高さを新しい縦横比に合わせる
     const redrawn = await call('plot_csv', { node: made.data.node, kind: 'line', height: 1280 })
     expect(redrawn.isError).toBe(false)
     const after = records.get(made.data.node) as unknown as { props: ImageProps }
-    expect(after.props.plot).toMatchObject({ kind: 'line', style: 'スライド', y: [1, 2], height: 1280 })
-    expect(after.props.w).toBe(640)
+    expect(after.props.plot).toMatchObject({ kind: 'line', style: 'プレゼン（横長）', y: [1, 2], width: 1920, height: 1280 })
+    expect(after.props.w).toBe(960)
     expect(after.props.h).toBe(640)
     expect(after.props.assetId).not.toBe(node.props.assetId)
 
     // 既定：最初の文字の列を横の軸に、数の列を値にする
     const auto = await call('plot_csv', { document: table.id, canvas_id: records.rootCanvasId })
     // （大阪は数でないセルがあるので、数の列に入らない）
-    expect(auto.data.spec).toMatchObject({ kind: 'line', x: '月', y: ['東京'], style: '標準' })
+    expect(auto.data.spec).toMatchObject({ kind: 'line', x: '月', y: ['東京'], style: 'プレゼン', width: 1440, height: 1440 })
   }, 60_000)
 })

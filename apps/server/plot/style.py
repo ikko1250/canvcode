@@ -1,165 +1,156 @@
-"""CanvCode のグラフのスタイル（CSV から作るグラフ。apps/server/plot/plot.py が読む）。
+"""グラフの共通スタイル設定（CanvCode の CSV から作るグラフ。apps/server/plot/plot.py が読む）。
 
 ワークスペースのフォルダの直下に style.py があれば、そちらを使う（なければ、初めてグラフを作るときにこのファイルを写す）。
 写したあとは CanvCode の画面（Python のカード・全画面のエディタ）や Neovim で直してよい。直したら、グラフの「描き直す」で反映する。
+seaborn が要る（pip install seaborn）。
 
-STYLES の 1 つが 1 つのスタイル。キーがスタイルの名前（画面の一覧と AI に出る）。値は次の項目を持つ辞書：
+set_presentation_style と place_legend は、ノートブックなどからも同じように使える：
+
+    from style import set_presentation_style, place_legend
+    set_presentation_style()
+    ax = sns.lineplot(...)
+    place_legend(ax, ncol=3)
+
+CanvCode は STYLES を読む。キーがスタイルの名前（画面の一覧と AI に出る）で、値は次の項目を持つ辞書：
 
 - description：一覧に出す短い説明（AI がスタイルを選ぶときにも読む）
-- base：先に当てる matplotlib の組み込みのスタイルの名前（例 "ggplot"、"seaborn-v0_8-whitegrid"）。なくてよい
-- colors：系列の色の並び（#rrggbb）。足りなければ最初に戻る
-- rc：matplotlib の rcParams（https://matplotlib.org/stable/users/explain/customizing.html）
-- after：描いたあとに呼ぶ関数 after(fig, ax)。rcParams でできないことをする。なくてよい
+- setup：描く前に呼ぶ関数（引数なし）。rcParams を整える
+- legend：凡例を置く関数 legend(ax, ncol)。CanvCode が ax.legend() を呼んだあとに呼ぶ（ncol は系列の数から決める。4 まで）
+- size：新しく作るときの画像の大きさ（画素の (幅, 高さ)。画面と AI がこの大きさから始める）
+- colors：一覧に出す系列の色（#rrggbb）
+- ほかに rc（rcParams の辞書）・base（matplotlib の組み込みのスタイル）・after（描いたあとに呼ぶ関数 after(fig, ax)）も使える
 
-font.sans-serif・font.serif に並べたフォントのうち、入っていないものは plot.py が外す（警告を出さないため）。
-日本語を出すには、日本語のフォント（Noto Sans CJK JP・IPAexGothic など）がサーバーに入っている必要がある
+画像の大きさと解像度は CanvCode が決める（figure.figsize・figure.dpi・savefig.dpi は、画面で選んだ大きさで上書きされる）。
+font_family に並べたフォントのうち、入っていないものは使わない。日本語を出すには、日本語のフォントがサーバーに入っている必要がある
 （Ubuntu なら sudo apt install fonts-noto-cjk）。
 """
 
-# 日本語のフォントの候補（前にあるものから使う）。入っていない名前は無視される
-JAPANESE_SANS = [
+import seaborn as sns
+
+# 日本語のフォントの候補（前にあるものから使う。字ごとに、前のフォントにない字は次のフォントで出す）
+JAPANESE_FONTS = [
     "Noto Sans CJK JP",
     "Noto Sans JP",
     "IPAexGothic",
     "IPAGothic",
-    "IPAPGothic",
-    "M+ 1p",
     "Hiragino Sans",
     "Yu Gothic",
     "Meiryo",
     "DejaVu Sans",
 ]
-JAPANESE_SERIF = [
-    "Noto Serif CJK JP",
-    "Noto Serif JP",
-    "IPAexMincho",
-    "IPAMincho",
-    "Hiragino Mincho ProN",
-    "Yu Mincho",
-    "DejaVu Serif",
-    # 明朝体がなければ、日本語の字はゴシック体で出す（matplotlib は字ごとに次のフォントを探す）
-    *JAPANESE_SANS,
-]
 
-# CanvCode の円グラフと同じ色の並び（packages/nodes/src/chart.ts の CHART_COLORS）
-CANVCODE_COLORS = ["#1971c2", "#f08c00", "#2f9e44", "#e03131", "#3b5bdb", "#1f2328", "#868e96"]
+# 凡例の配置設定 (set_presentation_style で更新)。set_presentation_style を呼ぶ前の既定も同じ（軸の外側・下中央）
+_legend_style = {"loc": "upper center", "bbox_to_anchor": (0.5, -0.2)}
 
-# どのスタイルにも共通の土台
-COMMON = {
-    "font.family": "sans-serif",
-    "font.sans-serif": JAPANESE_SANS,
-    "font.serif": JAPANESE_SERIF,
-    # 日本語のフォントでマイナス記号が豆腐にならないように
-    "axes.unicode_minus": False,
-    "figure.facecolor": "white",
-    "savefig.facecolor": "white",
+# 文字の大きさ (font_scale 倍する)
+_FONT_SIZES = {
+    "axes.titlesize": 22,
+    "axes.labelsize": 18,
+    "xtick.labelsize": 15,
+    "ytick.labelsize": 15,
+    "legend.fontsize": 14,
+    "legend.title_fontsize": 15,
 }
 
 
-def _hide_top_right(fig, ax):
-    # 上と右の枠線を消す（rcParams の axes.spines.* は円グラフの軸にも効くので、ここで消す）
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+def set_presentation_style(
+    font_family=JAPANESE_FONTS,
+    context="talk",
+    font_scale=1.15,
+    legend_loc="upper center",
+    legend_bbox_to_anchor=(0.5, -0.2),
+    palette="colorblind",
+):
+    # 凡例: 軸の外側・下中央 (bbox_to_anchor の点に loc の位置を合わせる)
+    _legend_style.update(
+        loc=legend_loc,
+        bbox_to_anchor=legend_bbox_to_anchor,
+    )
+
+    # font_scale は set_theme に渡す。あとから sns.set_context を呼ぶと、下の rc の文字の大きさ・線の太さが
+    # context の値で上書きされてしまうので呼ばない。文字の大きさは _FONT_SIZES を font_scale 倍する
+    sns.set_theme(
+        context=context,
+        style="whitegrid",
+        palette=palette,
+        font_scale=font_scale,
+        rc={
+            # 字ごとに次のフォントを探す（並べた名前のうち、入っているもの）
+            "font.family": list(font_family) if not isinstance(font_family, str) else [font_family],
+            # 日本語のフォントでマイナス記号が欠けないように
+            "axes.unicode_minus": False,
+            # Figure全体を1:1 (CanvCode では画面で選んだ大きさになる)
+            "figure.figsize": (7.2, 7.2),
+            "figure.dpi": 64,
+            "figure.facecolor": "white",
+            "savefig.facecolor": "white",
+            # 余白を自動調整 (軸外の凡例も含めて重ならないようにする)
+            "figure.constrained_layout.use": True,
+            # Font sizes
+            **{key: size * font_scale for key, size in _FONT_SIZES.items()},
+            # Lines / markers
+            "lines.linewidth": 2.4,
+            "lines.markersize": 7,
+            "patch.linewidth": 1.0,
+            # Axes
+            "axes.linewidth": 1.2,
+            "axes.edgecolor": "0.2",
+            "axes.labelpad": 8,
+            "axes.titlepad": 12,
+            # Grid
+            "grid.linewidth": 0.8,
+            "grid.alpha": 0.35,
+            # Ticks
+            "xtick.major.width": 1.0,
+            "ytick.major.width": 1.0,
+            "xtick.major.size": 5,
+            "ytick.major.size": 5,
+            # Export (savefig.pad_inches は bbox_inches="tight" で保存するときだけ効く)
+            "savefig.dpi": 300,
+            "savefig.pad_inches": 0.08,
+        },
+    )
+
+
+def place_legend(ax, ncol=1, **kwargs):
+    """凡例を outer-lower-center に移動する。ncol は呼出ごとに指定。凡例がなければ何もしない。"""
+    if ax.get_legend() is None:
+        return
+    sns.move_legend(ax, **{**_legend_style, "ncol": ncol, **kwargs})
+
+
+def _palette(name):
+    return sns.color_palette(name).as_hex()
 
 
 STYLES = {
-    "標準": {
-        "description": "CanvCode の色。薄い横の目盛り線、上と右の枠なし。迷ったらこれ",
-        "colors": CANVCODE_COLORS,
-        "rc": {
-            **COMMON,
-            "font.size": 11,
-            "axes.titlesize": 14,
-            "axes.titleweight": "bold",
-            "axes.titlelocation": "left",
-            "axes.edgecolor": "#adb5bd",
-            "axes.labelcolor": "#495057",
-            "axes.grid": True,
-            "axes.grid.axis": "y",
-            "grid.color": "#e9ecef",
-            "grid.linewidth": 0.8,
-            "axes.axisbelow": True,
-            "xtick.color": "#495057",
-            "ytick.color": "#495057",
-            "lines.linewidth": 2.2,
-            "lines.markersize": 5,
-            "legend.frameon": False,
-        },
-        "after": _hide_top_right,
+    "プレゼン": {
+        "description": "seaborn の talk・whitegrid・colorblind。大きい文字、凡例は軸の下中央。1:1。迷ったらこれ",
+        "setup": lambda: set_presentation_style(),
+        "legend": place_legend,
+        "size": (1440, 1440),
+        "colors": _palette("colorblind"),
     },
-    "スライド": {
-        "description": "大きい文字と太い線。スライドに貼る図向け",
-        "colors": CANVCODE_COLORS,
-        "rc": {
-            **COMMON,
-            "font.size": 16,
-            "axes.titlesize": 22,
-            "axes.titleweight": "bold",
-            "axes.titlelocation": "left",
-            "axes.labelsize": 16,
-            "axes.edgecolor": "#495057",
-            "axes.linewidth": 1.4,
-            "axes.grid": True,
-            "axes.grid.axis": "y",
-            "grid.color": "#dee2e6",
-            "grid.linewidth": 1.0,
-            "axes.axisbelow": True,
-            "xtick.labelsize": 14,
-            "ytick.labelsize": 14,
-            "lines.linewidth": 3.5,
-            "lines.markersize": 8,
-            "legend.frameon": False,
-            "legend.fontsize": 14,
-        },
-        "after": _hide_top_right,
+    "プレゼン（横長）": {
+        "description": "プレゼンと同じ見た目の 16:9。スライドの横幅いっぱいに貼る図向け。凡例は軸の下中央",
+        "setup": lambda: set_presentation_style(legend_bbox_to_anchor=(0.5, -0.25)),
+        "legend": place_legend,
+        "size": (1920, 1080),
+        "colors": _palette("colorblind"),
     },
-    "論文": {
-        "description": "白黒と灰の明朝体。目盛りは内向き、枠は四方。論文・報告書向け",
-        "colors": ["#000000", "#555555", "#999999", "#222222", "#777777"],
-        "rc": {
-            **COMMON,
-            "font.family": "serif",
-            "font.size": 10,
-            "axes.titlesize": 11,
-            "axes.linewidth": 0.8,
-            "axes.grid": False,
-            "xtick.direction": "in",
-            "ytick.direction": "in",
-            "xtick.top": True,
-            "ytick.right": True,
-            "lines.linewidth": 1.2,
-            "lines.markersize": 4,
-            "legend.frameon": True,
-            "legend.edgecolor": "#000000",
-            "legend.fancybox": False,
-            "patch.edgecolor": "#000000",
-            "patch.force_edgecolor": True,
-        },
+    "資料": {
+        "description": "文字を小さめにした notebook。報告書・Markdown に貼る図向け。凡例は軸の右の外",
+        "setup": lambda: set_presentation_style(context="notebook", font_scale=0.8, legend_loc="center left", legend_bbox_to_anchor=(1.02, 0.5)),
+        # 右の外に置く凡例は縦に 1 列（横に並べると、軸が細くなる）
+        "legend": lambda ax, ncol: place_legend(ax, ncol=1),
+        "size": (1280, 800),
+        "colors": _palette("colorblind"),
     },
-    "ダーク": {
-        "description": "暗い背景に明るい色。画面で見せる図向け",
-        "colors": ["#4dabf7", "#ffa94d", "#69db7c", "#ff8787", "#9775fa", "#f8f9fa", "#adb5bd"],
-        "rc": {
-            **COMMON,
-            "font.size": 11,
-            "axes.titlesize": 14,
-            "axes.titleweight": "bold",
-            "axes.titlelocation": "left",
-            "figure.facecolor": "#1f2328",
-            "savefig.facecolor": "#1f2328",
-            "axes.facecolor": "#1f2328",
-            "axes.edgecolor": "#495057",
-            "axes.labelcolor": "#dee2e6",
-            "text.color": "#f1f3f5",
-            "xtick.color": "#ced4da",
-            "ytick.color": "#ced4da",
-            "axes.grid": True,
-            "axes.grid.axis": "y",
-            "grid.color": "#343a40",
-            "axes.axisbelow": True,
-            "lines.linewidth": 2.2,
-            "legend.frameon": False,
-        },
-        "after": _hide_top_right,
+    "白黒": {
+        "description": "灰色の濃淡だけ。白黒で印刷する資料向け。凡例は軸の下中央",
+        "setup": lambda: set_presentation_style(context="notebook", font_scale=0.9, palette="gray"),
+        "legend": place_legend,
+        "size": (1280, 1000),
+        "colors": _palette("gray"),
     },
 }

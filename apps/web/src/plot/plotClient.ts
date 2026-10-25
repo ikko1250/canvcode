@@ -6,6 +6,8 @@ export interface PlotStyle {
   name: string
   description: string
   colors: string[]
+  // 新しく作るときの画像の大きさ（画素の [幅, 高さ]。style.py の size）
+  size?: [number, number]
 }
 
 export interface RenderedPlot {

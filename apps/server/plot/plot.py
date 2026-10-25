@@ -1,7 +1,7 @@
 """CanvCode のグラフを描く（CSV の列 → PNG）。サーバー（apps/server/src/plot.ts）が子プロセスとして呼ぶ。
 
   python3 plot.py styles <style.py>
-      スタイルの一覧を JSON（[{"name", "description", "colors"}]）で標準出力に書く
+      スタイルの一覧を JSON（[{"name", "description", "colors", "size"?}]）で標準出力に書く
   python3 plot.py render <style.py> <出力の PNG>
       標準入力の JSON（下の「入力」）を描いて PNG に書き、{"width", "height", "warnings"} を標準出力に書く
 
@@ -78,9 +78,20 @@ def list_styles(path):
             "name": str(name),
             "description": str(style.get("description", "")),
             "colors": [str(c) for c in style.get("colors", [])][:12],
+            **({"size": style_size(style)} if style_size(style) else {}),
         }
         for name, style in styles.items()
     ]
+
+
+def style_size(style):
+    """style の size（画素の (幅, 高さ)）。なければ・読めなければ None"""
+    size = style.get("size")
+    try:
+        width, height = (int(v) for v in size)
+    except (TypeError, ValueError):
+        return None
+    return [max(150, min(MAX_PIXELS, width)), max(150, min(MAX_PIXELS, height))]
 
 
 def installed_fonts():
@@ -88,6 +99,14 @@ def installed_fonts():
 
 
 def apply_style(style):
+    setup = style.get("setup")
+    if setup is not None:
+        if not callable(setup):
+            raise PlotError("style.py の setup が関数ではありません")
+        try:
+            setup()
+        except Exception as error:
+            raise PlotError(f"style.py の setup でエラーになりました：{type(error).__name__}: {error}") from error
     base = style.get("base")
     if base:
         try:
@@ -118,8 +137,10 @@ def apply_style(style):
     for name in plt.rcParams["font.family"]:
         expanded = [n for n in plt.rcParams[f"font.{name}"] if n in fonts] if name in GENERIC_FAMILIES else [name] if name in fonts else []
         families += [n for n in expanded if n not in families]
-    if families:
-        plt.rcParams["font.family"] = families
+    if not families:
+        # 並べたフォントがどれも入っていない：入っている sans-serif のフォントで描く
+        families = [n for n in plt.rcParams["font.sans-serif"] if n in fonts] or ["DejaVu Sans"]
+    plt.rcParams["font.family"] = families
 
 
 # ---- 値の読み方 ----
@@ -351,6 +372,12 @@ def render(spec, styles, out_path):
         legend = spec.get("legend")
         if kind != "pie" and (legend if legend is not None else len(series) > 1 and kind != "box"):
             ax.legend()
+            place = style.get("legend")
+            if callable(place):
+                try:
+                    place(ax, min(len(series), 4))
+                except Exception as error:
+                    raise PlotError(f"style.py の legend でエラーになりました：{type(error).__name__}: {error}") from error
         after = style.get("after")
         if callable(after):
             try:
