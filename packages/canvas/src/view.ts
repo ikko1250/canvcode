@@ -1792,6 +1792,10 @@ export class CanvasView {
       if (this.documentEditor?.editingId && e.button === 0) this.documentEditor.finish()
       // Ctrl（⌘）+クリックで、カードの中のリンクを開く（MAI-21）
       if (e.button === 0 && (e.ctrlKey || e.metaKey) && this.openLinkAt(e)) return
+      // キャンバスは user-select: none なので、押してもブラウザは外（Claude のパネルなど）で選んだ文字を外さない。
+      // 残っていると、copy イベントの target がその文字になり、キャンバスのコピーにならない
+      const selection = document.getSelection()
+      if (selection?.anchorNode && !this.root.contains(selection.anchorNode)) selection.removeAllRanges()
       this.root.focus({ preventScroll: true })
     }
     this.root.setPointerCapture(e.pointerId)
@@ -2150,8 +2154,20 @@ export class CanvasView {
     )
   }
 
+  // コピー・切り取り。キャンバスにフォーカスがあれば、copy イベントの target が外（前に選んだ Claude のパネルの文字など）を
+  // 指していても、キャンバスのものにする。フォーカスが外にあり、外で文字を選んでいれば、そのコピーはブラウザに任せる
+  private ownsCopyEvent(e: ClipboardEvent): boolean {
+    const active = document.activeElement
+    if (active && this.root.contains(active) && !isEditableKeyboardTarget(active)) {
+      return !this.textEditor.editingId && !this.documentEditor?.editingId && e.clipboardData !== null
+    }
+    if (!this.ownsClipboardEvent(e)) return false
+    const selection = document.getSelection()
+    return !(selection && !selection.isCollapsed && selection.anchorNode && !this.root.contains(selection.anchorNode))
+  }
+
   private onCopy(e: ClipboardEvent, cut: boolean): void {
-    if (!this.ownsClipboardEvent(e)) return
+    if (!this.ownsCopyEvent(e)) return
     const payload = copySelection(this.editor, (id) => this.assets.get(id))
     if (!payload) return
     e.preventDefault()
