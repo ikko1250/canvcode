@@ -219,6 +219,8 @@ export class ClaudeJobs {
       abortController: job.abort,
       ...(resume ? { resume } : {}),
       tools: CLAUDE_TOOLS,
+      // ワークスペースの .claude/skills/ のスキルをすべて使えるようにする（settingSources が project だけなので、~/.claude のスキルは読まない）
+      skills: 'all',
       // 分類のモデルが許すか決める。決められなければ canUseTool に来る
       permissionMode: 'auto',
       canUseTool: async (name, input) => {
@@ -275,15 +277,17 @@ export class ClaudeJobs {
     }
     // auto mode の判定で断られた
     if (message.type === 'system' && message.subtype === 'permission_denied') {
-      if (!message.agent_id) this.push(job, { kind: 'denied', name: message.tool_name, reason: message.decision_reason || message.message })
+      this.push(job, { kind: 'denied', name: message.tool_name, reason: message.decision_reason || message.message })
       return
     }
     if (message.type === 'assistant') {
-      // サブエージェントの中のメッセージは出さない（今はサブエージェントを使わせない）
-      if (message.parent_tool_use_id) return
-      if (message.error) this.push(job, { kind: 'error', message: assistantErrorText(message.error) })
+      // サブエージェントの中は、使ったツールだけを出す（文章はサブエージェントの途中の考えで、まとめは親が書く）
+      const sub = Boolean(message.parent_tool_use_id)
+      if (message.error && !sub) this.push(job, { kind: 'error', message: assistantErrorText(message.error) })
       for (const block of message.message.content) {
-        if (block.type === 'text' && block.text.trim()) this.push(job, { kind: 'text', text: block.text })
+        if (block.type === 'text' && block.text.trim()) {
+          if (!sub) this.push(job, { kind: 'text', text: block.text })
+        }
         else if (block.type === 'tool_use' && block.name !== 'TodoWrite') {
           const detail = toolDetail(block.name, (block.input ?? {}) as Record<string, unknown>, this.deps.workspace)
           this.push(job, { kind: 'tool', name: block.name, ...(detail ? { detail } : {}) })
@@ -370,6 +374,7 @@ export function systemPromptAppend(canvasId: string | undefined): string {
       : '',
     'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
     'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
+    'Skills in the workspace .claude/skills/ are available through the Skill tool.',
     'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; nobody is watching to approve the ones that are not.',
   ]
     .filter(Boolean)
@@ -388,6 +393,8 @@ export function toolDetail(name: string, input: Record<string, unknown>, workspa
   if (name === 'Bash') return str(input.command)
   if (name === 'WebSearch') return str(input.query)
   if (name === 'WebFetch') return str(input.url)
+  if (name === 'Agent') return str(input.description)
+  if (name === 'Skill') return str(input.skill)
   if (name.startsWith(CANVCODE_MCP_PREFIX)) return str(input.label) ?? str(input.ref) ?? str(input.id) ?? str(input.query)
   return undefined
 }

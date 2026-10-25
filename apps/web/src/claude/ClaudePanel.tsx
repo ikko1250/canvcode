@@ -278,6 +278,8 @@ const TOOL_LABELS: Record<string, string> = {
   Grep: '中身を探す',
   WebSearch: 'Web を検索',
   WebFetch: 'Web のページを読む',
+  Agent: 'サブエージェントに任せる',
+  Skill: 'スキルを使う',
   list_documents: '文書の一覧',
   read_document: '文書を読む',
   create_document: '文書を作る',
