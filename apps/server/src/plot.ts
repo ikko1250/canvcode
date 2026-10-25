@@ -90,11 +90,12 @@ export class Plotter {
   async styles(): Promise<PlotStyle[]> {
     await this.ensureStyleFile()
     const { stdout } = await this.run(['styles', this.stylePath], '')
-    return JSON.parse(stdout) as PlotStyle[]
+    return parseOutput<PlotStyle[]>(stdout)
   }
 
   // 作り方どおりに描く。表の File を読めない・列がない・描けないときは PlotError
-  async render(spec: PlotSpec): Promise<RenderedPlot> {
+  // signal でやめられる（画面がプレビューを頼み直した：待っている間なら順番から外し、描いている途中なら python を止める）
+  async render(spec: PlotSpec, signal?: AbortSignal): Promise<RenderedPlot> {
     let info
     let text
     try {
@@ -128,8 +129,8 @@ export class Plotter {
     await this.ensureStyleFile()
     const out = join(tmpdir(), `canvcode-plot-${randomBytes(8).toString('hex')}.png`)
     try {
-      const { stdout } = await this.run(['render', this.stylePath, out], JSON.stringify(input))
-      const result = JSON.parse(stdout) as { width: number; height: number; warnings: string[] }
+      const { stdout } = await this.run(['render', this.stylePath, out], JSON.stringify(input), signal)
+      const result = parseOutput<{ width: number; height: number; warnings: string[] }>(stdout)
       if (table.rows.length > PLOT_MAX_ROWS) result.warnings.push(`行が多いので、先頭の ${PLOT_MAX_ROWS} 行だけを描きました`)
       return { png: await readFile(out), ...result }
     } finally {
@@ -138,11 +139,18 @@ export class Plotter {
   }
 
   // plot.py を動かす。使う人の誤り（終了コード 2）は PlotError、python や matplotlib がないときもそう知らせる
-  private async run(args: string[], stdin: string): Promise<{ stdout: string }> {
-    await this.acquire()
+  private async run(args: string[], stdin: string, signal?: AbortSignal): Promise<{ stdout: string }> {
+    await this.acquire(signal)
     try {
       return await new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(abortedError())
         const child = spawn(this.python, [PLOT_SCRIPT, ...args], { cwd: this.workspace, stdio: ['pipe', 'pipe', 'pipe'] })
+        const onAbort = () => {
+          child.kill('SIGKILL')
+          reject(abortedError())
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+        child.on('close', () => signal?.removeEventListener('abort', onAbort))
         let stdout = ''
         let stderr = ''
         const timer = setTimeout(() => {
@@ -178,12 +186,26 @@ export class Plotter {
     }
   }
 
-  private async acquire(): Promise<void> {
+  // 空きを待つ。待っている間に signal でやめたら、順番から外す（空きは次に渡さない。まだ受け取っていないので）
+  private async acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw abortedError()
     if (this.running < MAX_RUNNING) {
       this.running++
       return
     }
-    await new Promise<void>((resolve) => this.waiting.push(resolve))
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        const i = this.waiting.indexOf(start)
+        if (i >= 0) this.waiting.splice(i, 1)
+        reject(abortedError())
+      }
+      const start = () => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.waiting.push(start)
+    })
   }
 
   private release(): void {
@@ -201,7 +223,12 @@ export class Plotter {
       } else if (path === '/api/plot' && req.method === 'POST') {
         const spec = normalizePlotSpec(JSON.parse((await readBody(req)).toString('utf8') || 'null'))
         if (!spec) throw new PlotError('グラフの作り方（fileId と値の列 y）がありません')
-        const plot = await this.render(spec)
+        // 画面が頼みをやめた（プレビューを頼み直した）ら、描くのもやめる
+        const controller = new AbortController()
+        res.on('close', () => {
+          if (!res.writableFinished) controller.abort()
+        })
+        const plot = await this.render(spec, controller.signal)
         res.writeHead(200, {
           'content-type': 'image/png',
           'content-length': plot.png.length,
@@ -216,6 +243,7 @@ export class Plotter {
         sendJson(res, 405, { error: 'method not allowed' })
       }
     } catch (error) {
+      if (res.destroyed || res.headersSent) return true
       if (error instanceof PlotError) sendJson(res, error.status, { error: error.message })
       else if (error instanceof SyntaxError) sendJson(res, 400, { error: 'JSON を読めません' })
       else {
@@ -224,6 +252,20 @@ export class Plotter {
       }
     }
     return true
+  }
+}
+
+// やめた頼み（499 は nginx の「クライアントが閉じた」。応答は返らない）
+function abortedError(): PlotError {
+  return new PlotError('グラフを描くのをやめました', 499)
+}
+
+// plot.py の標準出力の JSON。読めなければ（plot.py の誤りなど）、要求の誤りではなくサーバーの失敗として知らせる
+function parseOutput<T>(stdout: string): T {
+  try {
+    return JSON.parse(stdout) as T
+  } catch {
+    throw new PlotError(`グラフを描けませんでした：plot.py の出力を読めません（${stdout.slice(0, 80)}）`, 500)
   }
 }
 

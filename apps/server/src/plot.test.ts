@@ -111,6 +111,40 @@ describe('Plotter', () => {
     await expect(plot.render(spec(table.id, { style: 'b', y: [1] }))).resolves.toMatchObject({ width: 640 })
   }, 30_000)
 
+  it.skipIf(!hasMatplotlib)('keeps working when style.py prints, and stops a render that was given up', async () => {
+    const { plot, files, workspace } = await setup()
+    const table = await files.create('table', '売上', CSV)
+    writeFileSync(join(workspace, 'style.py'), 'print("debug")\ndef setup():\n    print("setup")\nSTYLES = {"a": {"setup": setup}}\n')
+    expect((await plot.styles()).map((s) => s.name)).toEqual(['a'])
+    await expect(plot.render(spec(table.id, { width: 150, height: 150 }))).resolves.toMatchObject({ width: 150, height: 150 })
+    // 一度に 2 つまで。3 つ目を待っている間にやめると順番から外れ、描いている途中でやめると止める
+    const busy = [plot.render(spec(table.id)), plot.render(spec(table.id))]
+    const waiting = new AbortController()
+    const third = plot.render(spec(table.id), waiting.signal)
+    waiting.abort()
+    await expect(third).rejects.toMatchObject({ status: 499 })
+    await Promise.all(busy)
+    const running = new AbortController()
+    const started = plot.render(spec(table.id), running.signal)
+    setTimeout(() => running.abort(), 50)
+    await expect(started).rejects.toMatchObject({ status: 499 })
+    await expect(plot.render(spec(table.id))).resolves.toMatchObject({ width: 640 })
+  }, 30_000)
+
+  it.skipIf(!hasMatplotlib)('reads only real numbers and dates, and refuses too many bars but groups pie slices', async () => {
+    const { plot, files } = await setup()
+    // 3,5 は小数の , なので数にしない（1,200 は桁区切り）。2026/1/5 は日付の軸
+    const odd = await files.create('table', 'odd', '日,値\n2026/1/5,"1,200"\n2026/1/12,"3,5"\n2026/2/1,1e400\n')
+    const result = await plot.render(spec(odd.id, { y: [1] }))
+    expect(result.warnings).toEqual(['列「値」の 2 行目「3,5」は数でないので飛ばしました'])
+    await expect(plot.render(spec(odd.id, { y: [1], kind: 'hist' }))).resolves.toMatchObject({ width: 640 })
+    const rows = Array.from({ length: 2100 }, (_, i) => `r${i},${i + 1}`).join('\n')
+    const many = await files.create('table', 'many', `名前,値\n${rows}\n`)
+    await expect(plot.render(spec(many.id, { y: [1], kind: 'bar' }))).rejects.toThrow('棒が多すぎます（2100 本。2000 本まで）')
+    await expect(plot.render(spec(many.id, { y: [1], kind: 'pie' }))).resolves.toMatchObject({ width: 640 })
+    await expect(plot.render(spec(many.id, { y: [1], kind: 'box' }))).resolves.toMatchObject({ width: 640 })
+  }, 30_000)
+
   it.skipIf(!hasMatplotlib)('serves the styles and the PNG over HTTP', async () => {
     const { plot, files } = await setup()
     const table = await files.create('table', '売上', CSV)

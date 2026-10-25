@@ -374,7 +374,8 @@ function outlineLine(item: Item, ctx: LineContext): string {
     // CSV から描いたグラフの画像（plot_csv）：plot=<種類> と表の File
     case 'image': {
       const plot = p.plot as { kind?: unknown; fileId?: unknown } | undefined
-      if (plot && typeof plot.kind === 'string') parts.push(`plot=${plot.kind}`, typeof plot.fileId === 'string' ? plot.fileId : '')
+      if (plot && typeof plot.kind === 'string') parts.push(`plot=${plot.kind}`)
+      if (plot && typeof plot.fileId === 'string') parts.push(plot.fileId)
       break
     }
     case 'link-card':

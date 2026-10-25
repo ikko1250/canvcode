@@ -44,6 +44,11 @@ MAX_CATEGORY_TICKS = 24
 # 系列の数の上限（凡例が読めなくなる）
 MAX_SERIES = 20
 MAX_PIXELS = 4000
+# 画面・サーバーの PLOT_MIN_SIDE と同じ
+MIN_PIXELS = 150
+# 棒（行 × 系列）と扇の数の上限。棒は 1 本ずつ図形になり、数千本で何十秒もかかるうえ読めない
+MAX_BARS = 2000
+MAX_WEDGES = 40
 
 
 class PlotError(Exception):
@@ -91,7 +96,7 @@ def style_size(style):
         width, height = (int(v) for v in size)
     except (TypeError, ValueError):
         return None
-    return [max(150, min(MAX_PIXELS, width)), max(150, min(MAX_PIXELS, height))]
+    return [max(MIN_PIXELS, min(MAX_PIXELS, width)), max(MIN_PIXELS, min(MAX_PIXELS, height))]
 
 
 def installed_fonts():
@@ -146,6 +151,7 @@ def apply_style(style):
 # ---- 値の読み方 ----
 
 NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
+THOUSANDS = re.compile(r"(\d),(?=\d{3}(\D|$))")
 
 
 def parse_number(text):
@@ -153,12 +159,17 @@ def parse_number(text):
     s = unicodedata.normalize("NFKC", str(text)).strip()
     if s == "":
         return math.nan
-    s = s.replace(",", "").replace("−", "-").replace("¥", "").replace("$", "").replace("円", "")
+    s = s.replace("−", "-").replace("¥", "").replace("$", "").replace("円", "")
     if s.endswith("%"):
         s = s[:-1]
     if s.startswith("(") and s.endswith(")"):  # 会計の書き方の負の数
         s = "-" + s[1:-1]
-    return float(s) if NUMBER.match(s) else None
+    # 桁区切りの , は 3 桁ずつのときだけ外す（3,5 のような小数の , は数にしない。画面の parseChartNumber と同じ）
+    s = THOUSANDS.sub(r"\1", s.strip())
+    if not NUMBER.match(s):
+        return None
+    value = float(s)
+    return value if math.isfinite(value) else None
 
 
 def parse_date(text):
@@ -172,6 +183,13 @@ def parse_date(text):
     m = re.match(r"^(\d{4})-(\d{1,2})$", s)
     if m:
         return datetime.datetime(int(m[1]), int(m[2]), 1)
+    # 2026/1/5・2026-1-5 12:30（Excel が書き出す、0 で埋めない日付）
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$", s)
+    if m:
+        try:
+            return datetime.datetime(*(int(v) for v in m.groups() if v is not None))
+        except ValueError:
+            return None
     try:
         return datetime.datetime.fromisoformat(s)
     except ValueError:
@@ -238,6 +256,9 @@ def draw(ax, kind, xs, xkind, labels, series):
         if labels:
             set_category_ticks(ax, labels)
     elif kind in ("bar", "barh", "stacked"):
+        bars = n * (1 if kind == "stacked" else len(ys))
+        if bars > MAX_BARS:
+            raise PlotError(f"棒が多すぎます（{bars} 本。{MAX_BARS} 本まで）。表の行を減らすか、折れ線・散布図にしてください")
         # 数・日付の軸でも、棒は行ごとに等間隔に並べ、値を目盛りの文字にする
         if labels is None:
             labels = [format_tick(v, xkind) for v in xs]
@@ -277,12 +298,19 @@ def draw(ax, kind, xs, xkind, labels, series):
             ax.hist([v for v in y if not math.isnan(v)], bins="auto", alpha=0.6 if multiple else 0.9, label=name)
     elif kind == "box":
         data = [[v for v in y if not math.isnan(v)] for y in ys]
-        ax.boxplot(data, tick_labels=names)
+        # tick_labels は matplotlib 3.9 から（apt の 3.6 にはない）ので、目盛りの文字はあとで付ける
+        ax.boxplot(data)
+        ax.set_xticks(range(1, len(names) + 1), names)
     elif kind == "pie":
         y = ys[0]
         pairs = [(labels[i] if labels else format_tick(xs[i], xkind), v) for i, v in enumerate(y) if not math.isnan(v) and v > 0]
         if not pairs:
             raise PlotError(f"列「{names[0]}」に正の値がありません（円グラフは正の値だけを扇にします）")
+        if len(pairs) > MAX_WEDGES:
+            # 大きい順に MAX_WEDGES - 1 個を残し、残りは「その他」にまとめる（表の順は保つ）
+            keep = set(sorted(range(len(pairs)), key=lambda i: -pairs[i][1])[: MAX_WEDGES - 1])
+            rest = sum(v for i, (_, v) in enumerate(pairs) if i not in keep)
+            pairs = [p for i, p in enumerate(pairs) if i in keep] + [("その他", rest)]
         wedges, _, percents = ax.pie(
             [v for _, v in pairs],
             labels=[label for label, _ in pairs],
@@ -300,6 +328,8 @@ def draw(ax, kind, xs, xkind, labels, series):
 
 
 def format_tick(value, xkind):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
     if xkind == "date" and isinstance(value, datetime.datetime):
         if value.hour == 0 and value.minute == 0:
             return value.strftime("%Y-%m-%d") if value.day != 1 else value.strftime("%Y-%m")
@@ -332,7 +362,8 @@ def render(spec, styles, out_path):
     for column in series_in:
         values, bad = numeric_values(column)
         if bad is not None:
-            warnings_out.append(f"列「{column['name']}」の {bad[0] + 1} 行目「{bad[1]}」は数でないので飛ばしました")
+            cell = str(bad[1]) if len(str(bad[1])) <= 40 else f"{str(bad[1])[:40]}…"
+            warnings_out.append(f"列「{column['name']}」の {bad[0] + 1} 行目「{cell}」は数でないので飛ばしました")
         series.append({"name": str(column["name"]), "values": values})
     n = max(len(s["values"]) for s in series)
     for s in series:
@@ -344,8 +375,8 @@ def render(spec, styles, out_path):
         series = series[:1]
 
     apply_style(style)
-    width = max(200, min(MAX_PIXELS, int(spec.get("width") or 1280)))
-    height = max(150, min(MAX_PIXELS, int(spec.get("height") or 800)))
+    width = max(MIN_PIXELS, min(MAX_PIXELS, int(spec.get("width") or 1280)))
+    height = max(MIN_PIXELS, min(MAX_PIXELS, int(spec.get("height") or 800)))
     dpi = max(50, min(400, int(spec.get("dpi") or 200)))
     fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi, layout="constrained")
     ax = fig.add_subplot()
@@ -402,13 +433,16 @@ def text_has_cjk(spec):
 
 
 def main(argv):
+    # 結果の JSON だけを本当の標準出力に書く。style.py の print などは標準エラーへ回す（混ざるとサーバーが読めない）
+    out = sys.stdout
+    sys.stdout = sys.stderr
     if len(argv) >= 3 and argv[1] == "styles":
-        json.dump(list_styles(argv[2]), sys.stdout, ensure_ascii=False)
+        json.dump(list_styles(argv[2]), out, ensure_ascii=False)
         return 0
     if len(argv) >= 4 and argv[1] == "render":
         spec = json.load(sys.stdin)
         result = render(spec, load_styles(argv[2]), argv[3])
-        json.dump(result, sys.stdout, ensure_ascii=False)
+        json.dump(result, out, ensure_ascii=False)
         return 0
     sys.stderr.write(__doc__)
     return 64

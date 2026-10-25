@@ -1907,7 +1907,11 @@ export function App(props: { initial: InitialRecords }) {
             <button
               type="button"
               className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') ? ' running' : ''}`}
-              onClick={() => (claudeOpen ? setClaudeOpen(false) : askClaude(''))}
+              onClick={() => {
+                if (!claudeOpen) return askClaude('')
+                setClaudeOpen(false)
+                setClaudeDraft(null)
+              }}
               title="Claude に頼むパネルを開け閉めする（Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
             >
               Claude
@@ -2033,6 +2037,8 @@ export function App(props: { initial: InitialRecords }) {
           onClearAttachment={() => setClaudeAttachment(null)}
           onClose={() => {
             setClaudeOpen(false)
+            // 開き直したときに、使い終わった下書きをもう一度入れない
+            setClaudeDraft(null)
             view?.root.focus({ preventScroll: true })
           }}
         />

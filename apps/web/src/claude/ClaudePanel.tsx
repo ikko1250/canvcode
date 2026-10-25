@@ -51,8 +51,9 @@ export function ClaudePanel(props: Props) {
 
   useEffect(() => client.connect(), [client])
   useEffect(() => inputRef.current?.focus({ preventScroll: true }), [focusRequest])
-  // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）
-  const [seenDraft, setSeenDraft] = useState(draft)
+  // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）。
+  // 閉じていたパネルは下書きと一緒に開く（初めから下書きがある）ので、null から比べて、開いたときも入れる
+  const [seenDraft, setSeenDraft] = useState<typeof draft>(null)
   if (draft !== seenDraft) {
     setSeenDraft(draft)
     if (draft) setPrompt(draft.text)

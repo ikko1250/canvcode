@@ -444,8 +444,11 @@ function registerPlotTools(
         const label = input.label ?? `グラフ：${spec.title || files.getInfo(fileId).title}`
         let result
         if (existing) {
-          // 幅はそのままにして、高さを新しい画像の縦横比に合わせる（切り抜いていたらやめる）
-          const w = existing.props.w
+          // 幅はそのままにして、高さを新しい画像の縦横比に合わせる（切り抜いていたらやめる）。
+          // 描いている間にユーザーが大きさを変えたかもしれないので、今の幅を読み直す
+          const current = records.get(input.node!) as { props?: ImageProps } | undefined
+          if (!current?.props) throw new PlotError(`${input.node} was deleted while drawing`)
+          const w = current.props.w
           const ops = [{ op: 'update', id: input.node, props: { assetId: `asset:${hash}`, plot: spec, crop: null }, w, h: (w * rendered.height) / rendered.width }]
           result = editCanvas(agent, { canvasId: existing.canvasId, ops, label, images: new Map([[0, image]]) })
         } else {
