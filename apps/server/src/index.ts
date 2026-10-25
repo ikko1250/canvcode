@@ -18,6 +18,7 @@ import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
 import { MarkdownPdf } from './markdownPdf.ts'
 import { handleMcp, MCP_PATH } from './mcp.ts'
+import { Plotter } from './plot.ts'
 import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
 import { RefImageStore } from './refImages.ts'
@@ -38,6 +39,7 @@ import { ThumbnailStore } from './thumbnails.ts'
 // - 画面のパネルから Claude Code に頼める（/api/claude。claude/jobs.ts）。Claude Code は canvcode の /mcp を通して Canvas を読み書きする。
 //   CANVCODE_CLAUDE=0 で切る。CANVCODE_CLAUDE_MODEL でモデルを、CANVCODE_CLAUDE_MAX_TURNS でターン数の上限（既定 100。claude/jobs.ts の DEFAULT_MAX_TURNS）を、
 //   CANVCODE_CLAUDE_MAX_BUDGET_USD で 1 回の依頼の費用の上限（ドル。既定はなし）を変える
+// - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
 const HOST = '127.0.0.1'
@@ -98,6 +100,8 @@ const files = new FileStore(WORKSPACE, DATA_DIR, broadcast)
 await files.init()
 // Markdown の File を PDF にする（md2pdf）
 const markdownPdf = new MarkdownPdf(files, WORKSPACE, DATA_DIR)
+// CSV から作るグラフ（matplotlib。plot.ts）。CANVCODE_PYTHON で python の場所を変える
+const plot = new Plotter({ workspace: WORKSPACE, files, ...(process.env.CANVCODE_PYTHON ? { python: process.env.CANVCODE_PYTHON } : {}) })
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
 // 画面から頼む Claude Code
@@ -212,8 +216,9 @@ const server = createServer(async (req, res) => {
   if (await linkPreviews.handle(req, res, url.pathname, url.searchParams)) return
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await markdownPdf.handle(req, res, url.pathname)) return
+  if (await plot.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return
-  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, refImages, agent, presence: () => sync.latestPresence(), pdf: { assets, links: linkPreviews } })) return
+  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, refImages, agent, presence: () => sync.latestPresence(), pdf: { assets, links: linkPreviews }, plot })) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return

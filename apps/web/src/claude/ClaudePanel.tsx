@@ -25,13 +25,15 @@ interface Props {
   attachment: ClaudeAttachment | null
   // 増えたら入力欄にフォーカスする
   focusRequest: number
+  // 入力欄に入れておく頼み方の下書き（n が変わるたびに入れ直す。「グラフを作る」の「Claude におまかせ」）
+  draft?: { text: string; n: number } | null
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
 }
 
 export function ClaudePanel(props: Props) {
-  const { client, canvasId, attachment, focusRequest, onAttachSelection, onClearAttachment, onClose } = props
+  const { client, canvasId, attachment, focusRequest, draft, onAttachSelection, onClearAttachment, onClose } = props
   const state = useClaudeState(client)
   const { threads } = state
   // 選んだ会話。null は新しい会話
@@ -49,6 +51,13 @@ export function ClaudePanel(props: Props) {
 
   useEffect(() => client.connect(), [client])
   useEffect(() => inputRef.current?.focus({ preventScroll: true }), [focusRequest])
+  // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）。
+  // 閉じていたパネルは下書きと一緒に開く（初めから下書きがある）ので、null から比べて、開いたときも入れる
+  const [seenDraft, setSeenDraft] = useState<typeof draft>(null)
+  if (draft !== seenDraft) {
+    setSeenDraft(draft)
+    if (draft) setPrompt(draft.text)
+  }
 
   // 見ている会話。選んだ会話が消されていれば、新しい会話
   const thread = threads.find((t) => t.threadId === chosenId)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { assetIdFromHash, type Camera, type ReferenceRecord } from '@canvcode/core'
+import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
@@ -27,6 +27,10 @@ import {
   createTableCardType,
   type ArrowProps,
   type FileContentSource,
+  type ImageProps,
+  normalizePlotSpec,
+  PLOT_NODE_SCALE,
+  type PlotSpec,
   type LinkCardProps,
   type PortalProps,
   PORTAL_DEFAULT_SIZE,
@@ -60,6 +64,8 @@ import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeClient, useClaudeState } from './claude/claudeClient.ts'
+import { PlotDialog } from './plot/PlotDialog.tsx'
+import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
@@ -229,6 +235,11 @@ const SYNC_LABELS: Record<SyncStatus, string> = { saved: '保存済み', saving:
 
 type Dialog = { title: string; message: string; choices: DialogChoice<string>[]; resolve(value: string | null): void }
 
+// グラフを作るダイアログの相手：表のカードから新しく作る（tableNodeId）か、グラフの画像の作り方を変える（imageNodeId と今の作り方）
+type PlotTarget = { fileId: string; title: string; header: boolean; tableNodeId?: string; imageNodeId?: string; initial: PlotSpec | null }
+// 表のカードの右に置くときの間隔
+const PLOT_GAP = 40
+
 export function App(props: { initial: InitialRecords }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [{ workspace, files, sync }] = useState(() => createWorkspace(props.initial))
@@ -343,6 +354,12 @@ export function App(props: { initial: InitialRecords }) {
     setClaudeAttachment(attachment)
     void save().then((refId) => setClaudeAttachment((current) => (current === attachment ? (refId ? { label, refId } : null) : current)))
   }, [])
+  // パネルの入力欄に入れておく文字（「Claude におまかせ」で、頼み方の下書きを入れる）
+  const [claudeDraft, setClaudeDraft] = useState<{ text: string; n: number } | null>(null)
+
+  // CSV からグラフを作るダイアログ（plot/PlotDialog.tsx）。表のカードから作る（tableNodeId）か、グラフの画像の作り方を変える（imageNodeId）
+  const [plotTarget, setPlotTarget] = useState<PlotTarget | null>(null)
+
   // スライドの非表示を変えたら描き直し、パイメニューの「非表示にする／表示する」を決め直す（選択は変わらないので、session では描き直らない）
   const [, setSlideEdits] = useState(0)
 
@@ -786,6 +803,98 @@ export function App(props: { initial: InitialRecords }) {
     [askClaude, notify],
   )
 
+  // 描いたグラフ（PNG）を画像の Asset にして、画像のノードを置く（tableNodeId があればその右）か、imageNodeId の画像を差し替える。
+  // 差し替えるときは幅をそのままにし、高さを新しい画像の縦横比に合わせる（切り抜きはやめる）
+  const placePlot = useCallback(
+    async (target: Pick<PlotTarget, 'tableNodeId' | 'imageNodeId'>, spec: PlotSpec, plot: RenderedPlot) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      const asset = await view.assets.importImage(plot.blob)
+      if (viewRef.current?.editor !== editor) return
+      if (target.imageNodeId) {
+        const node = editor.getNode(target.imageNodeId)
+        if (!node || node.type !== 'image') throw new Error('グラフの画像が見つかりません')
+        const props = node.props as ImageProps
+        editor.transact('グラフを描き直す', (tx) => {
+          tx.put({ ...node, props: { ...props, assetId: asset.id, plot: spec, crop: null, h: (props.w * asset.height) / asset.width } })
+          editor.setSelection([node.id])
+        })
+      } else {
+        const w = asset.width * PLOT_NODE_SCALE
+        const h = asset.height * PLOT_NODE_SCALE
+        const table = target.tableNodeId ? editor.index.get(target.tableNodeId)?.worldBounds : undefined
+        const center = view.viewportCenter()
+        const at = table ? { x: table.x + table.w + PLOT_GAP, y: table.y } : { x: center.x - w / 2, y: center.y - h / 2 }
+        const node = editor.makeNode('image', { x: at.x, y: at.y, props: { assetId: asset.id, w, h, crop: null, plot: spec } })
+        const [index] = indicesBetween(editor.index.topmost()?.index ?? null, null, 1)
+        editor.transact('グラフを置く', (tx) => {
+          tx.put({ ...node, index })
+          editor.setSelection([node.id])
+        })
+      }
+      if (plot.warnings.length > 0) notify(plot.warnings.join('\n'))
+    },
+    [notify],
+  )
+
+  // グラフの画像を、覚えている作り方のまま描き直す（CSV を直したあと）
+  const redrawPlot = useCallback(
+    async (nodeId: string) => {
+      const node = viewRef.current?.editor.getNode(nodeId)
+      const spec = node?.type === 'image' ? normalizePlotSpec((node.props as ImageProps).plot) : null
+      if (!spec) return
+      try {
+        await placePlot({ imageNodeId: nodeId }, spec, await renderPlot(spec))
+      } catch (error) {
+        notify(`グラフを描き直せませんでした：${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+    [placePlot, notify],
+  )
+
+  // 「Claude におまかせ」：表のカード（かグラフの画像）を選んで添え、頼み方の下書きを入れて Claude のパネルを開く
+  const askClaudeForPlot = useCallback(
+    (target: PlotTarget) => {
+      const view = viewRef.current
+      setPlotTarget(null)
+      if (!view) return
+      const nodeId = target.imageNodeId ?? target.tableNodeId
+      const text = target.imageNodeId
+        ? 'このグラフを、元の表（CSV）の中身に合わせて描き直して。グラフの種類・列・スタイル（list_plot_styles）を選び直し、plot_csv の node にこの画像を渡して。'
+        : 'この表（CSV）の中身に合うグラフを作って。列とグラフの種類、スタイル（list_plot_styles）は中身から選び、plot_csv で表の右に置いて。'
+      setClaudeDraft({ text, n: Date.now() })
+      if (!nodeId) return askClaude('')
+      view.editor.setSelection([nodeId])
+      askClaude(target.imageNodeId ? 'グラフ' : `表「${target.title}」`, () => view.saveCanvasReference())
+    },
+    [askClaude],
+  )
+
+  // ダイアログが読む表の本文（相手の File が変わったときだけ作り直す。ダイアログはこれが変わると読み直す）
+  const plotFileId = plotTarget?.fileId
+  const loadPlotTable = useCallback(async () => {
+    const files = viewRef.current?.files
+    const text = files && plotFileId ? await files.text(plotFileId) : null
+    if (text === null || !plotFileId) throw new Error('表のファイルが見つかりません')
+    return { text, path: files?.get(plotFileId)?.path ?? workspace.getFile(plotFileId)?.path }
+  }, [plotFileId, workspace])
+  const closePlotDialog = useCallback(() => {
+    setPlotTarget(null)
+    viewRef.current?.root.focus({ preventScroll: true })
+  }, [])
+
+  // style.py を全画面のエディタで開く（サーバーが写したばかりで、まだ一覧にないときは知らせる）
+  const openStyleFile = useCallback(() => {
+    const file = workspace.documents().find((doc) => isFileRecord(doc) && doc.path === 'style.py' && doc.deletedAt === null)
+    if (!file) {
+      notify('style.py がまだ見つかりません。少し待ってから、もう一度押してください')
+      return
+    }
+    setPlotTarget(null)
+    openFile(file.id)
+  }, [workspace, notify, openFile])
+
   // 右クリックメニューの項目（MAI-29）。右クリックしたときの選択に合わせる
   const buildMenu = useCallback(
     (at: { x: number; y: number }): (MenuItem | 'separator')[] => {
@@ -810,8 +919,14 @@ export function App(props: { initial: InitialRecords }) {
         items.push({ label: 'PDF ポータルを作成', onSelect: () => void createPdfPortal(single.id) })
         items.push('separator')
       }
-      // 画像：Markdown に貼る画像のリンク（#33）
+      // 画像：Markdown に貼る画像のリンク（#33）。CSV から描いたグラフなら、作り方を変える・描き直す
       if (single?.type === 'image') {
+        const plot = normalizePlotSpec((single.props as ImageProps).plot)
+        const file = plot && workspace.getFile(plot.fileId)
+        if (plot && file) {
+          items.push({ label: 'グラフを編集…', onSelect: () => setPlotTarget({ fileId: file.id, title: file.title, header: plot.header, imageNodeId: single.id, initial: plot }) })
+          items.push({ label: 'グラフを描き直す', onSelect: () => void redrawPlot(single.id) })
+        }
         items.push({ label: 'Markdown のリンクをコピー', onSelect: () => void view.copyImageMarkdownLink(single.id) })
         items.push('separator')
       }
@@ -878,6 +993,7 @@ export function App(props: { initial: InitialRecords }) {
           if (file.kind === 'markdown') items.push({ label: 'PDF で出力', onSelect: () => void exportPdf(file.id) })
           if (table) {
             const header = (single.props as TableCardProps).header
+            items.push({ label: 'グラフを作る…', onSelect: () => setPlotTarget({ fileId: file.id, title: file.title, header, tableNodeId: single.id, initial: null }) })
             items.push({
               label: header ? '1 行目を見出しにしない' : '1 行目を見出しにする',
               onSelect: () => {
@@ -1093,7 +1209,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot],
   )
 
 
@@ -1799,7 +1915,11 @@ export function App(props: { initial: InitialRecords }) {
             <button
               type="button"
               className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') ? ' running' : ''}`}
-              onClick={() => (claudeOpen ? setClaudeOpen(false) : askClaude(''))}
+              onClick={() => {
+                if (!claudeOpen) return askClaude('')
+                setClaudeOpen(false)
+                setClaudeDraft(null)
+              }}
               title="Claude に頼むパネルを開け閉めする（Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
             >
               Claude
@@ -1885,6 +2005,23 @@ export function App(props: { initial: InitialRecords }) {
             }}
           />
         )}
+        {plotTarget && (
+          <PlotDialog
+            title={plotTarget.title}
+            fileId={plotTarget.fileId}
+            loadTable={loadPlotTable}
+            initial={plotTarget.initial}
+            header={plotTarget.header}
+            onPlace={async (spec, plot) => {
+              await placePlot(plotTarget, spec, plot)
+              setPlotTarget(null)
+              view?.root.focus({ preventScroll: true })
+            }}
+            onAskClaude={claudeState.availability === 'on' ? () => askClaudeForPlot(plotTarget) : null}
+            onOpenStyleFile={openStyleFile}
+            onClose={closePlotDialog}
+          />
+        )}
         {dialog && (
           <ConfirmDialog
             title={dialog.title}
@@ -1903,10 +2040,13 @@ export function App(props: { initial: InitialRecords }) {
           canvasId={canvasId}
           attachment={claudeAttachment}
           focusRequest={claudeFocus}
+          draft={claudeDraft}
           onAttachSelection={() => askClaudeAboutSelection(true)}
           onClearAttachment={() => setClaudeAttachment(null)}
           onClose={() => {
             setClaudeOpen(false)
+            // 開き直したときに、使い終わった下書きをもう一度入れない
+            setClaudeDraft(null)
             view?.root.focus({ preventScroll: true })
           }}
         />

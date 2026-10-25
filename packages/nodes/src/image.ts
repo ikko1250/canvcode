@@ -1,5 +1,6 @@
 import type { AssetRecord, NodeRecord } from '@canvcode/core'
 import { defineNodeType, type RasterImage, type RenderInfo } from './defineNodeType.ts'
+import type { PlotSpec } from './plot.ts'
 
 // 画像（MAI-7 の `image`、MAI-26）。実体は Asset にあり、ノードは assetId で参照する。
 // 倍率に応じて、縮小版（長辺 256px・1024px）と原本を切り替えて描く（MAI-14）。
@@ -10,6 +11,8 @@ export interface ImageProps {
   // 切り抜き範囲（画像全体を 0〜1 とした割合）。null なら切り抜かない。この範囲を w×h に描く。
   // キャンバスの切り抜きモード（packages/canvas の cropHandles.ts）・MCP の edit_canvas で変える
   crop: { x: number; y: number; w: number; h: number } | null
+  // CSV から描いたグラフなら、その作り方（plot.ts）。描き直す・作り方を変えるときに使う
+  plot?: PlotSpec
 }
 
 export type ImageNode = NodeRecord<ImageProps>

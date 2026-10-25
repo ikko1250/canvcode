@@ -371,6 +371,13 @@ function outlineLine(item: Item, ctx: LineContext): string {
     case 'chart':
       if (typeof p.kind === 'string') parts.push(p.kind)
       break
+    // CSV から描いたグラフの画像（plot_csv）：plot=<種類> と表の File
+    case 'image': {
+      const plot = p.plot as { kind?: unknown; fileId?: unknown } | undefined
+      if (plot && typeof plot.kind === 'string') parts.push(`plot=${plot.kind}`)
+      if (plot && typeof plot.fileId === 'string') parts.push(plot.fileId)
+      break
+    }
     case 'link-card':
       if (typeof p.url === 'string') parts.push(p.url)
       break
@@ -575,7 +582,7 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       if (typeof p.pageIndex === 'number') out.page = p.pageIndex + 1
       break
     case 'image':
-      copy('assetId', 'crop')
+      copy('assetId', 'crop', 'plot')
       break
     case 'draw':
       copy('color', 'size')
@@ -739,7 +746,7 @@ First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revis
 Then one line per node, back-to-front (z-order); children of a group/frame follow their parent, indented by depth:
   <id> <type> <x>,<y> <W>x<H> [rot=<deg>] [extra] ["text"] [locked] [in=<parent id>] [[N children]]
 Arrows: <id> arrow <start>→<end> ["label"], where each end is a node id (bound) or x,y (free).
-Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
+Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when drawn by plot_csv; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
 Text is truncated to ${MAX_LINE_TEXT} characters. Group/frame contents are collapsed as [N children] unless depth > 0.
 Filters: rect (world box intersection), query (case-insensitive text), types (e.g. note, geo, geo/ellipse) and since search inside groups/frames too; nodes whose parent line is not shown get in=<parent id>.
 since=<rev> returns only nodes changed after that revision (including arrows whose connections changed) and deleted=<ids> (node ids deleted anywhere in the workspace after it). Pass the rev from a previous result to see what the user changed.
@@ -756,7 +763,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
 - draw: freehand stroke (color, size; points are not returned)
-- image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null)
+- image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
 - frame: named container that clips its children (name, w, h)
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)

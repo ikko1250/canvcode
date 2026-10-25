@@ -4,11 +4,13 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { normalizeRefId } from '@canvcode/core'
+import { findPlotColumn, PLOT_KINDS, plotTable, plotUsesX, type ImageProps, type PlotKind, type PlotSpec } from '@canvcode/nodes'
 import { HttpError, type FileInfo } from './files.ts'
 import type { AgentHost } from './agent/host.ts'
-import { EditError, editCanvas, editCanvasInput, undoCanvasEdit, type CreatedCanvas } from './agent/ops.ts'
+import { EditError, editCanvas, editCanvasInput, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
 import { preparePdfs, type PdfSources } from './agent/pdfSource.ts'
 import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } from './agent/outline.ts'
+import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
 import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
 import { resolveReference, type RefDeps } from './refs.ts'
@@ -24,12 +26,13 @@ import { resolveReference, type RefDeps } from './refs.ts'
 // - 第 4 段で Canvas のノードを書き換えるツールを足した（agent/ops.ts。サーバーの中のワークスペース agent/host.ts で行う）
 // - 第 5 段で、ユーザーが見ている Canvas と範囲（ブラウザが /api/sync で知らせる presence）を、Canvas のツールの既定にした
 // - 第 6 段で、edit_canvas から PDF（ワークスペースのファイルか URL）を取り込み、空の Canvas の Portal を作れるようにした（agent/pdfSource.ts）
+// - 第 7 段で、表（CSV）からグラフ（matplotlib の PNG）を描いて画像のノードとして置くツールを足した（plot.ts。list_plot_styles・plot_csv）
 
 export const MCP_PATH = '/mcp'
 
 // agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）。
-// pdf がなければ、edit_canvas で PDF を取り込めない
-export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null; pdf?: Omit<PdfSources, 'files'> }
+// pdf がなければ、edit_canvas で PDF を取り込めない。plot がなければ（か pdf の Asset がなければ）、グラフのツールを出さない
+export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null; pdf?: Omit<PdfSources, 'files'>; plot?: Plotter }
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const { files } = deps
@@ -50,7 +53,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
         (deps.agent
           ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
             ' To make a presentation, put slides on a canvas (edit_canvas: create type "slide" with a template; get_canvas_format explains them).' +
-            ' To show a PDF on a canvas, edit_canvas create type "pdf" with a path in the workspace or a url.'
+            ' To show a PDF on a canvas, edit_canvas create type "pdf" with a path in the workspace or a url.' +
+            (deps.plot && deps.pdf
+              ? ' To chart a CSV / TSV document, read it (read_document), pick a style from list_plot_styles, then call plot_csv; it draws a PNG with matplotlib and places it as an image node.'
+              : '')
           : ''),
     },
   )
@@ -199,14 +205,14 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
   )
 
-  registerCanvasTools(server, deps.records, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf })
+  registerCanvasTools(server, deps.records, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot)
   return server
 }
 
 // ---- Canvas の上のもの ----
 
 // 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
-function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources): void {
+function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources, plot?: Plotter): void {
   // ユーザーが見ている所（その Canvas がまだあるときだけ）
   const viewing = (): Presence | null => {
     const current = presence?.() ?? null
@@ -319,6 +325,180 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
     },
     ({ batch_id }) => editGuard(async () => text(JSON.stringify(undoCanvasEdit(agent, batch_id)))),
   )
+
+  if (plot && pdf) registerPlotTools(server, plot, pdf.assets, agent, pdf.files, records, viewing)
+}
+
+// 表（CSV）のグラフ（plot.ts）。描いた PNG を Asset に保存し、edit_canvas と同じ編集（元に戻せる）で画像のノードを置く・差し替える
+function registerPlotTools(
+  server: McpServer,
+  plot: Plotter,
+  assets: PdfSources['assets'],
+  agent: AgentHost,
+  files: McpDeps['files'],
+  records: RecordStore,
+  viewing: () => Presence | null,
+): void {
+  server.registerTool(
+    'list_plot_styles',
+    {
+      title: 'List chart styles',
+      description:
+        `Styles for plot_csv, defined in ${STYLE_FILE_NAME} at the workspace root (matplotlib rcParams; the user can edit it, or ask you to add a style there). ` +
+        'Returns name, description and series colours of each style, and the absolute path of the style file.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () => plotGuard(async () => json({ styles: await plot.styles(), path: plot.stylePath })),
+  )
+
+  const column = z.union([z.string(), z.number().int().min(0)])
+  server.registerTool(
+    'plot_csv',
+    {
+      title: 'Chart a CSV',
+      description:
+        'Draw a chart from a table (CSV / TSV) document with matplotlib and place it on a canvas as an image node (or redraw an existing chart image). ' +
+        'Columns are header names or 0-based indexes. kinds: line, bar, barh (horizontal bars), stacked (stacked bars), area (stacked area), scatter, ' +
+        'pie (first y column; x gives the labels), hist and box (y columns only, x is ignored). Numbers may contain thousands separators, %, ¥ or full-width digits. ' +
+        'The x column may be numbers, dates (2026-01-31, 2026/1, 2026年1月) or text (categories, in table order). ' +
+        'Place it with x/y (world top-left) or place {rightOf|leftOf|below|above: node id}; by default it goes next to what the user is viewing. ' +
+        'Pass node (an image made by plot_csv) to redraw that chart in place: omitted fields keep its current settings. ' +
+        'The user can open "グラフを編集…" on the image to change the settings later.',
+      inputSchema: {
+        document: z.string().optional().describe('Table document id (file:...) or its path in the workspace. Not needed with node'),
+        node: z.string().optional().describe('Redraw this chart image node instead of creating one'),
+        kind: z.enum(PLOT_KINDS as [PlotKind, ...PlotKind[]]).optional().describe('Default line (new charts)'),
+        x: column.nullable().optional().describe('Category / x-axis column; null = row numbers. Default: the first non-numeric column'),
+        y: z.array(column).min(1).max(20).optional().describe('Value columns. Default: the numeric columns (up to 6)'),
+        style: z.string().optional().describe('Style name from list_plot_styles (default: the first style)'),
+        title: z.string().optional(),
+        xlabel: z.string().nullable().optional().describe('Horizontal axis label; null = from the column name, "" = none'),
+        ylabel: z.string().nullable().optional().describe('Vertical axis label; null = from the column name, "" = none'),
+        legend: z.boolean().nullable().optional().describe('Default: only with 2+ series'),
+        header: z.boolean().optional().describe('First row is the header (default true)'),
+        width: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size)"),
+        height: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size)"),
+        canvas_id: z.string().optional().describe("Canvas id (default: the one the user is viewing)"),
+        at: z.object({ x: z.number(), y: z.number() }).optional().describe('World top-left of a new chart'),
+        place: z
+          .object({ rightOf: z.string().optional(), leftOf: z.string().optional(), below: z.string().optional(), above: z.string().optional(), gap: z.number().optional() })
+          .optional()
+          .describe('Place a new chart next to a node'),
+        w: z.number().positive().optional().describe('Node width in world units (default: half the pixel width)'),
+        label: z.string().max(80).optional().describe('Short description shown to the user'),
+      },
+      annotations: { destructiveHint: true },
+    },
+    (input) =>
+      plotGuard(async () => {
+        const user = viewing()
+        let existing: { canvasId: string; props: ImageProps } | null = null
+        if (input.node) {
+          const node = records.get(input.node)
+          if (!node || node.typeName !== 'node' || node.type !== 'image' || !(node.props as ImageProps).plot) {
+            throw new PlotError(`${input.node} is not a chart image made by plot_csv`)
+          }
+          existing = { canvasId: canvasOf(records, node.id), props: node.props as ImageProps }
+        }
+        const base = existing?.props.plot
+        const fileId = input.document ? resolveTable(files, input.document) : base?.fileId
+        if (!fileId) throw new PlotError('Pass document (a table document id or path)')
+        const header = input.header ?? base?.header ?? true
+        const table = plotTable((await files.read(fileId)).text, files.getInfo(fileId).path, header)
+        const col = (ref: string | number) => {
+          const index = findPlotColumn(table.columns, ref)
+          if (index === null) throw new PlotError(`No column ${JSON.stringify(ref)}. Columns: ${table.columns.map((c) => `${c.index}:${c.name}${c.numeric ? '' : ' (text)'}`).join(', ')}`)
+          return index
+        }
+        const kind = input.kind ?? base?.kind ?? 'line'
+        const x = input.x === null ? null : input.x !== undefined ? col(input.x) : base && !input.document ? base.x : (table.columns.find((c) => !c.numeric)?.index ?? null)
+        const y = input.y
+          ? input.y.map(col)
+          : base && !input.document
+            ? base.y
+            : table.columns.filter((c) => c.numeric && c.index !== x).slice(0, 6).map((c) => c.index)
+        if (y.length === 0) throw new PlotError(`No numeric column to plot. Pass y. Columns: ${table.columns.map((c) => `${c.index}:${c.name}`).join(', ')}`)
+        // スタイルの既定の大きさ（style.py の size）は、新しく作るときと、スタイルを変えて大きさを渡さなかったとき
+        const styleName = input.style ?? base?.style ?? ''
+        const styles = !styleName || ((!base || input.style) && (input.width === undefined || input.height === undefined)) ? await plot.styles() : []
+        const chosen = styles.find((s) => s.name === styleName) ?? (styleName ? undefined : styles[0])
+        const size = !base || input.style ? chosen?.size : undefined
+        const spec: PlotSpec = {
+          fileId,
+          header,
+          x: plotUsesX(kind) ? x : (base?.x ?? x),
+          y,
+          kind,
+          style: styleName || (chosen?.name ?? ''),
+          title: input.title ?? base?.title ?? '',
+          xlabel: input.xlabel !== undefined ? input.xlabel : (base?.xlabel ?? null),
+          ylabel: input.ylabel !== undefined ? input.ylabel : (base?.ylabel ?? null),
+          legend: input.legend !== undefined ? input.legend : (base?.legend ?? null),
+          width: input.width ?? size?.[0] ?? base?.width ?? 1280,
+          height: input.height ?? size?.[1] ?? base?.height ?? 800,
+        }
+        const rendered = await plot.render(spec)
+        const hash = await assets.storeOriginal(rendered.png, 'image/png', rendered.width, rendered.height)
+        const image: PreparedImage = { hash, size: rendered.png.length, width: rendered.width, height: rendered.height, plot: spec }
+        const label = input.label ?? `グラフ：${spec.title || files.getInfo(fileId).title}`
+        let result
+        if (existing) {
+          // 幅はそのままにして、高さを新しい画像の縦横比に合わせる（切り抜いていたらやめる）。
+          // 描いている間にユーザーが大きさを変えたかもしれないので、今の幅を読み直す
+          const current = records.get(input.node!) as { props?: ImageProps } | undefined
+          if (!current?.props) throw new PlotError(`${input.node} was deleted while drawing`)
+          const w = current.props.w
+          const ops = [{ op: 'update', id: input.node, props: { assetId: `asset:${hash}`, plot: spec, crop: null }, w, h: (w * rendered.height) / rendered.width }]
+          result = editCanvas(agent, { canvasId: existing.canvasId, ops, label, images: new Map([[0, image]]) })
+        } else {
+          // canvas_id がなければ、place の相手の Canvas、それもなければユーザーが見ている Canvas
+          const near = input.place && (input.place.rightOf ?? input.place.leftOf ?? input.place.below ?? input.place.above)
+          const canvasId = input.canvas_id ?? (near && records.get(near) ? canvasOf(records, near) : undefined) ?? user?.canvasId
+          if (!canvasId) throw new EditError('No canvas_id, and no open CanvCode tab reports which canvas the user is viewing. Pass canvas_id (see list_canvases).')
+          const viewport = user?.canvasId === canvasId ? user.viewport : undefined
+          const op = { op: 'create', type: 'image', as: 'chart', ...(input.at ?? {}), ...(input.place ? { place: input.place } : {}), ...(input.w ? { w: input.w } : {}) }
+          result = editCanvas(agent, { canvasId, ops: [op], label, viewport, images: new Map([[0, image]]) })
+        }
+        return json({
+          ...(existing ? { node: input.node } : { node: result.created.chart }),
+          batch: result.batch,
+          rev: result.rev,
+          spec: { ...spec, x: spec.x === null ? null : table.columns[spec.x]?.name, y: spec.y.map((i) => table.columns[i]?.name) },
+          ...(rendered.warnings.length ? { warnings: rendered.warnings } : {}),
+        })
+      }),
+  )
+}
+
+// 文書の id かワークスペースの中のパスから、表の File の id を引く
+function resolveTable(files: McpDeps['files'], ref: string): string {
+  const info = ref.startsWith('file:') ? files.list().find((f) => f.id === ref) : files.list().find((f) => f.path === ref.replace(/^\.\//, ''))
+  if (!info) throw new PlotError(`Unknown document ${JSON.stringify(ref)}. Use list_documents (kind: table) to find one.`)
+  if (info.kind !== 'table') throw new PlotError(`${info.path} is not a table (CSV / TSV) document`)
+  return info.id
+}
+
+// ノードが置いてある Canvas（group・frame の中なら、その上をたどる）
+function canvasOf(records: RecordStore, nodeId: string): string {
+  let parentId = (records.get(nodeId) as { parentId?: string } | undefined)?.parentId
+  for (let depth = 0; parentId && depth < 64; depth++) {
+    const parent = records.get(parentId)
+    if (!parent || parent.typeName !== 'node') return parentId
+    parentId = (parent as { parentId?: string }).parentId
+  }
+  if (!parentId) throw new PlotError(`Cannot find the canvas of ${nodeId}`)
+  return parentId
+}
+
+async function plotGuard(run: () => Promise<CallToolResult>): Promise<CallToolResult> {
+  try {
+    return await run()
+  } catch (err) {
+    if (err instanceof PlotError || err instanceof EditError) return error(err.message)
+    if (err instanceof HttpError) return error(err.message)
+    throw err
+  }
 }
 
 async function editGuard(run: () => Promise<CallToolResult>): Promise<CallToolResult> {
