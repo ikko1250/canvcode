@@ -66,6 +66,7 @@ describe('askTool', () => {
     expect(askTool('Write', { file_path: '/etc/passwd' }, ws).behavior).toBe('deny')
     expect(askTool('mcp__canvcode__edit_canvas', {}, ws).behavior).toBe('allow')
     expect(askTool('Agent', { prompt: 'x' }, ws).behavior).toBe('allow')
-    expect(askTool('Skill', {}, ws).behavior).toBe('deny')
+    expect(askTool('Skill', { skill: 'imozuru' }, ws).behavior).toBe('allow')
+    expect(askTool('NotebookEdit', {}, ws).behavior).toBe('deny')
   })
 })

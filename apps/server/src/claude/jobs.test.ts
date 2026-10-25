@@ -118,6 +118,8 @@ describe('ClaudeJobs', () => {
     expect(call.options.permissionMode).toBe('auto')
     expect(call.options.tools).toContain('Bash')
     expect(call.options.tools).toContain('Agent')
+    expect(call.options.tools).toContain('Skill')
+    expect(call.options.skills).toBe('all')
     expect(call.options.mcpServers).toEqual({ canvcode: { type: 'http', url: 'http://127.0.0.1:1/mcp', alwaysLoad: true } })
     expect(call.options.strictMcpConfig).toBe(true)
     expect(call.options.hooks?.PreToolUse).toHaveLength(1)

@@ -219,6 +219,8 @@ export class ClaudeJobs {
       abortController: job.abort,
       ...(resume ? { resume } : {}),
       tools: CLAUDE_TOOLS,
+      // ワークスペースの .claude/skills/ のスキルをすべて使えるようにする（settingSources が project だけなので、~/.claude のスキルは読まない）
+      skills: 'all',
       // 分類のモデルが許すか決める。決められなければ canUseTool に来る
       permissionMode: 'auto',
       canUseTool: async (name, input) => {
@@ -372,6 +374,7 @@ export function systemPromptAppend(canvasId: string | undefined): string {
       : '',
     'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
     'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
+    'Skills in the workspace .claude/skills/ are available through the Skill tool.',
     'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; nobody is watching to approve the ones that are not.',
   ]
     .filter(Boolean)
@@ -391,6 +394,7 @@ export function toolDetail(name: string, input: Record<string, unknown>, workspa
   if (name === 'WebSearch') return str(input.query)
   if (name === 'WebFetch') return str(input.url)
   if (name === 'Agent') return str(input.description)
+  if (name === 'Skill') return str(input.skill)
   if (name.startsWith(CANVCODE_MCP_PREFIX)) return str(input.label) ?? str(input.ref) ?? str(input.id) ?? str(input.query)
   return undefined
 }
