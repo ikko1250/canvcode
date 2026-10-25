@@ -198,15 +198,15 @@ describe('SyncHub', () => {
     const writer = await connect(base)
     writer.send({ type: 'hello', since: records.rev })
     await writer.next('changes')
+    const since = records.rev
     const early = await connect(base)
     writer.send({ type: 'push', seq: 1, puts: [node('node:a', 'canvas:a')], deletes: [] })
     await writer.next('ack')
-    const changes = await early.next('changes')
-    expect(changes.records).toEqual([])
-    expect(changes.evicted).toEqual(['node:a'])
-    // 手元で作った Canvas を伝える load（req なし）には答えない
+    // 手元で作った Canvas を伝える load（req なし）には答えない。hello の前の変更も送らない
     early.send({ type: 'load', req: null, canvasId: 'canvas:a' })
-    const rest = await early.drain()
-    expect(rest.filter((m) => m.type === 'canvas' && m.req !== 'drain')).toEqual([])
+    expect((await early.drain()).filter((m) => m.req !== 'drain')).toEqual([])
+    // hello の応答に、それまでの変更が入る
+    early.send({ type: 'hello', since, canvases: ['canvas:a'] })
+    expect((await early.next('changes')).records).toEqual([expect.objectContaining({ id: 'node:a' })])
   })
 })

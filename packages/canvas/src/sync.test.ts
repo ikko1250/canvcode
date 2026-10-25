@@ -271,6 +271,19 @@ describe('sync of loaded canvases', () => {
     sync.dispose()
   })
 
+  it('is disconnected only after having been connected (review)', () => {
+    const server = fakeServer()
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [], canvases: ['canvas:root'], citations: [] }, { baseUrl: 'http://127.0.0.1' })
+    // 最初につながる前は、断らずに待つ
+    expect(sync.disconnected).toBe(false)
+    server.open()
+    expect(sync.disconnected).toBe(false)
+    server.socket.onclose!()
+    expect(sync.disconnected).toBe(true)
+    sync.dispose()
+  })
+
   it('treats everything as loaded when the server sends all records (no canvases)', () => {
     vi.stubGlobal('WebSocket', undefined)
     const workspace = new Workspace({ rootCanvasId: 'canvas:root' })

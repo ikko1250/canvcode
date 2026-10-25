@@ -118,6 +118,7 @@ export class SyncClient {
   private rev: number
   private socket: WebSocket | null = null
   private open = false
+  private everOpened = false
   private outbox: Outbox = new Map()
   private readonly inflight = new Map<number, Outbox>()
   private seq = 0
@@ -176,6 +177,11 @@ export class SyncClient {
     if (handlers.onImported) this.options.onImported = handlers.onImported
     if (handlers.onAgentChange) this.options.onAgentChange = handlers.onAgentChange
     if (handlers.onAssets) this.options.onAssets = handlers.onAssets
+  }
+
+  // つながっていたのに、切れているか（読んでいない Canvas を、つながるまで待たずに断るとき。最初につながる前は false）
+  get disconnected(): boolean {
+    return this.everOpened && !this.open
   }
 
   // この Canvas のノードを読んであるか
@@ -288,6 +294,7 @@ export class SyncClient {
     this.socket = socket
     socket.onopen = () => {
       this.open = true
+      this.everOpened = true
       this.reconnectDelay = 500
       // 切れている間の変更をもらってから、手元の変更を送る。読んだ Canvas も伝える（その分の変更だけが届く）
       socket.send(JSON.stringify({ type: 'hello', since: this.rev, ...(this.loaded === 'all' ? {} : { canvases: [...this.loaded] }) }))

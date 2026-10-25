@@ -244,6 +244,20 @@ describe('RecordStore', () => {
       store.close()
     })
 
+    it('deletes a canvas with many quote notes quickly (review)', () => {
+      const store = new RecordStore(dataDir())
+      const quote = (id: string, parentId: string, anchorId: string) => ({ ...node(id, parentId), type: 'quote-card', props: { anchorId, memo: 'メモ'.repeat(40) } })
+      const puts: unknown[] = [canvas('canvas:gone')]
+      for (let i = 0; i < 1000; i++) puts.push({ typeName: 'anchor', id: `anchor:g${i}`, fileId: 'file:1' }, quote(`node:g${i}`, 'canvas:gone', `anchor:g${i}`))
+      for (let i = 0; i < 10_000; i++) puts.push(quote(`node:k${i}`, store.rootCanvasId, `anchor:k${i % 500}`))
+      store.apply(puts, [])
+      const started = performance.now()
+      store.apply([], ['canvas:gone'])
+      expect(performance.now() - started).toBeLessThan(2000)
+      expect(store.get('anchor:g999')).toBeUndefined()
+      store.close()
+    })
+
     it('fills the canvas of existing records when migrating to version 3', () => {
       const dir = dataDir()
       const store = new RecordStore(dir)

@@ -256,9 +256,14 @@ export class RecordStore {
       }
       // 一緒に消した引用ノートが最後の引用だった SourceAnchor も消す（ブラウザのフックが、読んでいないノートの分は消せないので）
       const anchorRow = this.db.prepare("SELECT id, body FROM records WHERE id = ? AND type_name = 'anchor'")
-      const stillCited = this.db.prepare("SELECT 1 FROM records WHERE type_name = 'node' AND type = 'quote-card' AND json_extract(body, '$.props.anchorId') = ? LIMIT 1")
+      // まだ引用されている SourceAnchor は、引用ノートを 1 回なめて集める（SourceAnchor ごとに引くと、数が多いと遅い）
+      const cited = new Set<string>()
+      if (orphanAnchors.size > 0) {
+        const rows = this.db.prepare("SELECT json_extract(body, '$.props.anchorId') AS anchor_id FROM records WHERE type_name = 'node' AND type = 'quote-card'").all() as { anchor_id: unknown }[]
+        for (const row of rows) if (typeof row.anchor_id === 'string') cited.add(row.anchor_id)
+      }
       for (const anchorId of orphanAnchors) {
-        if (stillCited.get(anchorId)) continue
+        if (cited.has(anchorId)) continue
         const row = anchorRow.get(anchorId) as { id: string; body: string } | undefined
         if (row) removeCascaded(row)
       }

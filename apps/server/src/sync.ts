@@ -48,8 +48,8 @@ type ClientMessage =
   | { type: 'push'; seq: number; puts: unknown[]; deletes: unknown[] }
   | { type: 'presence'; canvasId: unknown; viewport: unknown }
 
-// タブの読んだ Canvas（all はすべて）
-type Scope = Set<string> | 'all'
+// タブの読んだ Canvas（all はすべて。null は hello がまだ来ていない）
+type Scope = Set<string> | 'all' | null
 
 // 1 回に受け取る差分の上限（1 万ノードをまとめて貼り付けても足りる大きさ）
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024
@@ -74,8 +74,8 @@ export class SyncHub {
   constructor(store: RecordStore) {
     this.store = store
     this.sockets.on('connection', (socket) => {
-      // hello が来るまでは、どの Canvas も読んでいないものとして絞る（hello に canvases がなければ、そこで全部にする）
-      this.clients.set(socket, new Set())
+      // hello が来るまでは何も送らない（hello の応答に、それまでの変更が入る）。hello に canvases がなければ全部にする
+      this.clients.set(socket, null)
       socket.on('close', () => {
         this.clients.delete(socket)
         this.presences.delete(socket)
@@ -199,7 +199,7 @@ export class SyncHub {
   private relay(outgoing: Outgoing, extra: Record<string, unknown>, except: WebSocket | null): void {
     const citations = citationsOf(outgoing)
     for (const [client, scope] of this.clients) {
-      if (client === except || client.readyState !== client.OPEN) continue
+      if (client === except || scope === null || client.readyState !== client.OPEN) continue
       client.send(JSON.stringify({ type: 'changes', ...scoped(outgoing, scope), ...(citations.length ? { citations } : {}), ...extra }))
     }
   }
@@ -223,7 +223,7 @@ export class SyncHub {
     if (message.type === 'load') {
       if (typeof message.canvasId !== 'string') return
       const scope = this.clients.get(socket)
-      if (scope && scope !== 'all') scope.add(message.canvasId)
+      if (scope instanceof Set) scope.add(message.canvasId)
       // req のない load は、手元で作った Canvas を伝えるだけ（中身は手元にある）
       if (message.req === null || message.req === undefined) return
       socket.send(JSON.stringify({ type: 'canvas', req: message.req, canvasId: message.canvasId, rev: this.store.rev, records: this.store.recordsOfCanvas(message.canvasId) }))
@@ -262,7 +262,7 @@ export class SyncHub {
       own.canvasIds.push(outgoing.canvasIds[i])
     }
     if (own.records.length > 0 || own.deleted.length > 0) {
-      const scope = this.clients.get(socket) ?? 'all'
+      const scope = this.clients.get(socket) ?? new Set<string>()
       socket.send(JSON.stringify({ type: 'changes', ...scoped(own, scope) }))
     }
     socket.send(JSON.stringify({ type: 'ack', seq: message.seq, rev }))
@@ -276,7 +276,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 // タブの分に絞る。読んでいない Canvas のノードと Binding（と、所属のわからないもの）は evicted に入れる
-function scoped(changes: Outgoing, scope: Scope): { rev: number; records: StoredRecord[]; deleted: string[]; evicted?: string[] } {
+function scoped(changes: Outgoing, scope: Exclude<Scope, null>): { rev: number; records: StoredRecord[]; deleted: string[]; evicted?: string[] } {
   if (scope === 'all') return { rev: changes.rev, records: changes.records, deleted: changes.deleted }
   const records: StoredRecord[] = []
   const evicted: string[] = []

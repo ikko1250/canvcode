@@ -535,20 +535,21 @@ export function App(props: { initial: InitialRecords }) {
       const from = view.editor
       // あとから頼まれた移動があれば、読んでいる途中の移動はやめる
       const token = ++navigationToken.current
-      if (targetId === from.canvasId) return setLoadingCanvas(false)
+      // 読んでいる途中の移動をやめたので、読み込み中の表示を消す（このあと読むなら、また出す）
+      setLoadingCanvas(false)
+      if (targetId === from.canvasId) return
       const target = workspace.getCanvas(targetId)
       if (!target) return notify('このキャンバスは削除されています')
       if (target.deletedAt !== null) return notify('このキャンバスはゴミ箱の中にあります。サイドバーから元に戻せます')
       // 読んでいなければ、先に読む。読んでいる間も、ほかの Canvas へは移れる（docs/lazy-canvas-loading-plan.md）
       if (!sync.isLoaded(targetId)) {
-        if (sync.getStatus() === 'offline') return notify('サーバーにつながっていないので、このキャンバスを開けません')
+        if (sync.disconnected) return notify('サーバーにつながっていないので、このキャンバスを開けません')
         setLoadingCanvas(true)
         await sync.ensureCanvas(targetId)
         if (navigationToken.current !== token) return
         setLoadingCanvas(false)
         return go(targetId, options)
       }
-      setLoadingCanvas(false)
       navigating.current = true
       try {
         await view.captureThumbnail()
@@ -589,7 +590,7 @@ export function App(props: { initial: InitialRecords }) {
     async (canvasId: string) => {
       if (sync.isLoaded(canvasId)) return
       const title = workspace.getCanvas(canvasId)?.title ?? ''
-      if (sync.getStatus() === 'offline') throw new Error(`サーバーにつながっていないので、「${title}」を読み込めません`)
+      if (sync.disconnected) throw new Error(`サーバーにつながっていないので、「${title}」を読み込めません`)
       await sync.ensureCanvas(canvasId)
     },
     [workspace, sync],
@@ -1324,7 +1325,13 @@ export function App(props: { initial: InitialRecords }) {
     onRestore: async (id: string) => {
       // 持ち主の Portal を置き直す先の Canvas を、先に読む（Portal の親がノードなら、その Canvas をサーバーに聞く）
       const parentId = workspace.getDocument(id)?.trash?.portal?.parentId
-      const parentCanvas = parentId ? (parentId.startsWith('canvas:') ? parentId : await fetchCanvasOf(parentId).catch(() => null)) : null
+      let parentCanvas: string | null = null
+      try {
+        parentCanvas = parentId ? (parentId.startsWith('canvas:') ? parentId : await fetchCanvasOf(parentId)) : null
+      } catch {
+        // 聞けなければ、元の場所に戻せないので、戻さない（未配置として戻すと、元の場所がわからなくなる）
+        return notify('サーバーにつながっていないので、元に戻せません')
+      }
       if (parentCanvas && workspace.getCanvas(parentCanvas)) {
         try {
           await loadCanvasNow(parentCanvas)
