@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { OWN_KEYS_ATTRIBUTE } from '@canvcode/canvas'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
 import { jobsOfThread, useClaudeState, type ClaudeClient, type ClaudeJob, type JobEvent } from './claudeClient.ts'
 
@@ -7,6 +8,8 @@ import { jobsOfThread, useClaudeState, type ClaudeClient, type ClaudeJob, type J
 //   上の一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
 // - Canvas の編集は、ほかの AI の編集と同じく画面の下に「AI：…［元に戻す］」が出る（AgentToasts）
+// - パネルの中のキー入力は、キャンバスのショートカットに渡さない（data-own-keys）。押したらパネルにフォーカスを移すので、
+//   回答を選んで Delete や矢印キーを押しても、キャンバスで選んでいるノードは消えも動きもしない
 
 // 添える場所。refId が null の間は保存している
 export interface ClaudeAttachment {
@@ -106,8 +109,21 @@ export function ClaudePanel(props: Props) {
     }
   }
 
+  // 入力欄の外のキー（入力欄の中は onKeyDown が扱う）。Esc で閉じる。Ctrl（⌘）+A は、ページ全体ではなく会話の欄の文字を選ぶ
+  const onPanelKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.defaultPrevented || e.nativeEvent.isComposing) return
+    if (e.target instanceof Element && e.target.closest('textarea, input')) return
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onClose()
+    } else if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a' && logRef.current) {
+      e.preventDefault()
+      document.getSelection()?.selectAllChildren(logRef.current)
+    }
+  }
+
   return (
-    <aside className="claude-panel" aria-label="Claude">
+    <aside className="claude-panel" aria-label="Claude" tabIndex={-1} onKeyDown={onPanelKeyDown} {...{ [OWN_KEYS_ATTRIBUTE]: '' }}>
       <div className="claude-panel-header">
         <strong>Claude</strong>
         <select

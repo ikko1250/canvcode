@@ -2431,6 +2431,11 @@ body,
   font-size: 13px;
 }
 
+/* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない */
+.claude-panel:focus {
+  outline: none;
+}
+
 @media (max-width: 720px) {
   .claude-panel {
     position: fixed;
