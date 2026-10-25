@@ -22,7 +22,7 @@ async function openApp(page: Page) {
     node('node:geoB', 'geo', 300, 120, 'a2', { shape: 'ellipse', w: 120, h: 120, fill: '#ffc9c9', stroke: '#3b5bdb', strokeWidth: 2, label: '' }),
   ]
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()

@@ -17,7 +17,7 @@ async function openApp(page: Page) {
     props: { ratio: '16:9', name: 'S1', hidden: false }, meta: {},
   }
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, slide] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, slide] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()

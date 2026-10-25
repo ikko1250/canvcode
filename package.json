@@ -19,6 +19,7 @@
     "backup:sync": "node apps/server/src/backup-sync-cli.ts",
     "import": "node apps/server/src/import-cli.ts",
     "bench:memory": "npm run build -w @canvcode/web && node tests/bench/memory.ts",
+    "bench:newtab": "npm run build -w @canvcode/web && node tests/bench/newtab.ts",
     "test:e2e": "playwright test --project=chromium --project=firefox"
   },
   "devDependencies": {

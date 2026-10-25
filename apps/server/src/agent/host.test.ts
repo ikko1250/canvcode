@@ -72,7 +72,7 @@ describe('SyncHub.broadcast', () => {
     const { sync } = setup()
     const sent: unknown[] = []
     const tab = { readyState: 1, OPEN: 1, send: (text: string) => sent.push(JSON.parse(text)) }
-    ;(sync as unknown as { clients: Set<unknown> }).clients.add(tab)
+    ;(sync as unknown as { clients: Map<unknown, 'all'> }).clients.set(tab, 'all')
     sync.broadcast(7, [{ id: 'node:x' }], { origin: { kind: 'ai', batchId: 'ai-1' } }, { deleted: ['node:y'] })
     expect(sent).toEqual([{ type: 'changes', rev: 7, records: [{ id: 'node:x' }], deleted: ['node:y'], origin: { kind: 'ai', batchId: 'ai-1' } }])
   })

@@ -63,7 +63,7 @@ async function openApp(page: Page) {
     node('node:frame', 100, 300, 'a2', { fill: imageFill() }),
   ]
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.route('**/api/assets**', async (route) => {
     const url = new URL(route.request().url())

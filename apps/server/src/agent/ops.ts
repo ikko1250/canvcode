@@ -358,6 +358,14 @@ export function undoCanvasEdit(host: AgentHost, batchId: string): { rev: number;
   if (conflicts.length) {
     throw new EditError(`Conflict: ${conflicts.length} record(s) changed after this edit (${listIds(conflicts)}). Nothing was undone.`)
   }
+  // 取り消すと消える Canvas に、あとから足されたもの（消す Canvas の中身は一緒に消えるので、残すために断る）
+  const inPatch = new Set(op.patch.map((e) => e.id))
+  const added = op.patch
+    .filter((e) => !e.before && e.id.startsWith('canvas:'))
+    .flatMap((e) => records.idsOfCanvas(e.id).filter((id) => !inPatch.has(id)))
+  if (added.length) {
+    throw new EditError(`Conflict: ${added.length} record(s) were added after this edit to a canvas it created (${listIds(added)}). Nothing was undone.`)
+  }
   const puts = op.patch.flatMap((e) => (e.before ? [e.before] : []))
   const deleted = op.patch.flatMap((e) => (e.before ? [] : [e.id]))
   const rev = records.applyAgentUndo(op.id, puts, deleted)

@@ -6,7 +6,7 @@ async function openApp(page: Page, status: unknown): Promise<void> {
   const records = [
     { typeName: 'canvas', id: 'canvas:root', title: 'ホーム', parentCanvasId: null, ownerNodeId: null, createdAt: 0, updatedAt: 0, deletedAt: null, trash: null },
   ]
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:root', rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:root', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.route('**/api/backup-status', (route) => route.fulfill({ json: status }))
   await page.routeWebSocket('**/api/sync', (ws) => {

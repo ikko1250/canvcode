@@ -46,7 +46,7 @@ function setup() {
   cleanups.push(() => records.close())
   cleanups.push(() => host.dispose())
   const tab = fakeSocket()
-  ;(sync as unknown as { clients: Set<unknown> }).clients.add(tab)
+  ;(sync as unknown as { clients: Map<unknown, 'all'> }).clients.set(tab, 'all')
   const root = records.rootCanvasId
   const edit = (ops: unknown[], extra: Partial<EditRequest> = {}) => editCanvas(host, { canvasId: root, ops, ...extra })
   return { records, sync, host, tab, root, edit }
@@ -717,6 +717,16 @@ describe('undo_canvas_edit', () => {
     records.apply([{ ...records.get(result.created.n!)!, x: 99 }], [])
     expect(() => undoCanvasEdit(host, result.batch)).toThrow(/Conflict: 1 record\(s\) changed after this edit/)
     expect(records.get(result.created.n!)!.x).toBe(99)
+  })
+
+  it('refuses when something was added afterwards to a canvas the edit created (review)', () => {
+    const { records, host, edit } = setup()
+    const result = edit([{ op: 'create', type: 'portal', as: 'p', name: 'X', x: 0, y: 0 }])
+    const canvasId = (records.get(result.created.p!)!.props as { targetId: string }).targetId
+    records.apply([{ typeName: 'node', id: 'node:user', type: 'geo', parentId: canvasId, x: 0, y: 0, props: {} }], [])
+    expect(() => undoCanvasEdit(host, result.batch)).toThrow(/Conflict: 1 record\(s\) were added after this edit to a canvas it created \(node:user\)/)
+    expect(records.get('node:user')).toBeDefined()
+    expect(records.get(canvasId)).toBeDefined()
   })
 
   it('keeps only the latest edits', () => {

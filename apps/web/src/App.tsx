@@ -5,6 +5,7 @@ import {
   Editor,
   FileManager,
   SyncClient,
+  fetchCanvasOf,
   fetchReference,
   Workspace,
   isEditableKeyboardTarget,
@@ -262,6 +263,8 @@ export function App(props: { initial: InitialRecords }) {
         editors.set(canvasId, editor)
         return editor
       }
+      // 読んでいない Canvas の Editor は作らない（中身のない Editor になる。docs/lazy-canvas-loading-plan.md）
+      if (!sync.isLoaded(canvasId)) throw new Error(`the canvas is not loaded: ${canvasId}`)
       editor = new Editor({ workspace, canvasId })
       editors.set(canvasId, editor)
       // 前に開いたときのカメラに戻す（全体表示はしない）
@@ -288,7 +291,7 @@ export function App(props: { initial: InitialRecords }) {
       })
       return editor
     },
-    [workspace, editors, editorDisposers, visited],
+    [workspace, sync, editors, editorDisposers, visited],
   )
   // Editor が多すぎたら、古いものから捨てる。いま表示しているもの（shown）は捨てない（Canvas を移ったあとに呼ぶ）
   const trimEditors = useCallback(
@@ -303,7 +306,11 @@ export function App(props: { initial: InitialRecords }) {
     },
     [editors, editorDisposers],
   )
-  const [canvasId, setCanvasId] = useState(workspace.rootCanvasId)
+  // 最初に見せる Canvas（Canvas ごとに読んだときは、読んだ Canvas。すべてを読んだときはルートから URL の Canvas へ移る）
+  const [startCanvasId] = useState(() => props.initial.canvases?.[0] ?? workspace.rootCanvasId)
+  const [canvasId, setCanvasId] = useState(startCanvasId)
+  // 移る先の Canvas を読んでいる間
+  const [loadingCanvas, setLoadingCanvas] = useState(false)
   const editor = getEditor(canvasId)
   const [view, setView] = useState<CanvasView | null>(null)
   // いま見ている Canvas と範囲をサーバーに知らせる（AI のツールの既定）
@@ -332,6 +339,8 @@ export function App(props: { initial: InitialRecords }) {
   const [tableFilter, setTableFilter] = useState<(TableFilterRequest & { op: TableFilterOp }) | null>(null)
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
   const navigating = useRef(false)
+  // 移動を頼まれるたびに増やす（読み終えるのを待っている移動が、あとから頼まれた移動に替わったか）
+  const navigationToken = useRef(0)
   // 移っている途中（アニメーション中）に頼まれた移動。今の移動が終わったら、最後に頼まれたものを行う
   const pendingNavigation = useRef<{ targetId: string; options: { portalId?: string; push?: boolean } } | null>(null)
   const viewRef = useRef<CanvasView | null>(null)
@@ -541,10 +550,23 @@ export function App(props: { initial: InitialRecords }) {
         return
       }
       const from = view.editor
+      // あとから頼まれた移動があれば、読んでいる途中の移動はやめる
+      const token = ++navigationToken.current
+      // 読んでいる途中の移動をやめたので、読み込み中の表示を消す（このあと読むなら、また出す）
+      setLoadingCanvas(false)
       if (targetId === from.canvasId) return
       const target = workspace.getCanvas(targetId)
       if (!target) return notify('このキャンバスは削除されています')
       if (target.deletedAt !== null) return notify('このキャンバスはゴミ箱の中にあります。サイドバーから元に戻せます')
+      // 読んでいなければ、先に読む。読んでいる間も、ほかの Canvas へは移れる（docs/lazy-canvas-loading-plan.md）
+      if (!sync.isLoaded(targetId)) {
+        if (sync.disconnected) return notify('サーバーにつながっていないので、このキャンバスを開けません')
+        setLoadingCanvas(true)
+        await sync.ensureCanvas(targetId)
+        if (navigationToken.current !== token) return
+        setLoadingCanvas(false)
+        return go(targetId, options)
+      }
       navigating.current = true
       try {
         await view.captureThumbnail()
@@ -578,7 +600,17 @@ export function App(props: { initial: InitialRecords }) {
         if (pending) void go(pending.targetId, pending.options)
       }
     },
-    [workspace, visited, getEditor, trimEditors, notify],
+    [workspace, sync, visited, getEditor, trimEditors, notify],
+  )
+  // 移す・戻すときに、その Canvas を読む。サーバーにつながっていなければ断る（つながるまで待たせない）
+  const loadCanvasNow = useCallback(
+    async (canvasId: string) => {
+      if (sync.isLoaded(canvasId)) return
+      const title = workspace.getCanvas(canvasId)?.title ?? ''
+      if (sync.disconnected) throw new Error(`サーバーにつながっていないので、「${title}」を読み込めません`)
+      await sync.ensureCanvas(canvasId)
+    },
+    [workspace, sync],
   )
   const openPortal = useCallback(
     (portalId: string) => {
@@ -618,8 +650,10 @@ export function App(props: { initial: InitialRecords }) {
       if (status === 'trashed') return notify('元の場所はゴミ箱の中にあります。サイドバーから元に戻せます')
       // ルートの Canvas には持ち主がいないので、そのまま移る
       if (ref.targetId === workspace.rootCanvasId) return navigate(ref.targetId)
-      const ownerId = workspace.getDocument(ref.targetId)?.ownerNodeId
-      const canvas = ownerId ? workspace.canvasOf(ownerId) : null
+      // 持ち主の Canvas は、参照先の parentCanvasId（持ち主のノードを読んでいなくてもわかる）
+      const doc = workspace.getDocument(ref.targetId)
+      const ownerId = doc?.ownerNodeId
+      const canvas = ownerId ? (doc?.parentCanvasId ?? null) : null
       if (!ownerId || !canvas) return notify('元の場所はありません（参照先はどのキャンバスにも置かれていません）')
       await navigate(canvas)
       const view = viewRef.current
@@ -632,14 +666,13 @@ export function App(props: { initial: InitialRecords }) {
 
   // 引用ノートへ移る（逆リンク）。別の Canvas にあれば、そこへ移ってから見せる
   const goToNote = useCallback(
-    async (noteId: string) => {
-      const canvas = workspace.canvasOf(noteId)
+    async (noteId: string, canvas: string | null) => {
       if (!canvas) return
       await navigate(canvas)
       const view = viewRef.current
       if (view && view.editor.canvasId === canvas) await view.focusNode(noteId)
     },
-    [workspace, navigate],
+    [navigate],
   )
 
   // 引用しているノートの一覧（右クリックメニューと同じ形で出す）
@@ -647,11 +680,10 @@ export function App(props: { initial: InitialRecords }) {
     (anchorIds: string[]): MenuItem[] =>
       anchorIds.flatMap((anchorId) =>
         workspace.notesOfAnchor(anchorId).map((note) => {
-          const props = note.props as QuoteCardProps
-          const canvasTitle = workspace.getCanvas(workspace.canvasOf(note.id) ?? '')?.title ?? ''
-          const head = (props.memo.trim() || props.quote.trim() || '（図）').split('\n')[0]
+          const canvasTitle = workspace.getCanvas(note.canvasId ?? '')?.title ?? ''
+          const head = note.head
           const label = `${head.length > 24 ? `${head.slice(0, 24)}…` : head} — ${canvasTitle}`
-          return { label, onSelect: () => void goToNote(note.id) }
+          return { label, onSelect: () => void goToNote(note.id, note.canvasId) }
         }),
       ),
     [workspace, goToNote],
@@ -1216,8 +1248,9 @@ export function App(props: { initial: InitialRecords }) {
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    const created = new CanvasView(getEditor(workspace.rootCanvasId), container, {
+    const created = new CanvasView(getEditor(startCanvasId), container, {
       notify,
+      loadCanvas: (id) => loadCanvasNow(id),
       files,
       pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
@@ -1257,7 +1290,9 @@ export function App(props: { initial: InitialRecords }) {
       },
     })
     viewRef.current = created
-    visited.add(workspace.rootCanvasId)
+    // ルート以外の Canvas から始めて、前に開いたときのカメラがなければ、全体を見せる（Canvas に移ったときと同じ）
+    if (!visited.has(startCanvasId) && startCanvasId !== workspace.rootCanvasId) created.zoomToFit()
+    visited.add(startCanvasId)
     setView(created)
     // 画面を出したら、PDF.js を裏で読み込み始める（PDF を開くときに待たないように）
     setTimeout(preloadPdfJs, 0)
@@ -1340,7 +1375,7 @@ export function App(props: { initial: InitialRecords }) {
       files.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, sync, editors, visited, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, sync, editors, visited, startCanvasId, notify, ask, getEditor, navigate, loadCanvasNow, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
   // Ctrl+F（⌘F）で PDF の単語検索を開く（試作）。今の Canvas に PDF のページがなければ、ブラウザの検索に任せる
   useEffect(() => {
@@ -1411,7 +1446,26 @@ export function App(props: { initial: InitialRecords }) {
       if (!editor.placeCanvas(id, center)) notify('キャンバスを、それ自身やその中には置けません')
     },
     onOpenFile: (id: string) => openFile(id),
-    onRestore: (id: string) => editor.transact('restore canvas', (tx) => workspace.restoreCanvas(tx, id)),
+    onRestore: async (id: string) => {
+      // 持ち主の Portal を置き直す先の Canvas を、先に読む（Portal の親がノードなら、その Canvas をサーバーに聞く）
+      const parentId = workspace.getDocument(id)?.trash?.portal?.parentId
+      let parentCanvas: string | null = null
+      try {
+        parentCanvas = parentId ? (parentId.startsWith('canvas:') ? parentId : await fetchCanvasOf(parentId)) : null
+      } catch {
+        // 聞けなければ、元の場所に戻せないので、戻さない（未配置として戻すと、元の場所がわからなくなる）
+        return notify('サーバーにつながっていないので、元に戻せません')
+      }
+      if (parentCanvas && workspace.getCanvas(parentCanvas)) {
+        try {
+          await loadCanvasNow(parentCanvas)
+        } catch (error) {
+          return notify(error instanceof Error ? error.message : String(error))
+        }
+      }
+      const current = viewRef.current?.editor ?? editor
+      current.transact('restore canvas', (tx) => workspace.restoreCanvas(tx, id))
+    },
     onDeleteForever: async (id: string) => {
       const title = workspace.getDocument(id)?.title ?? ''
       const choice = await ask(
@@ -1927,7 +1981,7 @@ export function App(props: { initial: InitialRecords }) {
           )}
           <BackupStatus serverOnline={syncStatus !== 'offline'} />
           <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
-            {syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
+            {syncStatus === 'offline' ? '未接続' : loadingCanvas ? 'キャンバスを読み込み中…' : SYNC_LABELS[syncStatus]}
           </div>
         </div>
 

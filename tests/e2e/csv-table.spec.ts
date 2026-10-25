@@ -22,7 +22,7 @@ async function openApp(page: Page) {
   }
   const file = { id: FILE_ID, kind: 'table', title: '一覧', path: '一覧.csv', size: CSV.length, mtime: 0, hash: 'test', missing: false }
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, card] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, card] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: CSV, headers: { etag: '"test"' } }))
   await page.goto('/')
@@ -141,7 +141,7 @@ async function openSmall(page: Page) {
   }
   const file = { id: FILE_ID, kind: 'table', title: '店舗', path: '店舗.csv', size: SMALL.length, mtime: 0, hash: 'test', missing: false }
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, card] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, card] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: SMALL, headers: { etag: '"test"' } }))
   await page.goto('/')

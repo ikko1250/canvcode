@@ -80,7 +80,7 @@ async function openApp(page: Page, searches: string[]) {
   // サーバーが pages.json から取り出すテキスト（行ごと。書いた順のまま）
   const texts = PAGES.map((lines) => lines.map((line) => `${line.text}\n`).join(''))
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, file, ...pages] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, file, ...pages] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.route('**/api/assets**', async (route) => {
     const url = new URL(route.request().url())
@@ -162,7 +162,7 @@ test('leaves Ctrl+F to the browser on a canvas without PDF pages', async ({ page
     typeName: 'canvas', id: CANVAS_ID, title: 'Empty', parentCanvasId: null, ownerNodeId: null,
     createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
   }
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.route('**/api/assets', (route) => route.fulfill({ json: { assets: [] } }))
   await page.goto('/')

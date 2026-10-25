@@ -10,7 +10,7 @@ async function openCard(page: Page) {
   const records = await page.evaluate(() => [...(window as any).canvasInputFixture.editor.workspace.store.values()])
   const text = '# 見出し\n\n' + Array.from({ length: 6 }, (_, i) => `段落 ${i + 1}：Markdown の本文。The quick brown fox jumps over the lazy dog.`).join('\n\n')
   const file = { id: 'file:input-test', kind: 'markdown', title: 'Zoom', path: 'test.md', size: text.length, mtime: 0, hash: 'test', missing: false }
-  await page.context().route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
+  await page.context().route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.context().route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.context().route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: text, headers: { etag: '"test"' } }))
   await page.goto('/')

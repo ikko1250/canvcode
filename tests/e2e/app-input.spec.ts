@@ -10,7 +10,7 @@ for (const kind of ['code', 'markdown'] as const) test(`inline ${kind} editor in
     return [...fixture.editor.workspace.store.values()]
   })
   const file = { id: 'file:input-test', kind, title: 'Input test', path: kind === 'code' ? 'test.py' : 'test.md', size: 100, mtime: 0, hash: 'test', missing: false }
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: Array.from({ length: 90 }, (_, i) => `line ${i}`).join('\n'), headers: { etag: '"test"' } }))
   await page.goto('/')

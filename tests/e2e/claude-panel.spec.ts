@@ -16,7 +16,7 @@ async function openApp(page: Page) {
   const now = Date.now()
   const thread = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false }
   const job = { id: 'j1', threadId: 't1', prompt: 'question', status: 'done', createdAt: now, eventCount: 1, events: [{ kind: 'text', text: 'Answer from Claude' }] }
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: '# Card', headers: { etag: '"test"' } }))
   await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [thread] } }))

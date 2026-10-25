@@ -1,9 +1,22 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { loadRecords, type InitialRecords } from '@canvcode/canvas'
+import { loadRecords, type InitialRecords, type LoadTarget } from '@canvcode/canvas'
 import { App } from './App.tsx'
 
 // 検証ページは ?lab=markdown で開く（MAI-21）。通常の画面には読み込ませない
 const MarkdownLab = lazy(() => import('./lab/MarkdownLab.tsx').then((m) => ({ default: m.MarkdownLab })))
+
+// 開くときに読む Canvas（docs/lazy-canvas-loading-plan.md）：/c/<id> はその Canvas、/f/<id> はその File の持ち主の Canvas、ほかはルート
+function loadTarget(): LoadTarget {
+  const match = /^\/([cf])\/([^/]+)/.exec(location.pathname)
+  if (!match) return {}
+  let id: string
+  try {
+    id = decodeURIComponent(match[2])
+  } catch {
+    return {}
+  }
+  return match[1] === 'c' ? { canvasId: id } : { fileId: id }
+}
 
 export function Root() {
   const lab = new URLSearchParams(location.search).get('lab')
@@ -14,7 +27,7 @@ export function Root() {
   useEffect(() => {
     if (lab === 'markdown') return
     let cancelled = false
-    loadRecords()
+    loadRecords('', loadTarget())
       .then((records) => {
         if (!cancelled) setInitial(records)
       })
