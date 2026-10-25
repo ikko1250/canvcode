@@ -568,7 +568,7 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       break
     case 'table-card':
       file()
-      copy('role', 'sizing', 'header', 'wrap', 'sort', 'filters')
+      copy('role', 'sizing', 'header', 'wrap', 'thousands', 'sort', 'filters')
       break
     case 'quote-card':
       file()
@@ -768,7 +768,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
 - markdown-card / code-card: a document file on the canvas
-- table-card: a table document (a .csv / .tsv file) drawn as a grid; its text is the CSV (read_document). header = whether the first row is shown as the header; wrap = long cells wrap; sort {col, dir} and filters [{col, op, value}] (col is 0-based; filters are ANDed) only change what the card shows, not the file
+- table-card: a table document (a .csv / .tsv file) drawn as a grid; its text is the CSV (read_document). header = whether the first row is shown as the header; wrap = long cells wrap; thousands = number columns are shown with thousands separators (default true; false shows them as written); sort {col, dir} and filters [{col, op, value}] (col is 0-based; filters are ANDed) only change what the card shows, not the file
 - quote-card: quotation from a PDF or Markdown file with a memo
 - link-card: a web link pasted as a card (url, and the page's title, description and thumbnail when they could be fetched)
 - pdf-page: one page of a PDF (p= is 1-based)

@@ -1001,6 +1001,14 @@ export function App(props: { initial: InitialRecords }) {
                 if (node) editor.transact('table header', (tx) => tx.put({ ...node, props: { ...node.props, header: !header } }))
               },
             })
+            const thousands = (single.props as TableCardProps).thousands !== false
+            items.push({
+              label: thousands ? '3 桁区切りを外す' : '数を 3 桁で区切る',
+              onSelect: () => {
+                const node = editor.getNode(single.id)
+                if (node) editor.transact('table thousands', (tx) => tx.put({ ...node, props: { ...node.props, thousands: !thousands } }))
+              },
+            })
           }
           // このファイルを引用しているノート（逆リンク。MAI-33）
           const cited = citationItems(workspace.anchorsOfFile(file.id).map((a) => a.id))

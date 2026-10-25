@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyTableView, isNumericColumn, matchesFilter } from './tableView.ts'
+import { applyTableView, groupThousands, isNumericColumn, matchesFilter, withThousandsSeparators } from './tableView.ts'
 
 const ROWS = [
   ['店舗', '売上', '備考'],
@@ -65,5 +65,25 @@ describe('isNumericColumn', () => {
     expect(isNumericColumn(ROWS, 1, 1)).toBe(true)
     expect(isNumericColumn(ROWS, 0, 1)).toBe(false)
     expect(isNumericColumn([['h'], ['']], 0, 1)).toBe(false)
+  })
+})
+
+describe('thousands separators', () => {
+  it('groups the integer part only', () => {
+    expect(groupThousands('1234567')).toBe('1,234,567')
+    expect(groupThousands('-12345.6789')).toBe('-12,345.6789')
+    expect(groupThousands('¥1000')).toBe('¥1,000')
+    expect(groupThousands('2500円')).toBe('2,500円')
+    expect(groupThousands('12345%')).toBe('12,345%')
+    expect(groupThousands('999')).toBe('999')
+    expect(groupThousands('1,234')).toBe('1,234')
+    expect(groupThousands('0.12345')).toBe('0.12345')
+    expect(groupThousands('1e10')).toBe('1e10')
+  })
+
+  it('changes number columns but not the header or text columns', () => {
+    const rows = [['店舗', '売上', 'コード'], ['渋谷', '1200', 'A1000'], ['新宿', '', 'B2000']]
+    expect(withThousandsSeparators(rows, true)).toEqual([['店舗', '売上', 'コード'], ['渋谷', '1,200', 'A1000'], ['新宿', '', 'B2000']])
+    expect(withThousandsSeparators([['a', 'b']], false)).toEqual([['a', 'b']])
   })
 })
