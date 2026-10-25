@@ -91,7 +91,7 @@ describe('RecordStore', () => {
     const root = store.rootCanvasId
     store.apply([node('node:a', root), node('node:b', root)], [])
     store.apply([node('node:c', root)], ['node:a'])
-    expect(store.changesSince(1)).toEqual({ rev: 2, records: [expect.objectContaining({ id: 'node:c' })], deleted: ['node:a'] })
+    expect(store.changesSince(1)).toEqual({ rev: 2, records: [expect.objectContaining({ id: 'node:c' })], canvasIds: [store.rootCanvasId], deleted: ['node:a'] })
     // 消したものをまた入れたら、消した記録から外す
     store.apply([node('node:a', root)], [])
     expect(store.changesSince(2).deleted).toEqual([])
@@ -117,7 +117,7 @@ describe('RecordStore', () => {
     store.close()
   })
 
-  it('migrates a version 1 database to version 2 (agent_ops) after making a copy', () => {
+  it('migrates a version 1 database to the current version (agent_ops) after making a copy', () => {
     const dir = dataDir()
     const store = new RecordStore(dir)
     store.apply([node('node:a', store.rootCanvasId)], [])
@@ -127,12 +127,85 @@ describe('RecordStore', () => {
     db.exec("DROP TABLE agent_ops; UPDATE meta SET value = '1' WHERE key = 'schema'")
     db.close()
     const reopened = new RecordStore(dir)
-    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v2-'))).toBe(true)
+    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v3-'))).toBe(true)
     expect(reopened.get('node:a')).toBeDefined()
     const rev = reopened.applyAgentOp({ id: 'ai-1', canvasId: reopened.rootCanvasId, label: 'x', createdAt: 1, patch: [{ id: 'node:b', before: null, after: node('node:b', reopened.rootCanvasId) }] })
     expect(reopened.getAgentOp('ai-1')).toMatchObject({ rev, undoneAt: null, patch: [{ id: 'node:b', before: null }] })
     expect(reopened.revsOf(['node:a', 'node:b', 'node:none'])).toEqual(new Map([['node:a', 1], ['node:b', rev]]))
     reopened.close()
+  })
+
+  describe('所属する Canvas（canvas_id）', () => {
+    const canvas = (id: string) => ({ typeName: 'canvas', id, title: id, parentCanvasId: null, ownerNodeId: null, createdAt: 0, updatedAt: 0, deletedAt: null, trash: null })
+    const binding = (id: string, fromId: string, toId: string) => ({ typeName: 'binding', id, type: 'arrow', fromId, toId, props: {} })
+
+    it('resolves the canvas through parents in the same batch (in any order) and in the database', () => {
+      const store = new RecordStore(dataDir())
+      const root = store.rootCanvasId
+      // 子が親より先に来る
+      store.apply([node('node:child', 'node:group'), node('node:group', root), binding('binding:1', 'node:child', 'node:group')], [])
+      store.apply([node('node:later', 'node:group')], [])
+      for (const id of ['node:group', 'node:child', 'node:later', 'binding:1']) expect(store.canvasOf(id)).toBe(root)
+      expect(store.canvasOf(root)).toBeNull()
+      expect(store.canvasOf('node:none')).toBeNull()
+      // 親がないノードは所属なし
+      store.apply([node('node:orphan', 'node:missing')], [])
+      expect(store.canvasOf('node:orphan')).toBeNull()
+      store.close()
+    })
+
+    it('moves the descendants and their bindings along with a node moved to another canvas, raising their revision', () => {
+      const store = new RecordStore(dataDir())
+      const root = store.rootCanvasId
+      store.apply([canvas('canvas:other')], [])
+      store.apply([node('node:group', root), node('node:inner', 'node:group'), node('node:deep', 'node:inner'), node('node:arrow', 'node:inner'), binding('binding:1', 'node:arrow', 'node:deep'), node('node:stay', root)], [])
+      const rev = store.rev
+      store.apply([node('node:group', 'canvas:other')], [])
+      for (const id of ['node:group', 'node:inner', 'node:deep', 'node:arrow', 'binding:1']) expect(store.canvasOf(id)).toBe('canvas:other')
+      expect(store.canvasOf('node:stay')).toBe(root)
+      const changes = store.changesSince(rev)
+      expect(changes.records.map((r) => r.id).sort()).toEqual(['binding:1', 'node:arrow', 'node:deep', 'node:group', 'node:inner'])
+      expect(new Set(changes.canvasIds)).toEqual(new Set(['canvas:other']))
+      // 同じ Canvas の中で動かしただけなら、子孫は変えない
+      const after = store.rev
+      store.apply([{ ...node('node:group', 'canvas:other'), x: 10 }], [])
+      expect(store.changesSince(after).records.map((r) => r.id)).toEqual(['node:group'])
+      store.close()
+    })
+
+    it('deletes the records of a deleted canvas and records them in an agent edit so that undoing restores them', () => {
+      const store = new RecordStore(dataDir())
+      store.apply([canvas('canvas:gone'), node('node:a', 'canvas:gone'), node('node:b', 'node:a'), node('node:arrow', 'canvas:gone'), binding('binding:1', 'node:arrow', 'node:a')], [])
+      const rev = store.rev
+      store.apply([], ['canvas:gone'])
+      for (const id of ['node:a', 'node:b', 'node:arrow', 'binding:1']) expect(store.get(id)).toBeUndefined()
+      expect(store.changesSince(rev).deleted.sort()).toEqual(['binding:1', 'canvas:gone', 'node:a', 'node:arrow', 'node:b'])
+
+      store.apply([canvas('canvas:ai'), node('node:c', 'canvas:ai')], [])
+      store.applyAgentOp({ id: 'ai-1', canvasId: store.rootCanvasId, label: 'x', createdAt: 1, patch: [{ id: 'canvas:ai', before: canvas('canvas:ai'), after: null }] })
+      expect(store.get('node:c')).toBeUndefined()
+      expect(store.getAgentOp('ai-1')!.patch).toEqual([
+        { id: 'canvas:ai', before: canvas('canvas:ai'), after: null },
+        { id: 'node:c', before: expect.objectContaining({ id: 'node:c' }), after: null },
+      ])
+      store.close()
+    })
+
+    it('fills the canvas of existing records when migrating to version 3', () => {
+      const dir = dataDir()
+      const store = new RecordStore(dir)
+      const root = store.rootCanvasId
+      store.apply([node('node:a', root), node('node:b', 'node:a'), node('node:arrow', root), binding('binding:1', 'node:arrow', 'node:b'), node('node:loop1', 'node:loop2'), node('node:loop2', 'node:loop1')], [])
+      store.close()
+      // 版 2 の db にする（canvas_id がなく、schema が 2）
+      const db = new DatabaseSync(join(dir, 'workspace.db'))
+      db.exec("DROP INDEX records_canvas; ALTER TABLE records DROP COLUMN canvas_id; UPDATE meta SET value = '2' WHERE key = 'schema'")
+      db.close()
+      const reopened = new RecordStore(dir)
+      for (const id of ['node:a', 'node:b', 'node:arrow', 'binding:1']) expect(reopened.canvasOf(id)).toBe(root)
+      expect(reopened.canvasOf('node:loop1')).toBeNull()
+      reopened.close()
+    })
   })
 
   it('limits the size of the WAL file to 16 MB', () => {
