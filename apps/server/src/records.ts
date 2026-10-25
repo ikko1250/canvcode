@@ -90,6 +90,10 @@ export interface AgentOp {
   undoneAt: number | null
 }
 
+// 一覧のレコード（どの Canvas にも所属しない。ブラウザは全部を読む）の typeName
+export const LIST_RECORD_TYPES = ['canvas', 'file', 'anchor'] as const
+const LIST_TYPE_NAMES = LIST_RECORD_TYPES.map((name) => `'${name}'`).join(', ')
+
 // 受け付けるレコードの種類と、id の接頭辞（MAI-7）
 const RECORD_PREFIX: Record<string, string> = { canvas: 'canvas:', file: 'file:', node: 'node:', binding: 'binding:', anchor: 'anchor:' }
 
@@ -152,6 +156,26 @@ export class RecordStore {
     const rows = this.db.prepare('SELECT body, canvas_id FROM records WHERE rev > ?').all(since) as { body: string; canvas_id: string | null }[]
     const deleted = (this.db.prepare('SELECT id FROM deleted WHERE rev > ?').all(since) as { id: string }[]).map((row) => row.id)
     return { rev: this.rev, records: rows.map((row) => JSON.parse(row.body) as StoredRecord), canvasIds: rows.map((row) => row.canvas_id), deleted }
+  }
+
+  // 一覧のレコード（Canvas・File・SourceAnchor）すべてと、canvasIds に所属するレコード（ブラウザが開くときに読む）
+  loadScoped(canvasIds: readonly string[]): { rootCanvasId: string; rev: number; records: StoredRecord[] } {
+    const rows = this.db
+      .prepare(`SELECT body FROM records WHERE type_name IN (${LIST_TYPE_NAMES}) OR canvas_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(canvasIds)) as { body: string }[]
+    return { rootCanvasId: this.rootCanvasId, rev: this.rev, records: rows.map((row) => JSON.parse(row.body) as StoredRecord) }
+  }
+
+  // この Canvas に所属するレコード（ノードと Binding）
+  recordsOfCanvas(canvasId: string): StoredRecord[] {
+    const rows = this.db.prepare('SELECT body FROM records WHERE canvas_id = ?').all(canvasId) as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as StoredRecord)
+  }
+
+  // 引用ノート（quote-card）と、その所属する Canvas
+  quoteCards(): { record: StoredRecord; canvasId: string | null }[] {
+    const rows = this.db.prepare("SELECT body, canvas_id FROM records WHERE type_name = 'node' AND type = 'quote-card'").all() as { body: string; canvas_id: string | null }[]
+    return rows.map((row) => ({ record: JSON.parse(row.body) as StoredRecord, canvasId: row.canvas_id }))
   }
 
   // レコードの所属する Canvas（Canvas・File・SourceAnchor と、ないもの・所属のわからないものは null）

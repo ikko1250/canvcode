@@ -46,7 +46,7 @@ function setup() {
   cleanups.push(() => records.close())
   cleanups.push(() => host.dispose())
   const tab = fakeSocket()
-  ;(sync as unknown as { clients: Set<unknown> }).clients.add(tab)
+  ;(sync as unknown as { clients: Map<unknown, 'all'> }).clients.set(tab, 'all')
   const root = records.rootCanvasId
   const edit = (ops: unknown[], extra: Partial<EditRequest> = {}) => editCanvas(host, { canvasId: root, ops, ...extra })
   return { records, sync, host, tab, root, edit }
