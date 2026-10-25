@@ -28,7 +28,7 @@ test('design panel: confirming the IME with Enter neither doubles the number nor
     typeName: 'canvas', id: CANVAS_ID, title: 'IME', parentCanvasId: null, ownerNodeId: null, createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
   }
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, node] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, node] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.goto('/')
   const surface = page.locator('.canvas-container > div[tabindex]')
@@ -65,7 +65,7 @@ test('vim: with the IME on, I enters insert mode without typing い, and dd dele
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto')
   await page.waitForFunction(() => Boolean((window as any).canvasInputFixture))
   const records = await page.evaluate(() => [...(window as any).canvasInputFixture.editor.workspace.store.values()])
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: 'abcd\nefgh\nijkl', headers: { etag: '"test"' } }))
   await page.addInitScript(() => localStorage.setItem('canvcode.fileEditor.vim', '1'))

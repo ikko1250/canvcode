@@ -39,7 +39,7 @@ async function openApp(page: Page) {
     chart('node:donut', 450, 100, 'a2', { innerRadius: 0.5, startAngle: 90 }),
   ]
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()

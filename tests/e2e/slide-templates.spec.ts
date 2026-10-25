@@ -24,7 +24,7 @@ async function openApp(page: Page) {
   }
   const records = [canvas, ...KINDS.flatMap((kind, i) => [slide(`node:${kind}`, i * 4400, '16:9'), slide(`node:${kind}-43`, i * 4400 + 2200, '4:3')])]
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()

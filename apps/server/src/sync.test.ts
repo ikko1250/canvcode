@@ -102,6 +102,10 @@ describe('SyncHub', () => {
 
     // File の持ち主の Canvas も読む
     expect((await get('?canvas=canvas:a&file=file:1')).canvases).toEqual(['canvas:a', 'canvas:b'])
+    // ルート。見つからない・ゴミ箱の中の Canvas はルートに替える
+    expect((await get('?root')).canvases).toEqual([root])
+    records.apply([{ ...canvas('canvas:a'), deletedAt: 1 }], [])
+    expect((await get('?canvas=canvas:a&canvas=canvas:none')).canvases).toEqual([root])
 
     expect(await (await fetch(`http://${base}/api/records/node:q/canvas`)).json()).toEqual({ canvasId: 'canvas:b' })
     expect(await (await fetch(`http://${base}/api/records/canvas:a/canvas`)).json()).toEqual({ canvasId: null })

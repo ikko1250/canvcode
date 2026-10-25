@@ -30,7 +30,7 @@ function textRecord(extra: object = {}) {
 async function openApp(page: Page, records: object[]) {
   const saved = new Map<string, object>()
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.routeWebSocket('**/api/sync', (ws) => {
     let rev = 0

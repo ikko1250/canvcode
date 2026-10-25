@@ -41,6 +41,40 @@ describe('quote notes', () => {
     expect(workspace.getAnchor(anchor.id)).toBeUndefined()
   })
 
+  it('counts the notes in canvases that are not loaded by the links from the server (docs/lazy-canvas-loading-plan.md)', () => {
+    const { workspace, root, pdf, draft } = setup()
+    const id = root.createQuoteNote(draft(), { x: 0, y: 300 })
+    const anchorId = (workspace.getNode(id)!.props as QuoteCardProps).anchorId
+    // ほかの Canvas（読んでいない）のノートと、ゴミ箱の中の Canvas のノート
+    const other = workspace.store.transact('canvases', (tx) => {
+      const a = workspace.createCanvas(tx, 'A')
+      const b = workspace.createCanvas(tx, 'B')
+      tx.put({ ...b, deletedAt: 1 })
+      return [a.id, b.id]
+    }, { history: 'ignore' })
+    workspace.setCitationLinks([
+      { noteId: 'node:far', anchorId, canvasId: other[0], head: '遠くのメモ' },
+      { noteId: 'node:trashed', anchorId, canvasId: other[1], head: 'ゴミ箱' },
+      // 手元にあるノートは、手元のものを使う
+      { noteId: id, anchorId, canvasId: other[0], head: '古い' },
+    ])
+    expect(workspace.notesOfAnchor(anchorId)).toEqual([
+      { id, canvasId: 'canvas:root', head: '引用した文' },
+      { id: 'node:far', canvasId: other[0], head: '遠くのメモ' },
+    ])
+    expect(workspace.notesOfAnchor(anchorId, { includeTrashed: true })).toHaveLength(3)
+    expect(workspace.anchorsOfFile(pdf.fileId)).toHaveLength(1)
+    // 手元のノートを消しても、ほかの Canvas のノートが引用しているので SourceAnchor は残す
+    root.deleteNodes([id])
+    expect(workspace.getAnchor(anchorId)).toBeDefined()
+    workspace.forgetCitationLinks(['node:far', 'node:trashed'])
+    expect(workspace.notesOfAnchor(anchorId, { includeTrashed: true })).toEqual([])
+    // 引用先を外したつながり（anchorId が null）
+    workspace.setCitationLinks([{ noteId: 'node:far', anchorId, canvasId: other[0], head: 'x' }])
+    workspace.setCitationLinks([{ noteId: 'node:far', anchorId: null, canvasId: other[0], head: 'x' }])
+    expect(workspace.notesOfAnchor(anchorId)).toEqual([])
+  })
+
   it('places the note beside the page, below other quotes there', () => {
     const { pages, pageIds, draft } = setup()
     const page = pages.index.get(pageIds[0])!.worldBounds

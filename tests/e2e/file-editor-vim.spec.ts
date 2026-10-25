@@ -12,7 +12,7 @@ async function openEditor(page: Page, options: { vim: boolean; body?: string }) 
   const records = await page.evaluate(() => [...(window as any).canvasInputFixture.editor.workspace.store.values()])
   const file = { id: FILE_ID, kind: 'markdown', title: 'Input test', path: 'test.md', size: 100, mtime: 0, hash: 'test', missing: false }
   const saved: string[] = []
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, async (route) => {
     const request = route.request()

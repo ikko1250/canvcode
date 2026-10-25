@@ -22,7 +22,7 @@ async function openApp(page: Page) {
     node('node:text', 'text', 500, 320, 'a2', { text: 'hello', fontSize: 16, color: '#1f2328', align: 'left', w: 200, autoWidth: true }),
   ]
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()

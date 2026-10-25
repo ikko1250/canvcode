@@ -114,6 +114,8 @@ npx playwright install --with-deps webkit  # WebKit の OS 依存ライブラリ
 npx playwright test --project=webkit
 ```
 
+`tests/e2e/lazy-canvas.spec.ts` だけは、使い捨てのワークスペースで本物のサーバーと、それにつないだ Vite を自分で起動する（ポート 4400 から。開いた Canvas の分だけ読むことを、タブの間の同期も含めて確かめる）。
+
 `apps/web/canvas-input-test.html` はネットワーク上のファイル保存だけをメモリに置き換えた専用ページ。失敗時のイベント経路とブラウザ trace は `test-results/` に出る。トラックパッド固有の OS ジェスチャーそのものは Playwright で再現できないため、細かい wheel 入力で代用する。
 
 ## スライド
@@ -306,3 +308,16 @@ npm run bench:memory -- --canvases 10 --pdf-pages 20
 3. 移るたびに、画像を作り終えるまで待ってから GC し、JS ヒープ、プロセスごとの PSS（Linux のみ）、画面が持っているものの内訳（画像キャッシュ・サムネイル・開いている PDF・File の本文・Editor・レコード）を記録する
 
 結果は `test-results/bench-memory/` に JSON と Markdown の表で出る。開いた Canvas の数に比例して増え続け、ルートに戻っても下がらないものが、上限のないキャッシュ（または漏れ）。Chromium は Playwright が入れたものを使う。ほかの Chromium を使うときは `CANVCODE_CHROMIUM` に実行ファイルのパスを指定する。`--keep` でワークスペースを残す、`--headed` で画面を出す。
+
+### 開いた Canvas の分だけ読む
+
+画面は、開くときに Canvas・File・引用元（SourceAnchor）のレコードはすべて、ノードと矢印のつながりは開いた Canvas の分だけを読む（`GET /api/records?canvas=<id>`。/f/<id> なら File の持ち主の Canvas、ほかはルート）。ほかの Canvas は、入るときに WebSocket で読み（読んでいる間は右上に「キャンバスを読み込み中…」と出る）、そのあとはその Canvas の変更も届く。サーバーはタブごとに読んだ Canvas を覚え、その分の変更だけを送る。レコードには所属する Canvas（`canvas_id`）を持たせてあり、ノードを別の Canvas へ移すと子孫も付け直し、Canvas を完全に削除すると、読んでいない中身もサーバーで消す。引用ノートの一覧（逆リンク）と PDF の引用の印は、サーバーが全部のタブに配る引用のつながりで引くので、読んでいない Canvas のノートも出る。設計と測った値は `docs/lazy-canvas-loading-plan.md`。
+
+### 新しいタブで開くまでのベンチマーク
+
+```bash
+npm run bench:newtab                       # 画面をビルドしてから実行する
+npm run bench:newtab -- --records 0,13000 --runs 3 --net local
+```
+
+ノードの数（`--records`）ごとに使い捨てのワークスペースを作り（ルートの下に Canvas を並べ、1 つに 100 個ずつ置く）、元のタブを開いたまま、新しいタブで 1 つの Canvas を開く。`/api/records` の大きさ・サーバーが返し始めるまで・受け取り・JSON.parse・組み立て・操作できるまで・絵が出そろうまで・ヒープを、回線（`local`：遅延なし、`remote`：遅延 40 ms・下り 20 Mbps）ごとに `--runs` 回測って中央値を出す。結果は `test-results/bench-newtab/` に出る。

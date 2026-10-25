@@ -149,3 +149,94 @@ describe('sync', () => {
     vi.useRealTimers()
   })
 })
+
+// 開いた Canvas の分だけ読む（docs/lazy-canvas-loading-plan.md）
+describe('sync of loaded canvases', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // つないだ WebSocket の代わり。送ったメッセージを sent に残し、サーバーからのメッセージは receive で渡す
+  function fakeServer() {
+    const sockets: FakeWebSocket[] = []
+    class FakeWebSocket {
+      onmessage?: (event: { data: string }) => void
+      onopen?: () => void
+      onclose?: () => void
+      readonly sent: Record<string, any>[] = []
+      constructor() {
+        sockets.push(this)
+      }
+      send(text: string): void {
+        this.sent.push(JSON.parse(text))
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    return {
+      get socket() {
+        return sockets.at(-1)!
+      },
+      open: () => sockets.at(-1)!.onopen!(),
+      receive: (message: unknown) => sockets.at(-1)!.onmessage!({ data: JSON.stringify(message) }),
+    }
+  }
+
+  const base = { typeName: 'node' as const, x: 0, y: 0, rotation: 0, index: 'a0', opacity: 1, locked: false, meta: {} }
+  const geo = (id: string, parentId: string) => ({ ...base, id, parentId, type: 'geo', props: {} }) as unknown as WorkspaceRecord
+  const canvas = (id: string) => ({ typeName: 'canvas', id, title: id, parentCanvasId: null, ownerNodeId: null, createdAt: 0, updatedAt: 0, deletedAt: null, trash: null }) as WorkspaceRecord
+
+  it('loads a canvas once, after connecting, and tells the server the loaded canvases', async () => {
+    const server = fakeServer()
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 3, records: [canvas('canvas:a')], canvases: ['canvas:root'], citations: [] }, { baseUrl: 'http://127.0.0.1' })
+    expect(sync.isLoaded('canvas:root')).toBe(true)
+    expect(sync.isLoaded('canvas:a')).toBe(false)
+    // つながる前に頼んだら、つながってから送る
+    let done = false
+    const first = sync.ensureCanvas('canvas:a').then(() => (done = true))
+    expect(sync.ensureCanvas('canvas:a')).toBe(sync.ensureCanvas('canvas:a'))
+    expect(server.socket.sent).toEqual([])
+    server.open()
+    expect(server.socket.sent).toEqual([
+      { type: 'hello', since: 3, canvases: ['canvas:root'] },
+      { type: 'load', req: 'canvas:a', canvasId: 'canvas:a' },
+    ])
+    await Promise.resolve()
+    expect(done).toBe(false)
+    server.receive({ type: 'canvas', req: 'canvas:a', canvasId: 'canvas:a', rev: 5, records: [geo('node:a', 'canvas:a')] })
+    await first
+    expect(sync.isLoaded('canvas:a')).toBe(true)
+    expect(workspace.getNode('node:a')).toBeDefined()
+    await sync.ensureCanvas('canvas:a')
+    expect(server.socket.sent.filter((m) => m.type === 'load')).toHaveLength(1)
+    sync.dispose()
+  })
+
+  it('removes evicted records, keeps the citation links of notes elsewhere, and loads canvases created here', () => {
+    const server = fakeServer()
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const link = { noteId: 'node:q', anchorId: 'anchor:1', canvasId: 'canvas:root', head: 'メモ' }
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [geo('node:a', 'canvas:root'), canvas('canvas:b')], canvases: ['canvas:root'], citations: [link] }, { baseUrl: 'http://127.0.0.1' })
+    server.open()
+    expect(workspace.notesOfAnchor('anchor:1')).toEqual([{ id: 'node:q', canvasId: 'canvas:root', head: 'メモ' }])
+    // node:a は読んでいない Canvas へ移った。node:q は消えた
+    server.receive({ type: 'changes', rev: 1, records: [], deleted: ['node:q'], evicted: ['node:a'] })
+    expect(workspace.getNode('node:a')).toBeUndefined()
+    expect(workspace.notesOfAnchor('anchor:1')).toEqual([])
+    server.receive({ type: 'changes', rev: 2, records: [], deleted: [], citations: [{ ...link, noteId: 'node:r', canvasId: 'canvas:b' }] })
+    expect(workspace.notesOfAnchor('anchor:1').map((n) => n.id)).toEqual(['node:r'])
+
+    const editor = new Editor({ workspace, canvasId: 'canvas:root' })
+    const { canvasId } = editor.createPortal({ x: 0, y: 0 })
+    expect(sync.isLoaded(canvasId)).toBe(true)
+    expect(server.socket.sent.at(-1)).toEqual({ type: 'load', req: null, canvasId })
+    sync.dispose()
+  })
+
+  it('treats everything as loaded when the server sends all records (no canvases)', () => {
+    vi.stubGlobal('WebSocket', undefined)
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [] })
+    expect(sync.isLoaded('canvas:any')).toBe(true)
+    sync.dispose()
+  })
+})

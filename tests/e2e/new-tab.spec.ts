@@ -23,7 +23,7 @@ async function setup(page: Page, context: BrowserContext): Promise<Setup> {
   const fileId = 'file:input-test'
   const file = { id: fileId, kind: 'markdown', title: 'Input test', path: 'test.md', size: 8, mtime: 0, hash: 'test', missing: false }
   // 新しいタブも同じ応答を受けるよう、コンテキストに付ける
-  await context.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: rootId, rev: 0, records } }))
+  await context.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: rootId, rev: 0, records } }))
   await context.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await context.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: 'one line', headers: { etag: '"test"' } }))
   await page.goto('/')

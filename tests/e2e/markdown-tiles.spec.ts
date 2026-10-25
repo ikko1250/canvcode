@@ -15,7 +15,7 @@ test('a long markdown card draws the visible part as tiles at the requested reso
   })
   const text = Array.from({ length: 500 }, (_, i) => `段落 ${i + 1}：長い Markdown の本文。The quick brown fox jumps over the lazy dog.`).join('\n\n')
   const file = { id: 'file:input-test', kind: 'markdown', title: 'Long', path: 'test.md', size: text.length, mtime: 0, hash: 'test', missing: false }
-  await context.route('**/api/records', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
+  await context.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await context.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await context.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: text, headers: { etag: '"test"' } }))
   await page.goto('/')

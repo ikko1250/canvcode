@@ -1,5 +1,5 @@
 import type { WorkspaceRecord } from '@canvcode/core'
-import type { Workspace } from './workspace.ts'
+import type { CitationLink, Workspace } from './workspace.ts'
 
 // サーバーとのレコードの同期（MAI-11、MAI-13、MAI-15）。
 // - 開くとき：GET /api/records でワークスペースのレコードをまとめて読み、履歴に入れずに当てる
@@ -10,12 +10,25 @@ import type { Workspace } from './workspace.ts'
 // - AI（MCP の edit_canvas）がサーバーで行った変更は origin: { kind: 'ai' } 付きで届く。onAgentChange で画面に知らせる。
 //   AI が PDF を取り込んだときは、その Asset（assets）も一緒に届く。レコードを当てる前に onAssets で登録する
 // - いま見ている Canvas と範囲（reportPresence）を、カメラが止まってから送る。AI のツールが、ユーザーの見ている所を既定にする
+// - 開いた Canvas の分だけ読む（docs/lazy-canvas-loading-plan.md）。最初の読み込みに canvases があれば、一覧のレコード
+//   （Canvas・File・SourceAnchor）と、その Canvas のノードと Binding だけが届いている。ほかの Canvas は ensureCanvas で読む
+//   （WebSocket の load）。読んだ Canvas は hello で伝え、サーバーはその分の変更だけを送る。読んだ Canvas から出ていったものは
+//   evicted で届き、手元から外す。canvases がなければ（古いサーバー）、すべてを読んだものとして扱う
+// - 手元で作った Canvas は、作ったときに読んだ Canvas に入れる（ほかのタブで足した中身も届くように）
+// - 引用ノートのつながり（citations）は、読んだ Canvas によらず届く。ワークスペースの引用の索引に足す
 
 export interface InitialRecords {
   rootCanvasId: string
   rev: number
   records: WorkspaceRecord[]
+  // 読んだ Canvas（なければ、すべてを読んでいる）。最初のものが、開いた Canvas
+  canvases?: string[]
+  // 引用ノートのつながり（すべて。canvases があるときだけ）
+  citations?: CitationLink[]
 }
+
+// 開くときに読むもの：Canvas（なければルート）か、File（その持ち主の Canvas）
+export type LoadTarget = { canvasId?: string; fileId?: string }
 
 export type SyncStatus = 'saved' | 'saving' | 'offline'
 
@@ -76,11 +89,24 @@ export async function undoAgentChange(batchId: string, baseUrl = ''): Promise<vo
   throw new Error(body.error ?? `undo failed: ${response.status}`)
 }
 
-// ワークスペースのレコードをまとめて読む
-export async function loadRecords(baseUrl = ''): Promise<InitialRecords> {
-  const response = await fetch(`${baseUrl}/api/records`)
+// ワークスペースのレコードを読む。target を渡すと、一覧のレコードと、その Canvas の分だけを読む
+// （Canvas が見つからない・ゴミ箱の中ならルート。File なら持ち主の Canvas）。渡さなければすべて
+export async function loadRecords(baseUrl = '', target?: LoadTarget): Promise<InitialRecords> {
+  const params = new URLSearchParams()
+  if (target?.canvasId) params.append('canvas', target.canvasId)
+  if (target?.fileId) params.set('file', target.fileId)
+  if (target && !target.canvasId && !target.fileId) params.set('root', '')
+  const query = target ? `?${params}` : ''
+  const response = await fetch(`${baseUrl}/api/records${query}`)
   if (!response.ok) throw new Error(`Failed to load records: ${response.status}`)
   return (await response.json()) as InitialRecords
+}
+
+// レコードの所属する Canvas をサーバーに聞く（手元にないノードの Canvas。所属がなければ null）
+export async function fetchCanvasOf(id: string, baseUrl = ''): Promise<string | null> {
+  const response = await fetch(`${baseUrl}/api/records/${encodeURIComponent(id)}/canvas`)
+  if (!response.ok) throw new Error(`Failed to read the canvas of a record: ${response.status}`)
+  return ((await response.json()) as { canvasId: string | null }).canvasId
 }
 
 // id → 送る値（null は削除）
@@ -99,13 +125,16 @@ export class SyncClient {
   private reconnectDelay = 500
   private disposed = false
   // トランザクションの途中に届いた、まだ当てていない変更
-  private deferred: { records: WorkspaceRecord[]; deleted: string[] }[] = []
+  private deferred: { records: WorkspaceRecord[]; deleted: string[]; done?: () => void }[] = []
   private status: SyncStatus = 'saved'
   private readonly unlisten: () => void
   // 見ている所（最後に知らされたもの）と、最後に送ったもの（同じなら送らない）
   private presence: { canvasId: string; viewport: Viewport } | null = null
   private presenceSent: string | null = null
   private presenceTimer: ReturnType<typeof setTimeout> | null = null
+  // 読んだ Canvas（all はすべて）と、読んでいる途中の Canvas
+  private loaded: Set<string> | 'all'
+  private readonly loading = new Map<string, { promise: Promise<void>; resolve: () => void; sent: boolean }>()
 
   constructor(workspace: Workspace, initial: InitialRecords, options: SyncOptions = {}) {
     this.workspace = workspace
@@ -120,12 +149,18 @@ export class SyncClient {
       presenceDelayMs: options.presenceDelayMs ?? PRESENCE_DELAY_MS,
     }
     this.rev = initial.rev
+    this.loaded = initial.canvases ? new Set(initial.canvases) : 'all'
     this.applyRemote(initial.records, [])
+    if (initial.citations) workspace.setCitationLinks(initial.citations)
     this.unlisten = workspace.store.listen((event) => {
       if (event.phase === 'commit') {
         // サーバー・ほかのタブから届いた変更（File の情報を含む）は送り返さない
         if (event.options.source !== 'remote') {
-          for (const [id, change] of event.patch) this.outbox.set(id, change.after ?? null)
+          for (const [id, change] of event.patch) {
+            this.outbox.set(id, change.after ?? null)
+            // 手元で作った Canvas は、読んだ Canvas に入れる（中身は空。ほかのタブで足したものも届くように、サーバーにも伝える）
+            if (!change.before && change.after?.typeName === 'canvas') this.markLoaded(id)
+          }
           this.schedule()
         }
         // ほかの購読者がこの知らせを受け取り終えてから当てる（知らせの順番が入れ替わらないように）
@@ -141,6 +176,38 @@ export class SyncClient {
     if (handlers.onImported) this.options.onImported = handlers.onImported
     if (handlers.onAgentChange) this.options.onAgentChange = handlers.onAgentChange
     if (handlers.onAssets) this.options.onAssets = handlers.onAssets
+  }
+
+  // この Canvas のノードを読んであるか
+  isLoaded(canvasId: string): boolean {
+    return this.loaded === 'all' || this.loaded.has(canvasId)
+  }
+
+  // Canvas のノードを読む（読んであれば何もしない）。同じ Canvas への呼び出しは 1 つにまとめる。
+  // つながっていなければ、つながって読み終えるまで待つ
+  ensureCanvas(canvasId: string): Promise<void> {
+    if (this.isLoaded(canvasId)) return Promise.resolve()
+    const pending = this.loading.get(canvasId)
+    if (pending) return pending.promise
+    let resolve!: () => void
+    const promise = new Promise<void>((done) => (resolve = done))
+    const entry = { promise, resolve, sent: false }
+    this.loading.set(canvasId, entry)
+    this.sendLoad(canvasId)
+    return promise
+  }
+
+  private markLoaded(canvasId: string): void {
+    if (this.isLoaded(canvasId) || this.loaded === 'all') return
+    this.loaded.add(canvasId)
+    if (this.open && this.socket) this.socket.send(JSON.stringify({ type: 'load', req: null, canvasId }))
+  }
+
+  private sendLoad(canvasId: string): void {
+    const entry = this.loading.get(canvasId)
+    if (!entry || !this.open || !this.socket) return
+    entry.sent = true
+    this.socket.send(JSON.stringify({ type: 'load', req: canvasId, canvasId }))
   }
 
   // まだ保存が済んでいない変更があるか
@@ -222,8 +289,10 @@ export class SyncClient {
     socket.onopen = () => {
       this.open = true
       this.reconnectDelay = 500
-      // 切れている間の変更をもらってから、手元の変更を送る
-      socket.send(JSON.stringify({ type: 'hello', since: this.rev }))
+      // 切れている間の変更をもらってから、手元の変更を送る。読んだ Canvas も伝える（その分の変更だけが届く）
+      socket.send(JSON.stringify({ type: 'hello', since: this.rev, ...(this.loaded === 'all' ? {} : { canvases: [...this.loaded] }) }))
+      // 読んでいる途中だった Canvas を、頼み直す
+      for (const canvasId of this.loading.keys()) this.sendLoad(canvasId)
       this.presenceSent = null
       this.sendPresence()
     }
@@ -251,6 +320,9 @@ export class SyncClient {
       rev?: number
       records?: WorkspaceRecord[]
       deleted?: string[]
+      evicted?: string[]
+      citations?: CitationLink[]
+      canvasId?: string
       message?: string
       imported?: unknown
       assets?: RemoteAsset[]
@@ -264,7 +336,11 @@ export class SyncClient {
     if (message.type === 'changes') {
       this.rev = Math.max(this.rev, message.rev ?? 0)
       if (Array.isArray(message.assets) && message.assets.length > 0) this.options.onAssets(message.assets)
-      this.applyRemote(message.records ?? [], message.deleted ?? [])
+      const deleted = message.deleted ?? []
+      this.applyRemote(message.records ?? [], [...deleted, ...(message.evicted ?? [])])
+      // 消えたノートのつながりを外してから、変わったつながりを当てる（読んだ Canvas から出ていったノートは、つながりで届く）
+      this.workspace.forgetCitationLinks(deleted)
+      if (message.citations?.length) this.workspace.setCitationLinks(message.citations)
       if (message.imported) this.options.onImported(message.imported)
       const origin = message.origin
       if (origin?.kind === 'ai' && typeof origin.batchId === 'string') {
@@ -277,6 +353,15 @@ export class SyncClient {
       }
       // hello への応答のあとで、手元の変更を送る
       this.send()
+    } else if (message.type === 'canvas' && typeof message.canvasId === 'string') {
+      // 読んだ Canvas の中身。読む前に届いた変更は、この中に入っている
+      const canvasId = message.canvasId
+      this.rev = Math.max(this.rev, message.rev ?? 0)
+      if (this.loaded !== 'all') this.loaded.add(canvasId)
+      const entry = this.loading.get(canvasId)
+      this.loading.delete(canvasId)
+      // 当て終えてから（トランザクションの途中なら、終わって当ててから）知らせる
+      this.applyRemote(message.records ?? [], [], entry?.resolve)
     } else if (message.type === 'ack' && message.seq !== undefined) {
       this.inflight.delete(message.seq)
       this.rev = Math.max(this.rev, message.rev ?? 0)
@@ -290,10 +375,11 @@ export class SyncClient {
     }
   }
 
-  private applyRemote(records: WorkspaceRecord[], deleted: string[]): void {
-    if (records.length === 0 && deleted.length === 0) return
+  // done は当て終えたら呼ぶ
+  private applyRemote(records: WorkspaceRecord[], deleted: string[], done?: () => void): void {
+    if (records.length === 0 && deleted.length === 0) return done?.()
     if (this.workspace.store.activeTransaction) {
-      this.deferred.push({ records, deleted })
+      this.deferred.push({ records, deleted, done })
       // 取り消し（Esc）で終わったトランザクションは知らせが来ないので、少し待って確かめ直す
       this.retryDeferred()
       return
@@ -310,6 +396,7 @@ export class SyncClient {
       },
       { history: 'ignore', source: 'remote' },
     )
+    done?.()
   }
 
   private retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -330,7 +417,7 @@ export class SyncClient {
     }
     const deferred = this.deferred
     this.deferred = []
-    for (const { records, deleted } of deferred) this.applyRemote(records, deleted)
+    for (const { records, deleted, done } of deferred) this.applyRemote(records, deleted, done)
   }
 
   private updateStatus(): void {

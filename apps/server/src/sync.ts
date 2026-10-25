@@ -88,7 +88,8 @@ export class SyncHub {
   }
 
   // GET /api/records：すべてのレコード。?canvas=<id>（いくつでも）なら、一覧のレコードとその Canvas の分と、引用のつながり。
-  // ?file=<id> なら、その File の持ち主の Canvas も読む。読んだ Canvas を canvases で返す
+  // ?file=<id> なら、その File の持ち主の Canvas も、?root ならルートも読む。見つからない・ゴミ箱の中の Canvas は、ルートに替える。
+  // 読んだ Canvas を canvases で返す（最初のものが開く Canvas）
   // GET /api/records/<id>/canvas：レコードの所属する Canvas（{ canvasId }。所属がなければ null）
   handle(req: IncomingMessage, res: ServerResponse, path: string): boolean {
     const owner = /^\/api\/records\/([^/]+)\/canvas$/.exec(path)
@@ -110,16 +111,20 @@ export class SyncHub {
     const params = new URL(req.url ?? '/', 'http://localhost').searchParams
     const requested = params.getAll('canvas')
     const fileId = params.get('file')
-    if (requested.length === 0 && !fileId) {
+    if (requested.length === 0 && !fileId && !params.has('root')) {
       sendJson(res, 200, this.store.load())
       return true
     }
-    const canvases = new Set(requested)
+    const usable = (id: string | null) => {
+      const canvas = id ? this.store.get(id) : undefined
+      return canvas?.typeName === 'canvas' && canvas.deletedAt === null ? canvas.id : this.store.rootCanvasId
+    }
+    const canvases = new Set(requested.map(usable))
     if (fileId) {
       const file = this.store.get(fileId)
-      const parent = typeof file?.parentCanvasId === 'string' ? file.parentCanvasId : null
-      canvases.add(parent ?? this.store.rootCanvasId)
+      canvases.add(usable(typeof file?.parentCanvasId === 'string' ? file.parentCanvasId : null))
     }
+    if (params.has('root')) canvases.add(this.store.rootCanvasId)
     const loaded = this.store.loadScoped([...canvases])
     sendJson(res, 200, { ...loaded, canvases: [...canvases], citations: this.citations() })
     return true

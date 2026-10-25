@@ -81,11 +81,31 @@ class NodeTree {
   }
 }
 
+// 引用ノートのつながり（サーバーが配る。docs/lazy-canvas-loading-plan.md）。anchorId が null なら、引用していない
+export interface CitationLink {
+  noteId: string
+  anchorId: string | null
+  canvasId: string | null
+  // 一覧に出す文字（メモか引用の 1 行目）
+  head: string
+}
+
+// SourceAnchor を引用しているノート
+export interface CitingNote {
+  id: string
+  canvasId: string | null
+  head: string
+}
+
 // 引用の索引（MAI-33）：SourceAnchor → それを引用しているノート、File → その SourceAnchor。
-// NodeTree と同じく、フックと知らせの両方で更新する（どちらから当てても同じ結果になる）
+// NodeTree と同じく、フックと知らせの両方で更新する（どちらから当てても同じ結果になる）。
+// 読んでいない Canvas のノートは、サーバーから届いたつながり（remote）で引く。手元にあるノートは、手元のものを使う。
+// 手元からノートが消えたら、そのつながりも外す（読んだ Canvas から出ていったノートは、変わったつながりが続けて届く）
 class CitationIndex {
   private readonly notes = new Map<string, Set<string>>()
   private readonly anchors = new Map<string, Set<string>>()
+  private readonly remote = new Map<string, CitationLink>()
+  private readonly remoteByAnchor = new Map<string, Set<string>>()
   private readonly citationOf: (node: NodeRecord) => string | null
 
   constructor(citationOf: (node: NodeRecord) => string | null) {
@@ -97,10 +117,30 @@ class CitationIndex {
     const afterKey = this.keyOf(after)
     if (beforeKey && (beforeKey.map !== afterKey?.map || beforeKey.key !== afterKey.key)) remove(beforeKey.map, beforeKey.key, id)
     if (afterKey) add(afterKey.map, afterKey.key, id)
+    if (isNodeRecord(before) && !after) this.forget(id)
   }
 
   notesOf(anchorId: string): string[] {
     return [...(this.notes.get(anchorId) ?? [])]
+  }
+
+  // サーバーから届いたつながり（手元にあるノートの分も含む）
+  remoteNotesOf(anchorId: string): CitationLink[] {
+    return [...(this.remoteByAnchor.get(anchorId) ?? [])].map((id) => this.remote.get(id)!)
+  }
+
+  setRemote(link: CitationLink): void {
+    this.forget(link.noteId)
+    if (!link.anchorId) return
+    this.remote.set(link.noteId, link)
+    add(this.remoteByAnchor, link.anchorId, link.noteId)
+  }
+
+  forget(noteId: string): void {
+    const link = this.remote.get(noteId)
+    if (!link) return
+    this.remote.delete(noteId)
+    if (link.anchorId) remove(this.remoteByAnchor, link.anchorId, noteId)
   }
 
   anchorsOf(fileId: string): string[] {
@@ -282,14 +322,29 @@ export class Workspace implements NodeLookup {
   }
 
   // SourceAnchor を引用しているノート。trashed も渡すと、ゴミ箱の中の Canvas にあるノートも含める
-  notesOfAnchor(anchorId: string, options: { includeTrashed?: boolean } = {}): NodeRecord[] {
-    return this.citations.notesOf(anchorId).flatMap((id) => {
+  // SourceAnchor を引用しているノート（手元にないノートは、サーバーから届いたつながりから）。ゴミ箱の中の Canvas のものは除く
+  notesOfAnchor(anchorId: string, options: { includeTrashed?: boolean } = {}): CitingNote[] {
+    const local = this.citations.notesOf(anchorId).flatMap((id) => {
       const node = this.getNode(id)
-      if (!node) return []
-      if (options.includeTrashed) return [node]
-      const canvasId = this.canvasOf(id)
-      return canvasId && this.targetStatus(canvasId) === 'ok' ? [node] : []
+      return node ? [{ id, canvasId: this.canvasOf(id), head: citationHead(node) }] : []
     })
+    const remote = this.citations
+      .remoteNotesOf(anchorId)
+      .filter((link) => !this.store.has(link.noteId))
+      .map((link) => ({ id: link.noteId, canvasId: link.canvasId, head: link.head }))
+    const notes = [...local, ...remote]
+    if (options.includeTrashed) return notes
+    return notes.filter((note) => note.canvasId !== null && this.targetStatus(note.canvasId) === 'ok')
+  }
+
+  // サーバーから届いた引用ノートのつながりを当てる
+  setCitationLinks(links: readonly CitationLink[]): void {
+    for (const link of links) this.citations.setRemote(link)
+  }
+
+  // 消えたノートのつながりを外す
+  forgetCitationLinks(noteIds: readonly string[]): void {
+    for (const id of noteIds) this.citations.forget(id)
   }
 
   // File を出典にしている SourceAnchor のうち、引用しているノートが（ゴミ箱の外に）あるもの
@@ -500,7 +555,7 @@ export class Workspace implements NodeLookup {
     }
     // 引用ノートを消して、その SourceAnchor を引用するノートがなくなったら、SourceAnchor も消す（MAI-33）
     const anchorId = this.types.get(record.type)?.citation?.(record)
-    if (anchorId && this.citations.notesOf(anchorId).length === 0 && tx.get(anchorId)) tx.remove(anchorId)
+    if (anchorId && this.notesOfAnchor(anchorId, { includeTrashed: true }).length === 0 && tx.get(anchorId)) tx.remove(anchorId)
     // 持ち主（Portal やカード）を消したら、参照先をゴミ箱に送るか、未配置にする
     const ref = this.referenceOf(record)
     if (ref) {
@@ -556,6 +611,13 @@ export class Workspace implements NodeLookup {
       if (next) tx.put({ ...arrow, props: next })
     }
   }
+}
+
+// 引用ノートの一覧に出す文字（メモか引用の 1 行目。どちらもなければ図）
+export function citationHead(node: NodeRecord): string {
+  const props = node.props as { memo?: unknown; quote?: unknown }
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
+  return (text(props.memo) || text(props.quote) || '（図）').split('\n')[0]
 }
 
 function makeCanvas(id: string, title: string): CanvasRecord {
