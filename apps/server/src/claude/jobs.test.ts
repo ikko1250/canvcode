@@ -117,7 +117,7 @@ describe('ClaudeJobs', () => {
     expect(call.options.cwd).toBe(WS)
     expect(call.options.permissionMode).toBe('auto')
     expect(call.options.tools).toContain('Bash')
-    expect(call.options.tools).not.toContain('Agent')
+    expect(call.options.tools).toContain('Agent')
     expect(call.options.mcpServers).toEqual({ canvcode: { type: 'http', url: 'http://127.0.0.1:1/mcp', alwaysLoad: true } })
     expect(call.options.strictMcpConfig).toBe(true)
     expect(call.options.hooks?.PreToolUse).toHaveLength(1)
@@ -125,6 +125,27 @@ describe('ClaudeJobs', () => {
     expect(call.options.maxTurns).toBe(100)
     expect(call.options.maxBudgetUsd).toBeUndefined()
     expect((call.options.systemPrompt as { append: string }).append).toContain('canvas:x')
+  })
+
+  it('lets Claude use subagents, showing their tool uses and denials but not their text', async () => {
+    const sub = { parent_tool_use_id: 'a1' }
+    const fake = fakeRun([
+      init('s1'),
+      assistant('s1', [{ type: 'tool_use', name: 'Agent', input: { description: '論文を探す', prompt: '...' } }]),
+      assistant('s1', [{ type: 'text', text: '途中の考え' }], sub),
+      assistant('s1', [{ type: 'tool_use', name: 'WebSearch', input: { query: 'canvas' } }], sub),
+      { type: 'system', subtype: 'permission_denied', session_id: 's1', tool_name: 'Bash', tool_use_id: 't1', agent_id: 'x', decision_reason: 'no', message: 'denied' } as unknown as SDKMessage,
+      assistant('s1', [{ type: 'text', text: '見つけました' }]),
+      success('s1'),
+    ])
+    const jobs = makeJobs({ run: fake.run })
+    const done = await finished(jobs, jobs.start({ prompt: '探して' }).id)
+    expect(done.events).toEqual([
+      { kind: 'tool', name: 'Agent', detail: '論文を探す' },
+      { kind: 'tool', name: 'WebSearch', detail: 'canvas' },
+      { kind: 'denied', name: 'Bash', reason: 'no' },
+      { kind: 'text', text: '見つけました' },
+    ])
   })
 
   it('keeps jobs in SQLite, and continues a thread with its last session after a restart', async () => {

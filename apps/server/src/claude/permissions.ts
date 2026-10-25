@@ -3,14 +3,15 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { HookCallback, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
 
 // 画面から頼んだ Claude Code（claude/jobs.ts）に使わせるツールと、その許し方。
-// - 見せるツールは CLAUDE_TOOLS だけ（サブエージェント・スキルは出さない）。MCP は canvcode だけ（strictMcpConfig）
+// - 見せるツールは CLAUDE_TOOLS だけ（スキルは出さない）。MCP は canvcode だけ（strictMcpConfig）
+// - サブエージェント（Agent）も使える。サブエージェントのツールもこの中からで、下のフック・canUseTool も同じように通る
 // - 許すかどうかは Claude Code の auto mode に任せる：分類のモデルが、危ないもの（ワークスペースの外を消す・秘密を送り出すなど）を断り、
 //   ほかは許す。分類で決められなかった呼び出しは canUseTool（askTool）に来る。画面で尋ねる仕組みはまだないので、Bash は断る
 // - それとは別に、ファイルのツールで読み書きするのはワークスペースの中だけにし、.canvcode/（保存のデータ）と .claude/（Claude Code の設定）
 //   には書かせない（guardTool）。auto mode の判定より前に PreToolUse のフックで断るので、分類のモデルが許しても通らない。
 //   Bash はこの制限の外（どこを触るかは auto mode の判定に任せる）
 
-export const CLAUDE_TOOLS = ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch', 'TodoWrite']
+export const CLAUDE_TOOLS = ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent']
 
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep'])
 const WRITE_TOOLS = new Set(['Write', 'Edit'])

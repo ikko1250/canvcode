@@ -203,7 +203,7 @@ ID をコピーして貼り付けなくても、画面の右のパネルから�
 
 アプリにログインがないので、画面を開ける人なら誰でも頼める。そのため、できることを絞ってある（`apps/server/src/claude/permissions.ts`）：
 
-- 使えるツールは、ファイルを読む・探す・書く（Read・Glob・Grep・Write・Edit）、Bash、WebSearch・WebFetch、canvcode の MCP だけ。サブエージェント・スキルは使えない
+- 使えるツールは、ファイルを読む・探す・書く（Read・Glob・Grep・Write・Edit）、Bash、WebSearch・WebFetch、サブエージェント（Agent）、canvcode の MCP だけ。サブエージェントが使うツールも同じ範囲で、下の制限も同じようにかかる。スキルは使えない
 - 許すかどうかは Claude Code の [auto mode](https://code.claude.com/docs/en/permission-modes) に任せる。分類のモデルが、危ない操作（ワークスペースの外のものを消す・秘密を外に送るなど）を断り、ほかは許す。分類で決められなかったコマンドは、画面で許可する仕組みがまだないので断る。auto mode が使えない（プランやモデルが対応していない）ときは、パネルにそう出て、Bash は使えない
 - ファイルのツールで読み書きするのはワークスペースの中だけ。`.canvcode/` と `.claude/` には書けない（auto mode の判定より前にフックで断る）。Bash はこの制限の外で、どこを触るかは auto mode の判定に任せる
 - 断った操作（フック・auto mode の判定のどちらでも）はパネルに出る
