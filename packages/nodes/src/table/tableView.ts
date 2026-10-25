@@ -116,6 +116,23 @@ export function applyTableView(rows: string[][], view: { header: boolean; sort?:
   return start === 1 ? [rows[0], ...body] : body
 }
 
+// 数の 3 桁区切り（thousands。既定は区切る）：数だけの列のセルの、整数の部分が 4 桁以上で区切りのないものに「,」を入れる。
+// 符号・通貨の記号・小数・% などはそのまま。見出しの行と、数でないセル（その列の数でない列）は変えない。File（CSV）は変えない
+export function withThousandsSeparators(rows: string[][], header: boolean): string[][] {
+  const start = header && rows.length > 0 ? 1 : 0
+  const columns = rows.reduce((max, row) => Math.max(max, row.length), 0)
+  const numeric = Array.from({ length: columns }, (_, col) => isNumericColumn(rows, col, start))
+  if (!numeric.includes(true)) return rows
+  return rows.map((row, i) => (i < start ? row : row.map((text, col) => (numeric[col] ? groupThousands(text) : text))))
+}
+
+// 1 つのセル。区切りのない整数の部分（4 桁以上）だけに入れる（"1,234"・"1e10"・"0.12345" はそのまま）
+export function groupThousands(text: string): string {
+  const match = /^(\s*[-+−]?[¥$€£]?[-+−]?)(\d{4,})((?:\.\d*)?\s*[%円]?\s*)$/.exec(text)
+  if (!match) return text
+  return match[1] + match[2].replace(/\B(?=(\d{3})+$)/g, ',') + match[3]
+}
+
 // ---- 見せ方を変える（パイメニュー「操作」。どれも新しい値を返す） ----
 
 interface TableViewProps {

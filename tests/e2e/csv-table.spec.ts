@@ -222,3 +222,39 @@ test('sorts, filters and wraps a table card from the actions pie menu over a col
   await expect(page.locator('.table-filter-input')).toHaveCount(0)
   expect((await tableState(page)).filters).toEqual([])
 })
+
+// 数の 3 桁区切り（既定は区切る）：右クリックで外し、また入れる（どれも Undo 1 回。CSV のファイルは変えない）
+test('shows thousands separators in number columns by default and toggles them from the context menu', async ({ page }) => {
+  await openSmall(page)
+  // 列 1（売上）の幅：「1,200」のほうが「1200」より広い
+  const columnWidth = () =>
+    page.evaluate(() => {
+      const editor = (window as any).canvcode.editor
+      const node = editor.getNode('node:table')
+      const type = editor.getType(node)
+      let width = 0
+      for (let x = 0; x < node.props.w; x += 0.5) if (type.columnAt(node, { x, y: 36 + 14 })?.col === 1) width += 0.5
+      return width
+    })
+  const thousands = () => page.evaluate(() => (window as any).canvcode.editor.getNode('node:table').props.thousands ?? null)
+  await expect.poll(columnWidth).toBeGreaterThan(0)
+  const grouped = await columnWidth()
+
+  const rect = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  const openMenu = async () => {
+    await page.mouse.click(rect.x + 120, rect.y + 120, { button: 'right' })
+    await expect(page.locator('.context-menu')).toBeVisible()
+  }
+  await openMenu()
+  await page.locator('.context-menu button', { hasText: '3 桁区切りを外す' }).click()
+  await expect.poll(thousands).toBe(false)
+  await expect.poll(columnWidth).toBeLessThan(grouped)
+
+  await openMenu()
+  await page.locator('.context-menu button', { hasText: '数を 3 桁で区切る' }).click()
+  await expect.poll(thousands).toBe(true)
+  await expect.poll(columnWidth).toBe(grouped)
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(thousands).toBe(false)
+})

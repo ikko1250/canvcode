@@ -4,7 +4,7 @@ import { tilesInRect, visibleLocalRect } from '../markdown/tiles.ts'
 import { requestFontLoad, textMetricsGeneration, TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { parseDelimited } from './delimited.ts'
 import { TABLE_METRICS, columnAtX, drawCellBars, drawCells, estimateTextWidth, layoutTable, tableFont, type ColumnMark, type TableLayout, type TableMeasure } from './tableLayout.ts'
-import { applyTableView, filterNeedsValue, type TableFilter, type TableSort } from './tableView.ts'
+import { applyTableView, filterNeedsValue, withThousandsSeparators, type TableFilter, type TableSort } from './tableView.ts'
 
 // 表のカード（`table-card`）。ワークスペースの .csv / .tsv の File を表にして見せる（.md・.py のカードと同じく、本文は File が持つ）。
 // - DOM や SVG は使わない。列の幅を 1 度だけ測り（tableLayout.ts）、見えているところだけを TILE_SIZE の正方形のタイルに分けて、
@@ -13,6 +13,7 @@ import { applyTableView, filterNeedsValue, type TableFilter, type TableSort } fr
 // - 画面上で文字が小さいときはタイルを作らず、セルの代わりの帯を描く。もっと小さければ、表の地だけを描く
 // - 高さは、既定では全部の行に合わせる（sizing: 'auto'）。'fixed' なら下端をぼかして切る
 // - 1 行目を見出しにするか（header）・長いセルを折り返すか（wrap。既定は折り返さない）・並び替え（sort）・絞り込み（filters）は、
+//   数の 3 桁区切り（thousands。既定は区切る）は、
 //   カードごとに持つ（File の CSV は変えない。tableView.ts）。名前の帯には、絞り込んだ行の数と全体の行の数を出す
 
 export interface TableCardProps {
@@ -23,6 +24,8 @@ export interface TableCardProps {
   role: 'owner' | 'shortcut'
   header: boolean
   wrap?: boolean
+  // 数の列に 3 桁区切りを入れるか（省けば入れる）
+  thousands?: boolean
   sort?: TableSort | null
   filters?: TableFilter[]
 }
@@ -79,7 +82,7 @@ export function parseTableFile(text: string, path?: string): string[][] {
   return parseDelimited(text, path && /\.tsv$/i.test(path) ? '\t' : undefined)
 }
 
-type TableView = Pick<TableCardProps, 'header' | 'wrap' | 'sort' | 'filters'>
+type TableView = Pick<TableCardProps, 'header' | 'wrap' | 'thousands' | 'sort' | 'filters'>
 
 // 見せる行を配置する。並び替え・絞り込みをしている列には、見出しに印を付ける
 function layoutRows(rows: string[][], view: TableView): TableLayout {
@@ -92,7 +95,8 @@ function layoutRows(rows: string[][], view: TableView): TableLayout {
     if (view.sort) marks[view.sort.col] = { sort: view.sort.dir }
     for (const f of activeFilters(view)) marks[f.col] = { ...marks[f.col], filtered: true }
   }
-  return layoutTable(applyTableView(rows, view), { header: view.header, measure: measureText, wrap: view.wrap, marks })
+  const shown = applyTableView(rows, view)
+  return layoutTable(view.thousands === false ? shown : withThousandsSeparators(shown, view.header), { header: view.header, measure: measureText, wrap: view.wrap, marks })
 }
 
 // 値を入れてある絞り込みの条件（値の要らない条件はそのまま）
@@ -130,7 +134,7 @@ export function createTableCardType(options: TableCardOptions = {}) {
   const layoutOf = (props: TableCardProps) => {
     const content = textOf(props)
     if (!content) return null
-    const view: TableView = { header: props.header, wrap: props.wrap === true, sort: props.sort ?? null, filters: activeFilters(props) }
+    const view: TableView = { header: props.header, wrap: props.wrap === true, thousands: props.thousands !== false, sort: props.sort ?? null, filters: activeFilters(props) }
     const version = `${content.version}|${content.path ?? ''}|${JSON.stringify(view)}|${textMetricsGeneration()}`
     let cached = layoutCache.get(version)
     if (!cached) {
