@@ -74,7 +74,8 @@ export class SyncHub {
   constructor(store: RecordStore) {
     this.store = store
     this.sockets.on('connection', (socket) => {
-      this.clients.set(socket, 'all')
+      // hello が来るまでは、どの Canvas も読んでいないものとして絞る（hello に canvases がなければ、そこで全部にする）
+      this.clients.set(socket, new Set())
       socket.on('close', () => {
         this.clients.delete(socket)
         this.presences.delete(socket)
@@ -174,9 +175,12 @@ export class SyncHub {
     }
   }
 
-  // 渡された変更に、同じ変更番号で保存された、渡されていないもの（一緒に変わったもの）を足す。所属は保存してあるものを使う
+  // 渡された変更に、同じ変更番号で保存された、渡されていないもの（一緒に変わったもの）を足す。所属は保存してあるものを使う。
+  // rev は、いま保存した変更番号（保存と、ここを呼ぶ間に、ほかの保存が入らないこと）
   private withCascade(rev: number, records: StoredRecord[], deleted: string[]): Outgoing {
-    const saved = this.store.changesSince(rev - 1)
+    const known = new Map<string, StoredRecord>()
+    for (const record of records) if (record && typeof record.id === 'string') known.set(record.id, record)
+    const saved = this.store.changesAt(rev, known)
     const canvasOf = new Map<string, string | null>()
     for (const [i, record] of saved.records.entries()) canvasOf.set(record.id, saved.canvasIds[i])
     const gone = new Set([...deleted, ...saved.deleted])
@@ -220,6 +224,8 @@ export class SyncHub {
       if (typeof message.canvasId !== 'string') return
       const scope = this.clients.get(socket)
       if (scope && scope !== 'all') scope.add(message.canvasId)
+      // req のない load は、手元で作った Canvas を伝えるだけ（中身は手元にある）
+      if (message.req === null || message.req === undefined) return
       socket.send(JSON.stringify({ type: 'canvas', req: message.req, canvasId: message.canvasId, rev: this.store.rev, records: this.store.recordsOfCanvas(message.canvasId) }))
       return
     }

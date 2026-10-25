@@ -328,6 +328,8 @@ export function App(props: { initial: InitialRecords }) {
   const [tableFilter, setTableFilter] = useState<(TableFilterRequest & { op: TableFilterOp }) | null>(null)
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
   const navigating = useRef(false)
+  // 移動を頼まれるたびに増やす（読み終えるのを待っている移動が、あとから頼まれた移動に替わったか）
+  const navigationToken = useRef(0)
   // 移っている途中（アニメーション中）に頼まれた移動。今の移動が終わったら、最後に頼まれたものを行う
   const pendingNavigation = useRef<{ targetId: string; options: { portalId?: string; push?: boolean } } | null>(null)
   const viewRef = useRef<CanvasView | null>(null)
@@ -531,29 +533,29 @@ export function App(props: { initial: InitialRecords }) {
         return
       }
       const from = view.editor
-      if (targetId === from.canvasId) return
+      // あとから頼まれた移動があれば、読んでいる途中の移動はやめる
+      const token = ++navigationToken.current
+      if (targetId === from.canvasId) return setLoadingCanvas(false)
       const target = workspace.getCanvas(targetId)
       if (!target) return notify('このキャンバスは削除されています')
       if (target.deletedAt !== null) return notify('このキャンバスはゴミ箱の中にあります。サイドバーから元に戻せます')
+      // 読んでいなければ、先に読む。読んでいる間も、ほかの Canvas へは移れる（docs/lazy-canvas-loading-plan.md）
+      if (!sync.isLoaded(targetId)) {
+        if (sync.getStatus() === 'offline') return notify('サーバーにつながっていないので、このキャンバスを開けません')
+        setLoadingCanvas(true)
+        await sync.ensureCanvas(targetId)
+        if (navigationToken.current !== token) return
+        setLoadingCanvas(false)
+        return go(targetId, options)
+      }
+      setLoadingCanvas(false)
       navigating.current = true
       try {
-        // 読んでいなければ、サムネイルを作ったり近づいたりしている間に読む
-        const loading = sync.ensureCanvas(targetId)
         await view.captureThumbnail()
         const portal = options.portalId ? from.index.get(options.portalId) : undefined
         // 入るときのズームインは見せるためだけのもの。戻ってきたときは、その前のカメラに戻す
         const fromCamera = from.session.get().camera
         if (portal) await view.animateCamera(view.cameraFor(portal.worldBounds))
-        if (!sync.isLoaded(targetId)) {
-          setLoadingCanvas(true)
-          try {
-            await loading
-          } finally {
-            setLoadingCanvas(false)
-          }
-          // 読んでいる間に消された・ゴミ箱に入れられた
-          if (workspace.getCanvas(targetId)?.deletedAt !== null) return
-        }
         const next = getEditor(targetId)
         view.setEditor(next)
         // 画面の状態も、ここで切り替える（このあとのアニメーションの間の操作も、移った先の Canvas に入るように）
@@ -581,6 +583,16 @@ export function App(props: { initial: InitialRecords }) {
       }
     },
     [workspace, sync, visited, getEditor, trimEditors, notify],
+  )
+  // 移す・戻すときに、その Canvas を読む。サーバーにつながっていなければ断る（つながるまで待たせない）
+  const loadCanvasNow = useCallback(
+    async (canvasId: string) => {
+      if (sync.isLoaded(canvasId)) return
+      const title = workspace.getCanvas(canvasId)?.title ?? ''
+      if (sync.getStatus() === 'offline') throw new Error(`サーバーにつながっていないので、「${title}」を読み込めません`)
+      await sync.ensureCanvas(canvasId)
+    },
+    [workspace, sync],
   )
   const openPortal = useCallback(
     (portalId: string) => {
@@ -1113,7 +1125,7 @@ export function App(props: { initial: InitialRecords }) {
     if (!container) return
     const created = new CanvasView(getEditor(startCanvasId), container, {
       notify,
-      loadCanvas: (id) => sync.ensureCanvas(id),
+      loadCanvas: (id) => loadCanvasNow(id),
       files,
       pdf: pdfService,
       onOpenFile: (fileId) => openFile(fileId),
@@ -1238,7 +1250,7 @@ export function App(props: { initial: InitialRecords }) {
       files.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, sync, editors, visited, startCanvasId, notify, ask, getEditor, navigate, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, sync, editors, visited, startCanvasId, notify, ask, getEditor, navigate, loadCanvasNow, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
 
   // Ctrl+F（⌘F）で PDF の単語検索を開く（試作）。今の Canvas に PDF のページがなければ、ブラウザの検索に任せる
   useEffect(() => {
@@ -1313,7 +1325,13 @@ export function App(props: { initial: InitialRecords }) {
       // 持ち主の Portal を置き直す先の Canvas を、先に読む（Portal の親がノードなら、その Canvas をサーバーに聞く）
       const parentId = workspace.getDocument(id)?.trash?.portal?.parentId
       const parentCanvas = parentId ? (parentId.startsWith('canvas:') ? parentId : await fetchCanvasOf(parentId).catch(() => null)) : null
-      if (parentCanvas && workspace.getCanvas(parentCanvas)) await sync.ensureCanvas(parentCanvas)
+      if (parentCanvas && workspace.getCanvas(parentCanvas)) {
+        try {
+          await loadCanvasNow(parentCanvas)
+        } catch (error) {
+          return notify(error instanceof Error ? error.message : String(error))
+        }
+      }
       const current = viewRef.current?.editor ?? editor
       current.transact('restore canvas', (tx) => workspace.restoreCanvas(tx, id))
     },
@@ -1828,7 +1846,7 @@ export function App(props: { initial: InitialRecords }) {
           )}
           <BackupStatus serverOnline={syncStatus !== 'offline'} />
           <div className={`sync-status ${syncStatus}`} title={SYNC_LABELS[syncStatus]}>
-            {loadingCanvas ? 'キャンバスを読み込み中…' : syncStatus === 'offline' ? '未接続' : SYNC_LABELS[syncStatus]}
+            {syncStatus === 'offline' ? '未接続' : loadingCanvas ? 'キャンバスを読み込み中…' : SYNC_LABELS[syncStatus]}
           </div>
         </div>
 

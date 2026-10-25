@@ -719,6 +719,16 @@ describe('undo_canvas_edit', () => {
     expect(records.get(result.created.n!)!.x).toBe(99)
   })
 
+  it('refuses when something was added afterwards to a canvas the edit created (review)', () => {
+    const { records, host, edit } = setup()
+    const result = edit([{ op: 'create', type: 'portal', as: 'p', name: 'X', x: 0, y: 0 }])
+    const canvasId = (records.get(result.created.p!)!.props as { targetId: string }).targetId
+    records.apply([{ typeName: 'node', id: 'node:user', type: 'geo', parentId: canvasId, x: 0, y: 0, props: {} }], [])
+    expect(() => undoCanvasEdit(host, result.batch)).toThrow(/Conflict: 1 record\(s\) were added after this edit to a canvas it created \(node:user\)/)
+    expect(records.get('node:user')).toBeDefined()
+    expect(records.get(canvasId)).toBeDefined()
+  })
+
   it('keeps only the latest edits', () => {
     const { records, host, edit } = setup()
     const first = edit([{ op: 'create', type: 'note', x: 0, y: 0 }]).batch

@@ -34,7 +34,7 @@ export interface ScopedChanges extends Changes {
 export type Cascade = StoredRecord[]
 
 // テーブルの構造の版。変えるときは MIGRATIONS に足す（起動時に、適用する前に workspace.db のコピーを作る）
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
   // AI の編集の記録（MCP の edit_canvas。Undo に使う）
   2: (db) =>
@@ -56,6 +56,16 @@ const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
     if (!columns.some((column) => column.name === 'canvas_id')) db.exec('ALTER TABLE records ADD COLUMN canvas_id TEXT')
     db.exec('CREATE INDEX IF NOT EXISTS records_canvas ON records (canvas_id)')
     fillCanvasIds(db)
+  },
+  // Binding の矢印（from_id）の列と、ノードの型の索引（所属を付け直す・引用ノートを探すときに、本文を読まずに引く）
+  4: (db) => {
+    const columns = db.prepare('PRAGMA table_info(records)').all() as { name: string }[]
+    if (!columns.some((column) => column.name === 'from_id')) db.exec('ALTER TABLE records ADD COLUMN from_id TEXT')
+    db.exec(`
+      UPDATE records SET from_id = json_extract(body, '$.fromId') WHERE type_name = 'binding';
+      CREATE INDEX IF NOT EXISTS records_from ON records (from_id);
+      CREATE INDEX IF NOT EXISTS records_type ON records (type_name, type);
+    `)
   },
 }
 
@@ -178,6 +188,15 @@ export class RecordStore {
     return rows.map((row) => ({ record: JSON.parse(row.body) as StoredRecord, canvasId: row.canvas_id }))
   }
 
+  // この変更番号で変わったレコード（known の id は中身を読まない。所属だけ返す）と、消えたレコード
+  changesAt(rev: number, known: ReadonlyMap<string, StoredRecord>): ScopedChanges {
+    const rows = this.db.prepare('SELECT id, canvas_id FROM records WHERE rev = ?').all(rev) as { id: string; canvas_id: string | null }[]
+    const body = this.db.prepare('SELECT body FROM records WHERE id = ?')
+    const records = rows.map((row) => known.get(row.id) ?? (JSON.parse((body.get(row.id) as { body: string }).body) as StoredRecord))
+    const deleted = (this.db.prepare('SELECT id FROM deleted WHERE rev = ?').all(rev) as { id: string }[]).map((row) => row.id)
+    return { rev: this.rev, records, canvasIds: rows.map((row) => row.canvas_id), deleted }
+  }
+
   // レコードの所属する Canvas（Canvas・File・SourceAnchor と、ないもの・所属のわからないものは null）
   canvasOf(id: string): string | null {
     const row = this.db.prepare('SELECT canvas_id FROM records WHERE id = ?').get(id) as { canvas_id: string | null } | undefined
@@ -191,9 +210,9 @@ export class RecordStore {
     for (const id of deletes) if (typeof id !== 'string') throw new Error('invalid id')
     const rev = this.rev + 1
     const put = this.db.prepare(
-      'INSERT INTO records (id, type_name, parent_id, type, version, body, rev, canvas_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'INSERT INTO records (id, type_name, parent_id, type, version, body, rev, canvas_id, from_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
         'ON CONFLICT(id) DO UPDATE SET type_name = excluded.type_name, parent_id = excluded.parent_id, type = excluded.type, ' +
-        'version = excluded.version, body = excluded.body, rev = excluded.rev, canvas_id = excluded.canvas_id',
+        'version = excluded.version, body = excluded.body, rev = excluded.rev, canvas_id = excluded.canvas_id, from_id = excluded.from_id',
     )
     const unmarkDeleted = this.db.prepare('DELETE FROM deleted WHERE id = ?')
     const remove = this.db.prepare('DELETE FROM records WHERE id = ?')
@@ -201,66 +220,47 @@ export class RecordStore {
     const storedCanvas = this.db.prepare('SELECT canvas_id FROM records WHERE id = ?')
     this.db.exec('BEGIN')
     try {
-      const batch = new Map((puts as StoredRecord[]).map((record) => [record.id, record]))
-      // 差分の中のノードは差分の中の親から、ほかは保存してある親の canvas_id から決める（差分の中で子が親より先に来てもよい）
-      const resolved = new Map<string, string | null>()
-      const canvasOfNode = (id: string, depth = 0): string | null => {
-        if (id.startsWith('canvas:')) return id
-        if (resolved.has(id)) return resolved.get(id)!
-        const record = batch.get(id)
-        let canvas: string | null
-        if (record) canvas = record.typeName === 'node' && typeof record.parentId === 'string' && depth < 100 ? canvasOfNode(record.parentId, depth + 1) : null
-        else canvas = (storedCanvas.get(id) as { canvas_id: string | null } | undefined)?.canvas_id ?? null
-        resolved.set(id, canvas)
-        return canvas
+      // 前の所属（なかったものは入れない）。所属は、差分をすべて書いてから決める（書いたあとの親をたどるので、差分の中の順番によらない）
+      const before = new Map<string, string | null>()
+      for (const record of puts as StoredRecord[]) {
+        const row = storedCanvas.get(record.id) as { canvas_id: string | null } | undefined
+        if (row) before.set(record.id, row.canvas_id)
       }
-      const moved: { id: string; canvas: string | null }[] = []
       for (const record of puts as StoredRecord[]) {
         const parent = typeof record.parentId === 'string' ? record.parentId : null
         const type = typeof record.type === 'string' ? record.type : null
         const version = typeof record.version === 'number' ? record.version : 1
-        let canvas: string | null = null
-        if (record.typeName === 'node') {
-          canvas = canvasOfNode(record.id)
-          const before = storedCanvas.get(record.id) as { canvas_id: string | null } | undefined
-          if (before && before.canvas_id !== canvas) moved.push({ id: record.id, canvas })
-        } else if (record.typeName === 'binding' && typeof record.fromId === 'string') {
-          canvas = canvasOfNode(record.fromId)
-        }
-        put.run(record.id, record.typeName, parent, type, version, JSON.stringify(record), rev, canvas)
+        const from = record.typeName === 'binding' && typeof record.fromId === 'string' ? record.fromId : null
+        put.run(record.id, record.typeName, parent, type, version, JSON.stringify(record), rev, before.get(record.id) ?? null, from)
         unmarkDeleted.run(record.id)
       }
-      // 別の Canvas へ移したノードの子孫（差分にないもの）と、それらの矢印の Binding の所属を付け直す
-      if (moved.length > 0) {
-        const descendants = this.db.prepare(
-          "WITH RECURSIVE d(id) AS (SELECT id FROM records WHERE parent_id = ? AND type_name = 'node' " +
-            "UNION SELECT r.id FROM records r JOIN d ON r.parent_id = d.id WHERE r.type_name = 'node') SELECT id FROM d",
-        )
-        const update = this.db.prepare('UPDATE records SET canvas_id = ?, rev = ? WHERE id = ? AND canvas_id IS NOT ?')
-        const updateBindings = this.db.prepare(
-          "UPDATE records SET canvas_id = ?, rev = ? WHERE type_name = 'binding' AND json_extract(body, '$.fromId') = ? AND canvas_id IS NOT ?",
-        )
-        for (const { id, canvas } of moved) {
-          const ids = [id, ...(descendants.all(id) as { id: string }[]).filter((row) => !batch.has(row.id)).map((row) => row.id)]
-          for (const nodeId of ids) {
-            if (nodeId !== id) update.run(canvas, rev, nodeId, canvas)
-            updateBindings.run(canvas, rev, nodeId, canvas)
-          }
-        }
-      }
+      this.assignCanvases(puts as StoredRecord[], before, rev)
       const cascade: Cascade = []
       const selectInCanvas = this.db.prepare('SELECT id, body FROM records WHERE canvas_id = ?')
       const deleting = new Set(deletes as string[])
+      const orphanAnchors = new Set<string>()
+      const removeCascaded = (row: { id: string; body: string }) => {
+        remove.run(row.id)
+        markDeleted.run(row.id, rev)
+        if (deleting.has(row.id)) return
+        const record = JSON.parse(row.body) as StoredRecord
+        cascade.push(record)
+        const anchorId = record.type === 'quote-card' ? (record.props as { anchorId?: unknown } | undefined)?.anchorId : undefined
+        if (typeof anchorId === 'string' && anchorId) orphanAnchors.add(anchorId)
+      }
       for (const id of deletes as string[]) {
         remove.run(id)
         markDeleted.run(id, rev)
         // Canvas を消したら、そこに所属するレコードも消す（ブラウザが中身を読んでいなくても残らないように）
-        if (!id.startsWith('canvas:')) continue
-        for (const row of selectInCanvas.all(id) as { id: string; body: string }[]) {
-          remove.run(row.id)
-          markDeleted.run(row.id, rev)
-          if (!deleting.has(row.id)) cascade.push(JSON.parse(row.body) as StoredRecord)
-        }
+        if (id.startsWith('canvas:')) for (const row of selectInCanvas.all(id) as { id: string; body: string }[]) removeCascaded(row)
+      }
+      // 一緒に消した引用ノートが最後の引用だった SourceAnchor も消す（ブラウザのフックが、読んでいないノートの分は消せないので）
+      const anchorRow = this.db.prepare("SELECT id, body FROM records WHERE id = ? AND type_name = 'anchor'")
+      const stillCited = this.db.prepare("SELECT 1 FROM records WHERE type_name = 'node' AND type = 'quote-card' AND json_extract(body, '$.props.anchorId') = ? LIMIT 1")
+      for (const anchorId of orphanAnchors) {
+        if (stillCited.get(anchorId)) continue
+        const row = anchorRow.get(anchorId) as { id: string; body: string } | undefined
+        if (row) removeCascaded(row)
       }
       // ルートの Canvas は消させない
       if (!this.db.prepare('SELECT 1 FROM records WHERE id = ?').get(this.rootCanvasId)) throw new Error('the root canvas cannot be deleted')
@@ -272,6 +272,72 @@ export class RecordStore {
       throw error
     }
     return rev
+  }
+
+  // 書いた差分のノードと Binding の所属を、書いたあとの親（Binding は矢印）から決める。所属が変わったノードと、
+  // 新しく入ったノード（先に保存された子があるかもしれない）は、子孫の所属も合わせ、変わったものの rev を上げる。
+  // 所属が変わったノードの矢印の Binding も合わせる
+  private assignCanvases(puts: readonly StoredRecord[], before: ReadonlyMap<string, string | null>, rev: number): void {
+    const parentOf = this.db.prepare('SELECT parent_id, type_name FROM records WHERE id = ?')
+    const resolved = new Map<string, string | null>()
+    const resolve = (id: string): string | null => {
+      const chain: string[] = []
+      let current: string | null = id
+      let canvas: string | null = null
+      for (let guard = 0; current !== null && guard < 10_000; guard++) {
+        if (resolved.has(current)) {
+          canvas = resolved.get(current)!
+          break
+        }
+        const row = parentOf.get(current) as { parent_id: string | null; type_name: string } | undefined
+        // Canvas のレコードがまだなくても、Canvas の id ならそれ
+        if (row?.type_name === 'canvas' || (!row && current.startsWith('canvas:'))) {
+          canvas = current
+          break
+        }
+        // ない親・ノードでないもの・親の輪で止める
+        if (!row || row.type_name !== 'node' || chain.includes(current)) break
+        chain.push(current)
+        current = row.parent_id
+      }
+      for (const nodeId of chain) resolved.set(nodeId, canvas)
+      return canvas
+    }
+    const setCanvas = this.db.prepare('UPDATE records SET canvas_id = ?, rev = ? WHERE id = ? AND canvas_id IS NOT ?')
+    // parent_id を持つのはノードだけ（type_name で絞ると、parent_id の索引を使わなくなる）
+    const hasChild = this.db.prepare('SELECT 1 FROM records WHERE parent_id = ? LIMIT 1')
+    const descendants = this.db.prepare(
+      'WITH RECURSIVE d(id) AS (SELECT id FROM records WHERE parent_id = ? UNION SELECT r.id FROM records r JOIN d ON r.parent_id = d.id) SELECT id FROM d',
+    )
+    // 所属を決め直したノード（その矢印の Binding を合わせる）
+    const touched = new Set<string>()
+    const bindings: string[] = []
+    for (const record of puts) {
+      if (record.typeName === 'binding') bindings.push(record.id)
+      if (record.typeName !== 'node') continue
+      const canvas = resolve(record.id)
+      setCanvas.run(canvas, rev, record.id, canvas)
+      touched.add(record.id)
+      const isNew = !before.has(record.id)
+      if (before.get(record.id) === canvas && !isNew) continue
+      if (isNew && !hasChild.get(record.id)) continue
+      for (const row of descendants.all(record.id) as { id: string }[]) {
+        setCanvas.run(canvas, rev, row.id, canvas)
+        resolved.set(row.id, canvas)
+        touched.add(row.id)
+      }
+    }
+    // 1 件ずつ索引（from_id・id）で引く（IN に長い一覧を渡すと、行ごとに一覧をなめて遅い）
+    const fromCanvas = '(SELECT n.canvas_id FROM records n WHERE n.id = records.from_id)'
+    const byArrow = this.db.prepare(`UPDATE records SET canvas_id = ${fromCanvas}, rev = ? WHERE from_id = ? AND type_name = 'binding' AND canvas_id IS NOT ${fromCanvas}`)
+    const byId = this.db.prepare(`UPDATE records SET canvas_id = ${fromCanvas} WHERE id = ? AND canvas_id IS NOT ${fromCanvas}`)
+    for (const id of touched) byArrow.run(rev, id)
+    for (const id of bindings) byId.run(id)
+  }
+
+  // この Canvas に所属するレコードの id
+  idsOfCanvas(canvasId: string): string[] {
+    return (this.db.prepare('SELECT id FROM records WHERE canvas_id = ?').all(canvasId) as { id: string }[]).map((row) => row.id)
   }
 
   // レコードを最後に変えた変更番号（ないものは入れない）

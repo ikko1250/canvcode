@@ -127,7 +127,7 @@ describe('RecordStore', () => {
     db.exec("DROP TABLE agent_ops; UPDATE meta SET value = '1' WHERE key = 'schema'")
     db.close()
     const reopened = new RecordStore(dir)
-    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v3-'))).toBe(true)
+    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v4-'))).toBe(true)
     expect(reopened.get('node:a')).toBeDefined()
     const rev = reopened.applyAgentOp({ id: 'ai-1', canvasId: reopened.rootCanvasId, label: 'x', createdAt: 1, patch: [{ id: 'node:b', before: null, after: node('node:b', reopened.rootCanvasId) }] })
     expect(reopened.getAgentOp('ai-1')).toMatchObject({ rev, undoneAt: null, patch: [{ id: 'node:b', before: null }] })
@@ -188,6 +188,59 @@ describe('RecordStore', () => {
         { id: 'canvas:ai', before: canvas('canvas:ai'), after: null },
         { id: 'node:c', before: expect.objectContaining({ id: 'node:c' }), after: null },
       ])
+      store.close()
+    })
+
+    it('moves a node in the same batch as its moved ancestor, even when the node between them is not in the batch (review)', () => {
+      const store = new RecordStore(dataDir())
+      const root = store.rootCanvasId
+      store.apply([canvas('canvas:b'), node('node:g', root), node('node:c', 'node:g'), node('node:x', 'node:c'), node('node:y', 'node:x'), node('node:to', root), binding('binding:x', 'node:x', 'node:to')], [])
+      // 子が先・祖先があと
+      store.apply([{ ...node('node:x', 'node:c'), x: 5 }, node('node:g', 'canvas:b')], [])
+      for (const id of ['node:g', 'node:c', 'node:x', 'node:y', 'binding:x']) expect(store.canvasOf(id)).toBe('canvas:b')
+      expect(store.canvasOf('node:to')).toBe(root)
+      store.close()
+    })
+
+    it('gives the canvas to children and bindings saved before their parent or arrow (review)', () => {
+      const store = new RecordStore(dataDir())
+      const root = store.rootCanvasId
+      store.apply([node('node:child', 'node:parent'), binding('binding:1', 'node:arrow', 'node:child')], [])
+      expect(store.canvasOf('node:child')).toBeNull()
+      const rev = store.rev
+      store.apply([node('node:parent', root), node('node:arrow', root)], [])
+      expect(store.canvasOf('node:child')).toBe(root)
+      expect(store.canvasOf('binding:1')).toBe(root)
+      // あとから所属が付いたものは rev を上げる（読んだタブに届く）
+      expect(store.changesSince(rev).records.map((r) => r.id).sort()).toEqual(['binding:1', 'node:arrow', 'node:child', 'node:parent'])
+      store.close()
+    })
+
+    it('moves a large group with many bindings in the workspace quickly (review)', () => {
+      const store = new RecordStore(dataDir())
+      const root = store.rootCanvasId
+      const puts: unknown[] = [canvas('canvas:b'), node('node:g', root)]
+      for (let i = 0; i < 2000; i++) puts.push(node(`node:c${i}`, 'node:g'))
+      for (let i = 0; i < 10_000; i++) puts.push(node(`node:a${i}`, root), binding(`binding:${i}`, `node:a${i}`, 'node:g'))
+      store.apply(puts, [])
+      const started = performance.now()
+      store.apply([node('node:g', 'canvas:b')], [])
+      expect(performance.now() - started).toBeLessThan(2000)
+      expect(store.canvasOf('node:c1999')).toBe('canvas:b')
+      expect(store.canvasOf('binding:1')).toBe(root)
+      store.close()
+    })
+
+    it('deletes the anchors cited only by the notes of a deleted canvas (review)', () => {
+      const store = new RecordStore(dataDir())
+      const quote = (id: string, parentId: string, anchorId: string) => ({ ...node(id, parentId), type: 'quote-card', props: { anchorId } })
+      const anchor = (id: string) => ({ typeName: 'anchor', id, fileId: 'file:1' })
+      store.apply([canvas('canvas:gone'), anchor('anchor:only'), anchor('anchor:shared'), quote('node:q1', 'canvas:gone', 'anchor:only'), quote('node:q2', 'canvas:gone', 'anchor:shared'), quote('node:q3', store.rootCanvasId, 'anchor:shared')], [])
+      store.applyAgentOp({ id: 'ai-1', canvasId: store.rootCanvasId, label: 'x', createdAt: 1, patch: [{ id: 'canvas:gone', before: canvas('canvas:gone'), after: null }] })
+      expect(store.get('anchor:only')).toBeUndefined()
+      expect(store.get('anchor:shared')).toBeDefined()
+      // 取り消しで戻るよう、記録にも入れる
+      expect(store.getAgentOp('ai-1')!.patch.map((e) => e.id).sort()).toEqual(['anchor:only', 'canvas:gone', 'node:q1', 'node:q2'])
       store.close()
     })
 

@@ -337,10 +337,13 @@ export class SyncClient {
       this.rev = Math.max(this.rev, message.rev ?? 0)
       if (Array.isArray(message.assets) && message.assets.length > 0) this.options.onAssets(message.assets)
       const deleted = message.deleted ?? []
-      this.applyRemote(message.records ?? [], [...deleted, ...(message.evicted ?? [])])
-      // 消えたノートのつながりを外してから、変わったつながりを当てる（読んだ Canvas から出ていったノートは、つながりで届く）
-      this.workspace.forgetCitationLinks(deleted)
-      if (message.citations?.length) this.workspace.setCitationLinks(message.citations)
+      const citations = message.citations ?? []
+      // レコードを当てたあとで（トランザクションの途中なら、終わって当ててから）、消えたノートのつながりを外し、変わったつながりを当てる。
+      // 手元から外したノートのつながりは、外したときに消えるので、先に当てると消えてしまう（読んだ Canvas から出ていったノート）
+      this.applyRemote(message.records ?? [], [...deleted, ...(message.evicted ?? [])], () => {
+        this.workspace.forgetCitationLinks(deleted)
+        if (citations.length) this.workspace.setCitationLinks(citations)
+      })
       if (message.imported) this.options.onImported(message.imported)
       const origin = message.origin
       if (origin?.kind === 'ai' && typeof origin.batchId === 'string') {
@@ -357,11 +360,13 @@ export class SyncClient {
       // 読んだ Canvas の中身。読む前に届いた変更は、この中に入っている
       const canvasId = message.canvasId
       this.rev = Math.max(this.rev, message.rev ?? 0)
-      if (this.loaded !== 'all') this.loaded.add(canvasId)
-      const entry = this.loading.get(canvasId)
-      this.loading.delete(canvasId)
-      // 当て終えてから（トランザクションの途中なら、終わって当ててから）知らせる
-      this.applyRemote(message.records ?? [], [], entry?.resolve)
+      // 当て終えてから（トランザクションの途中なら、終わって当ててから）、読んだことにして知らせる
+      this.applyRemote(message.records ?? [], [], () => {
+        if (this.loaded !== 'all') this.loaded.add(canvasId)
+        const entry = this.loading.get(canvasId)
+        this.loading.delete(canvasId)
+        entry?.resolve()
+      })
     } else if (message.type === 'ack' && message.seq !== undefined) {
       this.inflight.delete(message.seq)
       this.rev = Math.max(this.rev, message.rev ?? 0)
@@ -377,13 +382,15 @@ export class SyncClient {
 
   // done は当て終えたら呼ぶ
   private applyRemote(records: WorkspaceRecord[], deleted: string[], done?: () => void): void {
-    if (records.length === 0 && deleted.length === 0) return done?.()
-    if (this.workspace.store.activeTransaction) {
+    // 前に後回しにした変更があれば、その後ろに並べる（届いた順に当てる）
+    if (this.workspace.store.activeTransaction || this.deferred.length > 0) {
       this.deferred.push({ records, deleted, done })
-      // 取り消し（Esc）で終わったトランザクションは知らせが来ないので、少し待って確かめ直す
-      this.retryDeferred()
+      // トランザクションがなければ、並べた順にすぐ当てる。取り消し（Esc）で終わったトランザクションは知らせが来ないので、少し待って確かめ直す
+      if (this.workspace.store.activeTransaction) this.retryDeferred()
+      else this.applyDeferred()
       return
     }
+    if (records.length === 0 && deleted.length === 0) return done?.()
     const mine = new Set<string>(this.outbox.keys())
     for (const batch of this.inflight.values()) for (const id of batch.keys()) mine.add(id)
     this.workspace.store.transact(

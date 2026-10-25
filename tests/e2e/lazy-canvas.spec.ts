@@ -241,3 +241,18 @@ test('does not undo creating a canvas after another tab put something in it', as
   expect(await has(creator, created)).toBe(true)
   expect(await canvasOf('node:in-created')).toBe(created)
 })
+
+// サーバーを止めるので、最後に置く
+test('refuses to open a canvas that is not loaded while offline, and still moves between loaded ones (review)', async ({ page }) => {
+  await open(page, `/c/${encodeURIComponent(ids.a)}`)
+  await page.evaluate((id) => (window as any).canvcode.navigate(id), ids.b)
+  await expect.poll(() => page.evaluate(() => (window as any).canvcode.editor.canvasId)).toBe(ids.b)
+  server?.kill()
+  await expect(page.locator('.sync-status.offline')).toBeVisible({ timeout: 15_000 })
+  await page.evaluate((id) => (window as any).canvcode.navigate(id), ids.c)
+  await expect(page.locator('.notice', { hasText: 'サーバーにつながっていないので' })).toBeVisible()
+  expect(await page.evaluate(() => (window as any).canvcode.editor.canvasId)).toBe(ids.b)
+  // 読んである Canvas には移れる
+  await page.evaluate((id) => (window as any).canvcode.navigate(id), ids.a)
+  await expect.poll(() => page.evaluate(() => (window as any).canvcode.editor.canvasId)).toBe(ids.a)
+})

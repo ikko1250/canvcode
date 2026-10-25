@@ -122,7 +122,8 @@ export interface CanvasViewOptions {
   confirmOwnerPortalDeletion?: (portals: { title: string; descendants: number }[]) => Promise<OwnerPortalDeletion | null>
   // ノードを Portal の上に落としたとき、参照先の Canvas に移してよいか尋ねる（MAI-38）。count は移すノードの数
   confirmMoveToCanvas?: (target: { title: string; count: number }) => Promise<boolean>
-  // 別の Canvas に移す前に、その Canvas のノードを読む（置く場所を決めるのに、中身が要る。docs/lazy-canvas-loading-plan.md）
+  // 別の Canvas に移す前に、その Canvas のノードを読む（置く場所を決めるのに、中身が要る。docs/lazy-canvas-loading-plan.md）。
+  // 読めなければ、理由を投げる（知らせて、移さない）
   loadCanvas?: (canvasId: string) => Promise<void>
   // 右クリック（画面の座標。ブラウザのウィンドウ基準）
   onContextMenu?: (point: { clientX: number; clientY: number }) => void
@@ -1414,7 +1415,12 @@ export class CanvasView {
       // 尋ねている間に Canvas を移った・ノードが変わった場合は、やめる
       if (!ok || this.editor !== editor || !editor.canMoveToCanvas(ids, canvasId)) return false
     }
-    await this.options.loadCanvas(canvasId)
+    try {
+      await this.options.loadCanvas(canvasId)
+    } catch (error) {
+      this.options.notify(error instanceof Error ? error.message : String(error))
+      return false
+    }
     if (this.editor !== editor || !editor.canMoveToCanvas(ids, canvasId)) return false
     const moved = editor.moveToCanvas(ids, canvasId, { nextTo: options.nextTo })
     if (moved) this.options.notify(`「${title}」に移動しました`)

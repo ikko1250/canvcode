@@ -191,4 +191,22 @@ describe('SyncHub', () => {
     expect(changes.origin).toEqual({ kind: 'ai' })
     expect(heard[0].deleted.sort()).toEqual(['canvas:a', 'node:a', 'node:b'])
   })
+
+  it('relays nothing of the canvases until hello says which are read, and answers no load without req (review)', async () => {
+    const { records, base } = await setup()
+    records.apply([canvas('canvas:a')], [])
+    const writer = await connect(base)
+    writer.send({ type: 'hello', since: records.rev })
+    await writer.next('changes')
+    const early = await connect(base)
+    writer.send({ type: 'push', seq: 1, puts: [node('node:a', 'canvas:a')], deletes: [] })
+    await writer.next('ack')
+    const changes = await early.next('changes')
+    expect(changes.records).toEqual([])
+    expect(changes.evicted).toEqual(['node:a'])
+    // 手元で作った Canvas を伝える load（req なし）には答えない
+    early.send({ type: 'load', req: null, canvasId: 'canvas:a' })
+    const rest = await early.drain()
+    expect(rest.filter((m) => m.type === 'canvas' && m.req !== 'drain')).toEqual([])
+  })
 })

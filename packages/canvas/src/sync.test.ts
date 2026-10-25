@@ -232,6 +232,45 @@ describe('sync of loaded canvases', () => {
     sync.dispose()
   })
 
+  it('keeps the citation link of a note evicted during a drag, and so keeps its anchor (review)', async () => {
+    const server = fakeServer()
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const quote = (id: string) => ({ ...base, id, parentId: 'canvas:root', type: 'quote-card', props: { anchorId: 'anchor:1', fileId: 'file:1', quote: '引用', figure: null, memo: '', w: 280 } }) as unknown as WorkspaceRecord
+    const anchor = { typeName: 'anchor', id: 'anchor:1', fileId: 'file:1', locator: { kind: 'pdf', pageIndex: 0, rect: { x: 0, y: 0, w: 1, h: 1 } }, quote: '引用', createdAt: 0 } as WorkspaceRecord
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [canvas('canvas:b'), anchor, quote('node:q'), quote('node:q2'), geo('node:drag', 'canvas:root')], canvases: ['canvas:root'], citations: [] }, { baseUrl: 'http://127.0.0.1' })
+    server.open()
+    const tx = workspace.store.begin('drag')
+    tx.put({ ...workspace.getNode('node:drag')!, x: 50 })
+    server.receive({ type: 'changes', rev: 1, records: [], deleted: [], evicted: ['node:q'], citations: [{ noteId: 'node:q', anchorId: 'anchor:1', canvasId: 'canvas:b', head: '引用' }] })
+    tx.commit()
+    // 後回しにした変更は、確定の知らせのあとで当てる
+    await Promise.resolve()
+    expect(workspace.getNode('node:q')).toBeUndefined()
+    expect(workspace.notesOfAnchor('anchor:1').map((n) => n.id).sort()).toEqual(['node:q', 'node:q2'])
+    new Editor({ workspace, canvasId: 'canvas:root' }).deleteNodes(['node:q2'])
+    expect(workspace.getAnchor('anchor:1')).toBeDefined()
+    sync.dispose()
+  })
+
+  it('applies a canvas reply held back by a cancelled drag before a later change, and is loaded only once applied (review)', async () => {
+    const server = fakeServer()
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [canvas('canvas:b')], canvases: ['canvas:root'], citations: [] }, { baseUrl: 'http://127.0.0.1' })
+    server.open()
+    const loading = sync.ensureCanvas('canvas:b')
+    const tx = workspace.store.begin('drag')
+    server.receive({ type: 'canvas', req: 'canvas:b', canvasId: 'canvas:b', rev: 1, records: [geo('node:m', 'canvas:b')] })
+    // 当てるまでは読んだことにしない
+    expect(sync.isLoaded('canvas:b')).toBe(false)
+    tx.cancel()
+    // ほかのタブが node:m を読んでいない Canvas へ移した
+    server.receive({ type: 'changes', rev: 2, records: [], deleted: [], evicted: ['node:m'] })
+    await loading
+    expect(sync.isLoaded('canvas:b')).toBe(true)
+    expect(workspace.getNode('node:m')).toBeUndefined()
+    sync.dispose()
+  })
+
   it('treats everything as loaded when the server sends all records (no canvases)', () => {
     vi.stubGlobal('WebSocket', undefined)
     const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
