@@ -6,3 +6,4 @@ dist/
 /playwright-report/
 /workspace/
 /temp/
+__pycache__/

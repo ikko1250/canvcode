@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { relative, sep } from 'node:path'
 import {
   applyMat,
+  assetIdFromHash,
   randomIdSuffix,
   transformOf,
   unionBoxes,
@@ -14,7 +15,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, GEO_SHAPES, normalizeCrop, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, GEO_SHAPES, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -55,8 +56,9 @@ const MAX_LISTED_IDS = 10
 
 // 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る。
 // portal は新しい空の Canvas の、pdf は PDF のページの Canvas（path か url の PDF を取り込む）の持ち主の Portal。
-// portal に target を渡したら、その Canvas のショートカットの Portal（#28）
-const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf'] as const
+// portal に target を渡したら、その Canvas のショートカットの Portal（#28）。
+// image は MCP の plot_csv が描いた画像だけ（EditRequest の images。edit_canvas から直には作れない）
+const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf', 'image'] as const
 // portal / pdf で使えるもの（Canvas の名前は name か text）
 const PORTAL_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h', 'name', 'text', 'path', 'url', 'target'])
 const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
@@ -233,6 +235,18 @@ export interface EditRequest {
   label?: string
   // create type pdf の PDF（ops の何番目か → 保存した Asset とページの大きさ。preparePdfs で用意する）
   pdfs?: ReadonlyMap<number, PreparedPdf>
+  // create type image の画像（ops の何番目か → 保存した Asset）。plot_csv が描いて用意する（update で画像を差し替えるときも、Asset を知らせるために入れる）
+  images?: ReadonlyMap<number, PreparedImage>
+}
+
+// plot_csv が描いて Asset に保存した画像
+export interface PreparedImage {
+  hash: string
+  size: number
+  // 画素
+  width: number
+  height: number
+  plot?: PlotSpec
 }
 
 // portal / pdf で作った Canvas（pdf なら、その File とページの数も）
@@ -264,7 +278,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const tx = workspace.store.begin(label, { scope: canvas.id, history: 'ignore', source: 'user', meta })
   // 画面の操作と同じく、commit の直前に slide-layout の子を並べ直す
   editor.arrangeSlideLayoutsOnCommit(tx)
-  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs)
+  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs, request.images)
   let patch: Patch<WorkspaceRecord>
   try {
     for (const [i, raw] of request.ops.entries()) {
@@ -320,8 +334,11 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const counts = countNodes(entries)
   const puts = entries.flatMap((e) => (e.after ? [e.after] : []))
   const deleted = entries.flatMap((e) => (e.after ? [] : [e.id]))
-  // 取り込んだ PDF の Asset は、開いているタブの Asset の一覧にまだないので、レコードと一緒に知らせる
-  const assets = [...(request.pdfs?.values() ?? [])].map(({ asset }) => ({ hash: asset.hash, mime: 'application/pdf', size: asset.size, width: 0, height: 0, variants: [] }))
+  // 取り込んだ PDF と描いた画像の Asset は、開いているタブの Asset の一覧にまだないので、レコードと一緒に知らせる
+  const assets = [
+    ...[...(request.pdfs?.values() ?? [])].map(({ asset }) => ({ hash: asset.hash, mime: 'application/pdf', size: asset.size, width: 0, height: 0, variants: [] })),
+    ...[...(request.images?.values() ?? [])].map(({ hash, size, width, height }) => ({ hash, mime: 'image/png', size, width, height, variants: [] })),
+  ]
   host.sync?.broadcast(
     rev,
     puts,
@@ -406,14 +423,24 @@ class EditRun {
   private auto: Vec | null = null
   private readonly viewport: Box | undefined
   private readonly pdfs: ReadonlyMap<number, PreparedPdf> | undefined
+  private readonly images: ReadonlyMap<number, PreparedImage> | undefined
 
-  constructor(host: AgentHost, editor: Editor, tx: Transaction<WorkspaceRecord>, meta: HistoryMeta, viewport?: Box, pdfs?: ReadonlyMap<number, PreparedPdf>) {
+  constructor(
+    host: AgentHost,
+    editor: Editor,
+    tx: Transaction<WorkspaceRecord>,
+    meta: HistoryMeta,
+    viewport?: Box,
+    pdfs?: ReadonlyMap<number, PreparedPdf>,
+    images?: ReadonlyMap<number, PreparedImage>,
+  ) {
     this.host = host
     this.editor = editor
     this.tx = tx
     this.meta = meta
     this.viewport = viewport
     this.pdfs = pdfs
+    this.images = images
   }
 
   // 結果の canvases（portal / pdf を作ったときだけ）
@@ -460,6 +487,7 @@ class EditRun {
   private create(op: Extract<Op, { op: 'create' }>, i: number): void {
     let type: string = op.type
     if (type === 'portal' || type === 'pdf') return this.createPortal(op, i)
+    if (type === 'image') return this.createImage(op, i)
     if (op.url !== undefined) throw new EditError('url is only for pdf')
     if (op.target !== undefined) throw new EditError('target is only for portal')
     let file: FileRecord | undefined
@@ -492,6 +520,26 @@ class EditRun {
     const target = this.targetTopLeft(node.id, op, parentId)
     this.translateTo(node.id, target.point, target.aabb)
     if (op.template !== undefined) this.applyTemplate(node.id, op.template)
+    this.remember(node.id, op.as, i)
+  }
+
+  // plot_csv が描いた画像のノードを置く。幅は w（なければ画素の PLOT_NODE_SCALE 倍）、高さは画像の縦横比から（h を渡せばその高さ）
+  private createImage(op: Extract<Op, { op: 'create' }>, i: number): void {
+    const image = this.images?.get(i)
+    if (!image) throw new EditError('edit_canvas cannot create images; use plot_csv to draw a chart from a CSV')
+    const allowed = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h'])
+    const extra = Object.keys(op).filter((key) => !allowed.has(key))
+    if (extra.length) throw new EditError(`${extra.join(', ')} ${extra.length > 1 ? 'are' : 'is'} not supported for image`)
+    if (op.as !== undefined && this.refs.has(op.as)) throw new EditError(`"as": "${op.as}" is already used`)
+    const parentId = op.parent ? this.container(op.parent) : this.canvasId
+    const w = op.w ?? image.width * PLOT_NODE_SCALE
+    const h = op.h ?? (w * image.height) / image.width
+    const props = { assetId: assetIdFromHash(image.hash), w, h, crop: null, ...(image.plot ? { plot: image.plot } : {}) }
+    const node = this.editor.makeNode('image', { x: 0, y: 0, parentId, props })
+    this.tx.put(node)
+    this.tx.flush()
+    const target = this.targetTopLeft(node.id, op, parentId)
+    this.translateTo(node.id, target.point, target.aabb)
     this.remember(node.id, op.as, i)
   }
 
