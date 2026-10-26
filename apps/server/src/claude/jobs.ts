@@ -11,6 +11,8 @@ import type { ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
 // - 届いたメッセージを、画面に見せる出来事（JobEvent）にして claude/store.ts（SQLite）に書き、購読者（/api/claude/events の SSE）に知らせる
 // - 同じ会話（thread）の続きは、前のジョブの session_id を resume に渡して続ける（サーバーを再起動しても続けられる）
 // - 動いているジョブはメモリにも持つ（止めるための AbortController）。起動したときに、途切れたジョブを止まったものにする
+// - バックグラウンドの作業（サブエージェント・Bash）は切る。文字列のプロンプトの query では、result のあとに届く出来事を受け取れないため
+// - Claude Code のプロセスは result のあとも少し残る。同じ会話の続きは、前のプロセスが終わってから resume する（同じ session を 2 つのプロセスで開かない）
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -74,6 +76,8 @@ export const MAX_PROMPT_LENGTH = 20_000
 export const INTERRUPTED_MESSAGE = 'サーバーが止まったので途切れました'
 // 1 回の依頼のターン数の上限（ツールを呼ぶたびに 1 ターン）。canvcode の MCP は 1 つの作業で何度も呼ぶので多めにする
 export const DEFAULT_MAX_TURNS = 100
+// 同じ会話の続きを頼まれたとき、前のプロセスが自分で終わるのを待つ時間（ミリ秒）。過ぎたら止める
+export const LINGER_GRACE_MS = 5_000
 
 export interface ClaudeJobsDeps {
   workspace: string
@@ -89,6 +93,8 @@ export interface ClaudeJobsDeps {
   maxTurns?: number
   // 1 回の依頼の費用の上限（ドル）。既定は付けない
   maxBudgetUsd?: number
+  // 既定は LINGER_GRACE_MS
+  lingerGraceMs?: number
 }
 
 // CANVCODE_CLAUDE_MAX_TURNS（正の整数）と CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）。使えない値なら既定のまま
@@ -105,12 +111,22 @@ interface JobState extends StoredJob {
   abort: AbortController
 }
 
+// 動いている query（result のあとも、for await が終わるまで）
+interface Execution {
+  abort: AbortController
+  done: Promise<void>
+}
+
 export class ClaudeJobs {
   private readonly deps: ClaudeJobsDeps
   private readonly store: ClaudeStore
   private readonly running = new Map<string, JobState>()
   // 動いている query（止めたあと、終わるのを待つため）
-  private readonly executions = new Set<Promise<void>>()
+  private readonly executions = new Set<Execution>()
+  // 会話ごとの、最後に立てた query
+  private readonly alive = new Map<string, Execution>()
+  // 終わったあとに応答が届いたと知らせたジョブ
+  private readonly lateWarned = new WeakSet<JobState>()
   private readonly listeners = new Set<JobListener>()
 
   constructor(deps: ClaudeJobsDeps) {
@@ -173,8 +189,16 @@ export class ClaudeJobs {
     this.store.insertJob(job)
     this.running.set(id, job)
     this.notify(job, 0)
-    const execution = this.execute(job, resume).finally(() => this.executions.delete(execution))
+    const previous = this.alive.get(job.threadId)
+    const execution: Execution = {
+      abort: job.abort,
+      done: (previous ? this.afterPrevious(previous).then(() => this.execute(job, resume)) : this.execute(job, resume)).finally(() => {
+        this.executions.delete(execution)
+        if (this.alive.get(job.threadId) === execution) this.alive.delete(job.threadId)
+      }),
+    }
     this.executions.add(execution)
+    this.alive.set(job.threadId, execution)
     return publicJob(job)
   }
 
@@ -195,6 +219,12 @@ export class ClaudeJobs {
     if ([...this.running.values()].some((job) => job.threadId === threadId)) throw new JobError(409, '動いている依頼があります。止めてから消してください')
     const sessions = this.store.deleteThread(threadId)
     for (const listener of this.listeners) safely(() => listener({ type: 'thread-deleted', threadId }))
+    // 書いている途中の transcript を消さないように、残っているプロセスを止めてから消す
+    const execution = this.alive.get(threadId)
+    if (execution) {
+      execution.abort.abort()
+      await execution.done
+    }
     const remove = this.deps.deleteSession ?? defaultDeleteSession
     for (const session of sessions) {
       try {
@@ -205,13 +235,32 @@ export class ClaudeJobs {
     }
   }
 
-  // 動いているものを止め、終わる（止めたことを書き終える）のを待つ（サーバーを止めるとき）
+  // 動いているもの（result のあとに残っているプロセスも）を止め、終わる（止めたことを書き終える）のを待つ（サーバーを止めるとき）
   async dispose(): Promise<void> {
-    for (const job of this.running.values()) job.abort.abort()
-    await Promise.all(this.executions)
+    for (const execution of this.executions) execution.abort.abort()
+    await Promise.all([...this.executions].map((execution) => execution.done))
+  }
+
+  // 同じ会話の前のプロセスが終わるのを待つ。lingerGraceMs 待っても終わらなければ止める
+  private async afterPrevious(previous: Execution): Promise<void> {
+    let timer: NodeJS.Timeout | undefined
+    const grace = new Promise<false>((resolve) => {
+      timer = setTimeout(resolve, this.deps.lingerGraceMs ?? LINGER_GRACE_MS, false)
+    })
+    const ended = await Promise.race([previous.done.then(() => true), grace])
+    clearTimeout(timer)
+    if (ended) return
+    console.warn('前の依頼の Claude Code のプロセスが終わらないので止めます（バックグラウンドの作業が残っていたかもしれません）')
+    previous.abort.abort()
+    await previous.done
   }
 
   private async execute(job: JobState, resume: string | undefined): Promise<void> {
+    // 前のプロセスを待つあいだに止められた
+    if (job.abort.signal.aborted) {
+      this.finish(job, 'cancelled')
+      return
+    }
     const { workspace } = this.deps
     const denied = (name: string, reason: string) => this.push(job, { kind: 'denied', name, reason })
     const options: Options = {
@@ -237,7 +286,7 @@ export class ClaudeJobs {
       ...(this.deps.model ? { model: this.deps.model } : {}),
       maxTurns: this.maxTurns(),
       ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
-      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
+      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' },
     }
     const prompt = job.refId ? `${job.prompt}\n\n（選んだ場所：${job.refId}）` : job.prompt
     try {
@@ -264,6 +313,14 @@ export class ClaudeJobs {
     if ('session_id' in message && typeof message.session_id === 'string' && message.session_id !== job.sessionId) {
       job.sessionId = message.session_id
       this.store.setSession(job.id, message.session_id)
+    }
+    if (job.status !== 'running') {
+      // result のあとの応答は、残っていたバックグラウンドの作業から始まったもの。画面には出さない
+      if (message.type === 'assistant' && !this.lateWarned.has(job)) {
+        this.lateWarned.add(job)
+        console.warn(`Claude のジョブ ${job.id} が終わったあとに応答が届きました（バックグラウンドの作業が残っているかもしれません）`)
+      }
+      return
     }
     if (message.type === 'system' && message.subtype === 'init') {
       const canvcode = message.mcp_servers.find((server) => server.name === 'canvcode')

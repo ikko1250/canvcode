@@ -52,20 +52,37 @@ interface Call {
   options: Options
 }
 
-// messages を順に返す偽の query。hold なら、止められるまで最後のメッセージを返さない
-function fakeRun(messages: SDKMessage[], options: { hold?: boolean } = {}) {
+// messages を順に返す偽の query。hold なら、止められるまで最後のメッセージを返さない。
+// linger なら、全部返したあとも、止められるか release() を呼ばれるまで終わらない（result のあとも残るプロセス）
+function fakeRun(messages: SDKMessage[], options: { hold?: boolean; linger?: boolean } = {}) {
   const calls: Call[] = []
+  const aborted: number[] = []
+  const releases: (() => void)[] = []
   const run: RunQuery = async function* (params) {
-    calls.push(params)
+    const index = calls.push(params) - 1
+    const signal = params.options.abortController!.signal
+    const abortedOrReleased = () =>
+      new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve()
+        signal.addEventListener('abort', () => {
+          aborted.push(index)
+          resolve()
+        })
+        releases.push(resolve)
+      })
     for (let i = 0; i < messages.length; i++) {
       if (options.hold && i === messages.length - 1) {
-        await new Promise((resolve) => params.options.abortController!.signal.addEventListener('abort', resolve))
+        await abortedOrReleased()
         throw new Error('aborted')
       }
       yield messages[i]
     }
+    if (options.linger) await abortedOrReleased()
   }
-  return { run, calls }
+  const release = () => {
+    for (const resolve of releases.splice(0)) resolve()
+  }
+  return { run, calls, aborted, release }
 }
 
 function until(jobs: ClaudeJobs, id: string, done: (job: Job) => boolean): Promise<Job> {
@@ -126,6 +143,7 @@ describe('ClaudeJobs', () => {
     expect(call.options.resume).toBeUndefined()
     expect(call.options.maxTurns).toBe(100)
     expect(call.options.maxBudgetUsd).toBeUndefined()
+    expect(call.options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1')
     expect((call.options.systemPrompt as { append: string }).append).toContain('canvas:x')
   })
 
@@ -206,6 +224,65 @@ describe('ClaudeJobs', () => {
     const done = await finished(jobs, job.id)
     expect(done.status).toBe('cancelled')
     expect(done.events).toEqual([{ kind: 'text', text: '途中' }])
+  })
+
+  it('continues a thread only after the previous process ended, stopping it when it lingers', async () => {
+    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
+    const jobs = makeJobs({ run: fake.run, lingerGraceMs: 0 })
+    const a = jobs.start({ prompt: 'a' })
+    expect((await finished(jobs, a.id)).status).toBe('done')
+    expect(fake.aborted).toEqual([])
+
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    expect((await finished(jobs, b.id)).status).toBe('done')
+    // 2 つ目の query を立てる前に、前のプロセスを止めた
+    expect(fake.aborted).toEqual([0])
+    expect(fake.calls).toHaveLength(2)
+    expect(fake.calls[1].options.resume).toBe('s1')
+  })
+
+  it('does not stop the previous process when it ends by itself in time', async () => {
+    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
+    const jobs = makeJobs({ run: fake.run, lingerGraceMs: 60_000 })
+    const a = jobs.start({ prompt: 'a' })
+    await finished(jobs, a.id)
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    expect(fake.calls).toHaveLength(1)
+    fake.release()
+    await until(jobs, b.id, () => fake.calls.length === 2)
+    fake.release()
+    expect((await finished(jobs, b.id)).status).toBe('done')
+    expect(fake.aborted).toEqual([])
+  })
+
+  it('cancels a job that waits for the previous process without starting it', async () => {
+    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
+    const jobs = makeJobs({ run: fake.run, lingerGraceMs: 60_000 })
+    const a = jobs.start({ prompt: 'a' })
+    await finished(jobs, a.id)
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    jobs.cancel(b.id)
+    fake.release()
+    expect((await finished(jobs, b.id)).status).toBe('cancelled')
+    expect(fake.calls).toHaveLength(1)
+  })
+
+  it('stops processes that linger after their result when disposed', async () => {
+    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
+    const jobs = new ClaudeJobs({ workspace: WS, mcpUrl: 'http://127.0.0.1:1/mcp', store: openStore(), run: fake.run })
+    await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    await jobs.dispose()
+    expect(fake.aborted).toEqual([0])
+  })
+
+  it('stops the lingering process of a thread before deleting its sessions', async () => {
+    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
+    const abortedWhenDeleted: number[][] = []
+    const jobs = makeJobs({ run: fake.run, deleteSession: async () => void abortedWhenDeleted.push([...fake.aborted]) })
+    const a = jobs.start({ prompt: 'a' })
+    await finished(jobs, a.id)
+    await jobs.deleteThread(a.threadId)
+    expect(abortedWhenDeleted).toEqual([[0]])
   })
 
   it('deletes a thread and its Claude Code sessions, but not while it runs', async () => {
