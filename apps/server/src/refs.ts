@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { resolveLines, validateReference, type Box, type PdfRegion, type ReferenceRecord } from '@canvcode/core'
 import { ensurePdfTextFile } from './assets.ts'
 import { HttpError, type FileStore } from './files.ts'
@@ -501,9 +501,13 @@ async function fileSummary(id: string, deps: RefDeps): Promise<FileSummary | und
     const out: FileSummary = { kind: String(record.kind), title: String(record.title), path: String(record.path) }
     if (typeof record.pageCount === 'number') out.pageCount = record.pageCount
     const assetId = record.assetId
-    const text = typeof assetId === 'string' && assetId.startsWith('asset:')
-      ? await ensurePdfTextFile(deps.dataDir, assetId.slice('asset:'.length)).catch(() => null)
-      : null
+    const hash = typeof assetId === 'string' && assetId.startsWith('asset:') ? assetId.slice('asset:'.length) : null
+    const text = hash ? await ensurePdfTextFile(deps.dataDir, hash).catch(() => null) : null
+    // 原本の PDF（Asset）。ページを指定して PDF をそのまま読めるモデルのため。ハッシュの形は ensurePdfTextFile が確かめている
+    if (text) {
+      const original = resolve(deps.dataDir, 'assets', `${hash}.pdf`)
+      if (await stat(original).then((s) => s.isFile(), () => false)) out.absPath = original
+    }
     if (text) out.textPath = text.path
     if (text?.textless) out.note = PDF_TEXTLESS
     if (record.missing === true) out.missing = true
@@ -519,6 +523,37 @@ async function fileSummary(id: string, deps: RefDeps): Promise<FileSummary | und
     }
   }
   return out
+}
+
+// read_nodes の結果の file に、resolve_reference と同じ場所（absPath・textPath・pageCount など）を足す。
+// PDF のページを並べた Canvas への Portal には、その PDF を file として付ける（ページのノードを開かなくても本文を読めるように）
+export async function addFileLocations(nodes: Record<string, unknown>[], deps: RefDeps): Promise<void> {
+  const cache: SummaryCache = new Map()
+  const summary = (id: string): Promise<FileSummary | undefined> => {
+    let pending = cache.get(id)
+    if (!pending) cache.set(id, (pending = fileSummary(id, deps)))
+    return pending
+  }
+  let pdfOf: Map<string, string> | undefined
+  for (const node of nodes) {
+    const file = node.file as { id?: unknown; missing?: unknown } | undefined
+    if (file && typeof file.id === 'string' && file.missing !== true) {
+      const info = await summary(file.id)
+      if (info) node.file = { ...file, ...info }
+      continue
+    }
+    const target = node.type === 'portal' ? (node.target as { id?: unknown } | undefined)?.id : undefined
+    if (typeof target !== 'string') continue
+    if (!pdfOf) {
+      pdfOf = new Map()
+      for (const record of deps.records.ofTypeName('file')) {
+        if (record.kind === 'pdf' && !record.deletedAt && typeof record.pagesCanvasId === 'string') pdfOf.set(record.pagesCanvasId, record.id)
+      }
+    }
+    const fileId = pdfOf.get(target)
+    const info = fileId ? await summary(fileId) : undefined
+    if (fileId && info) node.file = { id: fileId, ...info }
+  }
 }
 
 function trashed(id: string, deps: RefDeps): boolean {

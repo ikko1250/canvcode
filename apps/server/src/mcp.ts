@@ -13,7 +13,7 @@ import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } 
 import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
 import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
-import { resolveReference, type RefDeps } from './refs.ts'
+import { addFileLocations, resolveReference, type RefDeps } from './refs.ts'
 
 // AI から CanvCode を使うための MCP サーバー（MAI-59）。
 // - Claude Code などが Streamable HTTP で /mcp につなぐ（claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp）
@@ -48,7 +48,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
         'Document ids (file:...) in its result can be passed to read_document. ' +
         'Documents in its result also carry absPath (the Markdown / Python file) or textPath (plain text extracted from a PDF, ' +
         'each page starting with a "=== page N ===" line); read those files directly when you need more than the referenced part. ' +
-        'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details. ' +
+        'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details ' +
+        '(its file fields carry the same absPath / textPath, also on a portal to the pages of a PDF). ' +
         'Canvas tools default to the canvas the user is viewing ("this", "here").' +
         (deps.agent
           ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
@@ -205,14 +206,15 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
   )
 
-  registerCanvasTools(server, deps.records, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot)
+  registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot)
   return server
 }
 
 // ---- Canvas の上のもの ----
 
 // 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
-function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources, plot?: Plotter): void {
+function registerCanvasTools(server: McpServer, refDeps: RefDeps, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources, plot?: Plotter): void {
+  const { records } = refDeps
   // ユーザーが見ている所（その Canvas がまだあるときだけ）
   const viewing = (): Presence | null => {
     const current = presence?.() ?? null
@@ -275,11 +277,15 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
     'read_nodes',
     {
       title: 'Read nodes',
-      description: 'Details of nodes by id (compact JSON): world position and size, text, colours, file, arrow ends, children.',
+      description: 'Details of nodes by id (compact JSON): world position and size, text, colours, file (with absPath / textPath), arrow ends, children.',
       inputSchema: { ids: z.array(z.string()).min(1).max(100).describe('Node ids (node:...)') },
       annotations: { readOnlyHint: true },
     },
-    ({ ids }) => text(JSON.stringify(readNodes(records, ids))),
+    async ({ ids }) => {
+      const result = readNodes(records, ids)
+      await addFileLocations(result.nodes, refDeps)
+      return text(JSON.stringify(result))
+    },
   )
 
   if (!agent) return
