@@ -1,0 +1,4 @@
+interface:
+  display_name: "imozuru"
+  short_description: "知らない分野を用語・人・場から芋づる式にたどり、原文を保存する"
+  default_prompt: "Use $imozuru to dig into this field and save the original sources."
