@@ -16,6 +16,7 @@ import { HttpError, type FileInfo } from './files.ts'
 
 const BUNDLED_MD2PDF = fileURLToPath(new URL('../md2pdf/', import.meta.url))
 const CANVCODE_FILTER = join(BUNDLED_MD2PDF, 'canvcode-images.lua')
+export const CANVCODE_ALIGN_FILTER = join(BUNDLED_MD2PDF, 'canvcode-align.lua')
 const TIMEOUT_MS = 180_000
 const MAX_OUTPUT = 64 * 1024 * 1024
 
@@ -115,9 +116,11 @@ export class MarkdownPdf {
           `--metadata=canvcode-docdir:${docDir}`,
           `--resource-path=${[join(this.workspace, docDir), this.workspace].join(delimiter)}`,
           `--include-in-header=${header}`,
-          // 画像のパスを先に直してから、md2pdf のフィルタに渡す
+          // 画像のパスと <p align> の寄せを先に直してから、md2pdf のフィルタに渡す
           '--lua-filter',
           CANVCODE_FILTER,
+          '--lua-filter',
+          CANVCODE_ALIGN_FILTER,
           ...filters.flatMap((filter) => ['--lua-filter', filter]),
           input,
           '-o',
