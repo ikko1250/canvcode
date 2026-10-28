@@ -2826,6 +2826,58 @@ body,
   white-space: normal;
 }
 
+.claude-tool.task {
+  white-space: normal;
+}
+
+.claude-tool.task.failed {
+  color: #cf222e;
+}
+
+/* バックグラウンドの作業が終わって、Claude が自分で続けたジョブの見出し */
+.claude-wake {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.claude-wake::before {
+  content: '↳ ';
+}
+
+.claude-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 30%;
+  overflow-y: auto;
+  padding: 6px 12px;
+  border-top: 1px solid var(--panel-border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.claude-tasks-header,
+.claude-task {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.claude-tasks-header > span:nth-child(2),
+.claude-task-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-task {
+  padding-left: 16px;
+}
+
 .claude-error {
   margin: 6px 0;
   color: #cf222e;

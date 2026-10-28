@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyStreamMessage, jobsOfThread, type ClaudeJob, type ClaudeState, type ThreadSummary } from './claudeClient.ts'
+import { applyStreamMessage, jobsOfThread, threadBusy, type ClaudeJob, type ClaudeState, type ThreadSummary } from './claudeClient.ts'
 
 // Claude の会話の状態に、SSE のメッセージを当てる
 
@@ -63,6 +63,17 @@ describe('applyStreamMessage', () => {
     expect(s.jobs.get('a')!.events).toEqual([])
   })
 
+  it('replaces a thread whose background tasks changed, keeping its jobs', () => {
+    const before = state({ threads: [thread('a', 1), thread('b', 2)], jobs: new Map([['a', job('a')]]) })
+    const tasks = [{ id: 'ag1', description: '論文を探す', type: 'local_agent' }]
+    const { state: s } = applyStreamMessage(before, { type: 'thread', thread: thread('a', 3, { tasks }) })
+    expect(s.threads.map((t) => [t.threadId, t.tasks])).toEqual([
+      ['a', tasks],
+      ['b', undefined],
+    ])
+    expect(s.jobs).toBe(before.jobs)
+  })
+
   it('removes a deleted thread and its jobs', () => {
     const before = state({ threads: [thread('a', 1), thread('b', 2)], jobs: new Map([['a', job('a')], ['b', job('b')]]), loaded: new Set(['a']) })
     const { state: s } = applyStreamMessage(before, { type: 'thread-deleted', threadId: 'a' })
@@ -76,5 +87,14 @@ describe('jobsOfThread', () => {
   it('returns the jobs of a thread, oldest first', () => {
     const s = state({ jobs: new Map([['b2', job('b2', { threadId: 'b', createdAt: 4 })], ['a', job('a', { createdAt: 1 })], ['b', job('b', { createdAt: 2 })]]) })
     expect(jobsOfThread(s, 'b').map((j) => j.id)).toEqual(['b', 'b2'])
+  })
+})
+
+describe('threadBusy', () => {
+  it('is busy while a job runs or a background task is left', () => {
+    expect(threadBusy(thread('a', 1))).toBe(false)
+    expect(threadBusy(thread('a', 1, { tasks: [] }))).toBe(false)
+    expect(threadBusy(thread('a', 1, { running: true }))).toBe(true)
+    expect(threadBusy(thread('a', 1, { tasks: [{ id: 'x', description: 'x', type: 'local_bash' }] }))).toBe(true)
   })
 })
