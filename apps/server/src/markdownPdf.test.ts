@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HttpError, type FileInfo } from './files.ts'
-import { MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
+import { CANVCODE_ALIGN_FILTER, MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
 
 // Markdown の File を PDF にする口（POST /api/files/<id>/pdf）。
 // 実際に PDF を作るテストは、pandoc と LuaLaTeX がある環境でだけ動かす
@@ -30,7 +30,8 @@ function hasCommand(command: string, args: string[]): boolean {
     return false
   }
 }
-const canBuild = hasCommand('pandoc', ['--version']) && hasCommand('lualatex', ['--version'])
+const hasPandoc = hasCommand('pandoc', ['--version'])
+const canBuild = hasPandoc && hasCommand('lualatex', ['--version'])
 
 function fileInfo(id: string, path: string): FileInfo {
   const kind = path.endsWith('.py') ? 'code' : 'markdown'
@@ -109,6 +110,31 @@ describe('MarkdownPdf', () => {
     const stderr = 'This is LuaHBTeX\n(./input.tex\n! Package fontspec Error: The font "X" cannot be found.\n\nl.12 \\setmainjfont\nmore\n'
     expect(latexError(stderr)).toBe('! Package fontspec Error: The font "X" cannot be found.\n\nl.12 \\setmainjfont')
     expect(latexError('a\nb\nc\nd\n')).toBe('b\nc\nd')
+  })
+
+  it.skipIf(!hasPandoc)('centers <p align> and <div align> in LaTeX', () => {
+    const markdown = [
+      '<p align="center">表1　**太字**の題</p>',
+      '',
+      '<p align="right">右の文</p>',
+      '',
+      '<div align="center">',
+      '',
+      '表2　中の段落',
+      '',
+      '</div>',
+      '',
+      '<p align="center">閉じない',
+      '',
+    ].join('\n')
+    const latex = execFileSync('pandoc', ['--from=markdown', '-t', 'latex', '--lua-filter', CANVCODE_ALIGN_FILTER], {
+      input: markdown,
+      encoding: 'utf8',
+    })
+    expect(latex).toMatch(/\\begin\{center\}\s*表1　\\textbf\{太字\}の題\s*\\end\{center\}/)
+    expect(latex).toMatch(/\\begin\{flushright\}\s*右の文\s*\\end\{flushright\}/)
+    expect(latex).toMatch(/\\begin\{center\}\s*表2　中の段落\s*\\end\{center\}/)
+    expect(latex).not.toMatch(/\\begin\{center\}\s*閉じない/)
   })
 
   it.skipIf(!canBuild)(
