@@ -5,19 +5,24 @@ import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
 // 画面から Claude Code に頼む API（claude/jobs.ts）。
 // - GET /api/claude/threads：会話の一覧（最後に動いたものから）{ threads }
 // - GET /api/claude/threads/<id>：会話とそのジョブ（出来事も含む）{ thread, jobs }
-// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼があれば 409）
+// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼かバックグラウンドの作業があれば 409）
+// - POST /api/claude/threads/<id>/stop：会話のプロセスごと止める（今のターンもバックグラウンドの作業も）。204
+// - POST /api/claude/threads/<id>/tasks/<taskId>/stop：バックグラウンドの作業を 1 つ止める。204（もう動いていなければ 404）
 // - POST /api/claude/jobs { prompt, refId?, canvasId?, threadId? }：頼む（threadId があれば、その会話の続き）。201 { job }
 // - GET /api/claude/jobs/<id>：1 つのジョブ
-// - POST /api/claude/jobs/<id>/cancel：止める
+// - POST /api/claude/jobs/<id>/cancel：止める（そのターンだけ。バックグラウンドの作業は残る）
 // - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running }（running は動いているジョブ）、
-//   そのあと変わるたびに { type: 'job', job, events, from, thread }（events はジョブの from 番目からの出来事）か
-//   { type: 'thread-deleted', threadId }
+//   そのあと変わるたびに { type: 'job', job, events, from, thread }（events はジョブの from 番目からの出来事）か、
+//   { type: 'thread', thread }（バックグラウンドの作業の一覧が変わった）か、{ type: 'thread-deleted', threadId }
+// 会話（thread）には、動いているバックグラウンドの作業 tasks: { id, description, type }[] が付く
 // jobs がなければ（CANVCODE_CLAUDE=0）、どれも 404 を返す。画面はそれを見て入口を出さない
 
 const PREFIX = '/api/claude'
 const MAX_BODY = 64 * 1024
 // 経路の途中（Tailscale Serve など）で、黙っている接続を切られないように送る
 const HEARTBEAT_MS = 25_000
+// バックグラウンドの作業の id（Claude Code の task_id）
+const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 export function handleClaude(req: IncomingMessage, res: ServerResponse, path: string, jobs: ClaudeJobs | null): boolean {
   if (path !== PREFIX && !path.startsWith(`${PREFIX}/`)) return false
@@ -33,6 +38,23 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
   if (path === `${PREFIX}/threads`) {
     if (req.method !== 'GET') return methodNotAllowed(res)
     sendJson(res, 200, { threads: jobs.threads() })
+    return true
+  }
+  const stop = /^\/api\/claude\/threads\/([0-9a-f-]{36})(?:\/tasks\/([^/]+))?\/stop$/.exec(path)
+  if (stop) {
+    if (req.method !== 'POST') return methodNotAllowed(res)
+    const [, threadId, taskId] = stop
+    if (taskId !== undefined && !TASK_ID.test(taskId)) {
+      sendJson(res, 400, { error: 'invalid task id' })
+      return true
+    }
+    ;(taskId === undefined ? jobs.stopThread(threadId) : jobs.stopTask(threadId, taskId)).then(
+      () => {
+        res.writeHead(204)
+        res.end()
+      },
+      (error: unknown) => sendError(res, error),
+    )
     return true
   }
   const thread = /^\/api\/claude\/threads\/([0-9a-f-]{36})$/.exec(path)

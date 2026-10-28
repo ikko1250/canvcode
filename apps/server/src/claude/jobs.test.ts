@@ -2,8 +2,19 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { afterEach, describe, expect, it } from 'vitest'
-import { ClaudeJobs, claudeLimitsFromEnv, DEFAULT_MAX_TURNS, INTERRUPTED_MESSAGE, MAX_RUNNING, type ClaudeJobsDeps, type Job, type JobChange, type RunQuery } from './jobs.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  ClaudeJobs,
+  claudeLimitsFromEnv,
+  DEFAULT_MAX_TURNS,
+  INTERRUPTED_MESSAGE,
+  MAX_RUNNING,
+  MAX_SESSIONS,
+  type ClaudeJobsDeps,
+  type Job,
+  type JobChange,
+  type RunQuery,
+} from './jobs.ts'
 import { ClaudeStore } from './store.ts'
 
 // 画面から頼んだ Claude Code のジョブ（Agent SDK の query は偽物に差し替え、保存は本物の SQLite）
@@ -44,45 +55,112 @@ const init = (session: string, extra: { mcp?: string; mode?: string } = {}) =>
   }) as unknown as SDKMessage
 const assistant = (session: string, content: unknown[], extra: Record<string, unknown> = {}) =>
   ({ type: 'assistant', session_id: session, parent_tool_use_id: null, message: { content }, ...extra }) as unknown as SDKMessage
-const success = (session: string) =>
-  ({ type: 'result', subtype: 'success', is_error: false, session_id: session, total_cost_usd: 0.01, duration_ms: 1200, result: 'ok' }) as unknown as SDKMessage
+// total_cost_usd は query の合計
+const success = (session: string, total = 0.01) =>
+  ({ type: 'result', subtype: 'success', is_error: false, session_id: session, total_cost_usd: total, duration_ms: 1200, result: 'ok' }) as unknown as SDKMessage
+const interrupted = (session: string, total = 0.01) =>
+  ({ type: 'result', subtype: 'error_during_execution', is_error: true, session_id: session, total_cost_usd: total, duration_ms: 5, errors: [] }) as unknown as SDKMessage
+const taskStarted = (id: string, description: string, extra: Record<string, unknown> = {}) =>
+  ({ type: 'system', subtype: 'task_started', session_id: 's1', task_id: id, description, is_backgrounded: true, ...extra }) as unknown as SDKMessage
+const taskDone = (id: string, status = 'completed') =>
+  ({ type: 'system', subtype: 'task_notification', session_id: 's1', task_id: id, status, summary: '要約', output_file: '/tmp/x' }) as unknown as SDKMessage
+const tasksChanged = (tasks: { id: string; description: string; ambient?: boolean }[]) =>
+  ({
+    type: 'system',
+    subtype: 'background_tasks_changed',
+    session_id: 's1',
+    tasks: tasks.map((task) => ({ task_id: task.id, description: task.description, task_type: 'local_agent', ...(task.ambient ? { ambient: true } : {}) })),
+  }) as unknown as SDKMessage
 
-interface Call {
-  prompt: string
+// 偽の query（ストリーミング入力）。送られた文を sent に記録し、テストから emit() で SDK のメッセージを流す。
+// reply があれば、送られた文ごとにそれを呼ぶ。入れ物が閉じたら（stdin の終わり）、linger でなければ終わる
+interface FakeQuery {
   options: Options
+  sent: string[]
+  interrupts: number
+  stopped: string[]
+  aborted: boolean
+  emit: (...messages: SDKMessage[]) => void
+  end: () => void
+  fail: (error: Error) => void
 }
 
-// messages を順に返す偽の query。hold なら、止められるまで最後のメッセージを返さない。
-// linger なら、全部返したあとも、止められるか release() を呼ばれるまで終わらない（result のあとも残るプロセス）
-function fakeRun(messages: SDKMessage[], options: { hold?: boolean; linger?: boolean } = {}) {
-  const calls: Call[] = []
-  const aborted: number[] = []
-  const releases: (() => void)[] = []
-  const run: RunQuery = async function* (params) {
-    const index = calls.push(params) - 1
-    const signal = params.options.abortController!.signal
-    const abortedOrReleased = () =>
-      new Promise<void>((resolve) => {
-        if (signal.aborted) return resolve()
-        signal.addEventListener('abort', () => {
-          aborted.push(index)
-          resolve()
-        })
-        releases.push(resolve)
-      })
-    for (let i = 0; i < messages.length; i++) {
-      if (options.hold && i === messages.length - 1) {
-        await abortedOrReleased()
-        throw new Error('aborted')
-      }
-      yield messages[i]
+function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger?: boolean; onInterrupt?: (q: FakeQuery) => void } = {}) {
+  const queries: FakeQuery[] = []
+  const run: RunQuery = (params) => {
+    const out: SDKMessage[] = []
+    let wake: (() => void) | undefined
+    let done = false
+    let error: Error | undefined
+    const q: FakeQuery = {
+      options: params.options,
+      sent: [],
+      interrupts: 0,
+      stopped: [],
+      aborted: false,
+      emit: (...messages) => {
+        out.push(...messages)
+        wake?.()
+      },
+      end: () => {
+        done = true
+        wake?.()
+      },
+      fail: (failure) => {
+        error = failure
+        wake?.()
+      },
     }
-    if (options.linger) await abortedOrReleased()
+    params.options.abortController!.signal.addEventListener('abort', () => {
+      q.aborted = true
+      q.fail(new Error('aborted'))
+    })
+    void (async () => {
+      for await (const message of params.prompt) {
+        const text = message.message.content as string
+        q.sent.push(text)
+        options.reply?.(q, text)
+      }
+      if (!options.linger) q.end()
+    })()
+    queries.push(q)
+    return {
+      async *[Symbol.asyncIterator]() {
+        for (;;) {
+          const next = out.shift()
+          if (next) {
+            yield next
+            continue
+          }
+          if (error) throw error
+          if (done) return
+          await new Promise<void>((resolve) => {
+            wake = resolve
+          })
+          wake = undefined
+        }
+      },
+      interrupt: async () => {
+        q.interrupts++
+        options.onInterrupt?.(q)
+      },
+      stopTask: async (taskId: string) => {
+        q.stopped.push(taskId)
+      },
+    }
   }
-  const release = () => {
-    for (const resolve of releases.splice(0)) resolve()
-  }
-  return { run, calls, aborted, release }
+  return { run, queries }
+}
+
+// 送られた文ごとに、1 ターン（init・messages・result）を返す偽の SDK。費用は 1 ターン 0.01 ずつ増える
+function replying(messages: (text: string) => SDKMessage[] = () => [], session = 's1') {
+  let total = 0
+  return fakeSdk({
+    reply: (q, text) => {
+      total += 0.01
+      q.emit(init(session), ...messages(text), success(session, total))
+    },
+  })
 }
 
 function until(jobs: ClaudeJobs, id: string, done: (job: Job) => boolean): Promise<Job> {
@@ -99,11 +177,14 @@ function until(jobs: ClaudeJobs, id: string, done: (job: Job) => boolean): Promi
   })
 }
 const finished = (jobs: ClaudeJobs, id: string) => until(jobs, id, (job) => job.status !== 'running')
+const queryAt = async (sdk: { queries: FakeQuery[] }, index: number) => {
+  await vi.waitFor(() => expect(sdk.queries.length).toBeGreaterThan(index))
+  return sdk.queries[index]
+}
 
 describe('ClaudeJobs', () => {
   it('runs a prompt with the selected place in auto mode, and turns messages into events', async () => {
-    const fake = fakeRun([
-      init('s1'),
+    const sdk = replying(() => [
       assistant('s1', [
         { type: 'text', text: '読みます' },
         { type: 'tool_use', name: 'mcp__canvcode__resolve_reference', input: { id: 'ref:Ab12Cd34Ef' } },
@@ -112,14 +193,14 @@ describe('ClaudeJobs', () => {
         { type: 'tool_use', name: 'TodoWrite', input: {} },
       ]),
       assistant('s1', [{ type: 'text', text: '付箋にしました' }]),
-      success('s1'),
     ])
-    const jobs = makeJobs({ run: fake.run })
+    const jobs = makeJobs({ run: sdk.run })
     const job = jobs.start({ prompt: '  要約して ', refId: 'ref:Ab12Cd34Ef', canvasId: 'canvas:x' })
     expect(job.status).toBe('running')
     const done = await finished(jobs, job.id)
 
     expect(done.status).toBe('done')
+    expect(done.origin).toBeUndefined()
     expect(done.costUsd).toBe(0.01)
     expect(done.durationMs).toBe(1200)
     expect(done.events).toEqual([
@@ -129,36 +210,49 @@ describe('ClaudeJobs', () => {
       { kind: 'tool', name: 'Bash', detail: 'wc -l notes/a.md' },
       { kind: 'text', text: '付箋にしました' },
     ])
-    const [call] = fake.calls
-    expect(call.prompt).toBe('要約して\n\n（選んだ場所：ref:Ab12Cd34Ef）')
-    expect(call.options.cwd).toBe(WS)
-    expect(call.options.permissionMode).toBe('auto')
-    expect(call.options.tools).toContain('Bash')
-    expect(call.options.tools).toContain('Agent')
-    expect(call.options.tools).toContain('Skill')
-    expect(call.options.skills).toBe('all')
-    expect(call.options.mcpServers).toEqual({ canvcode: { type: 'http', url: 'http://127.0.0.1:1/mcp', alwaysLoad: true } })
-    expect(call.options.strictMcpConfig).toBe(true)
-    expect(call.options.hooks?.PreToolUse).toHaveLength(1)
-    expect(call.options.resume).toBeUndefined()
-    expect(call.options.maxTurns).toBe(100)
-    expect(call.options.maxBudgetUsd).toBeUndefined()
-    expect(call.options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1')
-    expect((call.options.systemPrompt as { append: string }).append).toContain('canvas:x')
+    const [q] = sdk.queries
+    expect(q.sent).toEqual(['要約して\n\n（選んだ場所：ref:Ab12Cd34Ef）'])
+    const { options } = q
+    expect(options.cwd).toBe(WS)
+    expect(options.permissionMode).toBe('auto')
+    expect(options.tools).toContain('Bash')
+    expect(options.tools).toContain('Agent')
+    expect(options.tools).toContain('Skill')
+    expect(options.skills).toBe('all')
+    expect(options.mcpServers).toEqual({ canvcode: { type: 'http', url: 'http://127.0.0.1:1/mcp', alwaysLoad: true } })
+    expect(options.strictMcpConfig).toBe(true)
+    expect(options.hooks?.PreToolUse).toHaveLength(1)
+    expect(options.resume).toBeUndefined()
+    expect(options.maxTurns).toBe(100)
+    expect(options.maxBudgetUsd).toBeUndefined()
+    expect(options.perTaskStopAffordance).toBe(true)
+    expect(options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBeUndefined()
+    expect((options.systemPrompt as { append: string }).append).toContain('canvas:x')
+  })
+
+  it('sends the next message of a thread to the same process, with the cost of each turn', async () => {
+    const sdk = replying((text) => [assistant('s1', [{ type: 'text', text: `${text.split('\n')[0]}です` }])])
+    const jobs = makeJobs({ run: sdk.run })
+    const a = await finished(jobs, jobs.start({ prompt: 'a', canvasId: 'canvas:x' }).id)
+    const b = await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId, canvasId: 'canvas:y' }).id)
+    expect(sdk.queries).toHaveLength(1)
+    // システムプロンプトと違う Canvas を見ていれば、それを添える
+    expect(sdk.queries[0].sent).toEqual(['a', 'b\n\n（いま見ている Canvas：canvas:y）'])
+    expect(a.costUsd).toBeCloseTo(0.01)
+    expect(b.costUsd).toBeCloseTo(0.01)
+    expect(b.events).toEqual([{ kind: 'text', text: 'bです' }])
   })
 
   it('lets Claude use subagents, showing their tool uses and denials but not their text', async () => {
     const sub = { parent_tool_use_id: 'a1' }
-    const fake = fakeRun([
-      init('s1'),
+    const sdk = replying(() => [
       assistant('s1', [{ type: 'tool_use', name: 'Agent', input: { description: '論文を探す', prompt: '...' } }]),
       assistant('s1', [{ type: 'text', text: '途中の考え' }], sub),
       assistant('s1', [{ type: 'tool_use', name: 'WebSearch', input: { query: 'canvas' } }], sub),
       { type: 'system', subtype: 'permission_denied', session_id: 's1', tool_name: 'Bash', tool_use_id: 't1', agent_id: 'x', decision_reason: 'no', message: 'denied' } as unknown as SDKMessage,
       assistant('s1', [{ type: 'text', text: '見つけました' }]),
-      success('s1'),
     ])
-    const jobs = makeJobs({ run: fake.run })
+    const jobs = makeJobs({ run: sdk.run })
     const done = await finished(jobs, jobs.start({ prompt: '探して' }).id)
     expect(done.events).toEqual([
       { kind: 'tool', name: 'Agent', detail: '論文を探す' },
@@ -168,24 +262,147 @@ describe('ClaudeJobs', () => {
     ])
   })
 
+  it('shows background tasks, lets the user talk while they run, and continues on its own when they finish', async () => {
+    const sdk = fakeSdk()
+    const jobs = makeJobs({ run: sdk.run })
+    const changes: JobChange[] = []
+    jobs.subscribe((change) => changes.push(change))
+    const a = jobs.start({ prompt: '調べて' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emit(
+      init('s1'),
+      assistant('s1', [{ type: 'tool_use', id: 'tu1', name: 'Agent', input: { description: '論文を探す' } }]),
+      tasksChanged([{ id: 'ag1', description: '論文を探す' }, { id: 'w1', description: '見張り', ambient: true }]),
+      taskStarted('ag1', '論文を探す', { tool_use_id: 'tu1' }),
+      // 前景の作業は知らせない
+      taskStarted('fg1', 'wc', { is_backgrounded: false }),
+      success('s1', 0.01),
+    )
+    const first = await finished(jobs, a.id)
+    expect(first.status).toBe('done')
+    expect(first.events).toEqual([
+      { kind: 'tool', name: 'Agent', detail: '論文を探す' },
+      { kind: 'task', status: 'started', description: '論文を探す' },
+    ])
+    expect(jobs.thread(a.threadId)!.thread.tasks).toEqual([{ id: 'ag1', description: '論文を探す', type: 'local_agent' }])
+    expect(changes).toContainEqual({ type: 'thread', thread: expect.objectContaining({ threadId: a.threadId, tasks: [expect.objectContaining({ id: 'ag1' })] }) })
+
+    // 作業が動いているあいだも話しかけられる。バックグラウンドのサブエージェントの中の動きは出さない
+    const b = jobs.start({ prompt: 'その間に一言', threadId: a.threadId })
+    await vi.waitFor(() => expect(q.sent).toHaveLength(2))
+    q.emit(
+      init('s1'),
+      assistant('s1', [{ type: 'tool_use', name: 'WebSearch', input: { query: 'x' } }], { parent_tool_use_id: 'tu1' }),
+      assistant('s1', [{ type: 'text', text: 'はい' }]),
+      success('s1', 0.02),
+    )
+    expect((await finished(jobs, b.id)).events).toEqual([{ kind: 'text', text: 'はい' }])
+
+    // 作業が終わり、Claude が自分で続ける
+    q.emit(taskDone('ag1'), tasksChanged([]), init('s1'), assistant('s1', [{ type: 'text', text: '見つかりました' }]), success('s1', 0.05))
+    await vi.waitFor(() => expect(jobs.thread(a.threadId)!.jobs).toHaveLength(3))
+    const background = jobs.thread(a.threadId)!.jobs[2]
+    const done = await finished(jobs, background.id)
+    expect(done).toMatchObject({ origin: 'background', prompt: 'バックグラウンドの作業が終わりました：「論文を探す」', status: 'done' })
+    expect(done.costUsd).toBeCloseTo(0.03)
+    expect(done.events).toEqual([
+      { kind: 'task', status: 'completed', description: '論文を探す' },
+      { kind: 'text', text: '見つかりました' },
+    ])
+    expect(jobs.thread(a.threadId)!.thread.tasks).toEqual([])
+    expect(sdk.queries).toHaveLength(1)
+  })
+
+  it('stops one background task, or the whole process', async () => {
+    const sdk = fakeSdk()
+    const jobs = makeJobs({ run: sdk.run })
+    const a = jobs.start({ prompt: 'a' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emit(init('s1'), tasksChanged([{ id: 'ag1', description: '探す' }]), taskStarted('ag1', '探す'), success('s1'))
+    await finished(jobs, a.id)
+    await jobs.stopTask(a.threadId, 'ag1')
+    expect(q.stopped).toEqual(['ag1'])
+    await expect(jobs.stopTask(a.threadId, 'nope')).rejects.toThrow(/もう動いていません/)
+
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    await vi.waitFor(() => expect(q.sent).toHaveLength(2))
+    q.emit(init('s1'))
+    await jobs.stopThread(a.threadId)
+    expect(q.aborted).toBe(true)
+    expect((await finished(jobs, b.id)).status).toBe('cancelled')
+    expect(jobs.thread(a.threadId)!.thread.tasks).toEqual([])
+    await expect(jobs.stopThread('00000000-0000-0000-0000-000000000000')).rejects.toThrow(/もうありません/)
+  })
+
+  it('closes an idle process, and resumes the thread in a new one', async () => {
+    const sdk = replying()
+    const jobs = makeJobs({ run: sdk.run, idleCloseMs: 0 })
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    // 入れ物を閉じて終わらせた（止めてはいない）
+    expect(sdk.queries[0].aborted).toBe(false)
+    const b = await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId }).id)
+    expect(b.status).toBe('done')
+    expect(sdk.queries).toHaveLength(2)
+    expect(sdk.queries[1].options.resume).toBe('s1')
+  })
+
+  it('does not close an idle process while it has background tasks', async () => {
+    const sdk = fakeSdk({ linger: true })
+    const jobs = makeJobs({ run: sdk.run, idleCloseMs: 0 })
+    const a = jobs.start({ prompt: 'a' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emit(init('s1'), tasksChanged([{ id: 'ag1', description: '探す' }]), success('s1'))
+    await finished(jobs, a.id)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(q.aborted).toBe(false)
+    jobs.start({ prompt: 'b', threadId: a.threadId })
+    await vi.waitFor(() => expect(q.sent).toHaveLength(2))
+    expect(sdk.queries).toHaveLength(1)
+  })
+
+  it(`keeps at most ${MAX_SESSIONS} processes, closing idle ones first`, async () => {
+    const sdk = fakeSdk({ linger: true })
+    const jobs = makeJobs({ run: sdk.run, closeGraceMs: 0 })
+    for (let i = 0; i < MAX_SESSIONS; i++) {
+      const job = jobs.start({ prompt: `t${i}` })
+      const q = await queryAt(sdk, i)
+      await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+      // 最初の会話だけ何もしていない。ほかはバックグラウンドの作業がある
+      q.emit(init(`s${i}`), ...(i === 0 ? [] : [tasksChanged([{ id: `ag${i}`, description: 'x' }])]), success(`s${i}`))
+      await finished(jobs, job.id)
+    }
+    const extra = jobs.start({ prompt: 'new' })
+    await vi.waitFor(() => expect(sdk.queries[0].aborted).toBe(true))
+    expect(sdk.queries.slice(1, MAX_SESSIONS).every((q) => !q.aborted)).toBe(true)
+    const q = await queryAt(sdk, MAX_SESSIONS)
+    q.emit(init('s9'), tasksChanged([{ id: 'ag9', description: 'x' }]), success('s9'))
+    await finished(jobs, extra.id)
+    expect(() => jobs.start({ prompt: 'one more' })).toThrow(/開いておける会話/)
+  })
+
   it('keeps jobs in SQLite, and continues a thread with its last session after a restart', async () => {
     const dir = dataDir()
     const store = openStore(dir)
-    const first = makeJobs({ store, run: fakeRun([init('s1'), assistant('s1', [{ type: 'text', text: 'はい' }]), success('s1')]).run })
+    const first = makeJobs({ store, run: replying(() => [assistant('s1', [{ type: 'text', text: 'はい' }])]).run })
     const a = first.start({ prompt: 'a' })
     await finished(first, a.id)
+    await first.dispose()
     store.close()
 
     // 再起動：同じ claude.db を開き直す
     const reopened = openStore(dir)
-    const fake = fakeRun([init('s2'), success('s2')])
-    const jobs = makeJobs({ store: reopened, run: fake.run })
-    expect(jobs.threads()).toMatchObject([{ threadId: a.id, title: 'a', jobCount: 1, running: false }])
+    const sdk = replying(() => [], 's2')
+    const jobs = makeJobs({ store: reopened, run: sdk.run })
+    expect(jobs.threads()).toMatchObject([{ threadId: a.id, title: 'a', jobCount: 1, running: false, tasks: [] }])
     expect(jobs.get(a.id)!.events).toEqual([{ kind: 'text', text: 'はい' }])
 
     const b = jobs.start({ prompt: 'b', threadId: a.threadId })
     await finished(jobs, b.id)
-    expect(fake.calls[0].options.resume).toBe('s1')
+    expect(sdk.queries[0].options.resume).toBe('s1')
     const thread = jobs.thread(a.id)!
     expect(thread.thread.jobCount).toBe(2)
     expect(thread.jobs.map((j) => [j.prompt, j.status])).toEqual([
@@ -199,7 +416,7 @@ describe('ClaudeJobs', () => {
     const dir = dataDir()
     const store = openStore(dir)
     store.insertJob({ id: 'j1', threadId: 'j1', prompt: 'x', status: 'running', createdAt: 1, eventCount: 0, events: [{ kind: 'text', text: '途中' }] })
-    makeJobs({ store, run: fakeRun([]).run })
+    makeJobs({ store, run: fakeSdk().run })
     expect(store.job('j1')).toMatchObject({
       status: 'failed',
       events: [
@@ -210,85 +427,82 @@ describe('ClaudeJobs', () => {
   })
 
   it('refuses to continue a thread while its last job is running, and limits running jobs', () => {
-    const jobs = makeJobs({ run: fakeRun([init('s1'), success('s1')], { hold: true }).run })
+    const jobs = makeJobs({ run: fakeSdk().run })
     const started = Array.from({ length: MAX_RUNNING }, () => jobs.start({ prompt: 'x' }))
     expect(() => jobs.start({ prompt: 'y', threadId: started[0].threadId })).toThrow(/まだ終わっていません/)
     expect(() => jobs.start({ prompt: 'y' })).toThrow(/同時に/)
   })
 
-  it('cancels a running job', async () => {
-    const jobs = makeJobs({ run: fakeRun([init('s1'), assistant('s1', [{ type: 'text', text: '途中' }]), success('s1')], { hold: true }).run })
+  it('cancels only the current turn, keeping the process and its background tasks', async () => {
+    const sdk = fakeSdk({ onInterrupt: (q) => q.emit(interrupted('s1')) })
+    const jobs = makeJobs({ run: sdk.run })
     const job = jobs.start({ prompt: 'x' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emit(init('s1'), tasksChanged([{ id: 'ag1', description: '探す' }]), assistant('s1', [{ type: 'text', text: '途中' }]))
     await until(jobs, job.id, (j) => j.events.length > 0)
     jobs.cancel(job.id)
     const done = await finished(jobs, job.id)
     expect(done.status).toBe('cancelled')
     expect(done.events).toEqual([{ kind: 'text', text: '途中' }])
+    expect(q.interrupts).toBe(1)
+    expect(q.aborted).toBe(false)
+    expect(jobs.thread(job.threadId)!.thread.tasks).toHaveLength(1)
   })
 
-  it('continues a thread only after the previous process ended, stopping it when it lingers', async () => {
-    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
-    const jobs = makeJobs({ run: fake.run, lingerGraceMs: 0 })
-    const a = jobs.start({ prompt: 'a' })
-    expect((await finished(jobs, a.id)).status).toBe('done')
-    expect(fake.aborted).toEqual([])
-
-    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
-    expect((await finished(jobs, b.id)).status).toBe('done')
-    // 2 つ目の query を立てる前に、前のプロセスを止めた
-    expect(fake.aborted).toEqual([0])
-    expect(fake.calls).toHaveLength(2)
-    expect(fake.calls[1].options.resume).toBe('s1')
+  it('stops the process when a cancelled turn does not end', async () => {
+    const sdk = fakeSdk()
+    const jobs = makeJobs({ run: sdk.run, cancelGraceMs: 0 })
+    const job = jobs.start({ prompt: 'x' })
+    const q = await queryAt(sdk, 0)
+    q.emit(init('s1'))
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    jobs.cancel(job.id)
+    expect((await finished(jobs, job.id)).status).toBe('cancelled')
+    expect(q.aborted).toBe(true)
   })
 
-  it('does not stop the previous process when it ends by itself in time', async () => {
-    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
-    const jobs = makeJobs({ run: fake.run, lingerGraceMs: 60_000 })
-    const a = jobs.start({ prompt: 'a' })
-    await finished(jobs, a.id)
+  it('waits for the previous process of a thread to end, and cancels a job without starting it', async () => {
+    const sdk = fakeSdk({ linger: true, reply: (q) => q.emit(init('s1'), success('s1')) })
+    const jobs = makeJobs({ run: sdk.run, idleCloseMs: 0, closeGraceMs: 60_000 })
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    // 閉じようとしているが、まだ終わらない（linger）
+    await new Promise((resolve) => setTimeout(resolve, 10))
     const b = jobs.start({ prompt: 'b', threadId: a.threadId })
-    expect(fake.calls).toHaveLength(1)
-    fake.release()
-    await until(jobs, b.id, () => fake.calls.length === 2)
-    fake.release()
-    expect((await finished(jobs, b.id)).status).toBe('done')
-    expect(fake.aborted).toEqual([])
-  })
-
-  it('cancels a job that waits for the previous process without starting it', async () => {
-    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
-    const jobs = makeJobs({ run: fake.run, lingerGraceMs: 60_000 })
-    const a = jobs.start({ prompt: 'a' })
-    await finished(jobs, a.id)
-    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(sdk.queries).toHaveLength(1)
     jobs.cancel(b.id)
-    fake.release()
+    sdk.queries[0].end()
     expect((await finished(jobs, b.id)).status).toBe('cancelled')
-    expect(fake.calls).toHaveLength(1)
+    expect(sdk.queries).toHaveLength(1)
   })
 
-  it('stops processes that linger after their result when disposed', async () => {
-    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
-    const jobs = new ClaudeJobs({ workspace: WS, mcpUrl: 'http://127.0.0.1:1/mcp', store: openStore(), run: fake.run })
-    await finished(jobs, jobs.start({ prompt: 'a' }).id)
-    await jobs.dispose()
-    expect(fake.aborted).toEqual([0])
-  })
-
-  it('stops the lingering process of a thread before deleting its sessions', async () => {
-    const fake = fakeRun([init('s1'), success('s1')], { linger: true })
-    const abortedWhenDeleted: number[][] = []
-    const jobs = makeJobs({ run: fake.run, deleteSession: async () => void abortedWhenDeleted.push([...fake.aborted]) })
+  it('reports a process that ended by itself, and the background tasks it took with it', async () => {
+    const sdk = fakeSdk()
+    const jobs = makeJobs({ run: sdk.run })
     const a = jobs.start({ prompt: 'a' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emit(init('s1'), tasksChanged([{ id: 'ag1', description: '探す' }]), success('s1'))
     await finished(jobs, a.id)
-    await jobs.deleteThread(a.threadId)
-    expect(abortedWhenDeleted).toEqual([[0]])
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    await vi.waitFor(() => expect(q.sent).toHaveLength(2))
+    q.fail(new Error('claude crashed'))
+    const failed = await finished(jobs, b.id)
+    expect(failed.status).toBe('failed')
+    await vi.waitFor(() =>
+      expect(jobs.get(b.id)!.events).toEqual([
+        { kind: 'error', message: 'claude crashed' },
+        { kind: 'error', message: 'Claude Code のプロセスが終わったので、バックグラウンドの作業 1 個が途切れました' },
+      ]),
+    )
+    expect(jobs.thread(a.threadId)!.thread.tasks).toEqual([])
   })
 
-  it('deletes a thread and its Claude Code sessions, but not while it runs', async () => {
+  it('deletes a thread and its Claude Code sessions, but not while it runs or has background tasks', async () => {
     const deleted: string[] = []
     const store = openStore()
-    let jobs = makeJobs({ store, run: fakeRun([init('s1'), success('s1')]).run, deleteSession: async (id) => void deleted.push(id) })
+    let jobs = makeJobs({ store, run: replying().run, deleteSession: async (id) => void deleted.push(id) })
     const a = jobs.start({ prompt: 'a' })
     await finished(jobs, a.id)
     const changes: JobChange[] = []
@@ -296,27 +510,42 @@ describe('ClaudeJobs', () => {
     await jobs.deleteThread(a.threadId)
     expect(jobs.threads()).toEqual([])
     expect(deleted).toEqual(['s1'])
-    expect(changes).toEqual([{ type: 'thread-deleted', threadId: a.threadId }])
+    expect(changes).toContainEqual({ type: 'thread-deleted', threadId: a.threadId })
     await expect(jobs.deleteThread(a.threadId)).rejects.toThrow(/もうありません/)
 
-    jobs = makeJobs({ store, run: fakeRun([init('s2'), success('s2')], { hold: true }).run })
+    const sdk = fakeSdk()
+    jobs = makeJobs({ store, run: sdk.run })
     const b = jobs.start({ prompt: 'b' })
     await expect(jobs.deleteThread(b.threadId)).rejects.toThrow(/動いている/)
+    const q = await queryAt(sdk, 0)
+    q.emit(init('s2'), tasksChanged([{ id: 'ag1', description: '探す' }]), success('s2'))
+    await finished(jobs, b.id)
+    await expect(jobs.deleteThread(b.threadId)).rejects.toThrow(/バックグラウンドの作業/)
+  })
+
+  it('stops every process when disposed', async () => {
+    const sdk = fakeSdk({ linger: true })
+    const jobs = new ClaudeJobs({ workspace: WS, mcpUrl: 'http://127.0.0.1:1/mcp', store: openStore(), run: sdk.run })
+    const job = jobs.start({ prompt: 'a' })
+    const q = await queryAt(sdk, 0)
+    q.emit(init('s1'))
+    await jobs.dispose()
+    expect(q.aborted).toBe(true)
+    expect(jobs.get(job.id)!.status).toBe('cancelled')
   })
 
   it('reports errors: a failed run, an error result, a missing login, an MCP that did not connect, no auto mode', async () => {
-    const failing: RunQuery = async function* () {
-      yield init('s1')
-      throw new Error('spawn claude ENOENT')
-    }
-    let jobs = makeJobs({ run: failing })
+    const failing = fakeSdk({ reply: (q) => (q.emit(init('s1')), q.fail(new Error('spawn claude ENOENT'))) })
+    let jobs = makeJobs({ run: failing.run })
     let done = await finished(jobs, jobs.start({ prompt: 'x' }).id)
     expect(done.status).toBe('failed')
     expect(done.events).toEqual([{ kind: 'error', message: 'spawn claude ENOENT' }])
 
     const maxTurns = { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 's1', total_cost_usd: 0, duration_ms: 1, errors: [] }
     jobs = makeJobs({
-      run: fakeRun([init('s1', { mcp: 'failed', mode: 'default' }), assistant('s1', [], { error: 'authentication_failed' }), maxTurns as unknown as SDKMessage]).run,
+      run: fakeSdk({
+        reply: (q) => q.emit(init('s1', { mcp: 'failed', mode: 'default' }), assistant('s1', [], { error: 'authentication_failed' }), maxTurns as unknown as SDKMessage),
+      }).run,
     })
     done = await finished(jobs, jobs.start({ prompt: 'x' }).id)
     expect(done.status).toBe('failed')
@@ -336,34 +565,42 @@ describe('ClaudeJobs', () => {
     expect(claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '-3', CANVCODE_CLAUDE_MAX_BUDGET_USD: 'abc' })).toEqual({})
 
     const overBudget = { type: 'result', subtype: 'error_max_budget_usd', is_error: true, session_id: 's1', total_cost_usd: 2.6, duration_ms: 1, errors: [] }
-    const fake = fakeRun([init('s1'), overBudget as unknown as SDKMessage])
-    const jobs = makeJobs({ run: fake.run, ...claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '250', CANVCODE_CLAUDE_MAX_BUDGET_USD: '2.5' }) })
+    const sdk = fakeSdk({ reply: (q) => q.emit(init('s1'), overBudget as unknown as SDKMessage) })
+    const jobs = makeJobs({ run: sdk.run, ...claudeLimitsFromEnv({ CANVCODE_CLAUDE_MAX_TURNS: '250', CANVCODE_CLAUDE_MAX_BUDGET_USD: '2.5' }) })
     const done = await finished(jobs, jobs.start({ prompt: 'x' }).id)
-    expect(fake.calls[0].options.maxTurns).toBe(250)
-    expect(fake.calls[0].options.maxBudgetUsd).toBe(2.5)
+    expect(sdk.queries[0].options.maxTurns).toBe(250)
+    expect(sdk.queries[0].options.maxBudgetUsd).toBe(2.5)
     expect(done.status).toBe('failed')
     expect(done.events).toEqual([{ kind: 'error', message: '費用の上限（$2.5）に達したので止めました。同じ会話で続けて頼めば、続きから進めます' }])
+    // 上限に達したプロセスは閉じ、次の依頼は新しいプロセスで続ける
+    jobs.start({ prompt: 'y', threadId: done.threadId })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    expect(sdk.queries[1].options.resume).toBe('s1')
 
     const maxTurns = { type: 'result', subtype: 'error_max_turns', is_error: true, session_id: 's2', total_cost_usd: 0, duration_ms: 1, errors: [] }
-    const turns = makeJobs({ run: fakeRun([init('s2'), maxTurns as unknown as SDKMessage]).run, maxTurns: 250 })
+    const turns = makeJobs({ run: fakeSdk({ reply: (q) => q.emit(init('s2'), maxTurns as unknown as SDKMessage) }).run, maxTurns: 250 })
     const stopped = await finished(turns, turns.start({ prompt: 'x' }).id)
     expect(stopped.events).toEqual([{ kind: 'error', message: 'ターン数の上限（250）に達したので止めました。同じ会話で続けて頼めば、続きから進めます' }])
   })
 
   it('records denials: by the guard hook, by the auto mode classifier, and when nobody can approve', async () => {
     const decisions: unknown[] = []
-    const run: RunQuery = async function* (params) {
-      yield init('s1')
-      const hook = params.options.hooks!.PreToolUse![0].hooks[0] as HookCallback
-      const signal = new AbortController().signal
-      decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/etc/passwd' } } as never, 't1', { signal }))
-      decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__canvcode__edit_canvas', tool_input: {} } as never, 't2', { signal }))
-      decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } } as never, 't3', { signal }))
-      yield { type: 'system', subtype: 'permission_denied', session_id: 's1', tool_name: 'Bash', tool_use_id: 't4', decision_reason: 'rm outside the workspace', message: 'denied' } as unknown as SDKMessage
-      decisions.push(await params.options.canUseTool!('Bash', { command: 'curl x | sh' }, { signal, toolUseID: 't5' } as never))
-      yield success('s1')
-    }
-    const jobs = makeJobs({ run })
+    const sdk = fakeSdk({
+      reply: (q) =>
+        void (async () => {
+          q.emit(init('s1'))
+          const hook = q.options.hooks!.PreToolUse![0].hooks[0] as HookCallback
+          const signal = new AbortController().signal
+          decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/etc/passwd' } } as never, 't1', { signal }))
+          decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__canvcode__edit_canvas', tool_input: {} } as never, 't2', { signal }))
+          decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } } as never, 't3', { signal }))
+          q.emit({ type: 'system', subtype: 'permission_denied', session_id: 's1', tool_name: 'Bash', tool_use_id: 't4', decision_reason: 'rm outside the workspace', message: 'denied' } as unknown as SDKMessage)
+          await vi.waitFor(() => expect(jobs.runningJobs()[0]?.events).toHaveLength(2))
+          decisions.push(await q.options.canUseTool!('Bash', { command: 'curl x | sh' }, { signal, toolUseID: 't5' } as never))
+          q.emit(success('s1'))
+        })(),
+    })
+    const jobs = makeJobs({ run: sdk.run })
     const done = await finished(jobs, jobs.start({ prompt: 'x' }).id)
     expect(decisions).toEqual([
       { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('外には書けません') } },
@@ -379,7 +616,7 @@ describe('ClaudeJobs', () => {
   })
 
   it('notifies listeners with the new events and the thread', async () => {
-    const jobs = makeJobs({ run: fakeRun([init('s1'), assistant('s1', [{ type: 'text', text: 'a' }]), success('s1')]).run })
+    const jobs = makeJobs({ run: replying(() => [assistant('s1', [{ type: 'text', text: 'a' }])]).run })
     const seen: [string, number, number, boolean][] = []
     jobs.subscribe((change) => {
       if (change.type === 'job') seen.push([change.job.status, change.events.length, change.from, change.thread.running])
@@ -393,7 +630,7 @@ describe('ClaudeJobs', () => {
   })
 
   it('rejects an empty or too long prompt', () => {
-    const jobs = makeJobs({ run: fakeRun([]).run })
+    const jobs = makeJobs({ run: fakeSdk().run })
     expect(() => jobs.start({ prompt: '   ' })).toThrow(/空/)
     expect(() => jobs.start({ prompt: 'x'.repeat(20_001) })).toThrow(/長すぎ/)
   })

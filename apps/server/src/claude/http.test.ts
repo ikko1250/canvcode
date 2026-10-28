@@ -16,10 +16,17 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 
-const run: RunQuery = async function* () {
-  yield { type: 'assistant', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'こんにちは' }] } } as unknown as SDKMessage
-  yield { type: 'result', subtype: 'success', is_error: false, session_id: 's', total_cost_usd: 0, duration_ms: 1, result: '' } as unknown as SDKMessage
-}
+// 送られた文ごとに「こんにちは」と答え、入れ物が閉じたら終わる偽の query
+const run: RunQuery = ({ prompt }) => ({
+  async *[Symbol.asyncIterator]() {
+    for await (const _message of prompt) {
+      yield { type: 'assistant', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'こんにちは' }] } } as unknown as SDKMessage
+      yield { type: 'result', subtype: 'success', is_error: false, session_id: 's', total_cost_usd: 0, duration_ms: 1, result: '' } as unknown as SDKMessage
+    }
+  },
+  interrupt: async () => {},
+  stopTask: async () => {},
+})
 
 function makeJobs(): ClaudeJobs {
   const dir = mkdtempSync(join(tmpdir(), 'canvcode-claude-http-'))
@@ -28,7 +35,9 @@ function makeJobs(): ClaudeJobs {
     store.close()
     rmSync(dir, { recursive: true, force: true })
   })
-  return new ClaudeJobs({ workspace: '/srv/ws', mcpUrl: 'x', store, run, deleteSession: async () => {} })
+  const jobs = new ClaudeJobs({ workspace: '/srv/ws', mcpUrl: 'x', store, run, deleteSession: async () => {} })
+  cleanups.push(() => jobs.dispose())
+  return jobs
 }
 
 async function setup(jobs: ClaudeJobs | null): Promise<string> {
@@ -107,6 +116,18 @@ describe('/api/claude', () => {
     expect((await post(`${base}/api/claude/jobs`, { prompt: 'x', threadId: '00000000-0000-0000-0000-000000000000' })).status).toBe(404)
     expect((await post(`${base}/api/claude/jobs/00000000-0000-0000-0000-000000000000/cancel`, {})).status).toBe(404)
     expect((await fetch(`${base}/api/claude/jobs`, { method: 'DELETE' })).status).toBe(405)
+  })
+
+  it('stops a thread or one of its background tasks', async () => {
+    const base = await setup(makeJobs())
+    const { job } = (await (await post(`${base}/api/claude/jobs`, { prompt: 'やあ' })).json()) as { job: { id: string } }
+    const thread = `${base}/api/claude/threads/${job.id}`
+    expect((await post(`${thread}/stop`, {})).status).toBe(204)
+    // 動いていない作業・正しくない id
+    expect((await post(`${thread}/tasks/ag1/stop`, {})).status).toBe(404)
+    expect((await post(`${thread}/tasks/a%20b/stop`, {})).status).toBe(400)
+    expect((await fetch(`${thread}/stop`)).status).toBe(405)
+    expect((await post(`${base}/api/claude/threads/00000000-0000-0000-0000-000000000000/stop`, {})).status).toBe(404)
   })
 
   it('answers 404 when disabled', async () => {

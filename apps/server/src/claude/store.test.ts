@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ClaudeStore } from './store.ts'
 
@@ -87,6 +88,32 @@ describe('ClaudeStore', () => {
     expect(store.deleteThread('a')).toEqual(['s1'])
     expect(store.threads().map((t) => t.threadId)).toEqual(['b'])
     expect(store.job('a')).toBeUndefined()
+  })
+
+  it('adds the origin column to a database made before it, keeping its jobs', () => {
+    const dir = dataDir()
+    // origin のない、前のサーバーの claude.db
+    const old = new DatabaseSync(join(dir, 'claude.db'))
+    old.exec(`
+      CREATE TABLE jobs (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, prompt TEXT NOT NULL, ref_id TEXT, canvas_id TEXT, status TEXT NOT NULL,
+        created_at INTEGER NOT NULL, finished_at INTEGER, cost_usd REAL, duration_ms INTEGER, session_id TEXT, event_count INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE events (job_id TEXT NOT NULL, seq INTEGER NOT NULL, event TEXT NOT NULL, PRIMARY KEY (job_id, seq));
+      INSERT INTO jobs (id, thread_id, prompt, status, created_at, event_count) VALUES ('a', 'a', 'old', 'done', 1, 0);
+      PRAGMA user_version = 1;
+    `)
+    old.close()
+    let store = new ClaudeStore(dir)
+    expect(store.job('a')).toMatchObject({ prompt: 'old', status: 'done' })
+    expect(store.job('a')!.origin).toBeUndefined()
+    store.insertJob(job('b', 'a', 2, { origin: 'background' }))
+    store.close()
+    // 開き直しても、もう一度足そうとしない
+    store = open(dir)
+    expect(store.threadJobs('a').map((j) => [j.id, j.origin])).toEqual([
+      ['a', undefined],
+      ['b', 'background'],
+    ])
+    expect(readdirSync(dir).some((name) => name.startsWith('claude.db.broken-'))).toBe(false)
   })
 
   it('moves a broken database aside and starts over', () => {
