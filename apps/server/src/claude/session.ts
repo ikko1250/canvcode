@@ -7,7 +7,8 @@ import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-a
 // - 前の同じ会話のプロセスが終わる途中なら、それを待ってから query を立てる（同じ session を 2 つのプロセスで開かない）
 
 export interface SessionQuery extends AsyncIterable<SDKMessage> {
-  interrupt(): Promise<unknown>
+  // cancelQueued は、まだ答え始めていない（待っている）メッセージも取り消す（d.ts にはないが、SDK の Query は受け取る）
+  interrupt(options?: { cancelQueued?: boolean }): Promise<unknown>
   stopTask(taskId: string): Promise<void>
 }
 
@@ -34,9 +35,10 @@ export class InputQueue implements AsyncIterable<SDKUserMessage> {
   private wake: (() => void) | undefined
   private closed = false
 
-  push(text: string): void {
+  // uuid は、そのメッセージに答えるターンの assistant と result の user_message_uuids に返ってくる
+  push(text: string, uuid: string): void {
     if (this.closed) throw new Error('the input is closed')
-    this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null })
+    this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, uuid: uuid as SDKUserMessage['uuid'] })
     this.wake?.()
   }
 
@@ -76,13 +78,13 @@ export class ClaudeSession {
     this.exited = this.read(run, options, handlers, after)
   }
 
-  send(text: string): void {
-    this.input.push(text)
+  send(text: string, uuid: string): void {
+    this.input.push(text, uuid)
   }
 
-  // 今のターンだけを止める（バックグラウンドの作業は残る。perTaskStopAffordance）
-  async interrupt(): Promise<void> {
-    await this.query?.interrupt()
+  // 今のターンだけを止める（バックグラウンドの作業は残る。perTaskStopAffordance）。cancelQueued なら、待っているメッセージも取り消す
+  async interrupt(cancelQueued = false): Promise<void> {
+    await this.query?.interrupt(cancelQueued ? { cancelQueued: true } : undefined)
   }
 
   async stopTask(taskId: string): Promise<void> {

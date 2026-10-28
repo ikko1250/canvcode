@@ -16,12 +16,13 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 
-// 送られた文ごとに「こんにちは」と答え、入れ物が閉じたら終わる偽の query
+// 送られた文ごとに「こんにちは」と答え（そのメッセージの uuid を付ける）、入れ物が閉じたら終わる偽の query
 const run: RunQuery = ({ prompt }) => ({
   async *[Symbol.asyncIterator]() {
-    for await (const _message of prompt) {
-      yield { type: 'assistant', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'こんにちは' }] } } as unknown as SDKMessage
-      yield { type: 'result', subtype: 'success', is_error: false, session_id: 's', total_cost_usd: 0, duration_ms: 1, result: '' } as unknown as SDKMessage
+    for await (const message of prompt) {
+      const stamp = { user_message_uuids: [message.uuid] }
+      yield { type: 'assistant', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'こんにちは' }] }, ...stamp } as unknown as SDKMessage
+      yield { type: 'result', subtype: 'success', is_error: false, session_id: 's', total_cost_usd: 0, duration_ms: 1, result: '', ...stamp } as unknown as SDKMessage
     }
   },
   interrupt: async () => {},

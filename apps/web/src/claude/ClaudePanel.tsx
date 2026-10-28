@@ -71,7 +71,11 @@ export function ClaudePanel(props: Props) {
   useEffect(() => {
     if (threadId && !state.loaded.has(threadId)) void client.loadThread(threadId)
   }, [client, threadId, state.loaded])
-  const jobs = useMemo(() => (threadId ? jobsOfThread(state, threadId) : []), [state, threadId])
+  // 作業の知らせを受けただけで何も書かなかったターン（サブエージェントの報告のあとに CLI が起こす）は見せない
+  const jobs = useMemo(
+    () => (threadId ? jobsOfThread(state, threadId).filter((job) => !(job.origin === 'background' && job.status !== 'running' && job.events.length === 0)) : []),
+    [state, threadId],
+  )
   const running = jobs.find((job) => job.status === 'running')
   const tasks = thread?.tasks ?? NO_TASKS
   // 答えを書いているか、バックグラウンドの作業がある（消せない）

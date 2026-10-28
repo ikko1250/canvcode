@@ -73,14 +73,20 @@ const tasksChanged = (tasks: { id: string; description: string; ambient?: boolea
   }) as unknown as SDKMessage
 
 // 偽の query（ストリーミング入力）。送られた文を sent に記録し、テストから emit() で SDK のメッセージを流す。
+// emit() は、最後に受け取ったメッセージの uuid を、そのターンの assistant（サブエージェントの中は除く）と result に user_message_uuids として付ける
+// （CLI と同じ。result でターンが終わる）。emitMeta() は付けない（CLI が自分で起こしたターン）。
 // reply があれば、送られた文ごとにそれを呼ぶ。入れ物が閉じたら（stdin の終わり）、linger でなければ終わる
 interface FakeQuery {
   options: Options
   sent: string[]
-  interrupts: number
+  uuids: string[]
+  // 答えているメッセージの uuid
+  turn: string | undefined
+  interrupts: { cancelQueued: boolean }[]
   stopped: string[]
   aborted: boolean
   emit: (...messages: SDKMessage[]) => void
+  emitMeta: (...messages: SDKMessage[]) => void
   end: () => void
   fail: (error: Error) => void
 }
@@ -95,10 +101,21 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
     const q: FakeQuery = {
       options: params.options,
       sent: [],
-      interrupts: 0,
+      uuids: [],
+      turn: undefined,
+      interrupts: [],
       stopped: [],
       aborted: false,
       emit: (...messages) => {
+        for (const message of messages) {
+          const turn = q.turn
+          const top = message.type === 'result' || (message.type === 'assistant' && !message.parent_tool_use_id)
+          out.push(top && turn && !('user_message_uuids' in message) ? ({ ...message, user_message_uuids: [turn] } as SDKMessage) : message)
+          if (message.type === 'result') q.turn = undefined
+        }
+        wake?.()
+      },
+      emitMeta: (...messages) => {
         out.push(...messages)
         wake?.()
       },
@@ -119,6 +136,8 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
       for await (const message of params.prompt) {
         const text = message.message.content as string
         q.sent.push(text)
+        q.uuids.push(message.uuid!)
+        q.turn = message.uuid
         options.reply?.(q, text)
       }
       if (!options.linger) q.end()
@@ -140,8 +159,8 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
           wake = undefined
         }
       },
-      interrupt: async () => {
-        q.interrupts++
+      interrupt: async (interrupt?: { cancelQueued?: boolean }) => {
+        q.interrupts.push({ cancelQueued: interrupt?.cancelQueued ?? false })
         options.onInterrupt?.(q)
       },
       stopTask: async (taskId: string) => {
@@ -304,7 +323,7 @@ describe('ClaudeJobs', () => {
     await vi.waitFor(() => expect(jobs.thread(a.threadId)!.jobs).toHaveLength(3))
     const background = jobs.thread(a.threadId)!.jobs[2]
     const done = await finished(jobs, background.id)
-    expect(done).toMatchObject({ origin: 'background', prompt: 'バックグラウンドの作業が終わりました：「論文を探す」', status: 'done' })
+    expect(done).toMatchObject({ origin: 'background', prompt: 'バックグラウンドの作業「論文を探す」が終わりました', status: 'done' })
     expect(done.costUsd).toBeCloseTo(0.03)
     expect(done.events).toEqual([
       { kind: 'task', status: 'completed', description: '論文を探す' },
@@ -445,7 +464,7 @@ describe('ClaudeJobs', () => {
     const done = await finished(jobs, job.id)
     expect(done.status).toBe('cancelled')
     expect(done.events).toEqual([{ kind: 'text', text: '途中' }])
-    expect(q.interrupts).toBe(1)
+    expect(q.interrupts).toEqual([{ cancelQueued: false }])
     expect(q.aborted).toBe(false)
     expect(jobs.thread(job.threadId)!.thread.tasks).toHaveLength(1)
   })
@@ -455,11 +474,76 @@ describe('ClaudeJobs', () => {
     const jobs = makeJobs({ run: sdk.run, cancelGraceMs: 0 })
     const job = jobs.start({ prompt: 'x' })
     const q = await queryAt(sdk, 0)
-    q.emit(init('s1'))
     await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emit(init('s1'), assistant('s1', [{ type: 'text', text: '途中' }]))
+    await until(jobs, job.id, (j) => j.events.length > 0)
     jobs.cancel(job.id)
     expect((await finished(jobs, job.id)).status).toBe('cancelled')
     expect(q.aborted).toBe(true)
+  })
+
+  it('answers a request with the turn stamped with it, even after a turn Claude Code started by itself (as after a resume)', async () => {
+    const sdk = fakeSdk()
+    const jobs = makeJobs({ run: sdk.run })
+    const a = jobs.start({ prompt: 'a' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    // 前のプロセスで途切れた作業の知らせから、CLI が先にターンを起こす。答えを書かなければジョブにしない
+    q.emitMeta(init('s1'), success('s1', 0.01))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(jobs.get(a.id)!.status).toBe('running')
+    // 書いたら、バックグラウンドのジョブにする。その途中に依頼が混ぜられたら、そこからは依頼のジョブ
+    q.emitMeta(init('s1'), assistant('s1', [{ type: 'text', text: '途切れた作業がありました' }]))
+    q.emit(assistant('s1', [{ type: 'text', text: 'aです' }]), success('s1', 0.03))
+    const done = await finished(jobs, a.id)
+    expect(done.events).toEqual([{ kind: 'text', text: 'aです' }])
+    const all = jobs.thread(a.threadId)!.jobs
+    expect(all.map((job) => [job.origin ?? 'user', job.status, job.events.length])).toEqual([
+      ['user', 'done', 1],
+      ['background', 'done', 1],
+    ])
+  })
+
+  it('cancels a request that is still waiting for its turn, and hides that turn if it comes anyway', async () => {
+    const sdk = fakeSdk()
+    const jobs = makeJobs({ run: sdk.run })
+    const a = jobs.start({ prompt: 'a' })
+    const q = await queryAt(sdk, 0)
+    await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+    q.emitMeta(init('s1'))
+    jobs.cancel(a.id)
+    expect((await finished(jobs, a.id)).status).toBe('cancelled')
+    expect(q.interrupts).toEqual([{ cancelQueued: true }])
+    // 取り消しが間に合わずにターンが来たら、止めて見せない
+    q.emit(assistant('s1', [{ type: 'text', text: 'aです' }]), success('s1'))
+    await vi.waitFor(() => expect(q.interrupts).toHaveLength(2))
+    expect(jobs.thread(a.threadId)!.jobs).toHaveLength(1)
+    expect(jobs.get(a.id)!.events).toEqual([])
+    // 次の依頼は送れる
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId })
+    await vi.waitFor(() => expect(q.sent).toHaveLength(2))
+    q.emit(init('s1'), assistant('s1', [{ type: 'text', text: 'bです' }]), success('s1'))
+    expect((await finished(jobs, b.id)).events).toEqual([{ kind: 'text', text: 'bです' }])
+  })
+
+  it('counts the cost of a resumed process from where the previous one ended', async () => {
+    const store = openStore()
+    const sdk = replying()
+    const jobs = makeJobs({ run: sdk.run, store, idleCloseMs: 0 })
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    expect(a.costUsd).toBeCloseTo(0.01)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    // resume したプロセスの total_cost_usd は、前のプロセスの合計（0.01）から続く。同じサーバーなら、そこから数える
+    const b = await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId }).id)
+    expect(sdk.queries).toHaveLength(2)
+    expect(sdk.queries[1].options.resume).toBe('s1')
+    expect(b.costUsd).toBeCloseTo(0.01)
+    await jobs.dispose()
+    // 前の合計を知らない（サーバーを再起動した）なら、最初のターンの費用は出さない
+    const restarted = makeJobs({ run: fakeSdk({ reply: (q) => q.emit(init('s1'), success('s1', 0.05)) }).run, store })
+    const c = await finished(restarted, restarted.start({ prompt: 'c', threadId: a.threadId }).id)
+    expect(c.status).toBe('done')
+    expect(c.costUsd).toBeUndefined()
   })
 
   it('waits for the previous process of a thread to end, and cancels a job without starting it', async () => {

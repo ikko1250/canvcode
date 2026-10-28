@@ -155,7 +155,7 @@ test('lists background tasks, stops one or all of them, and shows the turn Claud
       {
         id: 'j2',
         threadId: 't1',
-        prompt: 'バックグラウンドの作業が終わりました：「見張り」',
+        prompt: 'バックグラウンドの作業「見張り」が終わりました',
         origin: 'background',
         status: 'done',
         createdAt: now + 60_000,
@@ -174,7 +174,7 @@ test('lists background tasks, stops one or all of them, and shows the turn Claud
   })
 
   // 作業が終わって Claude が続けたジョブは、吹き出しでなく小さく出る
-  await expect(page.locator('.claude-wake')).toHaveText('バックグラウンドの作業が終わりました：「見張り」。Claude が続けました')
+  await expect(page.locator('.claude-wake')).toHaveText('バックグラウンドの作業「見張り」が終わりました。Claude が続けました')
   await expect(page.locator('.claude-prompt')).toHaveCount(1)
   await expect(page.locator('.claude-tool.task')).toHaveText('終わりました：見張り')
 
