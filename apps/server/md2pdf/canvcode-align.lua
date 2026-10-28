@@ -2,7 +2,9 @@
 -- - pandoc は `<p align>` を開きタグ・中身・閉じタグの 3 つのブロックに分け、LaTeX に出すとき開きと閉じを捨てる。
 --   そこで開きから対になる `</p>` までを center（right なら flushright）で囲む。中の **太字** などはそのまま
 -- - `<div align>` は pandoc が Div にして align を属性に持つので、それを見て囲む
--- - 開きと閉じの対が見つからないときは何もしない。LaTeX 以外に出すときも何もしない
+-- - 開きと閉じの対が見つからないときは何もしない。HTML では </p> を省けるので、次の <p> や見出しが来たら対はないとみなす
+-- - 囲んだ範囲は 1 つの Div にまとめる。後の refs-hanging-indent.lua が見出しで区切っても、環境が食い違わないように
+-- - LaTeX 以外に出すときは何もしない
 
 local ENV = { center = 'center', right = 'flushright' }
 
@@ -15,6 +17,10 @@ local function open_align(block)
   local tag = block.text:match('^%s*<[pP]%s+([^>]*)>%s*$')
   if not tag then return nil end
   return env_of(tag:match('[aA][lL][iI][gG][nN]%s*=%s*"([^"]*)"') or tag:match("[aA][lL][iI][gG][nN]%s*=%s*'([^']*)'"))
+end
+
+local function is_open_p(block)
+  return block.t == 'RawBlock' and block.format == 'html' and block.text:match('^%s*<[pP][%s>]') ~= nil
 end
 
 local function is_close(block)
@@ -47,14 +53,14 @@ return {
         local close = nil
         if env then
           for j = i + 1, #blocks do
-            if open_align(blocks[j]) then break end
+            if is_open_p(blocks[j]) or blocks[j].t == 'Header' then break end
             if is_close(blocks[j]) then close = j break end
           end
         end
         if close then
           local inner = pandoc.List()
           for j = i + 1, close - 1 do inner:insert(blocks[j]) end
-          out:extend(wrap(env, inner))
+          out:insert(pandoc.Div(wrap(env, inner)))
           i = close + 1
         else
           out:insert(blocks[i])

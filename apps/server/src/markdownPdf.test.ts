@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HttpError, type FileInfo } from './files.ts'
 import { CANVCODE_ALIGN_FILTER, MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
@@ -30,6 +31,7 @@ function hasCommand(command: string, args: string[]): boolean {
     return false
   }
 }
+const BUNDLED_MD2PDF_FILTERS = fileURLToPath(new URL('../md2pdf/filters/', import.meta.url))
 const hasPandoc = hasCommand('pandoc', ['--version'])
 const canBuild = hasPandoc && hasCommand('lualatex', ['--version'])
 
@@ -126,15 +128,35 @@ describe('MarkdownPdf', () => {
       '',
       '<p align="center">閉じない',
       '',
+      '<p class="note">寄せない</p>',
+      '',
+      '# 参考文献',
+      '',
+      '<p align="center">文献の中</p>',
+      '',
+      '文献1',
+      '',
     ].join('\n')
-    const latex = execFileSync('pandoc', ['--from=markdown', '-t', 'latex', '--lua-filter', CANVCODE_ALIGN_FILTER], {
-      input: markdown,
-      encoding: 'utf8',
-    })
+    const refs = join(BUNDLED_MD2PDF_FILTERS, 'refs-hanging-indent.lua')
+    const latex = execFileSync(
+      'pandoc',
+      ['--from=markdown', '-t', 'latex', '--lua-filter', CANVCODE_ALIGN_FILTER, '--lua-filter', refs],
+      { input: markdown, encoding: 'utf8' },
+    )
     expect(latex).toMatch(/\\begin\{center\}\s*表1　\\textbf\{太字\}の題\s*\\end\{center\}/)
     expect(latex).toMatch(/\\begin\{flushright\}\s*右の文\s*\\end\{flushright\}/)
     expect(latex).toMatch(/\\begin\{center\}\s*表2　中の段落\s*\\end\{center\}/)
+    // 閉じない <p align> は、後ろの </p> や見出しまで巻き込まない
     expect(latex).not.toMatch(/\\begin\{center\}\s*閉じない/)
+    expect(latex).not.toMatch(/\\begin\{center\}[^]*寄せない[^]*\\end\{center\}[^]*参考文献/)
+    expect(latex).toMatch(/\\begin\{refhang\}\s*\\begin\{center\}\s*文献の中\s*\\end\{center\}[^]*\\end\{refhang\}/)
+    // 環境の開きと閉じが入れ子として釣り合う
+    const stack: string[] = []
+    for (const [, kind, name] of latex.matchAll(/\\(begin|end)\{(\w+)\}/g)) {
+      if (kind === 'begin') stack.push(name)
+      else expect(stack.pop()).toBe(name)
+    }
+    expect(stack).toEqual([])
   })
 
   it.skipIf(!canBuild)(
