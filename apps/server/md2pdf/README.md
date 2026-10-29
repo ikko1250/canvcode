@@ -14,7 +14,7 @@ https://github.com/ikko1250/md2pdf の 781f31f から、次のファイルをそ
 `canvcode-align.lua` も CanvCode のもの。`<p align="center">`・`<div align="center">`（right も）の寄せを、PDF でも center・flushright で効かせる。
 `canvcode-footnotes.lua` も CanvCode のもの。同じ脚注を何度参照しても、脚注は 1 つで番号は同じにする（カードと同じ）。pandoc は参照のたびに脚注の中身を写すので、中身が同じ脚注を同じものとみなし、2 回目からは `\footnotemark[n]` にする（hyperref のリンクにはならない）。
 
-`pandoc-lualatex-mplus.tex` の末尾の「コードブロック」の数行（fvextra で長い行を折り返す）も CanvCode で足したもので、md2pdf にはまだない。写し直すときは消さないこと。
+`pandoc-lualatex-mplus.tex` の末尾の「コードブロック」の数行（fvextra で長い行を折り返す）と、`\setmainjfont`・`\setsansjfont` の `AutoFakeSlant`（和文の斜体）も CanvCode で足したもので、md2pdf にはまだない。写し直すときは消さないこと。
 
 ## 要るもの
 
