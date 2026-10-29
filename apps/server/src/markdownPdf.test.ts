@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HttpError, type FileInfo } from './files.ts'
-import { CANVCODE_ALIGN_FILTER, MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
+import { CANVCODE_ALIGN_FILTER, CANVCODE_FOOTNOTES_FILTER, MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
 
 // Markdown の File を PDF にする口（POST /api/files/<id>/pdf）。
 // 実際に PDF を作るテストは、pandoc と LuaLaTeX がある環境でだけ動かす
@@ -157,6 +157,37 @@ describe('MarkdownPdf', () => {
       else expect(stack.pop()).toBe(name)
     }
     expect(stack).toEqual([])
+  })
+
+  it.skipIf(!hasPandoc)('gives repeated references to one footnote the same number', () => {
+    const latex = (markdown: string, filter = true) =>
+      execFileSync(
+        'pandoc',
+        ['--from=markdown+autolink_bare_uris', '-t', 'latex', ...(filter ? ['--lua-filter', CANVCODE_FOOTNOTES_FILTER] : [])],
+        { input: markdown, encoding: 'utf8' },
+      )
+    const count = (text: string, part: string) => text.split(part).length - 1
+    // 同じ脚注を 3 回（表のセルの中も）参照しても、脚注は 1 つ
+    const same = latex(['a[^1] b[^1]', '', '| x | y |', '|---|---|', '| r[^1] | s |', '', '[^1]: one', ''].join('\n'))
+    expect(count(same, '\\footnote{')).toBe(1)
+    expect(count(same, '\\footnotemark[1]')).toBe(2)
+    expect(same).toMatch(/r\\footnotemark\[1\] & s/)
+    // 番号は初出の順。中身の違う脚注はまとめない
+    const mixed = latex(['a[^1] b[^2] c[^1] d[^3]', '', '[^1]: one', '[^2]: two', '[^3]: three', ''].join('\n'))
+    expect(mixed).toContain('a\\footnote{one} b\\footnote{two} c\\footnotemark[1] d\\footnote{three}')
+    // メタデータと画像の説明の中の脚注は、本文の番号に数えない（LaTeX の footnote カウンタも進まない）
+    const outside = execFileSync(
+      'pandoc',
+      ['--from=markdown', '-s', '-t', 'latex', '--lua-filter', CANVCODE_FOOTNOTES_FILTER],
+      {
+        input: ['---', 'title: T[^1]', 'memo: m[^3]', '---', '', '![alt[^4]](a.png) x', '', 'a[^1] b[^2] c[^2] d[^3]', '', '[^1]: one', '[^2]: two', '[^3]: three', '[^4]: four', ''].join('\n'),
+        encoding: 'utf8',
+      },
+    )
+    expect(outside).toContain('a\\footnote{one} b\\footnote{two} c\\footnotemark[2] d\\footnote{three}')
+    // 脚注のない文書は変わらない
+    const plain = ['# 見出し', '', '本文 [リンク](https://example.com) と `[^1]`', '', '| x |', '|---|', '| y |', ''].join('\n')
+    expect(latex(plain)).toBe(latex(plain, false))
   })
 
   it.skipIf(!canBuild)(
