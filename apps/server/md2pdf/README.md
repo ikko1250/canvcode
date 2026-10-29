@@ -13,7 +13,7 @@ https://github.com/ikko1250/md2pdf の 781f31f から、次のファイルをそ
 `canvcode-images.lua` は CanvCode のもの（md2pdf にはない）。画像のパスを、画面のプレビューと同じ規則で探す。
 `canvcode-align.lua` も CanvCode のもの。`<p align="center">`・`<div align="center">`（right も）の寄せを、PDF でも center・flushright で効かせる。
 
-`pandoc-lualatex-mplus.tex` の末尾の「コードブロック」の数行（fvextra で長い行を折り返す）も CanvCode で足したもので、md2pdf にはまだない。写し直すときは消さないこと。
+`pandoc-lualatex-mplus.tex` の末尾の「コードブロック」の数行（fvextra で長い行を折り返す）と、`\setmainjfont`・`\setsansjfont` の `AutoFakeSlant`（和文の斜体）も CanvCode で足したもので、md2pdf にはまだない。写し直すときは消さないこと。
 
 ## 要るもの
 

@@ -108,6 +108,9 @@ export class MarkdownPdf {
         this.pandoc,
         [
           '--from=markdown+autolink_bare_uris',
+          // LaTeX のソースを折り返さない。和文の直後の改行は LuaTeX-ja が空白なしとして扱うので、
+          // 折り返すと、書いた空白のうち折り返した位置のものだけが消える
+          '--wrap=none',
           '--pdf-engine=lualatex',
           '-V',
           'indent',

@@ -64,14 +64,23 @@ async function serve(workspace: string, paths: Record<string, string>, options: 
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 }
 
-// PDF の文字と、描いている画像の数と、文字のいちばん右の端（紙の右端からの空き、pt。紙からはみ出すと負）
-async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number; rightGap: number }> {
+// 描いた文字のかたまり（PDF の Tm と TJ のひと組）。x・end は左端と右端（pt）、slanted は傾けて描いたもの
+interface TextRun {
+  text: string
+  x: number
+  end: number
+  slanted: boolean
+}
+
+// PDF の文字と、描いている画像の数と、文字のいちばん右の端（紙の右端からの空き、pt。紙からはみ出すと負）と、描いた文字のかたまり
+async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number; rightGap: number; runs: TextRun[] }> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const task = pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: false })
   const doc = await task.promise
   let text = ''
   let images = 0
   let rightGap = Infinity
+  const runs: TextRun[] = []
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
     const content = await page.getTextContent()
@@ -79,10 +88,23 @@ async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: numbe
     for (const item of content.items) {
       if ('str' in item && item.str.trim()) rightGap = Math.min(rightGap, page.view[2] - (item.transform[4] + item.width))
     }
-    images += (await page.getOperatorList()).fnArray.filter((fn) => fn === pdfjs.OPS.paintImageXObject).length
+    const { fnArray, argsArray } = await page.getOperatorList()
+    images += fnArray.filter((fn) => fn === pdfjs.OPS.paintImageXObject).length
+    let size = 0
+    let matrix = [1, 0, 0, 1, 0, 0]
+    for (const [index, fn] of fnArray.entries()) {
+      const args = argsArray[index]
+      if (fn === pdfjs.OPS.setFont) size = args[1]
+      else if (fn === pdfjs.OPS.setTextMatrix) matrix = Array.from(args[0] as ArrayLike<number>)
+      else if (fn === pdfjs.OPS.showText) {
+        const glyphs = (args[0] as unknown[]).filter((glyph): glyph is { unicode: string; width: number } => typeof glyph === 'object' && glyph !== null)
+        const width = glyphs.reduce((sum, glyph) => sum + (glyph.width * size) / 1000, 0)
+        runs.push({ text: glyphs.map((glyph) => glyph.unicode).join(''), x: matrix[4], end: matrix[4] + width, slanted: matrix[2] !== 0 })
+      }
+    }
   }
   await task.destroy()
-  return { text, images, rightGap }
+  return { text, images, rightGap, runs }
 }
 
 // 1×1 の PNG
@@ -227,6 +249,33 @@ describe('MarkdownPdf', () => {
       for (const mark of ['END1', 'END2', 'END3']) expect(text).toContain(mark)
       // 右の余白は 25mm（約 71pt）。折り返しの印のぶん少しはみ出してもよい
       expect(rightGap).toBeGreaterThan(50)
+    },
+    300_000,
+  )
+
+  it.skipIf(!canBuild)(
+    'slants Japanese in *emphasis* and keeps the spaces around it',
+    async () => {
+      const workspace = tempDir()
+      // pandoc は既定で LaTeX のソースを 72 桁（和文は 1 字 2 桁）で、空白のところで折り返す。
+      // 和文 37 字のあとの空白（「普通」と「*強調いち*」のあいだ）で折り返す長さにする。
+      // 和文の直後の改行は LuaTeX-ja が空白にしないので、折り返すと書いた空白が消える。
+      // 字の幅で空きを測れるよう、PDF では段落の最後の 1 行（字間を伸ばさない）に収め、句読点（幅が半分になる）を使わない
+      const long = '長い段落の文章'.repeat(5)
+      writeFileSync(join(workspace, 'em.md'), [`${long}普通 *強調いち* 普通`, ''].join('\n'))
+      const base = await serve(workspace, { 'file:e': 'em.md' })
+      const response = await fetch(`${base}/api/files/file%3Ae/pdf`, { method: 'POST' })
+      expect(response.status, await response.clone().text()).toBe(200)
+      const { runs } = await readPdf(await response.arrayBuffer())
+      const at = runs.findIndex((run) => run.text === '強調いち')
+      const [before, emphasis, after] = runs.slice(at - 1, at + 2)
+      expect(before.text.endsWith('普通') && !before.slanted).toBe(true)
+      expect([emphasis, after].map(({ text, slanted }) => [text, slanted])).toEqual([
+        ['強調いち', true],
+        ['普通', false],
+      ])
+      // 「普通」と「強調いち」のあいだに、書いた空白（1pt より広い空き）が残る
+      expect(emphasis.x - before.end).toBeGreaterThan(1)
     },
     300_000,
   )
