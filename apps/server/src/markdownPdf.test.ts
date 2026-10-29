@@ -263,12 +263,30 @@ describe('MarkdownPdf', () => {
   )
 
   it.skipIf(!canBuild)(
+    'joins Japanese lines of a paragraph without a gap',
+    async () => {
+      const workspace = tempDir()
+      // 段落の途中で改行した和文と、改行しない和文が、同じ幅になる（改行のところに空きが入らない）
+      writeFileSync(join(workspace, 'br.md'), ['あいうえお', 'かきくけこ', '', 'さしすせそたちつてと', ''].join('\n'))
+      const base = await serve(workspace, { 'file:b': 'br.md' })
+      const response = await fetch(`${base}/api/files/file%3Ab/pdf`, { method: 'POST' })
+      expect(response.status, await response.clone().text()).toBe(200)
+      const { runs } = await readPdf(await response.arrayBuffer())
+      const broken = runs.find((run) => run.text === 'あいうえおかきくけこ')
+      const joined = runs.find((run) => run.text === 'さしすせそたちつてと')
+      expect(broken && joined, JSON.stringify(runs.map((run) => run.text))).toBeTruthy()
+      expect(broken!.end - broken!.x).toBeCloseTo(joined!.end - joined!.x, 1)
+    },
+    300_000,
+  )
+
+  it.skipIf(!canBuild)(
     'slants Japanese in *emphasis* and keeps the spaces around it',
     async () => {
       const workspace = tempDir()
-      // pandoc は既定で LaTeX のソースを 72 桁（和文は 1 字 2 桁）で、空白のところで折り返す。
+      // pandoc は既定（--wrap=auto）で LaTeX のソースを 72 桁（和文は 1 字 2 桁）で、空白のところで折り返す。
       // 和文 37 字のあとの空白（「普通」と「*強調いち*」のあいだ）で折り返す長さにする。
-      // 和文の直後の改行は LuaTeX-ja が空白にしないので、折り返すと書いた空白が消える。
+      // 和文の直後の改行は LuaTeX-ja が空白にしないので、pandoc が折り返すと書いた空白が消える。
       // 字の幅で空きを測れるよう、PDF では段落の最後の 1 行（字間を伸ばさない）に収め、句読点（幅が半分になる）を使わない
       const long = '長い段落の文章'.repeat(5)
       writeFileSync(join(workspace, 'em.md'), [`${long}普通 *強調いち* 普通`, ''].join('\n'))
