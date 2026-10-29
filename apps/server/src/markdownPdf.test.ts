@@ -97,9 +97,18 @@ async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: numbe
       if (fn === pdfjs.OPS.setFont) size = args[1]
       else if (fn === pdfjs.OPS.setTextMatrix) matrix = Array.from(args[0] as ArrayLike<number>)
       else if (fn === pdfjs.OPS.showText) {
-        const glyphs = (args[0] as unknown[]).filter((glyph): glyph is { unicode: string; width: number } => typeof glyph === 'object' && glyph !== null)
-        const width = glyphs.reduce((sum, glyph) => sum + (glyph.width * size) / 1000, 0)
-        runs.push({ text: glyphs.map((glyph) => glyph.unicode).join(''), x: matrix[4], end: matrix[4] + width, slanted: matrix[2] !== 0 })
+        // TJ の中身は字（幅は 1/1000 em）と、字のあいだを詰める数（1/1000 em。正なら左へ戻る）
+        const items = args[0] as (number | { unicode: string; width: number } | null)[]
+        let width = 0
+        let text = ''
+        for (const item of items) {
+          if (typeof item === 'number') width -= (item * size) / 1000
+          else if (item) {
+            width += (item.width * size) / 1000
+            text += item.unicode
+          }
+        }
+        runs.push({ text, x: matrix[4], end: matrix[4] + width, slanted: matrix[2] !== 0 })
       }
     }
   }
@@ -268,6 +277,7 @@ describe('MarkdownPdf', () => {
       expect(response.status, await response.clone().text()).toBe(200)
       const { runs } = await readPdf(await response.arrayBuffer())
       const at = runs.findIndex((run) => run.text === '強調いち')
+      expect(at, JSON.stringify(runs.map((run) => run.text))).toBeGreaterThan(0)
       const [before, emphasis, after] = runs.slice(at - 1, at + 2)
       expect(before.text.endsWith('普通') && !before.slanted).toBe(true)
       expect([emphasis, after].map(({ text, slanted }) => [text, slanted])).toEqual([
