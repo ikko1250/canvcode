@@ -175,6 +175,16 @@ describe('MarkdownPdf', () => {
     // 番号は初出の順。中身の違う脚注はまとめない
     const mixed = latex(['a[^1] b[^2] c[^1] d[^3]', '', '[^1]: one', '[^2]: two', '[^3]: three', ''].join('\n'))
     expect(mixed).toContain('a\\footnote{one} b\\footnote{two} c\\footnotemark[1] d\\footnote{three}')
+    // メタデータと画像の説明の中の脚注は、本文の番号に数えない（LaTeX の footnote カウンタも進まない）
+    const outside = execFileSync(
+      'pandoc',
+      ['--from=markdown', '-s', '-t', 'latex', '--lua-filter', CANVCODE_FOOTNOTES_FILTER],
+      {
+        input: ['---', 'title: T[^1]', 'memo: m[^3]', '---', '', '![alt[^4]](a.png) x', '', 'a[^1] b[^2] c[^2] d[^3]', '', '[^1]: one', '[^2]: two', '[^3]: three', '[^4]: four', ''].join('\n'),
+        encoding: 'utf8',
+      },
+    )
+    expect(outside).toContain('a\\footnote{one} b\\footnote{two} c\\footnotemark[2] d\\footnote{three}')
     // 脚注のない文書は変わらない
     const plain = ['# 見出し', '', '本文 [リンク](https://example.com) と `[^1]`', '', '| x |', '|---|', '| y |', ''].join('\n')
     expect(latex(plain)).toBe(latex(plain, false))
