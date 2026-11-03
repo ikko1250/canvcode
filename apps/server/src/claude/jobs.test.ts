@@ -246,7 +246,42 @@ describe('ClaudeJobs', () => {
     expect(options.maxBudgetUsd).toBeUndefined()
     expect(options.perTaskStopAffordance).toBe(true)
     expect(options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBeUndefined()
+    // env は Claude Code の環境を丸ごと置き換えるので、process.env を広げたうえで足してある
+    expect(options.env?.PATH).toBe(process.env.PATH)
+    expect(options.env?.CLAUDE_AGENT_SDK_CLIENT_APP).toBe('canvcode')
+    expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(process.env.CLAUDE_CODE_TMPDIR ?? tmpdir())
     expect((options.systemPrompt as { append: string }).append).toContain('canvas:x')
+  })
+
+  it("lets the hook allow reading the session's own tool results, and canUseTool use what the hook saw (it gets no session id)", async () => {
+    const decisions: unknown[] = []
+    const transcript = '/srv/config/projects/-srv-ws/s1.jsonl'
+    const own = '/srv/config/projects/-srv-ws/s1/tool-results/b1.txt'
+    const tasks = `/srv/tmp/claude-${process.getuid!()}/-srv-ws/s1/tasks/b2.output`
+    const sdk = fakeSdk({
+      reply: (q) =>
+        void (async () => {
+          q.emit(init('s1'))
+          const hook = q.options.hooks!.PreToolUse![0].hooks[0] as HookCallback
+          const signal = new AbortController().signal
+          const pre = (file_path: string) =>
+            hook({ hook_event_name: 'PreToolUse', session_id: 's1', transcript_path: transcript, cwd: WS, tool_name: 'Read', tool_input: { file_path }, tool_use_id: 't' } as never, 't', { signal })
+          decisions.push(await pre(own))
+          decisions.push(await pre(tasks))
+          decisions.push(await pre('/srv/config/projects/-srv-ws/s2/tool-results/b1.txt'))
+          decisions.push(await q.options.canUseTool!('Read', { file_path: own }, { signal, toolUseID: 't' } as never))
+          q.emit(success('s1'))
+        })(),
+    })
+    const jobs = makeJobs({ run: sdk.run, tmpRoot: '/srv/tmp' })
+    await finished(jobs, jobs.start({ prompt: 'x' }).id)
+    expect(decisions).toEqual([
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('外は読めません') } },
+      { behavior: 'allow', updatedInput: { file_path: own } },
+    ])
+    expect(sdk.queries[0].options.env?.CLAUDE_CODE_TMPDIR).toBe('/srv/tmp')
   })
 
   it('sends the next message of a thread to the same process, with the cost of each turn', async () => {

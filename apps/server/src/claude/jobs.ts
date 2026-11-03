@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { relative } from 'node:path'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { askTool, CANVCODE_MCP_PREFIX, CLAUDE_TOOLS, inside, preToolUseHook } from './permissions.ts'
+import { askTool, CANVCODE_MCP_PREFIX, CLAUDE_TOOLS, inside, preToolUseHook, skillRoots, type Guard, type GuardSettings } from './permissions.ts'
 import { ClaudeSession, type BackgroundTask, type RunQuery } from './session.ts'
 import type { ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
 
@@ -121,6 +122,8 @@ export interface ClaudeJobsDeps {
   idleCloseMs?: number
   closeGraceMs?: number
   cancelGraceMs?: number
+  // Claude Code に渡す CLAUDE_CODE_TMPDIR（バックグラウンドの作業の出力の置き場の根）。既定はサーバーの CLAUDE_CODE_TMPDIR か、OS の一時フォルダ
+  tmpRoot?: string
 }
 
 // CANVCODE_CLAUDE_MAX_TURNS（正の整数）と CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）。使えない値なら既定のまま
@@ -166,6 +169,8 @@ interface LiveThread {
   lastActive: number
   idleTimer?: NodeJS.Timeout
   cancelTimer?: NodeJS.Timeout
+  // 最後に通ったフックが組み立てた、ファイルのツールの許す場所（canUseTool には session の場所がわかる引数がないので、これを使う）
+  guard?: Guard
 }
 
 export class ClaudeJobs {
@@ -180,10 +185,13 @@ export class ClaudeJobs {
   // Claude Code の session ごとの、最後の total_cost_usd（resume したプロセスの費用の数え始め）
   private readonly costTotals = new Map<string, number>()
   private readonly listeners = new Set<JobListener>()
+  private readonly guardSettings: GuardSettings
 
   constructor(deps: ClaudeJobsDeps) {
     this.deps = deps
     this.store = deps.store
+    // スキルのフォルダは、起動したときに 1 回だけ調べる（Claude Code も、プロセスを立てたときに読み込む）
+    this.guardSettings = { workspace: deps.workspace, tmpRoot: deps.tmpRoot ?? process.env.CLAUDE_CODE_TMPDIR ?? tmpdir(), skillRoots: skillRoots(deps.workspace) }
     const interrupted = this.store.interruptRunning(INTERRUPTED_MESSAGE)
     if (interrupted > 0) console.log(`途切れた Claude のジョブを止まったものにしました：${interrupted} 個`)
   }
@@ -408,11 +416,11 @@ export class ClaudeJobs {
       // 分類のモデルが許すか決める。決められなければ canUseTool に来る
       permissionMode: 'auto',
       canUseTool: async (name, input) => {
-        const decision = askTool(name, input, workspace)
+        const decision = askTool(name, input, thread.guard ?? workspace)
         if (decision.behavior === 'deny') denied(name, decision.message)
         return decision
       },
-      hooks: { PreToolUse: [{ hooks: [preToolUseHook(workspace, denied)] }] },
+      hooks: { PreToolUse: [{ hooks: [preToolUseHook(this.guardSettings, denied, (guard) => (thread.guard = guard))] }] },
       mcpServers: { canvcode: { type: 'http', url: this.deps.mcpUrl, alwaysLoad: true } },
       strictMcpConfig: true,
       // ワークスペースの CLAUDE.md と .claude/ の設定だけを読む（ユーザーの ~/.claude の MCP・許可の設定は使わない）
@@ -423,7 +431,9 @@ export class ClaudeJobs {
       ...(this.deps.model ? { model: this.deps.model } : {}),
       maxTurns: this.maxTurns(),
       ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
-      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
+      // env は Claude Code の環境を丸ごと置き換えるので、process.env を広げたうえで足す。
+      // CLAUDE_CODE_TMPDIR は、バックグラウンドの作業の出力の置き場をサーバーが知るため（permissions.ts の sessionReadRoots）
+      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_TMPDIR: this.guardSettings.tmpRoot },
     }
   }
 

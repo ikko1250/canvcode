@@ -222,9 +222,13 @@ ID をコピーして貼り付けなくても、画面の右のパネルから�
 
 アプリにログインがないので、画面を開ける人なら誰でも頼める。そのため、できることを絞ってある（`apps/server/src/claude/permissions.ts`）：
 
-- 使えるツールは、ファイルを読む・探す・書く（Read・Glob・Grep・Write・Edit）、Bash、WebSearch・WebFetch、サブエージェント（Agent）、スキル（Skill）、canvcode の MCP だけ。スキルはワークスペースの `.claude/skills/` にあるもの（`~/.claude/skills` は読まない）。サブエージェントやスキルの中で使うツールも同じ範囲で、下の制限も同じようにかかる
+- 使えるツールは、ファイルを読む・探す・書く（Read・Glob・Grep・Write・Edit）、Bash、WebSearch・WebFetch、サブエージェント（Agent）、スキル（Skill）、canvcode の MCP だけ。スキルは、ワークスペースから git のリポジトリの根までのそれぞれの `.claude/skills/` にあるもの（Claude Code がそこから読み込む。`~/.claude/skills` は読まない）。サブエージェントやスキルの中で使うツールも同じ範囲で、下の制限も同じようにかかる
 - 許すかどうかは Claude Code の [auto mode](https://code.claude.com/docs/en/permission-modes) に任せる。分類のモデルが、危ない操作（ワークスペースの外のものを消す・秘密を外に送るなど）を断り、ほかは許す。分類で決められなかったコマンドは、画面で許可する仕組みがまだないので断る。auto mode が使えない（プランやモデルが対応していない）ときは、パネルにそう出て、Bash は使えない
-- ファイルのツールで読み書きするのはワークスペースの中だけ。`.canvcode/` と `.claude/` には書けない（auto mode の判定より前にフックで断る）。`~` と `~/…` は、Claude Code と同じくホームフォルダとして確かめる（`~user/…` も外とみなす）。Bash はこの制限の外で、どこを触るかは auto mode の判定に任せる
+- ファイルのツールで読み書きするのはワークスペースの中だけ。`.canvcode/` と `.claude/` には書けない（auto mode の判定より前にフックで断る）。`~` と `~/…` は、Claude Code と同じくホームフォルダとして確かめる（`~user/…` も外とみなす）。Glob は、`pattern` を絶対パスや `../` にしても外を探せない。Bash はこの制限の外で、どこを触るかは auto mode の判定に任せる
+- ワークスペースの外でも、読むだけなら次の場所は許す（Claude Code が自分で書いたものと、読み込んだスキル）。どれも、その会話の Claude Code の session のものだけで、ほかの会話のものと会話の記録（transcript）は読めない
+  - 大きいツールの結果を書き出したファイル（`~/.claude/projects/<cwd を変換した名前>/<session>/tool-results/`。`CLAUDE_CONFIG_DIR` があればその下）
+  - バックグラウンドの作業の出力（`<一時フォルダ>/claude-<uid>/<cwd を変換した名前>/<session>/tasks/`。一時フォルダは、サーバーの `CLAUDE_CODE_TMPDIR` か OS の一時フォルダで、サーバーが Claude Code に `CLAUDE_CODE_TMPDIR` として渡す）
+  - 上のスキルのフォルダ（ワークスペースの外にあるもの。imozuru の参照ファイルなど）
 - 断った操作（フック・auto mode の判定のどちらでも）はパネルに出る
 
 auto mode が断るのは、頼まれていないことや頼まれた範囲を超えることで、はっきり頼まれたコマンドは通す（ワークスペースの外を `rm -rf` するよう頼むと、消した）。つまり、画面を開ける人は、サーバーを動かしているユーザーの権限でシェルを動かせる。Tailscale から開くなら、tailnet のアクセス制御（ACL）で、このマシンに入れる端末を自分のものだけにしておく。この機能を使わないなら `CANVCODE_CLAUDE=0` で切る。
