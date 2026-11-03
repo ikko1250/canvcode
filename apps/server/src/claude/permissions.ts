@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { HookCallback, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
 
 // 画面から頼んだ Claude Code（claude/jobs.ts）に使わせるツールと、その許し方。
@@ -10,6 +11,9 @@ import type { HookCallback, PermissionResult } from '@anthropic-ai/claude-agent-
 // - それとは別に、ファイルのツールで読み書きするのはワークスペースの中だけにし、.canvcode/（保存のデータ）と .claude/（Claude Code の設定）
 //   には書かせない（guardTool）。auto mode の判定より前に PreToolUse のフックで断るので、分類のモデルが許しても通らない。
 //   Bash はこの制限の外（どこを触るかは auto mode の判定に任せる）
+// - Claude Code のファイルのツールは、~ と ~/… をホームフォルダとして扱う。Read・Write は展開してからフックに渡すが、
+//   Glob・Grep の path と Glob の pattern は ~ のまま届く（ワークスペースの中の「~」というフォルダに見えてしまう）。
+//   確かめる前に同じように置き換える（expandHome）
 
 export const CLAUDE_TOOLS = ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent', 'Skill']
 
@@ -24,18 +28,48 @@ export const CANVCODE_MCP_PREFIX = 'mcp__canvcode__'
 export function guardTool(name: string, input: Record<string, unknown>, workspace: string): string | null {
   if (name.startsWith('mcp__') && !name.startsWith(CANVCODE_MCP_PREFIX)) return `CanvCode の画面からは ${name} を使えません`
   if (READ_TOOLS.has(name)) {
-    const path = toolPath(name, input)
-    if (path !== undefined && !inside(workspace, path)) return `ワークスペース（${workspace}）の外は読めません：${path}`
+    for (const path of readPaths(name, input)) {
+      const expanded = expandHome(path)
+      if (expanded === null || !inside(workspace, expanded)) return `ワークスペース（${workspace}）の外は読めません：${path}`
+    }
     return null
   }
   if (WRITE_TOOLS.has(name)) {
-    const path = toolPath(name, input)
-    if (path === undefined) return '書くファイルのパスがありません'
-    if (!inside(workspace, path)) return `ワークスペース（${workspace}）の外には書けません：${path}`
+    const raw = toolPath(name, input)
+    if (raw === undefined) return '書くファイルのパスがありません'
+    const path = expandHome(raw)
+    if (path === null || !inside(workspace, path)) return `ワークスペース（${workspace}）の外には書けません：${raw}`
     const top = relative(realish(workspace), realish(resolve(workspace, path))).split(/[\\/]/)[0]
     if (PROTECTED_DIRS.includes(top)) return `${top}/ には書けません（CanvCode と Claude Code の設定・データの置き場）`
   }
   return null
+}
+
+// ~ と ~/… を、Claude Code と同じくホームフォルダに置き換える。ほかの書き方（$HOME・${HOME}・file://）は Claude Code も展開しない
+// （cwd からの相対になる）ので、そのまま返す。~user/… と ~\… は Claude Code は展開しないが、紛らわしいので外とみなす（null）。
+// 本物の CLI（2.1.317）で、Read・Write・Glob・Grep で確かめた（docs/claude-permissions-plan.md）
+export function expandHome(path: string): string | null {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2))
+  if (path.startsWith('~')) return null
+  return path
+}
+
+// 読むツールが触る場所。Glob の pattern が ~ で始まると、path を省いても Claude Code はホームフォルダから探すので、
+// その固定の部分（ワイルドカードを含む最初の区切りより前）も確かめる
+function readPaths(name: string, input: Record<string, unknown>): string[] {
+  const paths: string[] = []
+  const path = toolPath(name, input)
+  if (path !== undefined) paths.push(path)
+  if (name === 'Glob' && typeof input.pattern === 'string' && input.pattern.startsWith('~')) {
+    const fixed: string[] = []
+    for (const part of input.pattern.split('/')) {
+      if (/[*?[{]/.test(part)) break
+      fixed.push(part)
+    }
+    if (fixed.length > 0) paths.push(fixed.join('/'))
+  }
+  return paths
 }
 
 // PreToolUse のフック。guardTool で断るものを断り、canvcode の MCP は許す（Canvas の編集は画面で元に戻せる）。
