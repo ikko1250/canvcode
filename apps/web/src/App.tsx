@@ -916,7 +916,7 @@ export function App(props: { initial: InitialRecords }) {
     [placePlot, notify],
   )
 
-  // 付箋の文字（音声入力で入れた話し言葉など）を、Haiku に箇条書きのメモにしてもらい、付箋の文字と置き換える（Undo 1 回で戻る）。
+  // 付箋の文字（音声入力で入れた話し言葉など）を、Claude（既定は Sonnet）に箇条書きのメモにしてもらい、付箋の文字と置き換える（Undo 1 回で戻る）。
   // 待っている間に付箋が変わった・消えた・編集を始めた・別の Canvas に移ったなら、置き換えない。同じ付箋を重ねて頼まない
   const memoizing = useRef(new Set<string>())
   const noteToMemo = useCallback(
@@ -1070,7 +1070,7 @@ export function App(props: { initial: InitialRecords }) {
           })
         }
       }
-      // 付箋の高さ：文字に合わせる／固定する。文字があれば、箇条書きのメモにする（Haiku）
+      // 付箋の高さ：文字に合わせる／固定する。文字があれば、箇条書きのメモにする（Claude）
       if (single?.type === 'note') {
         const props = single.props as NoteProps
         if (plainTextOf(props.paragraphs).trim()) items.push({ label: '箇条書きのメモにする', onSelect: () => void noteToMemo(single.id) })

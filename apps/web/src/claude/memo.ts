@@ -1,7 +1,7 @@
 import { MAX_LIST_LEVEL, normalizeRichText, type TextParagraph, type TextRunFormat } from '@canvcode/nodes'
 
 // 付箋の文字を箇条書きのメモにする（付箋の右クリックの「箇条書きのメモにする」）。
-// サーバーの POST /api/claude/memo（apps/server/src/claude/memo.ts）が Haiku に頼み、項目と深さの並びを返す。
+// サーバーの POST /api/claude/memo（apps/server/src/claude/memo.ts）が Claude（既定は Sonnet）に頼み、項目と深さの並びを返す。
 // それを付箋の段落（箇条書き。MAI-78 のリスト）にする
 
 export interface MemoItem {

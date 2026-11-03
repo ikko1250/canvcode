@@ -6,7 +6,7 @@ import { JobError } from './jobs.ts'
 
 // 付箋の文字（音声入力で入れた話し言葉など）を、箇条書きのメモにする（付箋の右クリックの「箇条書きのメモにする」）。
 // - Claude Agent SDK の query() を 1 回だけ呼ぶ（認証は claude/jobs.ts と同じく、このマシンの Claude Code のもの）。
-//   モデルは既定で Haiku（CANVCODE_MEMO_MODEL で変える）
+//   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える。Haiku は速いが、元の文章にない補足を足し、音声認識の誤りを直せないことが多かった）
 // - ツール・MCP・設定（CLAUDE.md・.claude/）は使わず、会話も残さない（persistSession: false）。cwd は OS の一時フォルダ
 // - 答えは「- 項目」の行（行の頭の半角空白 2 つで 1 段深い）で返させ、ここで { text, level } の並びにする。
 //   付箋の段落（箇条書き）にするのは画面（apps/web/src/claude/memo.ts）
@@ -14,7 +14,7 @@ import { JobError } from './jobs.ts'
 //   Claude Code を画面から使わない（CANVCODE_CLAUDE=0）なら、handleClaude が 404 を返す
 
 export const MEMO_PATH = '/api/claude/memo'
-export const DEFAULT_MEMO_MODEL = 'claude-haiku-5-5'
+export const DEFAULT_MEMO_MODEL = 'claude-sonnet-5-5'
 // 1 回に渡せる文字の数（付箋 1 枚の話し言葉には十分）
 export const MAX_MEMO_TEXT_LENGTH = 20_000
 // 同時に頼める数。超えたら 429
@@ -141,7 +141,7 @@ export class MemoWriter {
       options: {
         cwd: tmpdir(),
         model: this.model,
-        // low だと、元の文章にない結論を足したり、直した語に注を付けたりしやすかった（medium で 3 秒ほど）
+        // 言い換えるだけなので medium（Sonnet で 3〜7 秒）。Haiku の low では、元の文章にない結論を足したり、直した語に注を付けたりしやすかった
         effort: 'medium',
         systemPrompt: MEMO_SYSTEM_PROMPT,
         tools: [],

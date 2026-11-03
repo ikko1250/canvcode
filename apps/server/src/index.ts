@@ -42,7 +42,7 @@ import { ThumbnailStore } from './thumbnails.ts'
 //   CANVCODE_CLAUDE=0 で切る。CANVCODE_CLAUDE_MODEL でモデルを、CANVCODE_CLAUDE_MAX_TURNS でターン数の上限（既定 100。claude/jobs.ts の DEFAULT_MAX_TURNS）を、
 //   CANVCODE_CLAUDE_MAX_BUDGET_USD で 1 回の依頼の費用の上限（ドル。既定はなし）を変える
 // - 付箋の文字を箇条書きのメモにする（/api/claude/memo。claude/memo.ts）。Claude Code を 1 回だけ、ツールなしで動かす。
-//   モデルは既定で Haiku（CANVCODE_MEMO_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
+//   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
@@ -122,7 +122,7 @@ const claude =
         ...(process.env.CANVCODE_CLAUDE_MODEL ? { model: process.env.CANVCODE_CLAUDE_MODEL } : {}),
         ...claudeLimitsFromEnv(process.env),
       })
-// 付箋の文字を箇条書きのメモにする（claude/memo.ts）。既定は Haiku。CANVCODE_MEMO_MODEL でモデルを変える
+// 付箋の文字を箇条書きのメモにする（claude/memo.ts）。既定は Sonnet。CANVCODE_MEMO_MODEL でモデルを変える
 const memo = process.env.CANVCODE_CLAUDE === '0' ? null : new MemoWriter(process.env.CANVCODE_MEMO_MODEL ? { model: process.env.CANVCODE_MEMO_MODEL } : {})
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。

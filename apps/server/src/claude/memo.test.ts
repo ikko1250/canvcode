@@ -75,7 +75,7 @@ describe('parseMemo', () => {
 })
 
 describe('MemoWriter', () => {
-  it('Haiku を、ツール・MCP・設定なし、会話を残さず、1 ターンだけ動かす', async () => {
+  it('既定のモデル（Sonnet）を、ツール・MCP・設定なし、会話を残さず、1 ターンだけ動かす', async () => {
     const calls: { prompt: string; options: Options }[] = []
     const memo = new MemoWriter({ run: answering('- 項目', calls) })
     expect(await memo.write('えっと、項目です')).toEqual([{ text: '項目', level: 0 }])
@@ -88,8 +88,8 @@ describe('MemoWriter', () => {
 
   it('モデルを変えられる', async () => {
     const calls: { prompt: string; options: Options }[] = []
-    await new MemoWriter({ model: 'claude-sonnet-5-5', run: answering('- a', calls) }).write('a')
-    expect(calls[0]!.options.model).toBe('claude-sonnet-5-5')
+    await new MemoWriter({ model: 'claude-haiku-5-5', run: answering('- a', calls) }).write('a')
+    expect(calls[0]!.options.model).toBe('claude-haiku-5-5')
   })
 
   it('失敗の答え・箇条書きにならない答え・答えずに終わったときは 502', async () => {
