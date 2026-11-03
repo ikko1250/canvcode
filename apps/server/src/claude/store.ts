@@ -5,6 +5,7 @@ import type { Job, JobEvent, JobStatus, JobSummary } from './jobs.ts'
 
 // 画面から頼んだ Claude Code のジョブと会話（thread）を保存する（.canvcode/claude.db）。
 // - ジョブ 1 つが 1 行。出来事（JobEvent）は 1 つずつ足す（届くたびに書く）
+// - origin の列は後から足した（表の版は上げない。上げると、古いサーバーが claude.db を壊れたものとして脇に移してしまう。古いサーバーはこの列を読まないだけ）
 // - 続きを頼むときは、その会話の最後のジョブの session_id を Claude Code の resume に渡す。
 //   Claude Code の会話の中身（transcript）は Claude Code が ~/.claude/projects/ に持っているので、サーバーを再起動しても続けられる
 // - 起動したときに動いていることになっているジョブは、止まったもの（failed）にする
@@ -31,6 +32,7 @@ interface JobRow {
   id: string
   thread_id: string
   prompt: string
+  origin: string | null
   ref_id: string | null
   canvas_id: string | null
   status: string
@@ -71,13 +73,14 @@ export class ClaudeStore {
   insertJob(job: StoredJob): void {
     this.db
       .prepare(
-        `INSERT INTO jobs (id, thread_id, prompt, ref_id, canvas_id, status, created_at, finished_at, cost_usd, duration_ms, session_id, event_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO jobs (id, thread_id, prompt, origin, ref_id, canvas_id, status, created_at, finished_at, cost_usd, duration_ms, session_id, event_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         job.id,
         job.threadId,
         job.prompt,
+        job.origin ?? null,
         job.refId ?? null,
         job.canvasId ?? null,
         job.status,
@@ -174,6 +177,7 @@ export class ClaudeStore {
       id: row.id,
       threadId: row.thread_id,
       prompt: row.prompt,
+      ...(row.origin === 'background' ? { origin: 'background' as const } : {}),
       ...(row.ref_id ? { refId: row.ref_id } : {}),
       ...(row.canvas_id ? { canvasId: row.canvas_id } : {}),
       status: row.status as JobStatus,
@@ -220,6 +224,7 @@ function open(path: string): DatabaseSync {
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
         prompt TEXT NOT NULL,
+        origin TEXT,
         ref_id TEXT,
         canvas_id TEXT,
         status TEXT NOT NULL,
@@ -238,6 +243,9 @@ function open(path: string): DatabaseSync {
         PRIMARY KEY (job_id, seq)
       );
     `)
+    // origin のない claude.db（前のサーバーが作ったもの）に足す
+    const columns = db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]
+    if (!columns.some((column) => column.name === 'origin')) db.exec('ALTER TABLE jobs ADD COLUMN origin TEXT')
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     return db
   } catch (error) {

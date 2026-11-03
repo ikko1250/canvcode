@@ -5,6 +5,7 @@ import { useSyncExternalStore } from 'react'
 // - 会話（thread）はサーバーの SQLite にある。一覧だけを持ち、中身（ジョブと出来事）は開いたときに読む（loadThread）
 // - 変化は /api/claude/events（SSE）で受け取る。つなぎ直すと、サーバーが一覧と動いているジョブ（snapshot）を送り直すので、
 //   読んであった会話は読み直す（抜けた出来事があるかもしれないため）
+// - 会話には、動いているバックグラウンドの作業（tasks）が付く。作業が終わって Claude が自分で続けたジョブは origin: 'background'
 // - 型はサーバーの claude/jobs.ts・claude/store.ts と同じ形
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
@@ -14,11 +15,13 @@ export type JobEvent =
   | { kind: 'tool'; name: string; detail?: string }
   | { kind: 'denied'; name: string; reason: string }
   | { kind: 'error'; message: string }
+  | { kind: 'task'; status: 'started' | 'completed' | 'failed' | 'stopped'; description: string }
 
 export interface ClaudeJob {
   id: string
   threadId: string
   prompt: string
+  origin?: 'background'
   refId?: string
   canvasId?: string
   status: JobStatus
@@ -30,6 +33,13 @@ export interface ClaudeJob {
   events: JobEvent[]
 }
 
+export interface BackgroundTask {
+  id: string
+  description: string
+  // local_agent（サブエージェント）・local_bash（コマンド）など
+  type: string
+}
+
 export interface ThreadSummary {
   threadId: string
   title: string
@@ -37,11 +47,13 @@ export interface ThreadSummary {
   updatedAt: number
   jobCount: number
   running: boolean
+  tasks?: BackgroundTask[]
 }
 
 export type StreamMessage =
   | { type: 'snapshot'; threads: ThreadSummary[]; running: ClaudeJob[] }
   | { type: 'job'; job: Omit<ClaudeJob, 'events'>; events: JobEvent[]; from: number; thread: ThreadSummary }
+  | { type: 'thread'; thread: ThreadSummary }
   | { type: 'thread-deleted'; threadId: string }
 
 export interface StartRequest {
@@ -91,6 +103,7 @@ export function applyStreamMessage(state: ClaudeState, message: StreamMessage): 
     }
   }
   const threads = sortThreads([message.thread, ...state.threads.filter((t) => t.threadId !== message.thread.threadId)])
+  if (message.type === 'thread') return { state: { ...state, threads } }
   const jobs = new Map(state.jobs)
   const have = state.jobs.get(message.job.id)?.events ?? []
   if (message.from > have.length) {
@@ -101,6 +114,11 @@ export function applyStreamMessage(state: ClaudeState, message: StreamMessage): 
   return { state: { ...state, threads, jobs } }
 }
 
+// 会話に、答えを書いているジョブかバックグラウンドの作業があるか
+export function threadBusy(thread: ThreadSummary): boolean {
+  return thread.running || (thread.tasks?.length ?? 0) > 0
+}
+
 // 会話のジョブ（古いものから）
 export function jobsOfThread(state: ClaudeState, threadId: string): ClaudeJob[] {
   return [...state.jobs.values()].filter((job) => job.threadId === threadId).sort((a, b) => a.createdAt - b.createdAt)
@@ -108,6 +126,15 @@ export function jobsOfThread(state: ClaudeState, threadId: string): ClaudeJob[] 
 
 function sortThreads(threads: ThreadSummary[]): ThreadSummary[] {
   return threads.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+// 本文のない POST。失敗したら、サーバーの error の文で投げる
+async function post(url: string): Promise<void> {
+  const res = await fetch(url, { method: 'POST' })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(body.error ?? `HTTP ${res.status}`)
+  }
 }
 
 // サーバーにつながらなかったときに、使えるか確かめ直すまでの時間
@@ -201,6 +228,16 @@ export class ClaudeClient {
   async cancel(id: string): Promise<void> {
     const res = await fetch(`${BASE}/jobs/${id}/cancel`, { method: 'POST' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  }
+
+  // 会話のプロセスごと止める（答えもバックグラウンドの作業も）
+  async stopThread(threadId: string): Promise<void> {
+    await post(`${BASE}/threads/${threadId}/stop`)
+  }
+
+  // バックグラウンドの作業を 1 つ止める
+  async stopTask(threadId: string, taskId: string): Promise<void> {
+    await post(`${BASE}/threads/${threadId}/tasks/${encodeURIComponent(taskId)}/stop`)
   }
 
   async deleteThread(threadId: string): Promise<void> {
