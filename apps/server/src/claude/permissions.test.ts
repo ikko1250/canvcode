@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { askTool, guardTool } from './permissions.ts'
+import { askTool, expandHome, guardTool } from './permissions.ts'
 
 // 画面から頼んだ Claude Code の許し方
 
@@ -55,6 +55,51 @@ describe('guardTool', () => {
     symlinkSync(join(ws, '..', 'outside'), join(ws, 'link'))
     expect(guarded('Write', { file_path: join(ws, 'link', 'x.md') }, ws)).toBe(true)
     expect(guarded('Read', { file_path: join(ws, 'link', 'x.md') }, ws)).toBe(true)
+  })
+
+  // Claude Code のファイルのツールは ~ をホームフォルダとして扱う。Glob・Grep の path と Glob の pattern には ~ のまま届くので、
+  // ワークスペースの中の「~」というフォルダとして通していた（Grep で、ホームのファイルの中身が読めた）
+  it('treats ~ and ~/ as the home folder, as Claude Code does, in every file tool', () => {
+    const ws = workspace()
+    expect(guarded('Read', { file_path: '~/.bashrc' }, ws)).toBe(true)
+    expect(guarded('Read', { file_path: '~' }, ws)).toBe(true)
+    expect(guarded('Write', { file_path: '~/.bashrc', content: '' }, ws)).toBe(true)
+    expect(guarded('Edit', { file_path: '~/.bashrc' }, ws)).toBe(true)
+    expect(guarded('Grep', { pattern: 'x', path: '~/.cache' }, ws)).toBe(true)
+    expect(guarded('Grep', { pattern: 'x', path: '~' }, ws)).toBe(true)
+    expect(guarded('Glob', { pattern: '*.txt', path: '~/.cache' }, ws)).toBe(true)
+    expect(guarded('Glob', { pattern: '~/.cache/*.txt' }, ws)).toBe(true)
+    expect(guarded('Glob', { pattern: '~/*' }, ws)).toBe(true)
+    expect(guarded('Glob', { pattern: '~' }, ws)).toBe(true)
+    // Claude Code は展開しないが、紛らわしいので外とみなす
+    expect(guarded('Read', { file_path: '~root/.bashrc' }, ws)).toBe(true)
+    expect(guarded('Write', { file_path: '~\\.bashrc', content: '' }, ws)).toBe(true)
+    expect(guarded('Glob', { pattern: '~root/*' }, ws)).toBe(true)
+    // Claude Code が展開しない書き方は、ワークスペースからの相対（そのまま）
+    expect(guarded('Read', { file_path: '$HOME/.bashrc' }, ws)).toBe(false)
+    expect(guarded('Read', { file_path: '${HOME}/.bashrc' }, ws)).toBe(false)
+    expect(guarded('Glob', { pattern: '~*.md' }, ws)).toBe(false)
+    expect(guarded('Read', { file_path: 'notes/~draft.md' }, ws)).toBe(false)
+  })
+
+  it('reads and writes through ~ when the home folder is the workspace', () => {
+    // ~ を置き換えたあとで、いつもの確かめをする（ワークスペースがホームの下なら、~/… でも中）
+    const ws = join(homedir(), 'canvcode-test-workspace-that-does-not-exist')
+    expect(guarded('Read', { file_path: '~/canvcode-test-workspace-that-does-not-exist/a.md' }, ws)).toBe(false)
+    expect(guarded('Write', { file_path: '~/canvcode-test-workspace-that-does-not-exist/a.md', content: '' }, ws)).toBe(false)
+    expect(guarded('Write', { file_path: '~/canvcode-test-workspace-that-does-not-exist/.claude/x', content: '' }, ws)).toBe(true)
+  })
+})
+
+describe('expandHome', () => {
+  it('expands only ~ and ~/, as Claude Code does', () => {
+    expect(expandHome('~')).toBe(homedir())
+    expect(expandHome('~/a/b')).toBe(join(homedir(), 'a', 'b'))
+    expect(expandHome('~root/a')).toBeNull()
+    expect(expandHome('~\\a')).toBeNull()
+    expect(expandHome('$HOME/a')).toBe('$HOME/a')
+    expect(expandHome('file:///etc/passwd')).toBe('file:///etc/passwd')
+    expect(expandHome('/etc/~')).toBe('/etc/~')
   })
 })
 
