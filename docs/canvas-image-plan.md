@@ -97,6 +97,37 @@ async renderImage(editor: Editor, target: ImageTarget, size: { scale: number } |
 - 2〜4 は `budgetMs`（既定 10 秒）までしか待たない。間に合わなければ、ある絵で描き、`incomplete` に入れる。
 - ref の画像とサムネイルの待ち方は変えない（MAI-64 のまま）。
 
+**今の振る舞いを変えない**：`renderRegionPng`（ref の画像）と `renderSlideImage`（スライドの PDF）は、`renderImage` を今と同じ設定で呼ぶ形にする。
+
+| 呼び出し | 渡す設定 |
+|---|---|
+| `renderRegionPng(editor, box, maxEdge)` | `rect`、`{ maxEdge }`、カードを待たない（今のフィルター：Asset と表のタイル）、PDF は `display`、上限なし（`refImageSize` のまま） |
+| `renderSlideImage(slideId, editor)` | `slide`、倍率 2、印刷用、カードを待たない、PDF は `display` |
+
+- 変える前と後で、次を通す：`packages/canvas/src/refs.test.ts`・`slideImage.test.ts`・`apps/web/src/slidePdf*.test.ts` と、e2e の `slide-pdf.spec.ts`・`slide-templates.spec.ts`。
+- まとめると振る舞いが変わりそうなら（描く順・待つものが変わるなど）、まとめずに `renderImage` を新しく足すだけにし、理由をコミットに書く。
+
+### 描いたあとに手放すもの
+
+見ていない Canvas を描くと、描くためだけに読んだものができる。iPad はメモリーが厳しい（MAI-66）ので、今の上限と手放し方を調べ、残り続けるものは描いたあとに手放す。
+
+| もの | 今の上限と手放し方 | 描いたあと |
+|---|---|---|
+| 画像のキャッシュ（PDF のページ・Asset・カード・表のタイル。`imageCache.ts`） | 使った順で 256 MB まで。Canvas を移るときに 64 MB まで減らす（`view.ts:528`）。描くためだけに読んだ画像は、上限に達するまで残る | **手放す**。描いている間に新しく入れた（キー・解像度）を覚えておき（`ImageCache.track()`）、描いたあとで、直近のフレームで画面に使っていないものを捨てる（`ImageCache.release(tracked)`） |
+| 開いた PDF の文書（`assets.ts` の `pdfDocuments`） | 3 つまで。超えたら使っていないものから閉じる（`MAX_OPEN_PDFS`） | そのまま（上限がある） |
+| PDF の縮小画像のシート（`previewSheets`） | 2 枚まで（`MAX_PREVIEW_SHEETS`） | そのまま |
+| カードの HTML の画像（`markdownCard.ts` の `htmlImages`） | 4 つまで（`HTML_IMAGE_LIMIT`） | そのまま |
+| File の本文（`files.ts` の `entries`） | 上限なし（文字だけ） | そのまま。Canvas を開いたときと同じ |
+| 読んだ Canvas のレコード（`ensureCanvas`） | 手放さない（`docs/lazy-canvas-loading-plan.md` の 7 はまだ） | そのまま。読んでいるタブを先に選ぶので、新しく読むのは見ていない子の Canvas のときだけ |
+| 一時的な Editor | — | **必ず捨てる**（`try … finally` で `editor.dispose()`）。`editors` に入れない |
+| 描いた canvas 要素（最大 8192×2048 などで数十 MB） | GC まで残る | `toBlob` のあとで幅と高さを 0 にする（Safari は GC まで中身を持ち続ける） |
+
+確かめ方：
+
+- 単体（`imageCache.test.ts`）：`track` の間に入れたものだけが `release` で消え、画面に使っているもの・前からあったものは残る。バイト数が戻る。
+- e2e（`render-canvas.spec.ts`）：見ていない Canvas を AI が描いたあとで、タブの画像のキャッシュのバイト数が描く前と同じに戻り、Editor の数が増えていない（`window.canvcode` から読む）。
+- 手で：`tests/bench/memory.ts` は Canvas を巡るベンチマークなので、ここでは使わない。上の e2e で足りる。
+
 ## 3. ユーザーの入口（`apps/web/src/App.tsx`・`apps/web/src/pie/menus.ts`）
 
 | 入口 | 出す条件 | 項目 |
@@ -285,6 +316,7 @@ server.registerTool('render_canvas', {
 - PNG は `image/png` だけ、8 MB まで。先頭の署名と IHDR の幅・高さを確かめる（`refImages.ts:87` の `pngWidth` を、高さも読む `pngSize` にして共有する）。頼んだ大きさより 1 画素を超えて大きければ断る。失敗の JSON は 4 KB まで。
 - 画像はメモリーにだけ置き、ファイルには書かない（ref の画像と違い、あとで読み直すことがない）。
 - 画面を開ける人なら誰でも、今でも `read_canvas` で中身を読める。画像になっても、読める範囲は広がらない。
+- **偽の画像**：画面を開ける人なら、`features: ['render']` を名乗るタブ（やスクリプト）を作り、どんな PNG でも返せる。AI は、その偽の画像を見ることがある。ただし、画面を開ける人は今でも Canvas を書き換えられ（`push`）、パネルから Claude に頼むこともできる。偽の画像を返せることで、信頼の範囲は広がらない。AI に見せる画像は「画面を開ける人が見せたもの」で、Canvas のレコード（`read_canvas`）と同じ重みで扱う。
 - `render_canvas` は Canvas を変えない。パネルの Claude Code では、canvcode の MCP をもう許している（`claude/permissions.ts` の `preToolUseHook`）。
 
 ## 8. テスト
@@ -296,7 +328,7 @@ server.registerTool('render_canvas', {
 | 単体 | `apps/server/src/sync.test.ts` | `hello` の `features`・`presence` の `visible` が `tabs()` に出る。`onClose` |
 | 単体 | `apps/server/src/renders.test.ts`（新しく作る。`sync.test.ts` と同じく本物の WebSocket） | タブの順（見ている・読んだ・そのほか・裏）。`features` のないタブに頼まない。打ち切り → 次のタブ。閉じた → 次のタブ。`retry: false` は次へ回さない。遅れた答えは 404。PUT の確かめ（型・大きさ・署名・寸法）。`busy` |
 | 単体 | `apps/server/src/mcp.test.ts` | 偽の `RenderBroker` で：画像が先・テキストが後。タブがないときのエラー。スライドの番号 → id。ない id。既定の範囲（見ている所・Canvas 全体）。`renders` がなければツールを出さない |
-| e2e | `tests/e2e/canvas-image.spec.ts`（新しく作る。`slide-pdf.spec.ts` と同じく API を `page.route` で差し替える） | 右クリック › 画像として保存 › 2 倍 で落ちる PNG の寸法。範囲選択なら範囲の全部、ノードなら選んだものだけが写る（色を見る）。スライド 1 枚は 3840×2160。画像をコピー（Chromium で `clipboard-read` を許して読み戻す）。パイメニューの「画像 ›」 |
+| e2e | `tests/e2e/canvas-image.spec.ts`（新しく作る。`slide-pdf.spec.ts` と同じく API を `page.route` で差し替える。Chromium と Firefox） | 右クリック › 画像として保存 › 2 倍 で落ちる PNG の寸法。範囲選択なら範囲の全部、ノードなら選んだものだけが写る（色を見る）。スライド 1 枚は 3840×2160。パイメニューの「画像 ›」。画像をコピー（`clipboard-read` を許して読み戻す）は Chromium だけ |
 | e2e | `tests/e2e/render-canvas.spec.ts`（新しく作る。`lazy-canvas.spec.ts` と同じく本物のサーバーと Vite を起動。ポート 4420〜） | タブを開き、MCP のクライアントで `edit_canvas` → `render_canvas`。返った PNG に、置いた付箋の色がある。読んでいない子の Canvas も描ける。タブを閉じるとエラー |
 
 e2e は `flock /tmp/canvcode-e2e.lock` を付けて走らせる（ポート 4179 がほかの作業とぶつかる）。
@@ -329,26 +361,26 @@ e2e は `flock /tmp/canvcode-e2e.lock` を付けて走らせる（ポート 4179
 
 PR は 2 つに分ける：1〜3（ユーザーの入口。これだけでも使える）と 4〜7（AI の入口）。
 
-## 11. 決めきれないこと（レビューで決めてほしい）
+## 11. 決めたこと（2026-11-03 のレビュー）
 
-| # | 決めること | 選択肢 | おすすめ |
-|---|---|---|---|
-| 1 | その Canvas を読んでいないタブにも頼むか | (a) 見ているタブだけ (b) 読んだタブまで (c) どのタブでも（描く前に読む） | **(c)**。AI は子の Canvas にスライドを作ることが多く、ユーザーは親を見ていることが多い。読むのはその Canvas の分だけ |
-| 2 | 引数がないときに描くもの | (a) 見ている範囲。見ていない Canvas なら全体 (b) 引数を必ず求める | **(a)**。「ここ」「この図」の頼み方と合う |
-| 3 | `ids` で描くもの | (a) そのノードだけ (b) そのノードを囲む範囲の全部 | **(a)**。右クリックと同じ規則。全部なら `rect` を使う |
-| 4 | 裏のタブで PDF のページを描くとき | (a) 頼まれたときは `intent: 'print'` で描く (b) そのまま（打ち切りに任せる） | **(a)**。印刷用の注釈の扱いが少し違うだけで、止まらなくなる |
-| 5 | 右クリックの形 | (a) 「画像として保存 ›」「画像をコピー ›」の 2 つと、等倍・2 倍の次のメニュー (b) 「画像として出力…」1 つと、小さな画面（大きさと保存・コピーを選ぶ） | **(a)**。今のメニューの作りで足り、出来上がりの画素も見せられる |
-| 6 | ユーザーの画像の上限 | (a) どの端末でも 8192 画素・1,677 万画素 (b) 端末ごとに変える | **(a)**。iPad でも同じに動く |
-| 7 | AI の `max_edge` の上限 | (a) 2576 まで (b) 1568 で固定 | **(a)**。既定は 1568 のまま |
-| 8 | カードを待つ処理を、ref の画像にも使うか | (a) 使う (b) このチケットでは使わない | **(b)**。MAI-64 の振る舞いを変えないため。使うなら別のチケット |
-| 9 | PR の分け方 | (a) 2 つ（ユーザー・AI） (b) 1 つ | **(a)** |
+| # | 決めたこと | 選ばなかったもの |
+|---|---|---|
+| 1 | その Canvas を読んでいないタブにも頼む（描く前に読む）。AI は子の Canvas にスライドを作ることが多く、ユーザーは親を見ていることが多いため | 見ているタブだけ・読んだタブまで |
+| 2 | 引数がないときは、ユーザーが見ている範囲。見ていない Canvas なら、ノード全体を囲む範囲 | 引数を必ず求める |
+| 3 | `ids` は、そのノード（と子孫）だけを描く。範囲の全部なら `rect` | ノードを囲む範囲の全部 |
+| 4 | 頼まれて描く PDF のページは、`intent: 'print'` で描く（裏のタブでも止まらない） | そのまま（打ち切りに任せる） |
+| 5 | 右クリックは「画像として保存 ›」「画像をコピー ›」の 2 つと、等倍・2 倍の次のメニュー | 「画像として出力…」と小さな画面 |
+| 6 | ユーザーの画像の上限は、どの端末でも長い辺 8192 画素・面積 16,777,216 画素 | 端末ごとに変える |
+| 7 | AI の `max_edge` は 2576 まで。既定は 1568 | 1568 で固定 |
+| 8 | カードを待つ処理は、ref の画像には使わない（MAI-64 の振る舞いを変えない） | ref の画像にも使う |
+| 9 | PR は 2 つ（1〜3 のユーザーの入口、4〜7 の AI の入口） | 1 つ |
 
 ## 12. リスクとやらないこと
 
 **リスク**
 
 - 描くのはユーザーのタブの中なので、大きい範囲を描く間は画面が止まる（数百 ms）。上限・タブの中で 1 つずつ・打ち切りで抑える。
-- 読んでいない Canvas を描くと、そのタブにその Canvas のレコードが残る（`ensureCanvas` で読んだものは手放さない。`docs/lazy-canvas-loading-plan.md` の 7）。Editor は一時的に作って捨てる。
+- 読んでいない Canvas を描くと、そのタブにその Canvas のレコードが残る（`ensureCanvas` で読んだものは手放さない。`docs/lazy-canvas-loading-plan.md` の 7）。画像と Editor は、描いたあとに手放す（2 の「描いたあとに手放すもの」）。
 - 画像はトークンを使う（1568×882 で約 1,800）。説明に「毎回は描かない」と書き、効き目は `claude.db` の時間・費用で見る。
 - 手元の、まだ送っていない編集も写る。rev はサーバーの値なので、絵と rev がずれることがある（`notes` には書かない。まれなので）。
 - ブラウザごとのクリップボードの違い（Firefox は 127 から `ClipboardItem` が使える）。
