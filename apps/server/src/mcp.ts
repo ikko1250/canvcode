@@ -13,7 +13,7 @@ import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } 
 import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
 import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
-import { resolveReference, type RefDeps } from './refs.ts'
+import { addFileLocations, pdfFileSummary, resolveReference, type FileSummary, type RefDeps } from './refs.ts'
 
 // AI から CanvCode を使うための MCP サーバー（MAI-59）。
 // - Claude Code などが Streamable HTTP で /mcp につなぐ（claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp）
@@ -48,7 +48,8 @@ export function createMcpServer(deps: McpDeps): McpServer {
         'Document ids (file:...) in its result can be passed to read_document. ' +
         'Documents in its result also carry absPath (the Markdown / Python file) or textPath (plain text extracted from a PDF, ' +
         'each page starting with a "=== page N ===" line); read those files directly when you need more than the referenced part. ' +
-        'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details. ' +
+        'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details ' +
+        '(its file fields carry the same absPath / textPath, also on a portal to the pages of a PDF). ' +
         'Canvas tools default to the canvas the user is viewing ("this", "here").' +
         (deps.agent
           ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
@@ -90,12 +91,17 @@ export function createMcpServer(deps: McpDeps): McpServer {
     'read_document',
     {
       title: 'Read a document',
-      description: 'Read the full text of a document. The returned hash can be passed to update_document as expected_hash.',
+      description:
+        'Read the full text of a Markdown, Python or table document. The returned hash can be passed to update_document as expected_hash. ' +
+        'For a PDF, it tells where its extracted text is.',
       inputSchema: { id: z.string().describe('Document id (file:...) from list_documents') },
       annotations: { readOnlyHint: true },
     },
     ({ id }) =>
       guard(async () => {
+        // PDF は FileStore にないので、そのままでは「no such file」になり、AI が PDF を探し回っていた
+        const pdf = await pdfFileSummary(id, deps)
+        if (pdf) return error(pdfDocumentText(id, pdf))
         const { text, hash } = await files.read(id)
         return json({ id, hash, text })
       }),
@@ -205,14 +211,15 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
   )
 
-  registerCanvasTools(server, deps.records, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot)
+  registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot)
   return server
 }
 
 // ---- Canvas の上のもの ----
 
 // 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
-function registerCanvasTools(server: McpServer, records: RecordStore, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources, plot?: Plotter): void {
+function registerCanvasTools(server: McpServer, refDeps: RefDeps, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources, plot?: Plotter): void {
+  const { records } = refDeps
   // ユーザーが見ている所（その Canvas がまだあるときだけ）
   const viewing = (): Presence | null => {
     const current = presence?.() ?? null
@@ -275,11 +282,15 @@ function registerCanvasTools(server: McpServer, records: RecordStore, agent?: Ag
     'read_nodes',
     {
       title: 'Read nodes',
-      description: 'Details of nodes by id (compact JSON): world position and size, text, colours, file, arrow ends, children.',
+      description: 'Details of nodes by id (compact JSON): world position and size, text, colours, file (with absPath / textPath), arrow ends, children.',
       inputSchema: { ids: z.array(z.string()).min(1).max(100).describe('Node ids (node:...)') },
       annotations: { readOnlyHint: true },
     },
-    ({ ids }) => text(JSON.stringify(readNodes(records, ids))),
+    async ({ ids }) => {
+      const result = readNodes(records, ids)
+      await addFileLocations(result.nodes, refDeps)
+      return text(JSON.stringify(result))
+    },
   )
 
   if (!agent) return
@@ -549,6 +560,17 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, path:
 
 function summary(info: FileInfo): Pick<FileInfo, 'id' | 'kind' | 'title' | 'path' | 'missing'> {
   return { id: info.id, kind: info.kind, title: info.title, path: info.path, missing: info.missing }
+}
+
+// read_document に PDF の id が来たときの答え：本文は返さず、取り出したテキストのファイルと原本の場所を教える
+function pdfDocumentText(id: string, pdf: FileSummary): string {
+  const about = [pdf.title ? `"${pdf.title}"` : '', typeof pdf.pageCount === 'number' ? `${pdf.pageCount} pages` : ''].filter(Boolean).join(', ')
+  const lines = [`${id} is a PDF${about ? ` (${about})` : ''}; read_document reads only Markdown, Python and table documents.`]
+  if (pdf.textPath) lines.push(`Its text is in ${pdf.textPath} (each page starts with a "=== page N ===" line). Search and read that file with your file tools.`)
+  else lines.push('Its text could not be extracted.')
+  if (pdf.note) lines.push(pdf.note)
+  if (pdf.absPath) lines.push(`The original PDF is ${pdf.absPath}.`)
+  return lines.join(' ')
 }
 
 function text(value: string): CallToolResult {
