@@ -1,7 +1,19 @@
 import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { relative } from 'node:path'
-import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { askTool, CANVCODE_MCP_PREFIX, CLAUDE_TOOLS, inside, preToolUseHook } from './permissions.ts'
+import type { CanUseTool, Options, PermissionResult, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import {
+  askedByRule,
+  askTool,
+  CANVCODE_MCP_PREFIX,
+  CLAUDE_TOOLS,
+  inside,
+  preToolUseHook,
+  skillRoots,
+  type AskContext,
+  type Guard,
+  type GuardSettings,
+} from './permissions.ts'
 import { ClaudeSession, type BackgroundTask, type RunQuery } from './session.ts'
 import type { ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
 
@@ -37,6 +49,32 @@ export type JobEvent =
   | { kind: 'error'; message: string }
   // バックグラウンドの作業を始めた・終わった
   | { kind: 'task'; status: 'started' | 'completed' | 'failed' | 'stopped'; description: string }
+  // 画面で許可を求めた（id は PendingPermission の id）と、その答え
+  | { kind: 'ask'; id: string; name: string; detail: string; agent?: string }
+  | { kind: 'answer'; id: string; result: PermissionAnswer }
+
+// 許可の問い合わせの終わり方：許した・断った・時間切れ・取り消し（ジョブや会話を止めた、プロセスが終わった）
+export type PermissionAnswer = 'allowed' | 'denied' | 'expired' | 'cancelled'
+
+// 画面で答えを待っている問い合わせ（プロセスが持っているもの。保存しない）。会話（thread）に付く
+export interface PendingPermission {
+  id: string
+  // 尋ねたときの今のジョブ（バックグラウンドのサブエージェントからなら、ない）
+  jobId?: string
+  // ツールの名前（Bash など）
+  name: string
+  // Bash ならコマンドの全文。ほかは toolDetail と同じもの
+  detail: string
+  // Claude が付けた説明（canUseTool の description）
+  description?: string
+  // サブエージェントの中なら、その作業の名前
+  agent?: string
+  // 尋ねるわけ（規則で尋ねた・ワークスペースの外を触る）
+  reason?: string
+  createdAt: number
+  // これを過ぎたら断る
+  expiresAt: number
+}
 
 export interface JobSummary {
   id: string
@@ -59,9 +97,11 @@ export interface Job extends JobSummary {
   events: JobEvent[]
 }
 
-// 画面に見せる会話。tasks は動いているバックグラウンドの作業（プロセスが持っているもの。保存しない）
+// 画面に見せる会話。tasks は動いているバックグラウンドの作業、permissions は画面で答えを待っている問い合わせ
+// （どちらもプロセスが持っているもの。保存しない）
 export interface ThreadInfo extends ThreadSummary {
   tasks: BackgroundTask[]
+  permissions: PendingPermission[]
 }
 
 export interface StartRequest {
@@ -102,6 +142,11 @@ export const IDLE_CLOSE_MS = 10 * 60_000
 export const CLOSE_GRACE_MS = 5_000
 // ジョブを止めて（interrupt）も、この時間のうちにターンが終わらなければ、プロセスごと止める（ミリ秒）
 export const CANCEL_GRACE_MS = 10_000
+// 画面で許可を求めて、この時間のうちに誰も答えなければ断る（ミリ秒。SDK の問い合わせには期限がない）
+export const PERMISSION_TIMEOUT_MS = 10 * 60_000
+// 1 つの会話で答えを待てる問い合わせの数。超えたものは尋ねずに断る（サブエージェントが並ぶと、一度にたくさん来うる）
+export const MAX_PENDING_PERMISSIONS = 20
+export const TOO_MANY_PERMISSIONS = `待っている許可が多すぎます（1 つの会話で ${MAX_PENDING_PERMISSIONS} まで）。前の許可の答えを待ってから、もう一度試してください`
 
 export interface ClaudeJobsDeps {
   workspace: string
@@ -121,16 +166,31 @@ export interface ClaudeJobsDeps {
   idleCloseMs?: number
   closeGraceMs?: number
   cancelGraceMs?: number
+  // Claude Code に渡す CLAUDE_CODE_TMPDIR（バックグラウンドの作業の出力の置き場の根）。既定はサーバーの CLAUDE_CODE_TMPDIR か、OS の一時フォルダ
+  tmpRoot?: string
+  // 既定は PERMISSION_TIMEOUT_MS
+  permissionTimeoutMs?: number
 }
 
-// CANVCODE_CLAUDE_MAX_TURNS（正の整数）と CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）。使えない値なら既定のまま
-export function claudeLimitsFromEnv(env: NodeJS.ProcessEnv): Pick<ClaudeJobsDeps, 'maxTurns' | 'maxBudgetUsd'> {
+// CANVCODE_CLAUDE_MAX_TURNS（正の整数）・CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）・CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS（正の整数）。
+// 使えない値なら既定のまま
+export function claudeLimitsFromEnv(env: NodeJS.ProcessEnv): Pick<ClaudeJobsDeps, 'maxTurns' | 'maxBudgetUsd' | 'permissionTimeoutMs'> {
   const maxTurns = Number(env.CANVCODE_CLAUDE_MAX_TURNS)
   const maxBudgetUsd = Number(env.CANVCODE_CLAUDE_MAX_BUDGET_USD)
+  const permissionTimeoutMs = Number(env.CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS)
   return {
     ...(Number.isInteger(maxTurns) && maxTurns > 0 ? { maxTurns } : {}),
     ...(Number.isFinite(maxBudgetUsd) && maxBudgetUsd > 0 ? { maxBudgetUsd } : {}),
+    ...(Number.isInteger(permissionTimeoutMs) && permissionTimeoutMs > 0 ? { permissionTimeoutMs } : {}),
   }
+}
+
+// 待っている問い合わせ（LiveThread が持つ）。settle で終わらせる（2 回目からは何もしない）
+interface PermissionEntry {
+  info: PendingPermission
+  // サブエージェントの中なら、その作業の id（作業 1 つを止めたら取り消す）
+  agentId?: string
+  settle: (answer: PermissionAnswer) => void
 }
 
 // 会話 1 つの、動いている Claude Code のプロセスとその様子
@@ -166,6 +226,10 @@ interface LiveThread {
   lastActive: number
   idleTimer?: NodeJS.Timeout
   cancelTimer?: NodeJS.Timeout
+  // 最後に通ったフックが組み立てた、ファイルのツールの許す場所（canUseTool には session の場所がわかる引数がないので、これを使う）
+  guard?: Guard
+  // 画面で答えを待っている問い合わせ（id → 中身）。古いものから
+  permissions: Map<string, PermissionEntry>
 }
 
 export class ClaudeJobs {
@@ -180,10 +244,13 @@ export class ClaudeJobs {
   // Claude Code の session ごとの、最後の total_cost_usd（resume したプロセスの費用の数え始め）
   private readonly costTotals = new Map<string, number>()
   private readonly listeners = new Set<JobListener>()
+  private readonly guardSettings: GuardSettings
 
   constructor(deps: ClaudeJobsDeps) {
     this.deps = deps
     this.store = deps.store
+    // スキルのフォルダは、起動したときに 1 回だけ調べる（Claude Code も、プロセスを立てたときに読み込む）
+    this.guardSettings = { workspace: deps.workspace, tmpRoot: deps.tmpRoot ?? process.env.CLAUDE_CODE_TMPDIR ?? tmpdir(), skillRoots: skillRoots(deps.workspace) }
     const interrupted = this.store.interruptRunning(INTERRUPTED_MESSAGE)
     if (interrupted > 0) console.log(`途切れた Claude のジョブを止まったものにしました：${interrupted} 個`)
   }
@@ -225,8 +292,10 @@ export class ClaudeJobs {
       if (last.status === 'running' || live?.current || live?.waiting) throw new JobError(409, '前の依頼がまだ終わっていません')
       resume = live?.sessionId ?? last.sessionId
     }
+    // 画面で許可を待っている依頼も数える（ターンの途中で、プロセスも動いている）
     if ([...this.running.values()].filter((job) => !job.origin).length >= MAX_RUNNING) {
-      throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです`)
+      const asking = [...this.live.values()].some((thread) => thread.permissions.size > 0)
+      throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです${asking ? '。許可を待っている依頼があれば、答えると進みます' : ''}`)
     }
     // 費用の上限に達したプロセスは、新しいものに替える
     if (live?.retire && live.session.tasks.length === 0) {
@@ -268,6 +337,8 @@ export class ClaudeJobs {
     }
     this.cancelled.add(job)
     const thread = this.live.get(job.threadId)
+    // そのジョブが待っている許可は取り消す（interrupt でも SDK の signal から取り消しになるが、待たずに画面から消す）
+    if (thread) this.cancelPermissions(thread, (entry) => entry.info.jobId === job.id)
     if (thread?.waiting === job && !thread.session.started) {
       // まだプロセスを立てていない（前のプロセスを待っている）
       void this.closeThread(thread.threadId, 0)
@@ -305,7 +376,16 @@ export class ClaudeJobs {
     if (!this.store.thread(threadId)) throw new JobError(404, 'その会話はもうありません')
     const thread = this.live.get(threadId)
     if (!thread?.session.tasks.some((task) => task.id === taskId)) throw new JobError(404, 'その作業はもう動いていません')
+    // その作業（サブエージェント）が待っている許可は取り消す
+    this.cancelPermissions(thread, (entry) => entry.agentId === taskId)
     await thread.session.stopTask(taskId)
+  }
+
+  // 画面で待っている問い合わせに答える。もう待っていない（答えた・時間切れ・取り消した）か、その会話のものでなければ 404
+  answerPermission(threadId: string, id: string, decision: 'allow' | 'deny'): void {
+    const entry = this.live.get(threadId)?.permissions.get(id)
+    if (!entry) throw new JobError(404, 'その問い合わせはもうありません')
+    entry.settle(decision === 'allow' ? 'allowed' : 'denied')
   }
 
   // 会話を消す（動いている依頼か作業があれば断る）。Claude Code の session も消す（消せなくても会話は消す）
@@ -342,7 +422,7 @@ export class ClaudeJobs {
   private makeRoom(): void {
     if (this.live.size < MAX_SESSIONS) return
     const idle = [...this.live.values()]
-      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0)
+      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0 && thread.permissions.size === 0)
       .sort((a, b) => a.lastActive - b.lastActive)[0]
     if (!idle) throw new JobError(429, `同時に開いておける会話は ${MAX_SESSIONS} つまでです。ほかの会話の作業が終わるのを待つか、止めてください`)
     void this.closeThread(idle.threadId)
@@ -364,6 +444,7 @@ export class ClaudeJobs {
       costSoFar: resume ? (this.costTotals.get(resume) ?? Number.NaN) : 0,
       retire: false,
       lastActive: Date.now(),
+      permissions: new Map(),
     } as unknown as LiveThread
     thread.session = new ClaudeSession(
       this.deps.run ?? defaultRun,
@@ -386,6 +467,8 @@ export class ClaudeJobs {
     this.live.delete(threadId)
     clearTimeout(thread.idleTimer)
     clearTimeout(thread.cancelTimer)
+    // 待っている許可は取り消す（プロセスを閉じるので、もう答えられない）
+    this.cancelPermissions(thread)
     const done: Promise<void> = thread.session.close(graceMs).finally(() => {
       if (this.closing.get(threadId) === done) this.closing.delete(threadId)
     })
@@ -405,14 +488,15 @@ export class ClaudeJobs {
       tools: CLAUDE_TOOLS,
       // ワークスペースの .claude/skills/ のスキルをすべて使えるようにする（settingSources が project だけなので、~/.claude のスキルは読まない）
       skills: 'all',
-      // 分類のモデルが許すか決める。決められなければ canUseTool に来る
+      // 分類のモデルが許すか決める。決められなければ canUseTool に来る。Bash と、規則で尋ねると決めたものは、画面で尋ねる
       permissionMode: 'auto',
-      canUseTool: async (name, input) => {
-        const decision = askTool(name, input, workspace)
+      canUseTool: async (name, input, options) => {
+        const decision = askTool(name, input, thread.guard ?? workspace, options as AskContext)
+        if (decision.behavior === 'ask') return this.ask(thread, name, input, options, denied)
         if (decision.behavior === 'deny') denied(name, decision.message)
         return decision
       },
-      hooks: { PreToolUse: [{ hooks: [preToolUseHook(workspace, denied)] }] },
+      hooks: { PreToolUse: [{ hooks: [preToolUseHook(this.guardSettings, denied, (guard) => (thread.guard = guard))] }] },
       mcpServers: { canvcode: { type: 'http', url: this.deps.mcpUrl, alwaysLoad: true } },
       strictMcpConfig: true,
       // ワークスペースの CLAUDE.md と .claude/ の設定だけを読む（ユーザーの ~/.claude の MCP・許可の設定は使わない）
@@ -423,12 +507,90 @@ export class ClaudeJobs {
       ...(this.deps.model ? { model: this.deps.model } : {}),
       maxTurns: this.maxTurns(),
       ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
-      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
+      // env は Claude Code の環境を丸ごと置き換えるので、process.env を広げたうえで足す。
+      // CLAUDE_CODE_TMPDIR は、バックグラウンドの作業の出力の置き場をサーバーが知るため（permissions.ts の sessionReadRoots）
+      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_TMPDIR: this.guardSettings.tmpRoot },
     }
   }
 
   private maxTurns(): number {
     return this.deps.maxTurns ?? DEFAULT_MAX_TURNS
+  }
+
+  // 画面でユーザーに尋ね、答え（許す・断る）か、時間切れか、取り消しを待つ（docs/claude-permissions-plan.md の段階 2）。
+  // 問い合わせは会話に付け（ThreadInfo.permissions）、尋ねたことと答えはジョブの出来事（ask・answer）として残す
+  private ask(
+    thread: LiveThread,
+    name: string,
+    input: Record<string, unknown>,
+    options: Parameters<CanUseTool>[2],
+    denied: (name: string, reason: string) => void,
+  ): Promise<PermissionResult> {
+    if (thread.permissions.size >= MAX_PENDING_PERMISSIONS) {
+      denied(name, TOO_MANY_PERMISSIONS)
+      return Promise.resolve({ behavior: 'deny', message: TOO_MANY_PERMISSIONS })
+    }
+    // 止めたあと・閉じた会話（もう答えられない）は、尋ねずに断る
+    if (options.signal.aborted || this.live.get(thread.threadId) !== thread) return Promise.resolve({ behavior: 'deny', message: PERMISSION_TEXT.cancelled })
+    const id = randomUUID()
+    const now = Date.now()
+    const timeoutMs = this.deps.permissionTimeoutMs ?? PERMISSION_TIMEOUT_MS
+    const agent = options.agentID ? (thread.names.get(options.agentID) ?? 'サブエージェント') : undefined
+    const reason = askedByRule(options as AskContext)
+      ? 'ワークスペースの設定（permissions.ask）で、尋ねると決めてあります'
+      : options.blockedPath
+        ? `${options.blockedPath} を触ります`
+        : undefined
+    const detail = permissionDetail(name, input, this.deps.workspace)
+    const info: PendingPermission = {
+      id,
+      ...(thread.current ? { jobId: thread.current.id } : {}),
+      name,
+      detail,
+      ...(options.description ? { description: options.description } : {}),
+      ...(agent ? { agent } : {}),
+      ...(reason ? { reason } : {}),
+      createdAt: now,
+      expiresAt: now + timeoutMs,
+    }
+    this.permissionEvent(thread, info.jobId, { kind: 'ask', id, name, detail, ...(agent ? { agent } : {}) })
+    return new Promise<PermissionResult>((resolve) => {
+      // SDK の signal の abort（ジョブを止めた interrupt など）と時間切れ。entry は下で作る（呼ばれるのはそのあと）
+      const onAbort = () => entry.settle('cancelled')
+      const timer = setTimeout(() => entry.settle('expired'), timeoutMs)
+      timer.unref?.()
+      const entry: PermissionEntry = {
+        info,
+        ...(options.agentID ? { agentId: options.agentID } : {}),
+        settle: (answer) => {
+          if (thread.permissions.get(id) !== entry) return
+          thread.permissions.delete(id)
+          clearTimeout(timer)
+          options.signal.removeEventListener('abort', onAbort)
+          this.permissionEvent(thread, info.jobId, { kind: 'answer', id, result: answer })
+          this.notifyThread(thread.threadId)
+          this.scheduleIdle(thread)
+          resolve(answer === 'allowed' ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: permissionText(answer, timeoutMs) })
+        },
+      }
+      thread.permissions.set(id, entry)
+      options.signal.addEventListener('abort', onAbort, { once: true })
+      this.notifyThread(thread.threadId)
+    })
+  }
+
+  // 待っている許可を取り消す（which で絞る。省けば全部）
+  private cancelPermissions(thread: LiveThread, which: (entry: PermissionEntry) => boolean = () => true): void {
+    for (const entry of [...thread.permissions.values()]) if (which(entry)) entry.settle('cancelled')
+  }
+
+  // 許可の出来事を、尋ねたときのジョブ（まだ動いていれば）か今のジョブに足す。どちらもなければ（バックグラウンドのサブエージェント）、会話の最後のジョブに足す。
+  // 最後のジョブが動いていれば（送ったが、まだターンが来ていない依頼）、保存した写しではなく動いているものに足す（出来事の番号がずれないように）
+  private permissionEvent(thread: LiveThread, jobId: string | undefined, event: JobEvent): void {
+    const last = this.store.lastOfThread(thread.threadId)
+    const job = (jobId ? this.running.get(jobId) : undefined) ?? thread.current ?? (last ? this.running.get(last.id) : undefined)
+    if (job) this.push(job, event)
+    else this.appendToLast(thread.threadId, event)
   }
 
   // ジョブを保存し、知らせる
@@ -503,8 +665,9 @@ export class ClaudeJobs {
       if (canvcode && canvcode.status !== 'connected') {
         this.push(job, { kind: 'error', message: `CanvCode の MCP につながりませんでした（${canvcode.status}）` })
       }
+      // auto mode が使えないと、Bash の呼び出しがみな canUseTool に来る（画面で毎回尋ねる）
       if (message.permissionMode !== 'auto') {
-        this.push(job, { kind: 'error', message: `auto mode が使えないので、Bash は使えません（${message.permissionMode} で動いています）` })
+        this.push(job, { kind: 'error', message: `auto mode が使えないので、Bash は毎回画面で許可を求めます（${message.permissionMode} で動いています）` })
       }
       return
     }
@@ -611,7 +774,7 @@ export class ClaudeJobs {
   // 何もしていなければ、しばらくして閉じる（費用の上限に達していれば、すぐ閉じる）
   private scheduleIdle(thread: LiveThread): void {
     clearTimeout(thread.idleTimer)
-    if (thread.current || thread.waiting || thread.session.tasks.length > 0 || this.live.get(thread.threadId) !== thread) return
+    if (thread.current || thread.waiting || thread.session.tasks.length > 0 || thread.permissions.size > 0 || this.live.get(thread.threadId) !== thread) return
     if (thread.retire) {
       void this.closeThread(thread.threadId)
       return
@@ -626,6 +789,8 @@ export class ClaudeJobs {
     clearTimeout(thread.cancelTimer)
     if (this.live.get(thread.threadId) === thread) this.live.delete(thread.threadId)
     if (error) console.error('a Claude session failed', error)
+    // 待っていた許可は取り消す（ジョブを終える前に。取り消しをそのジョブに残すため）
+    this.cancelPermissions(thread)
     for (const job of [thread.current, thread.waiting]) {
       if (!job) continue
       if (this.cancelled.has(job) || thread.session.closing) this.finish(job, 'cancelled')
@@ -673,7 +838,8 @@ export class ClaudeJobs {
   }
 
   private info(thread: ThreadSummary): ThreadInfo {
-    return { ...thread, tasks: [...(this.live.get(thread.threadId)?.session.tasks ?? [])] }
+    const live = this.live.get(thread.threadId)
+    return { ...thread, tasks: [...(live?.session.tasks ?? [])], permissions: [...(live?.permissions.values() ?? [])].map((entry) => entry.info) }
   }
 
   private notify(job: StoredJob, from: number): void {
@@ -743,10 +909,30 @@ export function systemPromptAppend(canvasId: string | undefined): string {
     'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
     'Skills in the workspace .claude/skills/ are available through the Skill tool.',
     'Subagents and long commands can run in the background. When one finishes you are woken and continue on your own; that reply is shown in the panel too.',
-    'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; nobody is watching to approve the ones that are not.',
+    'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; the ones that are not are shown to the user in the panel to approve or decline (unanswered ones are declined after a while).',
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+// 許可の問い合わせの終わり方ごとの、Claude に返す言葉（今の askTool の言葉と同じく日本語）
+const PERMISSION_TEXT = {
+  denied: 'ユーザーが画面で断りました。同じことをもう一度試さず、何をしたかったかを書いて、どうするかをユーザーに尋ねてください',
+  cancelled: 'ユーザーが依頼を止めたので、取り消しました',
+}
+
+function permissionText(answer: Exclude<PermissionAnswer, 'allowed'>, timeoutMs: number): string {
+  if (answer === 'expired') {
+    const span = timeoutMs >= 60_000 ? `${Math.round(timeoutMs / 60_000)} 分` : `${Math.round(timeoutMs / 1000)} 秒`
+    return `画面で ${span}のうちに誰も許可しなかったので断りました。ユーザーに、手で実行するか、もう一度頼むよう伝えてください`
+  }
+  return PERMISSION_TEXT[answer]
+}
+
+// 許可の問い合わせで見せる中身。Bash はコマンドの全文（断る判断の材料なので切らない）
+function permissionDetail(name: string, input: Record<string, unknown>, workspace: string): string {
+  if (name === 'Bash' && typeof input.command === 'string') return input.command
+  return toolDetail(name, input, workspace) ?? JSON.stringify(input).slice(0, 2000)
 }
 
 // 画面に出すツールの詳しさ（パスはワークスペースからの相対）

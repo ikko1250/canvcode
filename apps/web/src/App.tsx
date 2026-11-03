@@ -65,7 +65,7 @@ import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
-import { ClaudeClient, threadBusy, useClaudeState } from './claude/claudeClient.ts'
+import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
 import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
@@ -2021,7 +2021,8 @@ export function App(props: { initial: InitialRecords }) {
           {claudeState.availability === 'on' && (
             <button
               type="button"
-              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) ? ' running' : ''}`}
+              // waiting は、どれかの会話が画面で許可を待っている（パネルが閉じていても気づけるように、印を出す）
+              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) ? ' running' : ''}${claudeState.threads.some(threadAsking) ? ' waiting' : ''}`}
               onClick={() => {
                 if (!claudeOpen) return askClaude('')
                 setClaudeOpen(false)

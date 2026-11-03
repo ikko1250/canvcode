@@ -5,7 +5,9 @@ import { useSyncExternalStore } from 'react'
 // - 会話（thread）はサーバーの SQLite にある。一覧だけを持ち、中身（ジョブと出来事）は開いたときに読む（loadThread）
 // - 変化は /api/claude/events（SSE）で受け取る。つなぎ直すと、サーバーが一覧と動いているジョブ（snapshot）を送り直すので、
 //   読んであった会話は読み直す（抜けた出来事があるかもしれないため）
-// - 会話には、動いているバックグラウンドの作業（tasks）が付く。作業が終わって Claude が自分で続けたジョブは origin: 'background'
+// - 会話には、動いているバックグラウンドの作業（tasks）と、画面で答えを待っている問い合わせ（permissions）が付く。
+//   作業が終わって Claude が自分で続けたジョブは origin: 'background'
+// - SSE は、使えるとわかったときにつなぐ（パネルを開く前でも、問い合わせを Claude のボタンの印で知らせるため）
 // - 型はサーバーの claude/jobs.ts・claude/store.ts と同じ形
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
@@ -16,6 +18,28 @@ export type JobEvent =
   | { kind: 'denied'; name: string; reason: string }
   | { kind: 'error'; message: string }
   | { kind: 'task'; status: 'started' | 'completed' | 'failed' | 'stopped'; description: string }
+  // 画面で許可を求めた（id は PendingPermission の id）と、その答え
+  | { kind: 'ask'; id: string; name: string; detail: string; agent?: string }
+  | { kind: 'answer'; id: string; result: PermissionAnswer }
+
+// 許可の問い合わせの終わり方：許した・断った・時間切れ・取り消し
+export type PermissionAnswer = 'allowed' | 'denied' | 'expired' | 'cancelled'
+
+// 画面で答えを待っている問い合わせ（会話に付く）
+export interface PendingPermission {
+  id: string
+  // 尋ねたときのジョブ（バックグラウンドのサブエージェントからなら、ない）
+  jobId?: string
+  name: string
+  // Bash ならコマンドの全文
+  detail: string
+  description?: string
+  // サブエージェントの中なら、その作業の名前
+  agent?: string
+  reason?: string
+  createdAt: number
+  expiresAt: number
+}
 
 export interface ClaudeJob {
   id: string
@@ -48,6 +72,7 @@ export interface ThreadSummary {
   jobCount: number
   running: boolean
   tasks?: BackgroundTask[]
+  permissions?: PendingPermission[]
 }
 
 export type StreamMessage =
@@ -114,9 +139,14 @@ export function applyStreamMessage(state: ClaudeState, message: StreamMessage): 
   return { state: { ...state, threads, jobs } }
 }
 
-// 会話に、答えを書いているジョブかバックグラウンドの作業があるか
+// 会話に、答えを書いているジョブか、バックグラウンドの作業か、答えを待っている問い合わせがあるか
 export function threadBusy(thread: ThreadSummary): boolean {
-  return thread.running || (thread.tasks?.length ?? 0) > 0
+  return thread.running || (thread.tasks?.length ?? 0) > 0 || (thread.permissions?.length ?? 0) > 0
+}
+
+// 会話に、答えを待っている問い合わせがあるか（Claude のボタンの印）
+export function threadAsking(thread: ThreadSummary): boolean {
+  return (thread.permissions?.length ?? 0) > 0
 }
 
 // 会話のジョブ（古いものから）
@@ -240,6 +270,20 @@ export class ClaudeClient {
     await post(`${BASE}/threads/${threadId}/tasks/${encodeURIComponent(taskId)}/stop`)
   }
 
+  // 画面で待っている問い合わせに答える。サーバーは JSON だけを受ける（別のサイトのフォームから送らせないため）。
+  // 一覧から消すのは、SSE で会話の変化が届いたとき
+  async answerPermission(threadId: string, permissionId: string, decision: 'allow' | 'deny'): Promise<void> {
+    const res = await fetch(`${BASE}/threads/${threadId}/permissions/${permissionId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `HTTP ${res.status}`)
+    }
+  }
+
   async deleteThread(threadId: string): Promise<void> {
     const res = await fetch(`${BASE}/threads/${threadId}`, { method: 'DELETE' })
     if (!res.ok && res.status !== 404) {
@@ -264,6 +308,8 @@ export class ClaudeClient {
       if (res.ok) {
         const { threads } = (await res.json()) as { threads: ThreadSummary[] }
         this.set({ ...this.snapshot, availability: 'on', threads })
+        // パネルを開く前から SSE をつなぐ（許可を待っている問い合わせを、閉じたパネルの Claude のボタンに印で出すため）
+        this.connect()
       } else if (res.status === 404) {
         this.set({ ...this.snapshot, availability: 'off' })
       } else {

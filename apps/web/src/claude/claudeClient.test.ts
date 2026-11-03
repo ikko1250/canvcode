@@ -1,5 +1,15 @@
-import { describe, expect, it } from 'vitest'
-import { applyStreamMessage, jobsOfThread, threadBusy, type ClaudeJob, type ClaudeState, type ThreadSummary } from './claudeClient.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  applyStreamMessage,
+  ClaudeClient,
+  jobsOfThread,
+  threadAsking,
+  threadBusy,
+  type ClaudeJob,
+  type ClaudeState,
+  type PendingPermission,
+  type ThreadSummary,
+} from './claudeClient.ts'
 
 // Claude の会話の状態に、SSE のメッセージを当てる
 
@@ -90,11 +100,50 @@ describe('jobsOfThread', () => {
   })
 })
 
+const permission: PendingPermission = { id: 'p1', jobId: 'a', name: 'Bash', detail: 'rm -rf build', createdAt: 0, expiresAt: 600_000 }
+
 describe('threadBusy', () => {
-  it('is busy while a job runs or a background task is left', () => {
+  it('is busy while a job runs, a background task is left, or a question waits for an answer', () => {
     expect(threadBusy(thread('a', 1))).toBe(false)
     expect(threadBusy(thread('a', 1, { tasks: [] }))).toBe(false)
     expect(threadBusy(thread('a', 1, { running: true }))).toBe(true)
     expect(threadBusy(thread('a', 1, { tasks: [{ id: 'x', description: 'x', type: 'local_bash' }] }))).toBe(true)
+    expect(threadBusy(thread('a', 1, { permissions: [permission] }))).toBe(true)
+  })
+})
+
+describe('questions waiting for an answer', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('replaces the questions of a thread when it changes, and tells which threads are asking', () => {
+    const before = state({ threads: [thread('a', 1, { permissions: [permission] })] })
+    expect(threadAsking(before.threads[0]!)).toBe(true)
+    const { state: s } = applyStreamMessage(before, { type: 'thread', thread: thread('a', 2, { permissions: [] }) })
+    expect(s.threads[0]!.permissions).toEqual([])
+    expect(threadAsking(s.threads[0]!)).toBe(false)
+    expect(threadAsking(thread('b', 1))).toBe(false)
+  })
+
+  it('answers with a JSON POST (the server takes only JSON), and throws the error of the server', async () => {
+    const calls: [string, RequestInit | undefined][] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push([url, init])
+        // 使えるかの確かめ（GET /api/claude/threads）は切ってあることにする（SSE をつながない）
+        if (!init) return new Response('{}', { status: 404 })
+        if (url.endsWith('/p2')) return new Response(JSON.stringify({ error: 'その問い合わせはもうありません' }), { status: 404 })
+        return new Response(null, { status: 204 })
+      }),
+    )
+    const client = new ClaudeClient()
+    await client.answerPermission('t1', 'p1', 'allow')
+    const [url, init] = calls.at(-1)!
+    expect(url).toBe('/api/claude/threads/t1/permissions/p1')
+    expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"decision":"allow"}' })
+    await expect(client.answerPermission('t1', 'p2', 'deny')).rejects.toThrow('その問い合わせはもうありません')
+    client.dispose()
   })
 })

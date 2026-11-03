@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { OWN_KEYS_ATTRIBUTE } from '@canvcode/canvas'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
-import { jobsOfThread, useClaudeState, type BackgroundTask, type ClaudeClient, type ClaudeJob, type JobEvent } from './claudeClient.ts'
+import {
+  jobsOfThread,
+  useClaudeState,
+  type BackgroundTask,
+  type ClaudeClient,
+  type ClaudeJob,
+  type JobEvent,
+  type PendingPermission,
+  type PermissionAnswer,
+} from './claudeClient.ts'
 
 // 画面から Claude Code に頼むパネル（キャンバスの右に並べる）。
 // - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新規」で切る）。会話はサーバーの SQLite に残り、
 //   上の一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
+// - Claude Code が許可を求めてきた呼び出し（auto mode が決められなかった Bash など）は、入力欄の上（作業の一覧の上）に並べ、
+//   「断る」「許可する」で答える。1 つのキーでは許可しない（許可のボタンにフォーカスを置かない）。答えないと、サーバーがしばらくして断る
 // - バックグラウンドで動いている作業（サブエージェント・コマンド）は入力欄の上に並べ、1 つずつ止められる。「全部止める」は会話のプロセスごと止める
 //   （2 回押す）。作業が動いていても送れる（答えを書いている最中だけ送れない）。作業が終わって Claude が自分で続けたジョブは、吹き出しでなく小さく見せる
 // - Canvas の編集は、ほかの AI の編集と同じく画面の下に「AI：…［元に戻す］」が出る（AgentToasts）
@@ -21,6 +32,7 @@ export interface ClaudeAttachment {
 
 const RECENT_MS = 30 * 60_000
 const NO_TASKS: readonly BackgroundTask[] = []
+const NO_PERMISSIONS: readonly PendingPermission[] = []
 
 interface Props {
   client: ClaudeClient
@@ -78,8 +90,16 @@ export function ClaudePanel(props: Props) {
   )
   const running = jobs.find((job) => job.status === 'running')
   const tasks = thread?.tasks ?? NO_TASKS
-  // 答えを書いているか、バックグラウンドの作業がある（消せない）
-  const busy = !!thread && (thread.running || tasks.length > 0)
+  const permissions = thread?.permissions ?? NO_PERMISSIONS
+  // 答えを書いているか、バックグラウンドの作業か、許可を待っている問い合わせがある（消せない）
+  const busy = !!thread && (thread.running || tasks.length > 0 || permissions.length > 0)
+  // 答えを送っている問い合わせ（SSE で一覧から消えるまで、ボタンを押せなくする）
+  const [answering, setAnswering] = useState<ReadonlySet<string>>(() => new Set())
+  // 待っている問い合わせの id と、許可を待っているジョブ（jobs と同じく state から読む。React Compiler が手書きの useMemo を保てるように）
+  const waiting = useMemo(() => {
+    const found = state.threads.find((t) => t.threadId === threadId)?.permissions ?? []
+    return { ids: new Set(found.map((p) => p.id)), jobs: new Set(found.flatMap((p) => (p.jobId ? [p.jobId] : []))) }
+  }, [state, threadId])
   const eventTotal = jobs.reduce((n, job) => n + job.events.length, 0)
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
@@ -134,6 +154,21 @@ export function ClaudePanel(props: Props) {
     client.stopTask(thread.threadId, task.id).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
 
+  const answer = (permission: PendingPermission, decision: 'allow' | 'deny') => {
+    if (!thread || answering.has(permission.id)) return
+    setAnswering((ids) => new Set(ids).add(permission.id))
+    setError(null)
+    client.answerPermission(thread.threadId, permission.id, decision).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e))
+      // 送れなかったら、また押せるようにする（もう待っていない 404 なら、SSE で一覧から消える）
+      setAnswering((ids) => {
+        const next = new Set(ids)
+        next.delete(permission.id)
+        return next
+      })
+    })
+  }
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter は改行。Ctrl（⌘）+Enter で送る。変換中の Enter は IME に任せる
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
@@ -175,8 +210,9 @@ export function ClaudePanel(props: Props) {
           <option value="">新しい会話</option>
           {threads.map((t) => (
             <option key={t.threadId} value={t.threadId}>
-              {t.running || (t.tasks?.length ?? 0) > 0 ? '● ' : ''}
+              {t.running || (t.tasks?.length ?? 0) > 0 || (t.permissions?.length ?? 0) > 0 ? '● ' : ''}
               {truncate(t.title, 28)}
+              {(t.permissions?.length ?? 0) > 0 ? '・許可待ち' : ''}
             </option>
           ))}
         </select>
@@ -212,12 +248,22 @@ export function ClaudePanel(props: Props) {
           <p className="claude-hint">
             キャンバスを選んで右クリックの「Claude に頼む…」（Ctrl+Alt+Enter）で、選んだ場所を添えて頼めます。
             Claude は CanvCode の MCP で Canvas と文書を読み書きします。コマンド（Bash）は、Claude Code の auto mode
-            が危なくないと判断したものだけを動かします。
+            が危なくないと判断したものを動かし、判断できなかったものはここで許可を求めます。
           </p>
         )}
         {thread && jobs.length === 0 && <p className="claude-hint">読み込んでいます…</p>}
-        {jobs.map((job) => <JobView key={job.id} job={job} onCancel={() => void client.cancel(job.id)} />)}
+        {jobs.map((job) => (
+          <JobView
+            key={job.id}
+            job={job}
+            asking={waiting.jobs.has(job.id)}
+            pendingIds={waiting.ids}
+            onCancel={() => void client.cancel(job.id)}
+          />
+        ))}
       </div>
+
+      {thread && permissions.length > 0 && <PermissionList permissions={permissions} answering={answering} onAnswer={answer} />}
 
       {thread && tasks.length > 0 && (
         <TaskList tasks={tasks} confirmStop={confirmStop === thread.threadId} onStop={stopTask} onStopAll={stopAll} onBlurStopAll={() => setConfirmStop(null)} />
@@ -266,6 +312,53 @@ export function ClaudePanel(props: Props) {
   )
 }
 
+// 画面で許可を待っている問い合わせ（古いものが上）。断る判断の材料なので、コマンドは切らずに全部出す。
+// 許可のボタンにはフォーカスを置かず、1 つのキーで許可できるようにはしない。残りの時間は 15 秒ごとに描き直す
+function PermissionList(props: {
+  permissions: readonly PendingPermission[]
+  answering: ReadonlySet<string>
+  onAnswer(permission: PendingPermission, decision: 'allow' | 'deny'): void
+}) {
+  const { permissions, answering, onAnswer } = props
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  return (
+    <div className="claude-permissions" role="region" aria-label="許可を待っています">
+      <div className="claude-permissions-header">許可を待っています（{permissions.length}）</div>
+      {permissions.map((permission) => (
+        <div key={permission.id} className="claude-permission">
+          <div className="claude-permission-title">
+            <strong>{permission.name === 'Bash' ? 'コマンドを実行' : toolLabel(permission.name)}</strong>
+            <span className="claude-permission-left">{leftText(permission.expiresAt - now)}</span>
+          </div>
+          <pre className="claude-permission-detail">{permission.detail}</pre>
+          {permission.description && <div className="claude-permission-note">{permission.description}</div>}
+          {permission.agent && <div className="claude-permission-note">サブエージェント「{permission.agent}」から</div>}
+          {permission.reason && <div className="claude-permission-note">{permission.reason}</div>}
+          <div className="claude-permission-actions">
+            <button type="button" disabled={answering.has(permission.id)} onClick={() => onAnswer(permission, 'deny')}>
+              断る
+            </button>
+            <button type="button" className="claude-allow" disabled={answering.has(permission.id)} onClick={() => onAnswer(permission, 'allow')}>
+              許可する
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// 断るまでの残りの時間
+function leftText(ms: number): string {
+  if (ms <= 0) return 'まもなく断ります'
+  if (ms < 60_000) return `あと ${Math.ceil(ms / 1000)} 秒で断ります`
+  return `あと ${Math.ceil(ms / 60_000)} 分で断ります`
+}
+
 // バックグラウンドで動いている作業の一覧
 function TaskList(props: {
   tasks: readonly BackgroundTask[]
@@ -304,8 +397,11 @@ function TaskList(props: {
   )
 }
 
-function JobView(props: { job: ClaudeJob; onCancel(): void }) {
-  const { job, onCancel } = props
+// asking は、このジョブが画面で許可を待っているか。pendingIds は、会話で答えを待っている問い合わせの id
+function JobView(props: { job: ClaudeJob; asking: boolean; pendingIds: ReadonlySet<string>; onCancel(): void }) {
+  const { job, asking, pendingIds, onCancel } = props
+  // 答えの出来事があった問い合わせ（答えのない「尋ねた」を見分けるため）
+  const answered = useMemo(() => new Set(job.events.flatMap((event) => (event.kind === 'answer' ? [event.id] : []))), [job.events])
   return (
     <div className="claude-job">
       {job.origin === 'background' ? (
@@ -317,13 +413,18 @@ function JobView(props: { job: ClaudeJob; onCancel(): void }) {
         </div>
       )}
       {job.events.map((event, i) => (
-        <EventView key={i} event={event} />
+        <EventView
+          key={i}
+          event={event}
+          // 答えのないまま、ジョブもプロセスも終わった（サーバーが落ちたなど）
+          lost={event.kind === 'ask' && job.status !== 'running' && !answered.has(event.id) && !pendingIds.has(event.id)}
+        />
       ))}
       <div className={`claude-status ${job.status}`}>
         {job.status === 'running' ? (
           <>
             <span className="claude-spinner" aria-hidden="true" />
-            考えています…
+            {asking ? '許可を待っています…' : '考えています…'}
             <button type="button" className="claude-link" onClick={onCancel}>
               止める
             </button>
@@ -336,8 +437,8 @@ function JobView(props: { job: ClaudeJob; onCancel(): void }) {
   )
 }
 
-function EventView(props: { event: JobEvent }) {
-  const { event } = props
+function EventView(props: { event: JobEvent; lost?: boolean }) {
+  const { event, lost } = props
   const html = useMemo(() => (event.kind === 'text' ? renderMarkdownToSafeHtml(event.text) : ''), [event])
   if (event.kind === 'text') return <div className="claude-text" dangerouslySetInnerHTML={{ __html: html }} />
   if (event.kind === 'tool') {
@@ -350,6 +451,16 @@ function EventView(props: { event: JobEvent }) {
   }
   if (event.kind === 'denied') return <div className="claude-tool denied">断りました：{event.reason}</div>
   if (event.kind === 'task') return <div className={`claude-tool task ${event.status}`}>{taskText(event)}</div>
+  if (event.kind === 'ask') {
+    return (
+      <div className="claude-tool ask">
+        許可を求めました{event.agent ? `（サブエージェント「${event.agent}」）` : ''}：
+        <span className="claude-tool-detail">{truncate(event.detail, 200)}</span>
+        {lost && '（答えないまま途切れました）'}
+      </div>
+    )
+  }
+  if (event.kind === 'answer') return <div className={`claude-tool answer ${event.result}`}>{ANSWER_TEXT[event.result]}</div>
   return <div className="claude-error">{event.message}</div>
 }
 
@@ -383,6 +494,13 @@ function toolLabel(name: string): string {
 }
 
 const TASK_TEXT = { started: 'バックグラウンドで始めました', completed: '終わりました', failed: '失敗しました', stopped: '止めました' }
+
+const ANSWER_TEXT: Record<PermissionAnswer, string> = {
+  allowed: '許可しました',
+  denied: '断りました',
+  expired: '時間切れで断りました',
+  cancelled: '止めたので取り消しました',
+}
 
 function taskText(event: Extract<JobEvent, { kind: 'task' }>): string {
   return `${TASK_TEXT[event.status]}：${event.description}`
