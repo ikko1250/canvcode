@@ -599,6 +599,36 @@ describe('MCP server', () => {
       expect(readFileSync(file.textPath, 'utf8')).toMatch(/^=== page 1 ===\none/)
     })
 
+    // read_document に PDF の id を渡すと、これまでは「no such file. Use list_documents …」と返り、AI は PDF を探し回っていた
+    it('tells read_document where the text of a PDF is, instead of saying there is no such file', async () => {
+      const { client, records, dataDir } = await setup()
+      const root = records.rootCanvasId
+      const hash = 'e'.repeat(64)
+      mkdirSync(join(dataDir, 'assets'), { recursive: true })
+      writeFileSync(join(dataDir, 'assets', `${hash}.pages.json`), JSON.stringify({ version: 1, pages: ['one', 'two'] }))
+      writeFileSync(join(dataDir, 'assets', `${hash}.pdf`), samplePdf('one'))
+      const now = Date.now()
+      const meta = { ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null }
+      records.apply(
+        [
+          { typeName: 'file', id: 'file:pdf', kind: 'pdf', title: 'paper', path: '', assetId: `asset:${hash}`, pageCount: 2, parentCanvasId: root, ...meta },
+          { typeName: 'file', id: 'file:gone', kind: 'pdf', title: 'old', path: '', assetId: `asset:${hash}`, pageCount: 2, parentCanvasId: root, ...meta, deletedAt: now },
+        ],
+        [],
+      )
+      const result = await call(client, 'read_document', { id: 'file:pdf' })
+      expect(result.isError).toBe(true)
+      expect(result.text).toContain('file:pdf is a PDF ("paper", 2 pages)')
+      expect(result.text).toContain(join(dataDir, 'assets', `${hash}.txt`))
+      expect(result.text).toContain(join(dataDir, 'assets', `${hash}.pdf`))
+      expect(result.text).not.toContain('list_documents')
+      expect(readFileSync(join(dataDir, 'assets', `${hash}.txt`), 'utf8')).toMatch(/^=== page 1 ===\none/)
+      // ゴミ箱に入れた PDF は、ほかの知らない id と同じに扱う
+      const gone = await call(client, 'read_document', { id: 'file:gone' })
+      expect(gone.isError).toBe(true)
+      expect(gone.text).toContain('list_documents')
+    })
+
     it('returns the part of a PDF page a canvas region covered, and says when it is a figure', async () => {
       const { client, records, refImages } = await setup()
       const root = records.rootCanvasId

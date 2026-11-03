@@ -13,7 +13,7 @@ import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } 
 import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
 import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
-import { addFileLocations, resolveReference, type RefDeps } from './refs.ts'
+import { addFileLocations, pdfFileSummary, resolveReference, type FileSummary, type RefDeps } from './refs.ts'
 
 // AI から CanvCode を使うための MCP サーバー（MAI-59）。
 // - Claude Code などが Streamable HTTP で /mcp につなぐ（claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp）
@@ -91,12 +91,17 @@ export function createMcpServer(deps: McpDeps): McpServer {
     'read_document',
     {
       title: 'Read a document',
-      description: 'Read the full text of a document. The returned hash can be passed to update_document as expected_hash.',
+      description:
+        'Read the full text of a Markdown, Python or table document. The returned hash can be passed to update_document as expected_hash. ' +
+        'For a PDF, it tells where its extracted text is.',
       inputSchema: { id: z.string().describe('Document id (file:...) from list_documents') },
       annotations: { readOnlyHint: true },
     },
     ({ id }) =>
       guard(async () => {
+        // PDF は FileStore にないので、そのままでは「no such file」になり、AI が PDF を探し回っていた
+        const pdf = await pdfFileSummary(id, deps)
+        if (pdf) return error(pdfDocumentText(id, pdf))
         const { text, hash } = await files.read(id)
         return json({ id, hash, text })
       }),
@@ -555,6 +560,17 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, path:
 
 function summary(info: FileInfo): Pick<FileInfo, 'id' | 'kind' | 'title' | 'path' | 'missing'> {
   return { id: info.id, kind: info.kind, title: info.title, path: info.path, missing: info.missing }
+}
+
+// read_document に PDF の id が来たときの答え：本文は返さず、取り出したテキストのファイルと原本の場所を教える
+function pdfDocumentText(id: string, pdf: FileSummary): string {
+  const about = [pdf.title ? `"${pdf.title}"` : '', typeof pdf.pageCount === 'number' ? `${pdf.pageCount} pages` : ''].filter(Boolean).join(', ')
+  const lines = [`${id} is a PDF${about ? ` (${about})` : ''}; read_document reads only Markdown, Python and table documents.`]
+  if (pdf.textPath) lines.push(`Its text is in ${pdf.textPath} (each page starts with a "=== page N ===" line). Search and read that file with your file tools.`)
+  else lines.push('Its text could not be extracted.')
+  if (pdf.note) lines.push(pdf.note)
+  if (pdf.absPath) lines.push(`The original PDF is ${pdf.absPath}.`)
+  return lines.join(' ')
 }
 
 function text(value: string): CallToolResult {

@@ -525,6 +525,14 @@ async function fileSummary(id: string, deps: RefDeps): Promise<FileSummary | und
   return out
 }
 
+// PDF の File の要約（read_document に PDF の id が来たとき、取り出したテキストのファイルの場所を返すため）。
+// PDF でない・ゴミ箱に入っているなら undefined
+export async function pdfFileSummary(id: string, deps: RefDeps): Promise<FileSummary | undefined> {
+  const record = deps.records.get(id)
+  if (record?.typeName !== 'file' || record.kind !== 'pdf' || record.deletedAt) return undefined
+  return fileSummary(id, deps)
+}
+
 // read_nodes の結果の file に、resolve_reference と同じ場所（absPath・textPath・pageCount など）を足す。
 // PDF のページを並べた Canvas への Portal には、その PDF を file として付ける（ページのノードを開かなくても本文を読めるように）
 export async function addFileLocations(nodes: Record<string, unknown>[], deps: RefDeps): Promise<void> {

@@ -151,7 +151,7 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 | ツール | 内容 |
 |---|---|
 | `list_documents` | File の一覧（名前・パスで絞り込み）と、ワークスペースのフォルダの絶対パス（そこに書いた `.md` などは文書になる） |
-| `read_document` | 本文とハッシュを読む |
+| `read_document` | 本文とハッシュを読む（PDF の id なら本文は返さず、取り出したテキストのファイルと原本の場所を返す） |
 | `create_document` | 新しい File を作る（サイドバーの「未配置」に入る） |
 | `update_document` | 本文を丸ごと置き換える（`expected_hash` で、読んだあとの変更を検出） |
 | `edit_document` | 本文の一部を置き換える |
