@@ -8,13 +8,16 @@ import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
 // - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼かバックグラウンドの作業があれば 409）
 // - POST /api/claude/threads/<id>/stop：会話のプロセスごと止める（今のターンもバックグラウンドの作業も）。204
 // - POST /api/claude/threads/<id>/tasks/<taskId>/stop：バックグラウンドの作業を 1 つ止める。204（もう動いていなければ 404）
+// - POST /api/claude/threads/<id>/permissions/<permissionId> { decision: 'allow' | 'deny' }：画面で待っている問い合わせに答える。204
+//   （もう待っていなければ 404）。content-type は application/json だけ受ける（別のサイトのフォームから送らせないため。415）
 // - POST /api/claude/jobs { prompt, refId?, canvasId?, threadId? }：頼む（threadId があれば、その会話の続き）。201 { job }
 // - GET /api/claude/jobs/<id>：1 つのジョブ
 // - POST /api/claude/jobs/<id>/cancel：止める（そのターンだけ。バックグラウンドの作業は残る）
 // - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running }（running は動いているジョブ）、
 //   そのあと変わるたびに { type: 'job', job, events, from, thread }（events はジョブの from 番目からの出来事）か、
 //   { type: 'thread', thread }（バックグラウンドの作業の一覧が変わった）か、{ type: 'thread-deleted', threadId }
-// 会話（thread）には、動いているバックグラウンドの作業 tasks: { id, description, type }[] が付く
+// 会話（thread）には、動いているバックグラウンドの作業 tasks: { id, description, type }[] と、
+// 画面で答えを待っている問い合わせ permissions（claude/jobs.ts の PendingPermission）が付く
 // jobs がなければ（CANVCODE_CLAUDE=0）、どれも 404 を返す。画面はそれを見て入口を出さない
 
 const PREFIX = '/api/claude'
@@ -55,6 +58,13 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
       },
       (error: unknown) => sendError(res, error),
     )
+    return true
+  }
+  const permission = /^\/api\/claude\/threads\/([0-9a-f-]{36})\/permissions\/([0-9a-f-]{36})$/.exec(path)
+  if (permission) {
+    if (req.method !== 'POST') return methodNotAllowed(res)
+    const [, threadId, permissionId] = permission
+    void answerPermission(req, res, jobs, threadId, permissionId)
     return true
   }
   const thread = /^\/api\/claude\/threads\/([0-9a-f-]{36})$/.exec(path)
@@ -108,6 +118,21 @@ async function startJob(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJ
   try {
     const job = jobs.start(parseStart(await readJson(req)))
     sendJson(res, 201, { job })
+  } catch (error) {
+    sendError(res, error)
+  }
+}
+
+async function answerPermission(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJobs, threadId: string, permissionId: string): Promise<void> {
+  try {
+    const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
+    if (type !== 'application/json') throw new JobError(415, 'content-type must be application/json')
+    const body = await readJson(req)
+    const decision = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).decision : undefined
+    if (decision !== 'allow' && decision !== 'deny') throw new JobError(400, "decision must be 'allow' or 'deny'")
+    jobs.answerPermission(threadId, permissionId, decision)
+    res.writeHead(204)
+    res.end()
   } catch (error) {
     sendError(res, error)
   }

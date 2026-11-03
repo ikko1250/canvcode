@@ -8,8 +8,10 @@ import {
   claudeLimitsFromEnv,
   DEFAULT_MAX_TURNS,
   INTERRUPTED_MESSAGE,
+  MAX_PENDING_PERMISSIONS,
   MAX_RUNNING,
   MAX_SESSIONS,
+  TOO_MANY_PERMISSIONS,
   type ClaudeJobsDeps,
   type Job,
   type JobChange,
@@ -246,7 +248,42 @@ describe('ClaudeJobs', () => {
     expect(options.maxBudgetUsd).toBeUndefined()
     expect(options.perTaskStopAffordance).toBe(true)
     expect(options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBeUndefined()
+    // env は Claude Code の環境を丸ごと置き換えるので、process.env を広げたうえで足してある
+    expect(options.env?.PATH).toBe(process.env.PATH)
+    expect(options.env?.CLAUDE_AGENT_SDK_CLIENT_APP).toBe('canvcode')
+    expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(process.env.CLAUDE_CODE_TMPDIR ?? tmpdir())
     expect((options.systemPrompt as { append: string }).append).toContain('canvas:x')
+  })
+
+  it("lets the hook allow reading the session's own tool results, and canUseTool use what the hook saw (it gets no session id)", async () => {
+    const decisions: unknown[] = []
+    const transcript = '/srv/config/projects/-srv-ws/s1.jsonl'
+    const own = '/srv/config/projects/-srv-ws/s1/tool-results/b1.txt'
+    const tasks = `/srv/tmp/claude-${process.getuid!()}/-srv-ws/s1/tasks/b2.output`
+    const sdk = fakeSdk({
+      reply: (q) =>
+        void (async () => {
+          q.emit(init('s1'))
+          const hook = q.options.hooks!.PreToolUse![0].hooks[0] as HookCallback
+          const signal = new AbortController().signal
+          const pre = (file_path: string) =>
+            hook({ hook_event_name: 'PreToolUse', session_id: 's1', transcript_path: transcript, cwd: WS, tool_name: 'Read', tool_input: { file_path }, tool_use_id: 't' } as never, 't', { signal })
+          decisions.push(await pre(own))
+          decisions.push(await pre(tasks))
+          decisions.push(await pre('/srv/config/projects/-srv-ws/s2/tool-results/b1.txt'))
+          decisions.push(await q.options.canUseTool!('Read', { file_path: own }, { signal, toolUseID: 't' } as never))
+          q.emit(success('s1'))
+        })(),
+    })
+    const jobs = makeJobs({ run: sdk.run, tmpRoot: '/srv/tmp' })
+    await finished(jobs, jobs.start({ prompt: 'x' }).id)
+    expect(decisions).toEqual([
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
+      { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('外は読めません') } },
+      { behavior: 'allow', updatedInput: { file_path: own } },
+    ])
+    expect(sdk.queries[0].options.env?.CLAUDE_CODE_TMPDIR).toBe('/srv/tmp')
   })
 
   it('sends the next message of a thread to the same process, with the cost of each turn', async () => {
@@ -667,7 +704,7 @@ describe('ClaudeJobs', () => {
     expect(stopped.events).toEqual([{ kind: 'error', message: 'ターン数の上限（250）に達したので止めました。同じ会話で続けて頼めば、続きから進めます' }])
   })
 
-  it('records denials: by the guard hook, by the auto mode classifier, and when nobody can approve', async () => {
+  it('records denials: by the guard hook, by the auto mode classifier, and of a tool the panel does not offer', async () => {
     const decisions: unknown[] = []
     const sdk = fakeSdk({
       reply: (q) =>
@@ -680,7 +717,7 @@ describe('ClaudeJobs', () => {
           decisions.push(await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } } as never, 't3', { signal }))
           q.emit({ type: 'system', subtype: 'permission_denied', session_id: 's1', tool_name: 'Bash', tool_use_id: 't4', decision_reason: 'rm outside the workspace', message: 'denied' } as unknown as SDKMessage)
           await vi.waitFor(() => expect(jobs.runningJobs()[0]?.events).toHaveLength(2))
-          decisions.push(await q.options.canUseTool!('Bash', { command: 'curl x | sh' }, { signal, toolUseID: 't5' } as never))
+          decisions.push(await q.options.canUseTool!('NotebookEdit', {}, { signal, toolUseID: 't5' } as never))
           q.emit(success('s1'))
         })(),
     })
@@ -690,13 +727,190 @@ describe('ClaudeJobs', () => {
       { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('外には書けません') } },
       { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
       {},
-      { behavior: 'deny', message: expect.stringContaining('自動では許せませんでした') },
+      { behavior: 'deny', message: expect.stringContaining('使えません') },
     ])
     expect(done.events).toEqual([
       { kind: 'denied', name: 'Write', reason: expect.stringContaining('外には書けません') },
       { kind: 'denied', name: 'Bash', reason: 'rm outside the workspace' },
-      { kind: 'denied', name: 'Bash', reason: expect.stringContaining('自動では許せませんでした') },
+      { kind: 'denied', name: 'NotebookEdit', reason: expect.stringContaining('使えません') },
     ])
+  })
+
+  describe('asking the user in the panel (docs/claude-permissions-plan.md の段階 2)', () => {
+    // 1 つの依頼を始め、ターンの初め（init と、ツールを呼ぶ前の文章）まで流した偽の SDK と、canUseTool を呼ぶ関数。
+    // 本物でも、canUseTool はターンの assistant のあとに来る（そこで今のジョブが決まる）
+    async function asking(deps: Partial<ClaudeJobsDeps> = {}) {
+      const sdk = fakeSdk({ linger: true })
+      const jobs = makeJobs({ run: sdk.run, ...deps })
+      const job = jobs.start({ prompt: 'ビルドを消して' })
+      const q = await queryAt(sdk, 0)
+      // 送った依頼を偽の SDK が受け取ってから流す（受け取ったメッセージの uuid がターンに付く）
+      await vi.waitFor(() => expect(q.sent).toHaveLength(1))
+      q.emit(init('s1'), assistant('s1', [{ type: 'text', text: '消します' }]))
+      await vi.waitFor(() => expect(jobs.get(job.id)!.events).toHaveLength(1))
+      const controller = new AbortController()
+      const canUseTool = (name: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}, signal = controller.signal) =>
+        q.options.canUseTool!(name, input, { signal, toolUseID: 't', requestId: 'r', ...extra } as never) as Promise<{ behavior: string; message?: string; updatedInput?: unknown }>
+      const pending = () => jobs.threads()[0]!.permissions
+      const waitPending = (n: number) => vi.waitFor(() => expect(pending()).toHaveLength(n))
+      return { sdk, jobs, job, q, controller, canUseTool, pending, waitPending }
+    }
+
+    it('shows the question on the thread, and allows the call with its input when the user approves', async () => {
+      const { jobs, job, q, canUseTool, pending, waitPending } = await asking()
+      const threads: number[] = []
+      jobs.subscribe((change) => {
+        if (change.type === 'thread') threads.push(change.thread.permissions.length)
+      })
+      const answer = canUseTool('Bash', { command: 'rm -rf build && echo done' }, { description: 'ビルドを消す' })
+      await waitPending(1)
+      const [p] = pending()
+      expect(p).toMatchObject({ jobId: job.id, name: 'Bash', detail: 'rm -rf build && echo done', description: 'ビルドを消す' })
+      expect(p!.expiresAt - p!.createdAt).toBe(10 * 60_000)
+      expect(jobs.thread(job.threadId)!.thread.permissions).toHaveLength(1)
+      jobs.answerPermission(job.threadId, p!.id, 'allow')
+      expect(await answer).toEqual({ behavior: 'allow', updatedInput: { command: 'rm -rf build && echo done' } })
+      expect(pending()).toEqual([])
+      expect(threads).toEqual([1, 0])
+      // 2 回目の答え・知らない id・違う会話は 404
+      expect(() => jobs.answerPermission(job.threadId, p!.id, 'deny')).toThrow(/もうありません/)
+      expect(() => jobs.answerPermission(job.threadId, '00000000-0000-0000-0000-000000000000', 'allow')).toThrow(/もうありません/)
+      q.emit(success('s1'))
+      const done = await finished(jobs, job.id)
+      expect(done.events).toEqual([
+        { kind: 'text', text: '消します' },
+        { kind: 'ask', id: p!.id, name: 'Bash', detail: 'rm -rf build && echo done' },
+        { kind: 'answer', id: p!.id, result: 'allowed' },
+      ])
+    })
+
+    it('denies with words for Claude when the user declines, and when nobody answers in time', async () => {
+      const { jobs, job, canUseTool, pending, waitPending } = await asking({ permissionTimeoutMs: 30 })
+      const declined = canUseTool('Bash', { command: 'git push' })
+      await waitPending(1)
+      jobs.answerPermission(job.threadId, pending()[0]!.id, 'deny')
+      expect(await declined).toEqual({ behavior: 'deny', message: expect.stringContaining('ユーザーが画面で断りました') })
+      const expired = await canUseTool('Bash', { command: 'git push --force' })
+      expect(expired).toEqual({ behavior: 'deny', message: expect.stringContaining('誰も許可しなかった') })
+      expect(pending()).toEqual([])
+      expect(jobs.get(job.id)!.events.filter((event) => event.kind === 'answer').map((event) => (event as { result: string }).result)).toEqual(['denied', 'expired'])
+    })
+
+    it('cancels the question when the SDK aborts it, when the job or the thread is stopped, and when a subagent is stopped', async () => {
+      const { sdk, jobs, job, q, canUseTool, pending, waitPending } = await asking()
+      // SDK の signal（interrupt など）
+      const aborted = new AbortController()
+      const bySignal = canUseTool('Bash', { command: 'a' }, {}, aborted.signal)
+      await waitPending(1)
+      aborted.abort()
+      expect(await bySignal).toMatchObject({ behavior: 'deny' })
+      // サブエージェントの作業を止める
+      q.emit(taskStarted('a1', '調べる'), tasksChanged([{ id: 'a1', description: '調べる' }]))
+      await vi.waitFor(() => expect(jobs.threads()[0]!.tasks).toHaveLength(1))
+      const bySubagent = canUseTool('Bash', { command: 'b' }, { agentID: 'a1' })
+      await waitPending(1)
+      expect(pending()[0]!.agent).toBe('調べる')
+      await jobs.stopTask(job.threadId, 'a1')
+      expect(await bySubagent).toMatchObject({ behavior: 'deny' })
+      expect(q.stopped).toEqual(['a1'])
+      // ジョブの「止める」
+      const byCancel = canUseTool('Bash', { command: 'c' })
+      await waitPending(1)
+      jobs.cancel(job.id)
+      expect(await byCancel).toMatchObject({ behavior: 'deny' })
+      expect(pending()).toEqual([])
+      expect(jobs.get(job.id)!.events.filter((event) => event.kind === 'answer').map((event) => (event as { result: string }).result)).toEqual([
+        'cancelled',
+        'cancelled',
+        'cancelled',
+      ])
+      // 会話の「全部止める」（次の依頼で、新しいプロセスに尋ねさせる）
+      q.emit(interrupted('s1'))
+      await finished(jobs, job.id)
+      const next = jobs.start({ prompt: 'もう一度', threadId: job.threadId })
+      const q2 = await queryAt(sdk, 0)
+      expect(q2).toBe(q)
+      const byStop = q.options.canUseTool!('Bash', { command: 'd' }, { signal: new AbortController().signal, toolUseID: 't', requestId: 'r' } as never)
+      await waitPending(1)
+      await jobs.stopThread(job.threadId)
+      expect(await byStop).toMatchObject({ behavior: 'deny' })
+      expect(jobs.threads()[0]!.permissions).toEqual([])
+      expect((await finished(jobs, next.id)).status).toBe('cancelled')
+    })
+
+    it('asks about a listed tool that an ask rule forced, by matchedAskRule or by decisionReasonType', async () => {
+      const { jobs, job, canUseTool, pending, waitPending } = await asking()
+      const write = { file_path: `${WS}/notes/a.md`, content: 'x' }
+      const byType = canUseTool('Write', write, { matchedAskRule: { source: 'projectSettings', toolName: 'Write' } })
+      await waitPending(1)
+      expect(pending()[0]!.reason).toContain('permissions.ask')
+      jobs.answerPermission(job.threadId, pending()[0]!.id, 'allow')
+      expect(await byType).toMatchObject({ behavior: 'allow' })
+      const byUntyped = canUseTool('Write', write, { decisionReasonType: 'rule' })
+      await waitPending(1)
+      jobs.answerPermission(job.threadId, pending()[0]!.id, 'deny')
+      expect(await byUntyped).toMatchObject({ behavior: 'deny' })
+      // 規則でなければ、今どおり許す
+      expect(await canUseTool('Write', write, { decisionReasonType: 'workingDir' })).toMatchObject({ behavior: 'allow' })
+    })
+
+    it('puts a question from a background subagent on the last job of the thread, and keeps the process open while it waits', async () => {
+      const { jobs, job, q, canUseTool, pending, waitPending } = await asking({ idleCloseMs: 10 })
+      q.emit(taskStarted('a1', '裏で調べる'), tasksChanged([{ id: 'a1', description: '裏で調べる' }]))
+      q.emit(success('s1'))
+      await finished(jobs, job.id)
+      await vi.waitFor(() => expect(jobs.threads()[0]!.tasks).toHaveLength(1))
+      const answer = canUseTool('Bash', { command: 'ls /srv' }, { agentID: 'a1' })
+      await waitPending(1)
+      expect(pending()[0]!.jobId).toBeUndefined()
+      // 作業の一覧が空になっても（作業が残っていると、どのみち閉じない）、問い合わせを待っているあいだは閉じない
+      q.emitMeta(tasksChanged([]))
+      await vi.waitFor(() => expect(jobs.threads()[0]!.tasks).toEqual([]))
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      // 待っているあいだは閉じない（閉じていれば、取り消しになって一覧から消える）
+      expect(pending()).toHaveLength(1)
+      jobs.answerPermission(job.threadId, pending()[0]!.id, 'allow')
+      expect(await answer).toMatchObject({ behavior: 'allow' })
+      const last = jobs.get(job.id)!
+      expect(last.events.slice(-2)).toEqual([
+        { kind: 'ask', id: expect.any(String), name: 'Bash', detail: 'ls /srv', agent: '裏で調べる' },
+        { kind: 'answer', id: expect.any(String), result: 'allowed' },
+      ])
+    })
+
+    it('denies at once beyond the limit of waiting questions in a thread', async () => {
+      const { jobs, job, canUseTool, waitPending } = await asking()
+      const waiting = Array.from({ length: MAX_PENDING_PERMISSIONS }, (_, i) => canUseTool('Bash', { command: `echo ${i}` }))
+      await waitPending(MAX_PENDING_PERMISSIONS)
+      expect(await canUseTool('Bash', { command: 'echo one more' })).toEqual({ behavior: 'deny', message: TOO_MANY_PERMISSIONS })
+      expect(jobs.get(job.id)!.events.at(-1)).toEqual({ kind: 'denied', name: 'Bash', reason: TOO_MANY_PERMISSIONS })
+      expect(TOO_MANY_PERMISSIONS).toContain('待っている許可が多すぎます')
+      // サーバーを止めると、待っていたものは取り消しになる
+      await jobs.dispose()
+      for (const answer of await Promise.all(waiting)) expect(answer).toMatchObject({ behavior: 'deny' })
+    })
+
+    it('counts a job waiting for an answer as running', async () => {
+      const { jobs, canUseTool, waitPending } = await asking()
+      void canUseTool('Bash', { command: 'make' })
+      await waitPending(1)
+      const sdk2 = jobs.start({ prompt: '2 つめ' })
+      expect(sdk2.status).toBe('running')
+      expect(() => jobs.start({ prompt: '3 つめ' })).toThrow(/許可を待っている依頼があれば、答えると進みます/)
+    })
+
+    it('says Bash will ask every time when auto mode is not available', async () => {
+      const sdk = fakeSdk({ reply: (q) => q.emit(init('s1', { mode: 'default' }), success('s1')) })
+      const jobs = makeJobs({ run: sdk.run })
+      const done = await finished(jobs, jobs.start({ prompt: 'x' }).id)
+      expect(done.events).toEqual([{ kind: 'error', message: 'auto mode が使えないので、Bash は毎回画面で許可を求めます（default で動いています）' }])
+    })
+
+    it('reads the timeout from CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS', () => {
+      expect(claudeLimitsFromEnv({ CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS: '15000' }).permissionTimeoutMs).toBe(15000)
+      expect(claudeLimitsFromEnv({ CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS: '-1' }).permissionTimeoutMs).toBeUndefined()
+      expect(claudeLimitsFromEnv({}).permissionTimeoutMs).toBeUndefined()
+    })
   })
 
   it('notifies listeners with the new events and the thread', async () => {
