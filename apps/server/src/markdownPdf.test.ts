@@ -4,9 +4,10 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HttpError, type FileInfo } from './files.ts'
-import { MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
+import { CANVCODE_ALIGN_FILTER, CANVCODE_FOOTNOTES_FILTER, MarkdownPdf, latexError, type MarkdownPdfOptions } from './markdownPdf.ts'
 
 // Markdown の File を PDF にする口（POST /api/files/<id>/pdf）。
 // 実際に PDF を作るテストは、pandoc と LuaLaTeX がある環境でだけ動かす
@@ -30,7 +31,9 @@ function hasCommand(command: string, args: string[]): boolean {
     return false
   }
 }
-const canBuild = hasCommand('pandoc', ['--version']) && hasCommand('lualatex', ['--version'])
+const BUNDLED_MD2PDF_FILTERS = fileURLToPath(new URL('../md2pdf/filters/', import.meta.url))
+const hasPandoc = hasCommand('pandoc', ['--version'])
+const canBuild = hasPandoc && hasCommand('lualatex', ['--version'])
 
 function fileInfo(id: string, path: string): FileInfo {
   const kind = path.endsWith('.py') ? 'code' : 'markdown'
@@ -61,14 +64,23 @@ async function serve(workspace: string, paths: Record<string, string>, options: 
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 }
 
-// PDF の文字と、描いている画像の数と、文字のいちばん右の端（紙の右端からの空き、pt。紙からはみ出すと負）
-async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number; rightGap: number }> {
+// 描いた文字のかたまり（PDF の Tm と TJ のひと組）。x・end は左端と右端（pt）、slanted は傾けて描いたもの
+interface TextRun {
+  text: string
+  x: number
+  end: number
+  slanted: boolean
+}
+
+// PDF の文字と、描いている画像の数と、文字のいちばん右の端（紙の右端からの空き、pt。紙からはみ出すと負）と、描いた文字のかたまり
+async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: number; rightGap: number; runs: TextRun[] }> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const task = pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: false })
   const doc = await task.promise
   let text = ''
   let images = 0
   let rightGap = Infinity
+  const runs: TextRun[] = []
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
     const content = await page.getTextContent()
@@ -76,10 +88,32 @@ async function readPdf(data: ArrayBuffer): Promise<{ text: string; images: numbe
     for (const item of content.items) {
       if ('str' in item && item.str.trim()) rightGap = Math.min(rightGap, page.view[2] - (item.transform[4] + item.width))
     }
-    images += (await page.getOperatorList()).fnArray.filter((fn) => fn === pdfjs.OPS.paintImageXObject).length
+    const { fnArray, argsArray } = await page.getOperatorList()
+    images += fnArray.filter((fn) => fn === pdfjs.OPS.paintImageXObject).length
+    let size = 0
+    let matrix = [1, 0, 0, 1, 0, 0]
+    for (const [index, fn] of fnArray.entries()) {
+      const args = argsArray[index]
+      if (fn === pdfjs.OPS.setFont) size = args[1]
+      else if (fn === pdfjs.OPS.setTextMatrix) matrix = Array.from(args[0] as ArrayLike<number>)
+      else if (fn === pdfjs.OPS.showText) {
+        // TJ の中身は字（幅は 1/1000 em）と、字のあいだを詰める数（1/1000 em。正なら左へ戻る）
+        const items = args[0] as (number | { unicode: string; width: number } | null)[]
+        let width = 0
+        let text = ''
+        for (const item of items) {
+          if (typeof item === 'number') width -= (item * size) / 1000
+          else if (item) {
+            width += (item.width * size) / 1000
+            text += item.unicode
+          }
+        }
+        runs.push({ text, x: matrix[4], end: matrix[4] + width, slanted: matrix[2] !== 0 })
+      }
+    }
   }
   await task.destroy()
-  return { text, images, rightGap }
+  return { text, images, rightGap, runs }
 }
 
 // 1×1 の PNG
@@ -109,6 +143,82 @@ describe('MarkdownPdf', () => {
     const stderr = 'This is LuaHBTeX\n(./input.tex\n! Package fontspec Error: The font "X" cannot be found.\n\nl.12 \\setmainjfont\nmore\n'
     expect(latexError(stderr)).toBe('! Package fontspec Error: The font "X" cannot be found.\n\nl.12 \\setmainjfont')
     expect(latexError('a\nb\nc\nd\n')).toBe('b\nc\nd')
+  })
+
+  it.skipIf(!hasPandoc)('centers <p align> and <div align> in LaTeX', () => {
+    const markdown = [
+      '<p align="center">表1　**太字**の題</p>',
+      '',
+      '<p align="right">右の文</p>',
+      '',
+      '<div align="center">',
+      '',
+      '表2　中の段落',
+      '',
+      '</div>',
+      '',
+      '<p align="center">閉じない',
+      '',
+      '<p class="note">寄せない</p>',
+      '',
+      '# 参考文献',
+      '',
+      '<p align="center">文献の中</p>',
+      '',
+      '文献1',
+      '',
+    ].join('\n')
+    const refs = join(BUNDLED_MD2PDF_FILTERS, 'refs-hanging-indent.lua')
+    const latex = execFileSync(
+      'pandoc',
+      ['--from=markdown', '-t', 'latex', '--lua-filter', CANVCODE_ALIGN_FILTER, '--lua-filter', refs],
+      { input: markdown, encoding: 'utf8' },
+    )
+    expect(latex).toMatch(/\\begin\{center\}\s*表1　\\textbf\{太字\}の題\s*\\end\{center\}/)
+    expect(latex).toMatch(/\\begin\{flushright\}\s*右の文\s*\\end\{flushright\}/)
+    expect(latex).toMatch(/\\begin\{center\}\s*表2　中の段落\s*\\end\{center\}/)
+    // 閉じない <p align> は、後ろの </p> や見出しまで巻き込まない
+    expect(latex).not.toMatch(/\\begin\{center\}\s*閉じない/)
+    expect(latex).not.toMatch(/\\begin\{center\}[^]*寄せない[^]*\\end\{center\}[^]*参考文献/)
+    expect(latex).toMatch(/\\begin\{refhang\}\s*\\begin\{center\}\s*文献の中\s*\\end\{center\}[^]*\\end\{refhang\}/)
+    // 環境の開きと閉じが入れ子として釣り合う
+    const stack: string[] = []
+    for (const [, kind, name] of latex.matchAll(/\\(begin|end)\{(\w+)\}/g)) {
+      if (kind === 'begin') stack.push(name)
+      else expect(stack.pop()).toBe(name)
+    }
+    expect(stack).toEqual([])
+  })
+
+  it.skipIf(!hasPandoc)('gives repeated references to one footnote the same number', () => {
+    const latex = (markdown: string, filter = true) =>
+      execFileSync(
+        'pandoc',
+        ['--from=markdown+autolink_bare_uris', '-t', 'latex', ...(filter ? ['--lua-filter', CANVCODE_FOOTNOTES_FILTER] : [])],
+        { input: markdown, encoding: 'utf8' },
+      )
+    const count = (text: string, part: string) => text.split(part).length - 1
+    // 同じ脚注を 3 回（表のセルの中も）参照しても、脚注は 1 つ
+    const same = latex(['a[^1] b[^1]', '', '| x | y |', '|---|---|', '| r[^1] | s |', '', '[^1]: one', ''].join('\n'))
+    expect(count(same, '\\footnote{')).toBe(1)
+    expect(count(same, '\\footnotemark[1]')).toBe(2)
+    expect(same).toMatch(/r\\footnotemark\[1\] & s/)
+    // 番号は初出の順。中身の違う脚注はまとめない
+    const mixed = latex(['a[^1] b[^2] c[^1] d[^3]', '', '[^1]: one', '[^2]: two', '[^3]: three', ''].join('\n'))
+    expect(mixed).toContain('a\\footnote{one} b\\footnote{two} c\\footnotemark[1] d\\footnote{three}')
+    // メタデータと画像の説明の中の脚注は、本文の番号に数えない（LaTeX の footnote カウンタも進まない）
+    const outside = execFileSync(
+      'pandoc',
+      ['--from=markdown', '-s', '-t', 'latex', '--lua-filter', CANVCODE_FOOTNOTES_FILTER],
+      {
+        input: ['---', 'title: T[^1]', 'memo: m[^3]', '---', '', '![alt[^4]](a.png) x', '', 'a[^1] b[^2] c[^2] d[^3]', '', '[^1]: one', '[^2]: two', '[^3]: three', '[^4]: four', ''].join('\n'),
+        encoding: 'utf8',
+      },
+    )
+    expect(outside).toContain('a\\footnote{one} b\\footnote{two} c\\footnotemark[2] d\\footnote{three}')
+    // 脚注のない文書は変わらない
+    const plain = ['# 見出し', '', '本文 [リンク](https://example.com) と `[^1]`', '', '| x |', '|---|', '| y |', ''].join('\n')
+    expect(latex(plain)).toBe(latex(plain, false))
   })
 
   it.skipIf(!canBuild)(
@@ -179,6 +289,52 @@ describe('MarkdownPdf', () => {
       for (const mark of ['END1', 'END2', 'END3']) expect(text).toContain(mark)
       // 右の余白は 25mm（約 71pt）。折り返しの印のぶん少しはみ出してもよい
       expect(rightGap).toBeGreaterThan(50)
+    },
+    300_000,
+  )
+
+  it.skipIf(!canBuild)(
+    'joins Japanese lines of a paragraph without a gap',
+    async () => {
+      const workspace = tempDir()
+      // 段落の途中で改行した和文と、改行しない和文が、同じ幅になる（改行のところに空きが入らない）
+      writeFileSync(join(workspace, 'br.md'), ['あいうえお', 'かきくけこ', '', 'さしすせそたちつてと', ''].join('\n'))
+      const base = await serve(workspace, { 'file:b': 'br.md' })
+      const response = await fetch(`${base}/api/files/file%3Ab/pdf`, { method: 'POST' })
+      expect(response.status, await response.clone().text()).toBe(200)
+      const { runs } = await readPdf(await response.arrayBuffer())
+      const broken = runs.find((run) => run.text === 'あいうえおかきくけこ')
+      const joined = runs.find((run) => run.text === 'さしすせそたちつてと')
+      expect(broken && joined, JSON.stringify(runs.map((run) => run.text))).toBeTruthy()
+      expect(broken!.end - broken!.x).toBeCloseTo(joined!.end - joined!.x, 1)
+    },
+    300_000,
+  )
+
+  it.skipIf(!canBuild)(
+    'slants Japanese in *emphasis* and keeps the spaces around it',
+    async () => {
+      const workspace = tempDir()
+      // pandoc は既定（--wrap=auto）で LaTeX のソースを 72 桁（和文は 1 字 2 桁）で、空白のところで折り返す。
+      // 和文 37 字のあとの空白（「普通」と「*強調いち*」のあいだ）で折り返す長さにする。
+      // 和文の直後の改行は LuaTeX-ja が空白にしないので、pandoc が折り返すと書いた空白が消える。
+      // 字の幅で空きを測れるよう、PDF では段落の最後の 1 行（字間を伸ばさない）に収め、句読点（幅が半分になる）を使わない
+      const long = '長い段落の文章'.repeat(5)
+      writeFileSync(join(workspace, 'em.md'), [`${long}普通 *強調いち* 普通`, ''].join('\n'))
+      const base = await serve(workspace, { 'file:e': 'em.md' })
+      const response = await fetch(`${base}/api/files/file%3Ae/pdf`, { method: 'POST' })
+      expect(response.status, await response.clone().text()).toBe(200)
+      const { runs } = await readPdf(await response.arrayBuffer())
+      const at = runs.findIndex((run) => run.text === '強調いち')
+      expect(at, JSON.stringify(runs.map((run) => run.text))).toBeGreaterThan(0)
+      const [before, emphasis, after] = runs.slice(at - 1, at + 2)
+      expect(before.text.endsWith('普通') && !before.slanted).toBe(true)
+      expect([emphasis, after].map(({ text, slanted }) => [text, slanted])).toEqual([
+        ['強調いち', true],
+        ['普通', false],
+      ])
+      // 「普通」と「強調いち」のあいだに、書いた空白（1pt より広い空き）が残る
+      expect(emphasis.x - before.end).toBeGreaterThan(1)
     },
     300_000,
   )

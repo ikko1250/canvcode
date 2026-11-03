@@ -2,17 +2,29 @@ import { randomUUID } from 'node:crypto'
 import { relative } from 'node:path'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { askTool, CANVCODE_MCP_PREFIX, CLAUDE_TOOLS, inside, preToolUseHook } from './permissions.ts'
+import { ClaudeSession, type BackgroundTask, type RunQuery } from './session.ts'
 import type { ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
+
+export type { BackgroundTask, RunQuery } from './session.ts'
 
 // 画面から頼んだ Claude Code の仕事（ジョブ）。
 // - Claude Agent SDK の query() で、サーバーと同じマシンの Claude Code を動かす（認証は、そのマシンの claude のログインか API キー）
 // - cwd はワークスペース。MCP は自分の /mcp（canvcode）だけをつなぐ。許し方は auto mode と claude/permissions.ts
 // - ユーザーが選んだ場所は ref:XXXX としてプロンプトに添える（AI は resolve_reference で読む。手で貼り付けたときと同じ）
 // - 届いたメッセージを、画面に見せる出来事（JobEvent）にして claude/store.ts（SQLite）に書き、購読者（/api/claude/events の SSE）に知らせる
-// - 同じ会話（thread）の続きは、前のジョブの session_id を resume に渡して続ける（サーバーを再起動しても続けられる）
-// - 動いているジョブはメモリにも持つ（止めるための AbortController）。起動したときに、途切れたジョブを止まったものにする
+// - 会話（thread）ごとに Claude Code のプロセスを 1 つ持ち続ける（claude/session.ts。ストリーミング入力）。続きのメッセージはそのプロセスに送る。
+//   しばらく使わなければ閉じ、次のメッセージは前のジョブの session_id を resume に渡して続ける（サーバーを再起動しても続けられる）
+// - ジョブ 1 つがターン 1 つ。送るメッセージにジョブの id を uuid として付け、ターンの assistant と result に返ってくる user_message_uuids で、
+//   どのターンがどの依頼に答えているかを決める（resume した直後などに、CLI が自分で起こしたターンが先に走ることがあるので、順番では決めない）。
+//   バックグラウンドの作業（サブエージェント・コマンド）が終わって Claude が自分で続けたターンは、origin: 'background' のジョブにする
+//   （答えを書かなかったターンはジョブにしない）
+// - 止めるのは 3 通り：ジョブ（今のターンだけ。interrupt）・作業 1 つ（stopTask）・会話（プロセスごと。バックグラウンドの作業も止まる）
+// - 起動したときに、途切れたジョブを止まったものにする
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
+
+// 'background' は、バックグラウンドの作業が終わって Claude が自分で続けたジョブ（prompt は終わった作業の名前）
+export type JobOrigin = 'background'
 
 // 画面に見せる出来事
 export type JobEvent =
@@ -23,18 +35,21 @@ export type JobEvent =
   // ツールを断った
   | { kind: 'denied'; name: string; reason: string }
   | { kind: 'error'; message: string }
+  // バックグラウンドの作業を始めた・終わった
+  | { kind: 'task'; status: 'started' | 'completed' | 'failed' | 'stopped'; description: string }
 
 export interface JobSummary {
   id: string
   // 会話の id（最初のジョブの id）
   threadId: string
   prompt: string
+  origin?: JobOrigin
   refId?: string
   canvasId?: string
   status: JobStatus
   createdAt: number
   finishedAt?: number
-  // Claude Code が見積もった費用（USD）と、かかった時間
+  // Claude Code が見積もったそのターンの費用（USD）と、かかった時間
   costUsd?: number
   durationMs?: number
   eventCount: number
@@ -44,22 +59,26 @@ export interface Job extends JobSummary {
   events: JobEvent[]
 }
 
+// 画面に見せる会話。tasks は動いているバックグラウンドの作業（プロセスが持っているもの。保存しない）
+export interface ThreadInfo extends ThreadSummary {
+  tasks: BackgroundTask[]
+}
+
 export interface StartRequest {
   prompt: string
   refId?: string
   canvasId?: string
-  // 続ける会話（その会話の最後のジョブの session を使う）
+  // 続ける会話
   threadId?: string
 }
 
-// 変化。job は、ジョブが変わった（events はその変化で足した出来事。from 番目から）。thread-deleted は、会話を消した
+// 変化。job は、ジョブが変わった（events はその変化で足した出来事。from 番目から）。thread は、会話の作業の一覧が変わった。thread-deleted は、会話を消した
 export type JobChange =
-  | { type: 'job'; job: JobSummary; events: JobEvent[]; from: number; thread: ThreadSummary }
+  | { type: 'job'; job: JobSummary; events: JobEvent[]; from: number; thread: ThreadInfo }
+  | { type: 'thread'; thread: ThreadInfo }
   | { type: 'thread-deleted'; threadId: string }
 
 export type JobListener = (change: JobChange) => void
-
-export type RunQuery = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>
 
 export class JobError extends Error {
   readonly status: number
@@ -69,11 +88,20 @@ export class JobError extends Error {
   }
 }
 
+// 同時に動かせるユーザーの依頼（バックグラウンドから始まったターンは数えない。CLI が自分で始めるので断れない）
 export const MAX_RUNNING = 2
+// 同時に持っておく Claude Code のプロセス（会話）。超えるときは、何もしていないものから閉じる
+export const MAX_SESSIONS = 4
 export const MAX_PROMPT_LENGTH = 20_000
 export const INTERRUPTED_MESSAGE = 'サーバーが止まったので途切れました'
 // 1 回の依頼のターン数の上限（ツールを呼ぶたびに 1 ターン）。canvcode の MCP は 1 つの作業で何度も呼ぶので多めにする
 export const DEFAULT_MAX_TURNS = 100
+// 何もしていない（今のジョブもバックグラウンドの作業もない）プロセスを閉じるまでの時間（ミリ秒）
+export const IDLE_CLOSE_MS = 10 * 60_000
+// 閉じるとき、プロセスが自分で終わるのを待つ時間（ミリ秒）。過ぎたら止める
+export const CLOSE_GRACE_MS = 5_000
+// ジョブを止めて（interrupt）も、この時間のうちにターンが終わらなければ、プロセスごと止める（ミリ秒）
+export const CANCEL_GRACE_MS = 10_000
 
 export interface ClaudeJobsDeps {
   workspace: string
@@ -87,8 +115,12 @@ export interface ClaudeJobsDeps {
   model?: string
   // 既定は DEFAULT_MAX_TURNS
   maxTurns?: number
-  // 1 回の依頼の費用の上限（ドル）。既定は付けない
+  // 1 つのプロセスの費用の上限（ドル。プロセスの間の合計）。既定は付けない。超えたら、何もしていなくなったときにプロセスを閉じる（次の依頼は新しいプロセスで続ける）
   maxBudgetUsd?: number
+  // 既定は IDLE_CLOSE_MS・CLOSE_GRACE_MS・CANCEL_GRACE_MS
+  idleCloseMs?: number
+  closeGraceMs?: number
+  cancelGraceMs?: number
 }
 
 // CANVCODE_CLAUDE_MAX_TURNS（正の整数）と CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）。使えない値なら既定のまま
@@ -101,16 +133,52 @@ export function claudeLimitsFromEnv(env: NodeJS.ProcessEnv): Pick<ClaudeJobsDeps
   }
 }
 
-interface JobState extends StoredJob {
-  abort: AbortController
+// 会話 1 つの、動いている Claude Code のプロセスとその様子
+interface LiveThread {
+  threadId: string
+  session: ClaudeSession
+  sessionId?: string
+  // システムプロンプトに入れた、見ている Canvas
+  canvasId?: string
+  // 今のターンのジョブ
+  current?: StoredJob
+  // 送ったが、まだ答えるターンが来ていない依頼
+  waiting?: StoredJob
+  // 待っているあいだに止めた依頼の id（そのターンが来たら止めて、見せない）
+  dropped: Set<string>
+  skipTurn: boolean
+  // 今のジョブがないときに届いた作業の出来事（次のジョブの初めに入れる）
+  pending: JobEvent[]
+  // 今のジョブがないときに終わった作業（次のバックグラウンドのジョブの prompt にする）
+  finished: { description: string; status: 'completed' | 'failed' | 'stopped' }[]
+  // 作業の名前（task_id → description）。バックグラウンドで動いたものだけを知らせる
+  names: Map<string, string>
+  background: Set<string>
+  // バックグラウンドのサブエージェントを起こした tool_use の id（その中の動きは、今のジョブに出さない）
+  backgroundToolUses: Set<string>
+  // 最初の system/init を確かめた
+  initialized: boolean
+  // 前の result までの費用（total_cost_usd は query の合計なので、差がそのターンの費用）。resume したプロセスは前のプロセスの合計から数えるので、
+  // それを知らなければ NaN（最初のターンの費用は出さない）
+  costSoFar: number
+  // 費用の上限に達した。何もしていなくなったら閉じる
+  retire: boolean
+  lastActive: number
+  idleTimer?: NodeJS.Timeout
+  cancelTimer?: NodeJS.Timeout
 }
 
 export class ClaudeJobs {
   private readonly deps: ClaudeJobsDeps
   private readonly store: ClaudeStore
-  private readonly running = new Map<string, JobState>()
-  // 動いている query（止めたあと、終わるのを待つため）
-  private readonly executions = new Set<Promise<void>>()
+  private readonly running = new Map<string, StoredJob>()
+  private readonly live = new Map<string, LiveThread>()
+  // 閉じている途中のプロセス（同じ会話の次のプロセスは、これを待ってから立てる）
+  private readonly closing = new Map<string, Promise<void>>()
+  // 止めると頼まれたジョブ
+  private readonly cancelled = new WeakSet<StoredJob>()
+  // Claude Code の session ごとの、最後の total_cost_usd（resume したプロセスの費用の数え始め）
+  private readonly costTotals = new Map<string, number>()
   private readonly listeners = new Set<JobListener>()
 
   constructor(deps: ClaudeJobsDeps) {
@@ -120,14 +188,14 @@ export class ClaudeJobs {
     if (interrupted > 0) console.log(`途切れた Claude のジョブを止まったものにしました：${interrupted} 個`)
   }
 
-  threads(): ThreadSummary[] {
-    return this.store.threads()
+  threads(): ThreadInfo[] {
+    return this.store.threads().map((thread) => this.info(thread))
   }
 
-  thread(threadId: string): { thread: ThreadSummary; jobs: Job[] } | undefined {
+  thread(threadId: string): { thread: ThreadInfo; jobs: Job[] } | undefined {
     const thread = this.store.thread(threadId)
     if (!thread) return undefined
-    return { thread, jobs: this.store.threadJobs(threadId).map((job) => publicJob(this.running.get(job.id) ?? job)) }
+    return { thread: this.info(thread), jobs: this.store.threadJobs(threadId).map((job) => publicJob(this.running.get(job.id) ?? job)) }
   }
 
   // 動いているジョブ（出来事も含む）
@@ -150,51 +218,107 @@ export class ClaudeJobs {
     if (!prompt) throw new JobError(400, 'プロンプトが空です')
     if (prompt.length > MAX_PROMPT_LENGTH) throw new JobError(400, `プロンプトが長すぎます（${MAX_PROMPT_LENGTH} 文字まで）`)
     let resume: string | undefined
+    let live = request.threadId ? this.live.get(request.threadId) : undefined
     if (request.threadId) {
       const last = this.store.lastOfThread(request.threadId)
       if (!last) throw new JobError(404, 'その会話はもうありません')
-      if (last.status === 'running') throw new JobError(409, '前の依頼がまだ終わっていません')
-      resume = last.sessionId
+      if (last.status === 'running' || live?.current || live?.waiting) throw new JobError(409, '前の依頼がまだ終わっていません')
+      resume = live?.sessionId ?? last.sessionId
     }
-    if (this.running.size >= MAX_RUNNING) throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです`)
+    if ([...this.running.values()].filter((job) => !job.origin).length >= MAX_RUNNING) {
+      throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです`)
+    }
+    // 費用の上限に達したプロセスは、新しいものに替える
+    if (live?.retire && live.session.tasks.length === 0) {
+      void this.closeThread(live.threadId)
+      live = undefined
+    }
+    if (!live) this.makeRoom()
     const id = randomUUID()
-    const job: JobState = {
+    const threadId = request.threadId ?? id
+    const thread = live ?? this.open(threadId, resume, request.canvasId)
+    const job: StoredJob = {
       id,
-      threadId: request.threadId ?? id,
+      threadId,
       prompt,
       ...(request.refId ? { refId: request.refId } : {}),
       ...(request.canvasId ? { canvasId: request.canvasId } : {}),
       status: 'running',
       createdAt: Date.now(),
+      // 誰のターンでもないときに届いた作業の知らせは、この依頼の初めに出す
+      events: thread.pending.splice(0),
       eventCount: 0,
-      events: [],
-      abort: new AbortController(),
+      ...(thread.sessionId ? { sessionId: thread.sessionId } : {}),
     }
-    this.store.insertJob(job)
-    this.running.set(id, job)
-    this.notify(job, 0)
-    const execution = this.execute(job, resume).finally(() => this.executions.delete(execution))
-    this.executions.add(execution)
+    job.eventCount = job.events.length
+    thread.finished = []
+    thread.waiting = job
+    this.begin(thread, job)
+    thread.session.send(messageText(job, thread.canvasId), job.id)
     return publicJob(job)
   }
 
+  // ジョブを止める：今のターンだけを止め、バックグラウンドの作業とプロセスは残す
   cancel(id: string): Job {
     const job = this.running.get(id)
-    if (job) {
-      job.abort.abort()
-      return publicJob(job)
+    if (!job) {
+      const stored = this.store.job(id)
+      if (!stored) throw new JobError(404, 'job not found')
+      return publicJob(stored)
     }
-    const stored = this.store.job(id)
-    if (!stored) throw new JobError(404, 'job not found')
-    return publicJob(stored)
+    this.cancelled.add(job)
+    const thread = this.live.get(job.threadId)
+    if (thread?.waiting === job && !thread.session.started) {
+      // まだプロセスを立てていない（前のプロセスを待っている）
+      void this.closeThread(thread.threadId, 0)
+    } else if (thread?.waiting === job) {
+      // 答えるターンがまだ来ていない。待っているメッセージを取り消す（取り消せずにターンが来たら、そこで止める）
+      thread.waiting = undefined
+      thread.dropped.add(job.id)
+      this.finish(job, 'cancelled')
+      thread.session.interrupt(true).catch((error: unknown) => console.warn('Claude の依頼を止められませんでした', error))
+      this.scheduleIdle(thread)
+    } else if (!thread || thread.current !== job) {
+      this.finish(job, 'cancelled')
+    } else {
+      thread.session.interrupt().catch((error: unknown) => console.warn('Claude の依頼を止められませんでした', error))
+      clearTimeout(thread.cancelTimer)
+      thread.cancelTimer = setTimeout(() => {
+        if (thread.current === job) void this.closeThread(thread.threadId, 0)
+      }, this.deps.cancelGraceMs ?? CANCEL_GRACE_MS)
+      thread.cancelTimer.unref?.()
+    }
+    return publicJob(job)
   }
 
-  // 会話を消す（動いているジョブがあれば断る）。Claude Code の session も消す（消せなくても会話は消す）
+  // 会話のプロセスごと止める（今のターンもバックグラウンドの作業も止まる）
+  async stopThread(threadId: string): Promise<void> {
+    if (!this.store.thread(threadId)) throw new JobError(404, 'その会話はもうありません')
+    const thread = this.live.get(threadId)
+    if (thread?.current) this.cancelled.add(thread.current)
+    if (thread?.waiting) this.cancelled.add(thread.waiting)
+    await this.closeThread(threadId, 0)
+  }
+
+  // バックグラウンドの作業を 1 つ止める
+  async stopTask(threadId: string, taskId: string): Promise<void> {
+    if (!this.store.thread(threadId)) throw new JobError(404, 'その会話はもうありません')
+    const thread = this.live.get(threadId)
+    if (!thread?.session.tasks.some((task) => task.id === taskId)) throw new JobError(404, 'その作業はもう動いていません')
+    await thread.session.stopTask(taskId)
+  }
+
+  // 会話を消す（動いている依頼か作業があれば断る）。Claude Code の session も消す（消せなくても会話は消す）
   async deleteThread(threadId: string): Promise<void> {
     if (!this.store.thread(threadId)) throw new JobError(404, 'その会話はもうありません')
     if ([...this.running.values()].some((job) => job.threadId === threadId)) throw new JobError(409, '動いている依頼があります。止めてから消してください')
+    if ((this.live.get(threadId)?.session.tasks.length ?? 0) > 0) {
+      throw new JobError(409, 'バックグラウンドの作業が動いています。止めてから消してください')
+    }
     const sessions = this.store.deleteThread(threadId)
     for (const listener of this.listeners) safely(() => listener({ type: 'thread-deleted', threadId }))
+    // 書いている途中の transcript を消さないように、プロセスが終わってから消す
+    await this.closeThread(threadId)
     const remove = this.deps.deleteSession ?? defaultDeleteSession
     for (const session of sessions) {
       try {
@@ -205,18 +329,78 @@ export class ClaudeJobs {
     }
   }
 
-  // 動いているものを止め、終わる（止めたことを書き終える）のを待つ（サーバーを止めるとき）
+  // すべてのプロセスを止め、終わる（止めたことを書き終える）のを待つ（サーバーを止めるとき）
   async dispose(): Promise<void> {
-    for (const job of this.running.values()) job.abort.abort()
-    await Promise.all(this.executions)
+    for (const thread of this.live.values()) {
+      if (thread.current) this.cancelled.add(thread.current)
+      if (thread.waiting) this.cancelled.add(thread.waiting)
+    }
+    await Promise.all([...[...this.live.keys()].map((threadId) => this.closeThread(threadId, 0)), ...this.closing.values()])
   }
 
-  private async execute(job: JobState, resume: string | undefined): Promise<void> {
+  // 新しいプロセスを立てる場所を空ける。上限なら、何もしていないものを古い順に 1 つ閉じる
+  private makeRoom(): void {
+    if (this.live.size < MAX_SESSIONS) return
+    const idle = [...this.live.values()]
+      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0)
+      .sort((a, b) => a.lastActive - b.lastActive)[0]
+    if (!idle) throw new JobError(429, `同時に開いておける会話は ${MAX_SESSIONS} つまでです。ほかの会話の作業が終わるのを待つか、止めてください`)
+    void this.closeThread(idle.threadId)
+  }
+
+  private open(threadId: string, resume: string | undefined, canvasId: string | undefined): LiveThread {
+    const thread = {
+      threadId,
+      ...(resume ? { sessionId: resume } : {}),
+      ...(canvasId ? { canvasId } : {}),
+      pending: [],
+      finished: [],
+      names: new Map(),
+      background: new Set(),
+      backgroundToolUses: new Set(),
+      dropped: new Set(),
+      skipTurn: false,
+      initialized: false,
+      costSoFar: resume ? (this.costTotals.get(resume) ?? Number.NaN) : 0,
+      retire: false,
+      lastActive: Date.now(),
+    } as unknown as LiveThread
+    thread.session = new ClaudeSession(
+      this.deps.run ?? defaultRun,
+      this.options(thread, resume),
+      {
+        onMessage: (message) => this.receive(thread, message),
+        onTasks: () => this.tasksChanged(thread),
+        onExit: (error) => this.exited(thread, error),
+      },
+      this.closing.get(threadId),
+    )
+    this.live.set(threadId, thread)
+    return thread
+  }
+
+  // 閉じて、終わるのを待つ。graceMs が 0 なら、すぐ止める
+  private closeThread(threadId: string, graceMs = this.deps.closeGraceMs ?? CLOSE_GRACE_MS): Promise<void> {
+    const thread = this.live.get(threadId)
+    if (!thread) return this.closing.get(threadId) ?? Promise.resolve()
+    this.live.delete(threadId)
+    clearTimeout(thread.idleTimer)
+    clearTimeout(thread.cancelTimer)
+    const done: Promise<void> = thread.session.close(graceMs).finally(() => {
+      if (this.closing.get(threadId) === done) this.closing.delete(threadId)
+    })
+    this.closing.set(threadId, done)
+    return done
+  }
+
+  private options(thread: LiveThread, resume: string | undefined): Options {
     const { workspace } = this.deps
-    const denied = (name: string, reason: string) => this.push(job, { kind: 'denied', name, reason })
-    const options: Options = {
+    const denied = (name: string, reason: string) => {
+      const job = thread.current ?? thread.waiting
+      if (job) this.push(job, { kind: 'denied', name, reason })
+    }
+    return {
       cwd: workspace,
-      abortController: job.abort,
       ...(resume ? { resume } : {}),
       tools: CLAUDE_TOOLS,
       // ワークスペースの .claude/skills/ のスキルをすべて使えるようにする（settingSources が project だけなので、~/.claude のスキルは読まない）
@@ -233,26 +417,13 @@ export class ClaudeJobs {
       strictMcpConfig: true,
       // ワークスペースの CLAUDE.md と .claude/ の設定だけを読む（ユーザーの ~/.claude の MCP・許可の設定は使わない）
       settingSources: ['project'],
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(job.canvasId) },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(thread.canvasId) },
+      // 画面に作業ごとの止めるボタンがある。interrupt はターンだけを止め、バックグラウンドの作業は残す
+      perTaskStopAffordance: true,
       ...(this.deps.model ? { model: this.deps.model } : {}),
       maxTurns: this.maxTurns(),
       ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
       env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
-    }
-    const prompt = job.refId ? `${job.prompt}\n\n（選んだ場所：${job.refId}）` : job.prompt
-    try {
-      const run = this.deps.run ?? (await defaultRun())
-      for await (const message of run({ prompt, options })) this.receive(job, message)
-      if (job.status === 'running') this.finish(job, job.abort.signal.aborted ? 'cancelled' : 'done')
-    } catch (error) {
-      if (job.status !== 'running') return
-      if (job.abort.signal.aborted) {
-        this.finish(job, 'cancelled')
-        return
-      }
-      console.error('a Claude job failed', error)
-      this.push(job, { kind: 'error', message: error instanceof Error ? error.message : String(error) })
-      this.finish(job, 'failed')
     }
   }
 
@@ -260,12 +431,74 @@ export class ClaudeJobs {
     return this.deps.maxTurns ?? DEFAULT_MAX_TURNS
   }
 
-  private receive(job: JobState, message: SDKMessage): void {
-    if ('session_id' in message && typeof message.session_id === 'string' && message.session_id !== job.sessionId) {
-      job.sessionId = message.session_id
-      this.store.setSession(job.id, message.session_id)
+  // ジョブを保存し、知らせる
+  private begin(thread: LiveThread, job: StoredJob): void {
+    thread.lastActive = Date.now()
+    clearTimeout(thread.idleTimer)
+    this.store.insertJob(job)
+    this.running.set(job.id, job)
+    this.notify(job, 0)
+  }
+
+  // バックグラウンドの作業が終わって、Claude が自分で始めたターン
+  private beginBackground(thread: LiveThread): StoredJob {
+    const finished = thread.finished.splice(0)
+    const job: StoredJob = {
+      id: randomUUID(),
+      threadId: thread.threadId,
+      prompt:
+        finished.length > 0
+          ? `バックグラウンドの作業${finished.map((task) => `「${task.description}」${FINISHED_TEXT[task.status]}`).join('、')}`
+          : 'バックグラウンドの作業から続けました',
+      origin: 'background',
+      status: 'running',
+      createdAt: Date.now(),
+      events: thread.pending.splice(0),
+      eventCount: 0,
+      ...(thread.sessionId ? { sessionId: thread.sessionId } : {}),
     }
+    job.eventCount = job.events.length
+    thread.current = job
+    this.begin(thread, job)
+    return job
+  }
+
+  // ターンが答えている依頼（user_message_uuids）が、待っている依頼なら、今のジョブにする。
+  // CLI が自分で起こしたターンの途中に依頼が混ぜられたら、そこまでをバックグラウンドのジョブとして終える。止めた依頼なら、そのターンを止めて見せない
+  private bind(thread: LiveThread, uuids: readonly string[] | undefined): void {
+    if (!uuids || uuids.length === 0) return
+    const waiting = thread.waiting
+    if (waiting && uuids.includes(waiting.id)) {
+      thread.waiting = undefined
+      if (thread.current && thread.current !== waiting) this.finish(thread.current, 'done')
+      thread.current = waiting
+      for (const event of thread.pending.splice(0)) this.push(waiting, event)
+      return
+    }
+    if (!thread.skipTurn && uuids.some((id) => thread.dropped.has(id))) {
+      thread.skipTurn = true
+      thread.session.interrupt().catch((error: unknown) => console.warn('Claude の依頼を止められませんでした', error))
+    }
+  }
+
+  private receive(thread: LiveThread, message: SDKMessage): void {
+    thread.lastActive = Date.now()
+    if ('session_id' in message && typeof message.session_id === 'string' && message.session_id !== thread.sessionId) {
+      thread.sessionId = message.session_id
+    }
+    const sessionId = thread.sessionId
+    for (const job of [thread.current, thread.waiting]) {
+      if (sessionId && job && job.sessionId !== sessionId) {
+        job.sessionId = sessionId
+        this.store.setSession(job.id, sessionId)
+      }
+    }
+    // ターンの初め（ターンごとに届く）。どの依頼に答えるターンかは、最初の assistant でわかる
     if (message.type === 'system' && message.subtype === 'init') {
+      if (thread.initialized) return
+      thread.initialized = true
+      const job = thread.current ?? thread.waiting
+      if (!job) return
       const canvcode = message.mcp_servers.find((server) => server.name === 'canvcode')
       if (canvcode && canvcode.status !== 'connected') {
         this.push(job, { kind: 'error', message: `CanvCode の MCP につながりませんでした（${canvcode.status}）` })
@@ -277,12 +510,45 @@ export class ClaudeJobs {
     }
     // auto mode の判定で断られた
     if (message.type === 'system' && message.subtype === 'permission_denied') {
-      this.push(job, { kind: 'denied', name: message.tool_name, reason: message.decision_reason || message.message })
+      const job = thread.current ?? thread.waiting
+      if (job) this.push(job, { kind: 'denied', name: message.tool_name, reason: message.decision_reason || message.message })
+      return
+    }
+    if (message.type === 'system' && message.subtype === 'task_started') {
+      thread.names.set(message.task_id, message.description)
+      // 前景の作業（ツールの呼び出しとして出している）は知らせない。サブエージェントが起こした作業と、起こし直し（resume）も知らせない
+      if (message.is_backgrounded && !message.parent_task_id && !thread.background.has(message.task_id)) {
+        thread.background.add(message.task_id)
+        if (message.tool_use_id) thread.backgroundToolUses.add(message.tool_use_id)
+        this.taskEvent(thread, { kind: 'task', status: 'started', description: message.description })
+      }
+      return
+    }
+    // Bash の時間切れなどで、前景からバックグラウンドに回った
+    if (message.type === 'system' && message.subtype === 'task_updated') {
+      if (message.patch.is_backgrounded && !thread.background.has(message.task_id) && thread.names.has(message.task_id)) {
+        thread.background.add(message.task_id)
+        this.taskEvent(thread, { kind: 'task', status: 'started', description: thread.names.get(message.task_id)! })
+      }
+      return
+    }
+    if (message.type === 'system' && message.subtype === 'task_notification') {
+      if (message.skip_transcript || message.ambient || !thread.background.has(message.task_id)) return
+      const description = thread.names.get(message.task_id) ?? message.summary
+      this.taskEvent(thread, { kind: 'task', status: message.status, description })
+      if (!thread.current) thread.finished.push({ description, status: message.status })
       return
     }
     if (message.type === 'assistant') {
+      const parent = message.parent_tool_use_id
+      // バックグラウンドのサブエージェントの中は出さない（どのターンのものでもない）
+      if (parent && thread.backgroundToolUses.has(parent)) return
       // サブエージェントの中は、使ったツールだけを出す（文章はサブエージェントの途中の考えで、まとめは親が書く）
-      const sub = Boolean(message.parent_tool_use_id)
+      const sub = Boolean(parent)
+      if (!sub) this.bind(thread, message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : undefined))
+      if (thread.skipTurn) return
+      const job = thread.current ?? (sub ? undefined : this.beginBackground(thread))
+      if (!job) return
       if (message.error && !sub) this.push(job, { kind: 'error', message: assistantErrorText(message.error) })
       for (const block of message.message.content) {
         if (block.type === 'text' && block.text.trim()) {
@@ -296,23 +562,99 @@ export class ClaudeJobs {
       return
     }
     if (message.type === 'result') {
-      job.costUsd = message.total_cost_usd
+      const stamps = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : undefined)
+      // 答えを書く前にエラーで終わったのに、どの依頼のものか書いていない（古い CLI）。待っている依頼のエラーとみなす（いつまでも待たせない）
+      const unstampedError = !stamps && message.is_error && !thread.current && thread.waiting
+      this.bind(thread, unstampedError ? [thread.waiting!.id] : stamps)
+      const cost = message.total_cost_usd - thread.costSoFar
+      thread.costSoFar = message.total_cost_usd
+      if (thread.sessionId) this.costTotals.set(thread.sessionId, message.total_cost_usd)
+      if (message.subtype === 'error_max_budget_usd') thread.retire = true
+      if (thread.skipTurn) {
+        thread.skipTurn = false
+        this.scheduleIdle(thread)
+        return
+      }
+      const job = thread.current
+      // 答えを書かなかったターン（作業の知らせを受けただけ）は、ジョブにしない
+      if (!job) {
+        this.scheduleIdle(thread)
+        return
+      }
+      thread.current = undefined
+      clearTimeout(thread.cancelTimer)
+      if (Number.isFinite(cost)) job.costUsd = cost
       job.durationMs = message.duration_ms
-      if (message.subtype === 'success' && !message.is_error) {
-        this.finish(job, 'done')
-        return
+      if (message.subtype === 'success' && !message.is_error) this.finish(job, 'done')
+      else if (this.cancelled.has(job)) this.finish(job, 'cancelled')
+      else {
+        const text = message.subtype === 'success' ? message.result : resultErrorText(message.subtype, message.errors, this.maxTurns(), this.deps.maxBudgetUsd)
+        this.push(job, { kind: 'error', message: text })
+        this.finish(job, 'failed')
       }
-      if (job.abort.signal.aborted) {
-        this.finish(job, 'cancelled')
-        return
-      }
-      const text = message.subtype === 'success' ? message.result : resultErrorText(message.subtype, message.errors, this.maxTurns(), this.deps.maxBudgetUsd)
-      this.push(job, { kind: 'error', message: text })
-      this.finish(job, 'failed')
+      this.scheduleIdle(thread)
     }
   }
 
-  private push(job: JobState, event: JobEvent): void {
+  // 作業の出来事を、今のジョブか、次のジョブの初めに入れる
+  private taskEvent(thread: LiveThread, event: JobEvent): void {
+    if (thread.current) this.push(thread.current, event)
+    else thread.pending.push(event)
+  }
+
+  private tasksChanged(thread: LiveThread): void {
+    thread.lastActive = Date.now()
+    this.scheduleIdle(thread)
+    this.notifyThread(thread.threadId)
+  }
+
+  // 何もしていなければ、しばらくして閉じる（費用の上限に達していれば、すぐ閉じる）
+  private scheduleIdle(thread: LiveThread): void {
+    clearTimeout(thread.idleTimer)
+    if (thread.current || thread.waiting || thread.session.tasks.length > 0 || this.live.get(thread.threadId) !== thread) return
+    if (thread.retire) {
+      void this.closeThread(thread.threadId)
+      return
+    }
+    thread.idleTimer = setTimeout(() => void this.closeThread(thread.threadId), this.deps.idleCloseMs ?? IDLE_CLOSE_MS)
+    thread.idleTimer.unref?.()
+  }
+
+  // プロセスが終わった
+  private exited(thread: LiveThread, error: unknown): void {
+    clearTimeout(thread.idleTimer)
+    clearTimeout(thread.cancelTimer)
+    if (this.live.get(thread.threadId) === thread) this.live.delete(thread.threadId)
+    if (error) console.error('a Claude session failed', error)
+    for (const job of [thread.current, thread.waiting]) {
+      if (!job) continue
+      if (this.cancelled.has(job) || thread.session.closing) this.finish(job, 'cancelled')
+      else {
+        this.push(job, { kind: 'error', message: error instanceof Error ? error.message : error ? String(error) : 'Claude Code のプロセスが途中で終わりました' })
+        this.finish(job, 'failed')
+      }
+    }
+    thread.current = undefined
+    thread.waiting = undefined
+    const lost = thread.session.tasks.length
+    if (lost > 0 && !thread.session.closing) {
+      this.appendToLast(thread.threadId, { kind: 'error', message: `Claude Code のプロセスが終わったので、バックグラウンドの作業 ${lost} 個が途切れました` })
+    }
+    this.notifyThread(thread.threadId)
+  }
+
+  // 会話の最後のジョブに出来事を足す（終わったジョブにも）
+  private appendToLast(threadId: string, event: JobEvent): void {
+    const last = this.store.lastOfThread(threadId)
+    if (!last) return
+    const from = last.events.length
+    last.events.push(event)
+    last.eventCount = last.events.length
+    this.store.appendEvent(last.id, from, event)
+    this.notify(last, from)
+  }
+
+  private push(job: StoredJob, event: JobEvent): void {
     if (job.status !== 'running') return
     const from = job.events.length
     job.events.push(event)
@@ -321,7 +663,7 @@ export class ClaudeJobs {
     this.notify(job, from)
   }
 
-  private finish(job: JobState, status: JobStatus): void {
+  private finish(job: StoredJob, status: JobStatus): void {
     if (job.status !== 'running') return
     job.status = status
     job.finishedAt = Date.now()
@@ -330,13 +672,26 @@ export class ClaudeJobs {
     this.notify(job, job.events.length)
   }
 
-  private notify(job: JobState, from: number): void {
+  private info(thread: ThreadSummary): ThreadInfo {
+    return { ...thread, tasks: [...(this.live.get(thread.threadId)?.session.tasks ?? [])] }
+  }
+
+  private notify(job: StoredJob, from: number): void {
     const thread = this.store.thread(job.threadId)
     if (!thread) return
-    const change: JobChange = { type: 'job', job: summaryOf(job), events: job.events.slice(from), from, thread }
+    const change: JobChange = { type: 'job', job: summaryOf(job), events: job.events.slice(from), from, thread: this.info(thread) }
+    for (const listener of this.listeners) safely(() => listener(change))
+  }
+
+  private notifyThread(threadId: string): void {
+    const thread = this.store.thread(threadId)
+    if (!thread) return
+    const change: JobChange = { type: 'thread', thread: this.info(thread) }
     for (const listener of this.listeners) safely(() => listener(change))
   }
 }
+
+const FINISHED_TEXT = { completed: 'が終わりました', failed: 'が失敗しました', stopped: 'を止めました' }
 
 function safely(fn: () => void): void {
   try {
@@ -346,9 +701,20 @@ function safely(fn: () => void): void {
   }
 }
 
-async function defaultRun(): Promise<RunQuery> {
+// プロセスに送る文。選んだ場所と、システムプロンプトと違う Canvas を見ていればそれを添える
+function messageText(job: StoredJob, sessionCanvasId: string | undefined): string {
+  return [
+    job.prompt,
+    job.refId ? `（選んだ場所：${job.refId}）` : '',
+    job.canvasId && job.canvasId !== sessionCanvasId ? `（いま見ている Canvas：${job.canvasId}）` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+const defaultRun: RunQuery = async (params) => {
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
-  return query
+  return query(params)
 }
 
 async function defaultDeleteSession(sessionId: string, dir: string): Promise<void> {
@@ -356,8 +722,8 @@ async function defaultDeleteSession(sessionId: string, dir: string): Promise<voi
   await deleteSession(sessionId, { dir })
 }
 
-function summaryOf(job: StoredJob & { abort?: AbortController }): JobSummary {
-  const { events: _events, sessionId: _sessionId, abort: _abort, ...summary } = job
+function summaryOf(job: StoredJob): JobSummary {
+  const { events: _events, sessionId: _sessionId, ...summary } = job
   return summary
 }
 
@@ -375,6 +741,7 @@ export function systemPromptAppend(canvasId: string | undefined): string {
     'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
     'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
     'Skills in the workspace .claude/skills/ are available through the Skill tool.',
+    'Subagents and long commands can run in the background. When one finishes you are woken and continue on your own; that reply is shown in the panel too.',
     'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; nobody is watching to approve the ones that are not.',
   ]
     .filter(Boolean)

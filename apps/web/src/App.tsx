@@ -64,7 +64,7 @@ import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
-import { ClaudeClient, useClaudeState } from './claude/claudeClient.ts'
+import { ClaudeClient, threadBusy, useClaudeState } from './claude/claudeClient.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
 import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
@@ -1968,7 +1968,7 @@ export function App(props: { initial: InitialRecords }) {
           {claudeState.availability === 'on' && (
             <button
               type="button"
-              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') ? ' running' : ''}`}
+              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) ? ' running' : ''}`}
               onClick={() => {
                 if (!claudeOpen) return askClaude('')
                 setClaudeOpen(false)

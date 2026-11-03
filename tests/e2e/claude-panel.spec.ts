@@ -1,9 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
 
 // Claude のパネルの回答を選んでコピーしても、キャンバスで選んでいるノードのコピーに横取りされない。
-// パネルの中のキー（Delete・矢印・Ctrl+A・Esc）は、キャンバスのショートカットに渡らない
+// パネルの中のキー（Delete・矢印・Ctrl+A・Esc）は、キャンバスのショートカットに渡らない。
+// バックグラウンドの作業が並び、1 つずつ・まるごと止められる
 
-async function openApp(page: Page) {
+// claude は、会話 t1 に足すもの（バックグラウンドの作業と、ジョブ）
+async function openApp(page: Page, claude: { tasks?: object[]; jobs?: object[] } = {}) {
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto')
   await page.waitForFunction(() => Boolean((window as any).canvasInputFixture))
   // カードのほかに付箋を 1 つ置く（Ctrl+A でキャンバスのノードを全部選んだら、わかるように）
@@ -14,13 +16,13 @@ async function openApp(page: Page) {
   })
   const file = { id: 'file:input-test', kind: 'markdown', title: 'Input test', path: 'test.md', size: 100, mtime: 0, hash: 'test', missing: false }
   const now = Date.now()
-  const thread = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false }
+  const thread = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false, tasks: claude.tasks ?? [] }
   const job = { id: 'j1', threadId: 't1', prompt: 'question', status: 'done', createdAt: now, eventCount: 1, events: [{ kind: 'text', text: 'Answer from Claude' }] }
   await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: '# Card', headers: { etag: '"test"' } }))
   await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [thread] } }))
-  await page.route('**/api/claude/threads/t1', (route) => route.fulfill({ json: { jobs: [job] } }))
+  await page.route('**/api/claude/threads/t1', (route) => route.fulfill({ json: { jobs: [job, ...(claude.jobs ?? [])] } }))
   await page.route('**/api/claude/events', (route) => route.fulfill({ status: 204 }))
   await page.goto('/')
   const root = page.locator('.canvas-container > div[tabindex]')
@@ -31,7 +33,7 @@ async function openApp(page: Page) {
   await page.mouse.click(rect.x + 140, rect.y + 140)
   await expect.poll(() => selectedIds(page)).toHaveLength(1)
   await page.locator('.claude-toggle').click()
-  await expect(page.locator('.claude-text')).toHaveText('Answer from Claude')
+  await expect(page.locator('.claude-text').first()).toHaveText('Answer from Claude')
   // キャンバスの copy の処理（window で受ける）が既定の動作を止めたかを記録する
   await page.evaluate(() => {
     ;(window as any).copyPrevented = []
@@ -140,4 +142,57 @@ test('Escape closes the panel after clicking the conversation', async ({ page })
   await expect(page.locator('.claude-panel')).toHaveCount(0)
   // キャンバスの選択はそのまま（Esc はキャンバスに渡らない）
   expect(await selectedIds(page)).toHaveLength(1)
+})
+
+test('lists background tasks, stops one or all of them, and shows the turn Claude continued on its own', async ({ page }) => {
+  const now = Date.now()
+  await openApp(page, {
+    tasks: [
+      { id: 'ag1', description: '論文を探す', type: 'local_agent' },
+      { id: 'b2', description: 'ping 90 times', type: 'local_bash' },
+    ],
+    jobs: [
+      {
+        id: 'j2',
+        threadId: 't1',
+        prompt: 'バックグラウンドの作業「見張り」が終わりました',
+        origin: 'background',
+        status: 'done',
+        createdAt: now + 60_000,
+        eventCount: 2,
+        events: [
+          { kind: 'task', status: 'completed', description: '見張り' },
+          { kind: 'text', text: '続きを書きました' },
+        ],
+      },
+    ],
+  })
+  const stops: string[] = []
+  await page.route('**/api/claude/threads/t1/**', (route) => {
+    stops.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`)
+    return route.fulfill({ status: 204 })
+  })
+
+  // 作業が終わって Claude が続けたジョブは、吹き出しでなく小さく出る
+  await expect(page.locator('.claude-wake')).toHaveText('バックグラウンドの作業「見張り」が終わりました。Claude が続けました')
+  await expect(page.locator('.claude-prompt')).toHaveCount(1)
+  await expect(page.locator('.claude-tool.task')).toHaveText('終わりました：見張り')
+
+  // 作業の一覧。作業があるあいだは、消せないが送れる
+  await expect(page.locator('.claude-task-name')).toHaveText(['サブエージェント：論文を探す', 'コマンド：ping 90 times'])
+  await expect(page.locator('.claude-tasks-header')).toContainText('バックグラウンドで動いている作業（2）')
+  await expect(page.locator('.claude-toggle')).toHaveClass(/running/)
+  await expect(page.getByRole('button', { name: '削除' })).toBeDisabled()
+  await page.locator('.claude-compose textarea').fill('その間に')
+  await expect(page.locator('.claude-send')).toBeEnabled()
+
+  await page.locator('.claude-task').first().getByRole('button', { name: '止める' }).click()
+  await expect.poll(() => stops).toEqual(['POST /api/claude/threads/t1/tasks/ag1/stop'])
+
+  // 「全部止める」は 2 回押す
+  await page.getByRole('button', { name: '全部止める' }).click()
+  await expect(page.getByRole('button', { name: '本当に全部止める' })).toBeVisible()
+  expect(stops).toHaveLength(1)
+  await page.getByRole('button', { name: '本当に全部止める' }).click()
+  await expect.poll(() => stops).toEqual(['POST /api/claude/threads/t1/tasks/ag1/stop', 'POST /api/claude/threads/t1/stop'])
 })

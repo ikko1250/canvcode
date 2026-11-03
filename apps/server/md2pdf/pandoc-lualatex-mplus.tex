@@ -34,8 +34,10 @@
   \par
   \everypar{}%
 }
-\setmainjfont{M PLUS 1p}
-\setsansjfont{M PLUS 1p Medium}
+% 和文の斜体（CanvCode で足した）: M PLUS 1p には斜体がないので、傾けて作る。
+% *強調*（\emph）は LuaTeX-ja が和文をゴシック（sansjfont）に切り替えるので、両方に付ける
+\setmainjfont[AutoFakeSlant=0.2]{M PLUS 1p}
+\setsansjfont[AutoFakeSlant=0.2]{M PLUS 1p Medium}
 \newfontfamily\titleonefont{M PLUS 1p Black}
 \newjfontfamily\titleonejfont{M PLUS 1p Black}
 \makeatletter

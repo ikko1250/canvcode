@@ -16,6 +16,8 @@ import { HttpError, type FileInfo } from './files.ts'
 
 const BUNDLED_MD2PDF = fileURLToPath(new URL('../md2pdf/', import.meta.url))
 const CANVCODE_FILTER = join(BUNDLED_MD2PDF, 'canvcode-images.lua')
+export const CANVCODE_ALIGN_FILTER = join(BUNDLED_MD2PDF, 'canvcode-align.lua')
+export const CANVCODE_FOOTNOTES_FILTER = join(BUNDLED_MD2PDF, 'canvcode-footnotes.lua')
 const TIMEOUT_MS = 180_000
 const MAX_OUTPUT = 64 * 1024 * 1024
 
@@ -107,6 +109,10 @@ export class MarkdownPdf {
         this.pandoc,
         [
           '--from=markdown+autolink_bare_uris',
+          // LaTeX のソースの改行は、Markdown に書いたとおりにする（pandoc で折り返さない）。
+          // 和文の直後の改行は LuaTeX-ja が空白なしとして扱うので、段落の途中の和文の改行は空きにならず、
+          // pandoc が折り返すと消えていた、書いた空白も残る
+          '--wrap=preserve',
           '--pdf-engine=lualatex',
           '-V',
           'indent',
@@ -115,9 +121,13 @@ export class MarkdownPdf {
           `--metadata=canvcode-docdir:${docDir}`,
           `--resource-path=${[join(this.workspace, docDir), this.workspace].join(delimiter)}`,
           `--include-in-header=${header}`,
-          // 画像のパスを先に直してから、md2pdf のフィルタに渡す
+          // 画像のパスと <p align> の寄せを先に直し、同じ脚注をまとめてから、md2pdf のフィルタに渡す
           '--lua-filter',
           CANVCODE_FILTER,
+          '--lua-filter',
+          CANVCODE_ALIGN_FILTER,
+          '--lua-filter',
+          CANVCODE_FOOTNOTES_FILTER,
           ...filters.flatMap((filter) => ['--lua-filter', filter]),
           input,
           '-o',

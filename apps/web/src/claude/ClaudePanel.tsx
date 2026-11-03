@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { OWN_KEYS_ATTRIBUTE } from '@canvcode/canvas'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
-import { jobsOfThread, useClaudeState, type ClaudeClient, type ClaudeJob, type JobEvent } from './claudeClient.ts'
+import { jobsOfThread, useClaudeState, type BackgroundTask, type ClaudeClient, type ClaudeJob, type JobEvent } from './claudeClient.ts'
 
 // 画面から Claude Code に頼むパネル（キャンバスの右に並べる）。
 // - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新規」で切る）。会話はサーバーの SQLite に残り、
 //   上の一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
+// - バックグラウンドで動いている作業（サブエージェント・コマンド）は入力欄の上に並べ、1 つずつ止められる。「全部止める」は会話のプロセスごと止める
+//   （2 回押す）。作業が動いていても送れる（答えを書いている最中だけ送れない）。作業が終わって Claude が自分で続けたジョブは、吹き出しでなく小さく見せる
 // - Canvas の編集は、ほかの AI の編集と同じく画面の下に「AI：…［元に戻す］」が出る（AgentToasts）
 // - パネルの中のキー入力は、キャンバスのショートカットに渡さない（data-own-keys）。押したらパネルにフォーカスを移すので、
 //   回答を選んで Delete や矢印キーを押しても、キャンバスで選んでいるノードは消えも動きもしない
@@ -18,6 +20,7 @@ export interface ClaudeAttachment {
 }
 
 const RECENT_MS = 30 * 60_000
+const NO_TASKS: readonly BackgroundTask[] = []
 
 interface Props {
   client: ClaudeClient
@@ -46,6 +49,8 @@ export function ClaudePanel(props: Props) {
   const [error, setError] = useState<string | null>(null)
   // 「削除」を 1 回押した会話（もう 1 回押すと消す）
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  // 「全部止める」を 1 回押した会話（もう 1 回押すと止める）
+  const [confirmStop, setConfirmStop] = useState<string | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -66,8 +71,15 @@ export function ClaudePanel(props: Props) {
   useEffect(() => {
     if (threadId && !state.loaded.has(threadId)) void client.loadThread(threadId)
   }, [client, threadId, state.loaded])
-  const jobs = useMemo(() => (threadId ? jobsOfThread(state, threadId) : []), [state, threadId])
+  // 作業の知らせを受けただけで何も書かなかったターン（サブエージェントの報告のあとに CLI が起こす）は見せない
+  const jobs = useMemo(
+    () => (threadId ? jobsOfThread(state, threadId).filter((job) => !(job.origin === 'background' && job.status !== 'running' && job.events.length === 0)) : []),
+    [state, threadId],
+  )
   const running = jobs.find((job) => job.status === 'running')
+  const tasks = thread?.tasks ?? NO_TASKS
+  // 答えを書いているか、バックグラウンドの作業がある（消せない）
+  const busy = !!thread && (thread.running || tasks.length > 0)
   const eventTotal = jobs.reduce((n, job) => n + job.events.length, 0)
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
@@ -105,6 +117,21 @@ export function ClaudePanel(props: Props) {
       .deleteThread(thread.threadId)
       .then(() => setThreadId(null))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }
+
+  const stopAll = () => {
+    if (!thread) return
+    if (confirmStop !== thread.threadId) {
+      setConfirmStop(thread.threadId)
+      return
+    }
+    setConfirmStop(null)
+    client.stopThread(thread.threadId).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }
+
+  const stopTask = (task: BackgroundTask) => {
+    if (!thread) return
+    client.stopTask(thread.threadId, task.id).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -148,7 +175,7 @@ export function ClaudePanel(props: Props) {
           <option value="">新しい会話</option>
           {threads.map((t) => (
             <option key={t.threadId} value={t.threadId}>
-              {t.running ? '● ' : ''}
+              {t.running || (t.tasks?.length ?? 0) > 0 ? '● ' : ''}
               {truncate(t.title, 28)}
             </option>
           ))}
@@ -160,10 +187,10 @@ export function ClaudePanel(props: Props) {
           <button
             type="button"
             className={confirmDelete === thread.threadId ? 'claude-danger' : undefined}
-            disabled={thread.running}
+            disabled={busy}
             onClick={remove}
             onBlur={() => setConfirmDelete(null)}
-            title={thread.running ? '動いている依頼を止めてから消せます' : 'この会話を消す（もう一度押すと消します）'}
+            title={busy ? '動いている依頼と作業を止めてから消せます' : 'この会話を消す（もう一度押すと消します）'}
           >
             {confirmDelete === thread.threadId ? '消す' : '削除'}
           </button>
@@ -191,6 +218,10 @@ export function ClaudePanel(props: Props) {
         {thread && jobs.length === 0 && <p className="claude-hint">読み込んでいます…</p>}
         {jobs.map((job) => <JobView key={job.id} job={job} onCancel={() => void client.cancel(job.id)} />)}
       </div>
+
+      {thread && tasks.length > 0 && (
+        <TaskList tasks={tasks} confirmStop={confirmStop === thread.threadId} onStop={stopTask} onStopAll={stopAll} onBlurStopAll={() => setConfirmStop(null)} />
+      )}
 
       <div className="claude-compose">
         {attachment ? (
@@ -235,14 +266,56 @@ export function ClaudePanel(props: Props) {
   )
 }
 
+// バックグラウンドで動いている作業の一覧
+function TaskList(props: {
+  tasks: readonly BackgroundTask[]
+  confirmStop: boolean
+  onStop(task: BackgroundTask): void
+  onStopAll(): void
+  onBlurStopAll(): void
+}) {
+  const { tasks, confirmStop, onStop, onStopAll, onBlurStopAll } = props
+  return (
+    <div className="claude-tasks" aria-label="バックグラウンドの作業">
+      <div className="claude-tasks-header">
+        <span className="claude-spinner" aria-hidden="true" />
+        <span>バックグラウンドで動いている作業（{tasks.length}）</span>
+        <button
+          type="button"
+          className={confirmStop ? 'claude-danger' : 'claude-link'}
+          onClick={onStopAll}
+          onBlur={onBlurStopAll}
+          title="答えも作業も、この会話の Claude Code をまるごと止める（もう一度押すと止めます）"
+        >
+          {confirmStop ? '本当に全部止める' : '全部止める'}
+        </button>
+      </div>
+      {tasks.map((task) => (
+        <div key={task.id} className="claude-task">
+          <span className="claude-task-name" title={task.description}>
+            {taskTypeLabel(task.type)}：{task.description}
+          </span>
+          <button type="button" className="claude-link" onClick={() => onStop(task)} title="この作業だけを止める">
+            止める
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function JobView(props: { job: ClaudeJob; onCancel(): void }) {
   const { job, onCancel } = props
   return (
     <div className="claude-job">
-      <div className="claude-prompt">
-        <div className="claude-prompt-text">{job.prompt}</div>
-        {job.refId && <div className="claude-prompt-ref">選んだ場所：{job.refId}</div>}
-      </div>
+      {job.origin === 'background' ? (
+        <div className="claude-wake">{job.prompt}。Claude が続けました</div>
+      ) : (
+        <div className="claude-prompt">
+          <div className="claude-prompt-text">{job.prompt}</div>
+          {job.refId && <div className="claude-prompt-ref">選んだ場所：{job.refId}</div>}
+        </div>
+      )}
       {job.events.map((event, i) => (
         <EventView key={i} event={event} />
       ))}
@@ -276,6 +349,7 @@ function EventView(props: { event: JobEvent }) {
     )
   }
   if (event.kind === 'denied') return <div className="claude-tool denied">断りました：{event.reason}</div>
+  if (event.kind === 'task') return <div className={`claude-tool task ${event.status}`}>{taskText(event)}</div>
   return <div className="claude-error">{event.message}</div>
 }
 
@@ -306,6 +380,18 @@ const TOOL_LABELS: Record<string, string> = {
 function toolLabel(name: string): string {
   const short = name.replace(/^mcp__canvcode__/, '')
   return TOOL_LABELS[short] ?? short
+}
+
+const TASK_TEXT = { started: 'バックグラウンドで始めました', completed: '終わりました', failed: '失敗しました', stopped: '止めました' }
+
+function taskText(event: Extract<JobEvent, { kind: 'task' }>): string {
+  return `${TASK_TEXT[event.status]}：${event.description}`
+}
+
+function taskTypeLabel(type: string): string {
+  if (type === 'local_agent') return 'サブエージェント'
+  if (type === 'local_bash') return 'コマンド'
+  return '作業'
 }
 
 function statusText(job: ClaudeJob): string {
