@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
-import { createServer, type Server } from 'node:http'
+import { createServer, request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -99,6 +99,8 @@ const answer = (base: string, attempt: string, body: Buffer | object, query = 'x
     headers: { 'content-type': Buffer.isBuffer(body) ? 'image/png' : 'application/json' },
     body: Buffer.isBuffer(body) ? new Uint8Array(body) : JSON.stringify(body),
   })
+
+const answer2 = (base: string, attempt: string) => answer(base, attempt, png(10, 10))
 
 const request = (fields: Partial<RenderRequest> = {}): RenderRequest => ({ canvasId: 'canvas:a', target: { kind: 'canvas' }, maxEdge: 1568, rev: 3, ...fields })
 
@@ -223,6 +225,33 @@ describe('RenderBroker', () => {
     await expect(broker.request(request())).rejects.toMatchObject({ code: 'busy' })
     await answer(base, (await t.nextRender()).attempt, png(10, 10))
     await pending
+  })
+
+  // レビュー：答えを読み始めると 1 回の打ち切りを止めるので、本文を送り始めて止まるタブがいると、全体の期限も効かずに返らなかった
+  it('ends within the total time even when a tab starts sending its answer and stalls, and closes that answer', async () => {
+    const { broker, base } = await setup({ attemptTimeoutMs: 5000, totalTimeoutMs: 300 })
+    const stalling = await tab(base, {})
+    await settle()
+    const started = Date.now()
+    const result = broker.request(request()).catch((e: unknown) => e)
+    const { attempt } = await stalling.nextRender()
+    // PNG の頭だけを送って止まる（content-length はもっと大きい）
+    const [host, port] = base.split(':')
+    const answer = httpRequest({ host, port: Number(port), method: 'PUT', path: `/api/renders/${attempt}?x=0&y=0&w=10&h=10&scale=1&rev=3`, headers: { 'content-type': 'image/png', 'content-length': '100000' } })
+    const closed = new Promise<string>((resolve) => {
+      answer.on('error', (error) => resolve(`error ${(error as NodeJS.ErrnoException).code}`))
+      answer.on('response', (response) => resolve(`response ${response.statusCode}`))
+    })
+    answer.write(png(10, 10))
+    const error = await result
+    expect(error).toMatchObject({ code: 'timeout' })
+    expect((error as Error).message).toContain('timed out after 0 s')
+    // 全体の期限（300 ms）のうちに終わる（1 回の打ち切りの 5 秒は待たない）
+    expect(Date.now() - started).toBeLessThan(1500)
+    // 読みかけの答えは捨てて、その接続を閉じる
+    expect(await closed).toMatch(/^error (ECONNRESET|EPIPE)$|^response 410$/)
+    // 期限を過ぎた頼みに答えても 404
+    expect((await answer2(base, attempt)).status).toBe(404)
   })
 
   it('gives up after the total time', async () => {

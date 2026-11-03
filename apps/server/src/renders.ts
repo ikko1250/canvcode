@@ -12,7 +12,9 @@ import type { SyncHub, TabInfo } from './sync.ts'
 // - タブは描いて、PUT /api/renders/<attempt> で答える。PNG なら成功（範囲などは query）、JSON（{ error, retry? }）なら失敗
 // - attempt の id は 128 ビットの乱数で、頼んだタブにだけ送る。頼み直すたびに作り直し、1 回答えたら（成功・失敗・打ち切り）消す
 //   （前のタブから遅れて届いた答えは 404）。/api/ の下なので、ほかの API と同じく Host と Origin を確かめる（index.ts）
-// - 1 回 attemptTimeoutMs で打ち切って次のタブに頼む。タブが閉じたら、すぐ次に頼む。全体で totalTimeoutMs まで
+// - 1 回 attemptTimeoutMs で打ち切って次のタブに頼む。タブが閉じたら、すぐ次に頼む。全体で totalTimeoutMs まで。
+//   全体の期限はジョブごとのタイマーで守る（答えの本文をとても遅く送るタブがいても、request はその時間で終わる）。
+//   期限を過ぎたら、待っている頼みを消し、読みかけの答えは捨てて、その接続を閉じる
 // - 画像はメモリーにだけ置く（ファイルには書かない）
 // 画面を開ける人なら、render を名乗るタブを作ってどんな PNG でも返せる。ただ、その人は今でも Canvas を書き換えられるので、
 // 信頼の範囲は広がらない（AI に見せる画像は、Canvas のレコードと同じ重みで扱う）
@@ -73,6 +75,13 @@ interface Job {
   deadline: number
   // 最後の失敗の理由（全部のタブで駄目だったときに返す）
   lastFailure: string | null
+  // 終わったか（答えた・断った・期限を過ぎた）。終わったあとに届いた答えは捨てる
+  done: boolean
+  // 全体の期限のタイマー
+  timer: ReturnType<typeof setTimeout> | null
+  // 読んでいる途中の答え（期限を過ぎたら閉じる）
+  reading: Set<IncomingMessage>
+  // どちらも 1 回だけ効く（2 回目からは何もしない）
   resolve(result: RenderResult): void
   reject(error: RenderError): void
 }
@@ -103,10 +112,9 @@ export class RenderBroker {
 
   dispose(): void {
     this.unlisten()
+    for (const job of [...this.jobs]) job.reject(new RenderError('failed', 'The server is shutting down.'))
     for (const attempt of this.attempts.values()) clearTimeout(attempt.timer)
     this.attempts.clear()
-    for (const job of this.jobs) job.reject(new RenderError('failed', 'The server is shutting down.'))
-    this.jobs.clear()
   }
 
   // 描けるタブがあるか（MCP の答えを早く返すため）
@@ -124,15 +132,19 @@ export class RenderBroker {
         tried: new Set(),
         deadline: Date.now() + this.options.totalTimeoutMs,
         lastFailure: null,
+        done: false,
+        timer: null,
+        reading: new Set(),
         resolve: (result) => {
-          this.jobs.delete(job)
-          resolve(result)
+          if (this.finish(job)) resolve(result)
         },
         reject: (error) => {
-          this.jobs.delete(job)
-          reject(error)
+          if (this.finish(job)) reject(error)
         },
       }
+      // 全体の期限。答えを読んでいる途中でも、ここで終える
+      const seconds = Math.round(this.options.totalTimeoutMs / 1000)
+      job.timer = setTimeout(() => job.reject(new RenderError('timeout', this.giveUpMessage(job, `timed out after ${seconds} s`))), this.options.totalTimeoutMs)
       this.jobs.add(job)
       this.next(job)
     })
@@ -157,25 +169,41 @@ export class RenderBroker {
       sendJson(res, 404, { error: 'no such render request' })
       return true
     }
-    // 答えを読み始めたら、この頼みは打ち切らない（読み終えるまでに、ほかのタブへ頼み直さない）
+    // 答えを読み始めたら、この頼みは打ち切らない（読み終えるまでに、ほかのタブへ頼み直さない）。
+    // 全体の期限（ジョブのタイマー）は効いたままで、過ぎたら読みかけの答えを捨てて接続を閉じる
+    const { job } = attempt
     clearTimeout(attempt.timer)
     this.attempts.delete(id)
+    // 本文を読んでいる間だけ「読みかけ」にする（期限を過ぎたら、この接続を閉じる）
+    const read = async (max: number): Promise<Buffer> => {
+      job.reading.add(req)
+      try {
+        return await readBody(req, max)
+      } finally {
+        job.reading.delete(req)
+      }
+    }
     const type = (req.headers['content-type'] ?? '').split(';')[0].trim()
     try {
       if (type === 'image/png') {
-        const result = parseResult(await readBody(req, MAX_REF_IMAGE_BYTES), new URL(req.url ?? '/', 'http://localhost').searchParams, attempt.job.request)
-        attempt.job.resolve(result)
+        const body = await read(MAX_REF_IMAGE_BYTES)
+        if (job.done) return ended(res)
+        job.resolve(parseResult(body, new URL(req.url ?? '/', 'http://localhost').searchParams, job.request))
         sendJson(res, 201, { ok: true })
       } else if (type === 'application/json') {
-        const body = JSON.parse((await readBody(req, MAX_ERROR_BYTES)).toString('utf8')) as { error?: unknown; retry?: unknown }
-        const reason = typeof body.error === 'string' && body.error ? body.error.slice(0, 500) : 'the tab could not render'
-        this.failed(attempt, reason, body.retry !== false)
+        const body = await read(MAX_ERROR_BYTES)
+        if (job.done) return ended(res)
+        const answer = JSON.parse(body.toString('utf8')) as { error?: unknown; retry?: unknown }
+        const reason = typeof answer.error === 'string' && answer.error ? answer.error.slice(0, 500) : 'the tab could not render'
+        this.failed(attempt, reason, answer.retry !== false)
         sendJson(res, 200, { ok: true })
       } else {
         this.failed(attempt, 'the tab sent an answer that is not a PNG', true)
         sendJson(res, 415, { error: 'png or json only' })
       }
     } catch (error) {
+      // 期限を過ぎて閉じた接続（読みかけ）なら、もう何もしない
+      if (job.done) return ended(res)
       const status = error instanceof HttpError ? error.status : 400
       const message = error instanceof Error ? error.message : 'invalid answer'
       this.failed(attempt, `the tab sent an invalid answer (${message})`, true)
@@ -184,8 +212,25 @@ export class RenderBroker {
     return true
   }
 
+  // ジョブを終える（全体の期限のタイマー・待っている頼みを消し、読みかけの答えの接続を閉じる）。もう終わっていれば false
+  private finish(job: Job): boolean {
+    if (job.done) return false
+    job.done = true
+    if (job.timer !== null) clearTimeout(job.timer)
+    this.jobs.delete(job)
+    for (const attempt of [...this.attempts.values()]) {
+      if (attempt.job !== job) continue
+      clearTimeout(attempt.timer)
+      this.attempts.delete(attempt.id)
+    }
+    for (const req of job.reading) req.destroy()
+    job.reading.clear()
+    return true
+  }
+
   // 次のタブに頼む。もうなければ、最後の理由で終える
   private next(job: Job): void {
+    if (job.done) return
     const left = job.deadline - Date.now()
     if (left <= 0) return job.reject(new RenderError('timeout', this.giveUpMessage(job, 'timed out')))
     for (const tab of this.candidates(job)) {
@@ -212,6 +257,7 @@ export class RenderBroker {
   }
 
   private failed(attempt: Attempt, reason: string, retry: boolean): void {
+    if (attempt.job.done) return
     attempt.job.lastFailure = reason
     if (retry) this.next(attempt.job)
     else attempt.job.reject(new RenderError('failed', reason))
@@ -291,6 +337,12 @@ async function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
     chunks.push(chunk as Buffer)
   }
   return Buffer.concat(chunks)
+}
+
+// 終わったジョブへの答え（期限を過ぎた）。接続がまだ開いていれば、そう返す
+function ended(res: ServerResponse): true {
+  if (!res.headersSent && !res.destroyed) sendJson(res, 410, { error: 'the render request has ended' })
+  return true
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
