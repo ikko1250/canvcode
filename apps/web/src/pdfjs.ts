@@ -1,4 +1,4 @@
-import type { PdfDocument, PdfService, PdfTextItem } from '@canvcode/canvas'
+import type { PdfDocument, PdfRenderIntent, PdfService, PdfTextItem } from '@canvcode/canvas'
 // 古いブラウザ向けの版（legacy）を使う。ふつうの版は新しい機能（Iterator など）を前提にしていて、
 // iPad の Safari 17 では読み込んだだけで止まり、画面が白紙になった。legacy は足りない機能を補ってから動く
 import { GlobalWorkerOptions, Util, getDocument, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
@@ -36,13 +36,13 @@ class PdfJsDocument implements PdfDocument {
     return { width: viewport.width, height: viewport.height }
   }
 
-  async render(pageIndex: number, scale: number): Promise<ImageBitmap> {
+  async render(pageIndex: number, scale: number, intent: PdfRenderIntent = 'display'): Promise<ImageBitmap> {
     const page = await this.doc.getPage(pageIndex + 1)
     const viewport = page.getViewport({ scale })
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.ceil(viewport.width))
     canvas.height = Math.max(1, Math.ceil(viewport.height))
-    await page.render({ canvas, viewport }).promise
+    await page.render({ canvas, viewport, intent }).promise
     const bitmap = await createImageBitmap(canvas)
     // 描き終えたら、ページが使っていたメモリを返す
     page.cleanup()

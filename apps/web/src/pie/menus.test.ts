@@ -5,7 +5,7 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
 const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
-const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false, pdfLink: false, image: false }
+const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false, pdfLink: false, image: false, exportImage: false }
 
 function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false, table: TableMenuContext | null = null): PieMenuContext {
   return {
@@ -51,6 +51,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     exportSlidesPdf: vi.fn(),
     createPdfPortal: vi.fn(),
     copyImageMarkdownLink: vi.fn(),
+    exportSelectionImage: vi.fn(),
     table,
     sortTable: vi.fn(),
     filterTable: vi.fn(),
@@ -294,6 +295,29 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(labels(folded?.items)).toEqual(['文字', '重なり順', '固定する', '複製', '比率を切り替え', '非表示にする', 'テンプレート', 'スライドを PDF に出力'])
     const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
     for (const ring of [menu, full, folded]) for (const size of rings(ring!.items)) expect(size).toBeLessThanOrEqual(8)
+  })
+
+  it('saves or copies the selection as an image, also for a brush without a selection (MAI-89)', () => {
+    const ctx = context({}, { count: 1, reorderCount: 1, exportImage: true })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製', '画像'])
+    expect(labels(sub(menu, '画像'))).toEqual(['保存（等倍）', '保存（2 倍）', 'コピー（等倍）', 'コピー（2 倍）'])
+    run(sub(menu, '画像'), '保存（2 倍）')
+    expect(ctx.exportSelectionImage).toHaveBeenLastCalledWith('save', 2)
+    run(sub(menu, '画像'), 'コピー（等倍）')
+    expect(ctx.exportSelectionImage).toHaveBeenLastCalledWith('copy', 1)
+    // 何もない所を範囲選択しただけ（ノードを選んでいない）
+    expect(labels(actionsOf(context({}, { exportImage: true }))?.items)).toEqual(['画像'])
+    expect(labels(actionsOf(context({}, { count: 1, reorderCount: 1 }))?.items)).not.toContain('画像')
+    // いちばん多いとき（3 つ以上を選び、文字とスライドもある）も、まとめて 8 つまでに収める
+    const pdf = { hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false }
+    const full = actionsOf(context(pdf, { count: 3, arrangeCount: 3, reorderCount: 3, hasText: true, slideCount: 2, exportImage: true }, true))
+    const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((e) => (isSubmenu(e) ? rings(e.items) : []))]
+    for (const size of rings(full!.items)) expect(size).toBeLessThanOrEqual(8)
+    // そのときは、今の並びを変えないよう「画像 ›」を出さない（右クリックからは出せる）
+    expect(labels(full?.items)).toEqual(['ページ', '文字', '整列', '等間隔', '重なり順', '固定する', '複製', 'スライド'])
+    // ページがなければ収まるので出す
+    expect(labels(actionsOf(context({}, { count: 3, arrangeCount: 3, reorderCount: 3, hasText: true, slideCount: 2, exportImage: true }, true))?.items)).toContain('画像')
   })
 
   it('creates a PDF portal from a link card to a PDF, first among the selection items', () => {

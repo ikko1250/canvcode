@@ -137,6 +137,25 @@ export class ImageCache implements ImageRequester {
     }
   }
 
+  // その版・解像度の画像が、手元にちょうどあるか（見えているものとしては扱わない）
+  has(key: string, version: string, level: number): boolean {
+    const entry = this.images.get(key)
+    return entry?.version === version && entry.levels.has(level)
+  }
+
+  // 描くためだけに読んだ画像を捨てる（Canvas を画像にしたあと。MAI-89）。その解像度だけを捨て、ほかの解像度は残す
+  forget(entries: Iterable<{ key: string; level: number }>): void {
+    for (const { key, level } of entries) {
+      const entry = this.images.get(key)
+      const image = entry?.levels.get(level)
+      if (!entry || !image) continue
+      entry.levels.delete(level)
+      this.bytes -= sizeOf(image)
+      close(image)
+      if (entry.levels.size === 0) this.images.delete(key)
+    }
+  }
+
   get stats(): ImageCacheStats {
     return {
       entries: this.images.size,
@@ -291,6 +310,8 @@ function nearestLevel(levels: Map<number, RasterImage>, level: number): RasterIm
 // 読み込めなかった画像（404・壊れた画像など）は諦める：loadAll は失敗しても reject せず、その画像はプレースホルダーのまま書き出す
 export class MissingImageRecorder implements ImageRequester {
   private readonly missing = new Map<string, { key: string; version: string; level: number; produce: () => Promise<RasterImage> }>()
+  // loadAll で読み込んだもの（描いたあとに捨てるため。MAI-89）
+  readonly loaded: { key: string; level: number }[] = []
 
   private readonly cache: ImageCache
   private readonly filter: (key: string) => boolean
@@ -316,7 +337,13 @@ export class MissingImageRecorder implements ImageRequester {
 
   // 覚えた画像を読み込む。読み込めた数を返す（失敗したものは数えない）
   async loadAll(): Promise<number> {
-    const results = await Promise.allSettled([...this.missing.values()].map(({ key, version, level, produce }) => this.cache.load(key, version, level, produce)))
+    const results = await Promise.allSettled(
+      [...this.missing.values()].map(async ({ key, version, level, produce }) => {
+        const image = await this.cache.load(key, version, level, produce)
+        if (image) this.loaded.push({ key, level })
+        return image
+      }),
+    )
     return results.filter((result) => result.status === 'fulfilled' && result.value !== null).length
   }
 }

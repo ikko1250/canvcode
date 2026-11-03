@@ -13,6 +13,7 @@ import {
   type InitialRecords,
   type ConflictChoice,
   type ArrowStyle,
+  type ImageSize,
   type OwnerPortalDeletion,
   type QuoteDraft,
   type QuoteRequest,
@@ -240,6 +241,13 @@ type Dialog = { title: string; message: string; choices: DialogChoice<string>[];
 type PlotTarget = { fileId: string; title: string; header: boolean; tableNodeId?: string; imageNodeId?: string; initial: PlotSpec | null }
 // 表のカードの右に置くときの間隔
 const PLOT_GAP = 40
+
+// 右クリックの「画像として保存 ›」「画像をコピー ›」の大きさの項目（MAI-89）。上限で縮めるときは、そのことも出す
+function imageSizeLabel(scale: 1 | 2, size: ImageSize): string {
+  const name = scale === 1 ? '等倍' : '2 倍'
+  const pixels = `${size.width}×${size.height}`
+  return size.capped ? `${name}（上限で ${Math.round(size.scale * 100) / 100} 倍・${pixels}）` : `${name}（${pixels}）`
+}
 
 export function App(props: { initial: InitialRecords }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -936,6 +944,25 @@ export function App(props: { initial: InitialRecords }) {
       const selected = [...editor.session.get().selectedIds].flatMap((id) => editor.getNode(id) ?? [])
       const single = selected.length === 1 ? selected[0] : null
       const items: (MenuItem | 'separator')[] = []
+      // 「画像として保存 ›」「画像をコピー ›」（MAI-89）。押すと同じ位置に、等倍・2 倍と出来上がりの画素の数を出す。
+      // 範囲選択なら範囲に見えるものを全部、ノードを選んでいればそれだけ、スライドを 1 枚だけならスライドの枠どおり
+      const imageItems = (point: { x: number; y: number }): MenuItem[] => {
+        const sizes = ([1, 2] as const).flatMap((scale) => {
+          const size = view.selectionImageSize(scale)
+          return size ? [{ scale, size }] : []
+        })
+        if (sizes.length === 0) return []
+        const choose = (mode: 'save' | 'copy') => () =>
+          setMenu({
+            x: point.x,
+            y: point.y,
+            items: sizes.map(({ scale, size }) => ({ label: imageSizeLabel(scale, size), onSelect: () => void view.exportImage(mode, scale) })),
+          })
+        return [
+          { label: '画像として保存 ›', onSelect: choose('save') },
+          { label: '画像をコピー ›', onSelect: choose('copy') },
+        ]
+      }
       // PDF のページの Canvas なら、すべてのページの固定をまとめて外す・固定する（MAI-56）。
       // 全部が固定されていれば「固定する」を、どれも固定されていなければ「固定を外して選ぶ」を出さない。区切りは呼ぶ側で足す
       const pdfPageIds = editor.pdfPageIds()
@@ -1085,6 +1112,8 @@ export function App(props: { initial: InitialRecords }) {
         }
       }
       if (selected.length > 0) {
+        // 選んでいるノード（直前の範囲選択なら、その枠）を画像にする（MAI-89）
+        items.push(...imageItems(at))
         // AI に見てほしい場所として、選んでいるノード（直前の範囲選択なら、その枠）を指す ID をコピーする
         items.push({ label: 'AIに渡すIDをコピー', shortcut: 'Ctrl+Alt+A', onSelect: () => void view.copyCanvasReference() })
         if (claude.state.availability === 'on') items.push({ label: 'Claude に頼む…', shortcut: 'Ctrl+Alt+Enter', onSelect: () => askClaudeAboutSelection() })
@@ -1230,6 +1259,7 @@ export function App(props: { initial: InitialRecords }) {
         items.push({ label: 'すべて選択', shortcut: 'Ctrl+A', onSelect: () => editor.selectAll() })
         // 何もない所を範囲選択した直後なら、その範囲を AI に渡せる
         if (editor.session.get().lastBrush) {
+          items.push(...imageItems(at))
           items.push({ label: 'この範囲をAIに渡す', shortcut: 'Ctrl+Alt+A', onSelect: () => void view.copyCanvasReference() })
           if (claude.state.availability === 'on') {
             items.push({ label: 'この範囲を Claude に頼む…', shortcut: 'Ctrl+Alt+Enter', onSelect: () => askClaudeAboutSelection() })
@@ -1695,6 +1725,7 @@ export function App(props: { initial: InitialRecords }) {
         slideTemplate: templateSlideId !== null,
         pdfLink: pdfLinkId !== null,
         image: imageId !== null,
+        exportImage: Boolean(view?.selectionImage()),
       },
       panToPage: (direction) => view?.panToPage(direction),
       unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
@@ -1731,6 +1762,7 @@ export function App(props: { initial: InitialRecords }) {
       copyImageMarkdownLink: () => {
         if (imageId) void view?.copyImageMarkdownLink(imageId)
       },
+      exportSelectionImage: (mode, scale) => void view?.exportImage(mode, scale),
       ...tableMenu(tableUnder, origin),
     })
   }

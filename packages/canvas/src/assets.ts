@@ -41,12 +41,16 @@ export interface PdfPreviewManifest {
   rev?: string
 }
 
+// PDF のページの描き方。display は画面用（PDF.js は requestAnimationFrame で描き進める）、print は印刷用
+export type PdfRenderIntent = 'display' | 'print'
+
 // PDF を開いて描く（MAI-5、MAI-32）。大きさはポイント（1/72 インチ）
 export interface PdfDocument {
   numPages: number
   pageSize(pageIndex: number): Promise<{ width: number; height: number }>
-  // 1 ポイントあたり scale 画素で描く
-  render(pageIndex: number, scale: number): Promise<ImageBitmap>
+  // 1 ポイントあたり scale 画素で描く。intent が print なら印刷用に描く（PDF.js は requestAnimationFrame を使わないので、
+  // 裏に回ったタブでも止まらない。Canvas を画像にするとき。MAI-89）
+  render(pageIndex: number, scale: number, intent?: PdfRenderIntent): Promise<ImageBitmap>
   // ページの文字の断片（位置はポイント、ページの左上が原点。引用に使う。MAI-33）
   textItems(pageIndex: number): Promise<PdfTextItem[]>
   // 閉じて、解析した中身（Worker の側も含む）を捨てる。閉じたあとは使わない（MAI-66）
@@ -217,7 +221,7 @@ export class AssetManager implements AssetResolver {
     }
   }
 
-  async renderPdfPage(assetId: string, pageIndex: number, scale: number): Promise<RasterImage> {
+  async renderPdfPage(assetId: string, pageIndex: number, scale: number, intent: PdfRenderIntent = 'display'): Promise<RasterImage> {
     // 前に読んでいたページなら、ブラウザに置いておいた画像を返す（PDF を開かない）
     const record = this.records.get(assetId)
     if (record && this.pageStore && scale >= 1) {
@@ -237,7 +241,7 @@ export class AssetManager implements AssetResolver {
       // ワールド座標の 1 単位あたり scale 画素 → ポイントあたりの画素。大きすぎるときは抑える
       let pointScale = scale * PDF_POINT_SCALE
       pointScale = Math.min(pointScale, PDF_MAX_SIDE / size.width, PDF_MAX_SIDE / size.height, Math.sqrt(PDF_MAX_PIXELS / (size.width * size.height)))
-      const image = await doc.render(pageIndex, pointScale)
+      const image = await doc.render(pageIndex, pointScale, intent)
       return { image, width: image.width, height: image.height, level: scale }
     })
   }

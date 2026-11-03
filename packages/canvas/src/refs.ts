@@ -84,8 +84,8 @@ export function pdfRegionRequests(source: CanvasRefSource): PdfRegionRequest[] {
   return out
 }
 
-// 参照の範囲に使う、直前の範囲選択の枠（そのあと選択を変えていないときだけ）
-function activeBrush(source: CanvasRefSource): { rect: Box; ids: ReadonlySet<string> } | null {
+// 参照の範囲に使う、直前の範囲選択の枠（そのあと選択を変えていないときだけ）。Canvas を画像にするときも、同じ規則で範囲選択かを決める（MAI-89）
+export function activeBrush(source: CanvasRefSource): { rect: Box; ids: ReadonlySet<string> } | null {
   const last = source.lastBrush
   return last && (source.selectedIds.size === 0 || sameIds(last.ids, source.selectedIds)) ? last : null
 }
