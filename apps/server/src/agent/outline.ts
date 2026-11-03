@@ -773,7 +773,7 @@ read_canvas and edit_canvas default to that canvas when canvas_id is omitted (re
 ## Seeing a canvas (render_canvas)
 render_canvas returns a PNG drawn by an open CanvCode tab, then JSON whose image maps pixels to world coordinates: pixel (px, py) is world (x + px / scale, y + py / scale).
 Use it after making or rearranging slides or a diagram, to check what the outline cannot show: overlaps, text that does not fit, arrows crossing other nodes, uneven spacing. Fix what you see with edit_canvas and render again; do not render after every small edit (images cost tokens).
-Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name and frame), ids (only those nodes and their children), or rect (everything in it). Without them it draws what the user sees, or the whole canvas. It fails when no CanvCode tab is open.
+Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name and frame), ids (only those nodes and their children; arrows are nodes too, so include them or use rect), or rect (everything in it). Several slides side by side fit in one rect, at a smaller scale. Without them it draws what the user sees, or the whole canvas. It fails when no CanvCode tab is open.
 
 ## Node types
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)

@@ -619,7 +619,7 @@ function registerRenderTool(server: McpServer, records: RecordStore, renders: Re
       inputSchema: {
         canvas_id: z.string().optional().describe('Canvas id (default: the one the user is viewing, else the root)'),
         slide: z.number().int().min(1).optional().describe('Slide number (n= in read_canvas)'),
-        ids: z.array(z.string()).min(1).max(100).optional().describe('Node ids (node:...); only these nodes are drawn'),
+        ids: z.array(z.string()).min(1).max(100).optional().describe('Node ids (node:...); only these nodes are drawn (arrows are nodes too: include them, or use rect)'),
         rect: z.object({ x: z.number(), y: z.number(), w: z.number().positive(), h: z.number().positive() }).optional().describe('World rectangle; everything in it is drawn'),
         max_edge: z.number().int().min(64).max(RENDER_MAX_EDGE_LIMIT).optional().describe(`Longest edge in pixels (default ${RENDER_MAX_EDGE})`),
       },
