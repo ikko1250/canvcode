@@ -19,6 +19,8 @@ Linear の MAI-90。画面の右のパネルから頼む Claude Code（`apps/ser
 - `canUseTool(toolName, input, options)` の `options` にあるもの：`signal`・`suggestions`・`blockedPath`・`mcpServer`・`decisionReason`・`title`・`displayName`・`description`・`defaultToNo`・`suppressAlwaysAllowRule`・`toolUseID`・`agentID`・`requestId`・`matchedAskRule`
   - `session_id` と `transcript_path` は**ない**
   - 実際に届いたものには、型に書いていない `decisionReasonType`（`'rule'`・`'workingDir'`）と `serverPolicyAskOnly` もあった
+- `matchedAskRule`（`sdk.d.ts:305-316`）：ユーザーが書いた ask の規則（`permissions.ask`）で尋ねたときに付く。ツール自身の理由もある問い合わせに付き、host は「規則で尋ねた」（rule-forced）として扱うべき、と書いてある
+- `env`（`sdk.d.ts:1678-1683`）：渡すと、Claude Code のプロセスの環境を**丸ごと置き換える**（`process.env` と混ぜない）。今の `jobs.ts` は `env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' }` で渡している
 - 返すのは `PermissionResult`（`allow` に `updatedInput`、`deny` に `message` と `interrupt`）。`null` を返してよいのは、答えを別の経路で送ったときだけ
 - **問い合わせに期限はない**（「permission prompts have no park deadline」）。答えを返すまで、ツールは止まったまま待つ
 - `permissionMode: 'auto'`：「分類のモデルが許すか断るかを決め、決められないときは `canUseTool` で尋ねる」
@@ -57,6 +59,10 @@ Linear の MAI-90。画面の右のパネルから頼む Claude Code（`apps/ser
   - 実験：`{"permissions":{"ask":["Bash(echo canvcode-ask-test:*)"]}}` を置き、`echo canvcode-ask-test hello` を頼んだ
   - `decisionReasonType: 'rule'` が付いて `canUseTool` に来た。`settingSources: ['project']` なので、ワークスペースの設定は読まれる
   - 今のサーバーでは、規則で「尋ねる」と決めたものは、Bash なら必ず断ることになる
+- 規則で尋ねたときに付くもの（auto mode）
+  - 規則だけが理由のとき（`echo canvcode-ask-test hello`）：`decisionReasonType: 'rule'` だけが付き、`matchedAskRule` は付かなかった
+  - ワークスペースの外への読み込みに、規則（`Read(//etc/**)`）も当たったとき（`/etc/host*` の Glob と `/etc/hostname` の Read）：これも `decisionReasonType: 'rule'` だけだった
+  - `matchedAskRule` が付く問い合わせは、再現できなかった。そのため、実装では両方を見る（下の「尋ねる呼び出し」）
 - `default` のモードで、ワークスペースの外を Glob すると、`decisionReason: 'Path is outside allowed working directories'`・`decisionReasonType: 'workingDir'` で来た
 - **問い合わせを待っているあいだに `interrupt()` すると、`signal` がすぐ abort される**
   - そのツールは「The user doesn't want to proceed…」で断られ、ターンは `error_during_execution` で終わる
@@ -120,7 +126,10 @@ export interface Guard {
 - tool-results：`join(dirname(transcript_path), session_id, 'tool-results')`
 - 作業の出力：`join(tmpRoot, 'claude-' + uid, basename(dirname(transcript_path)), session_id, 'tasks')`
   - `uid` は `process.getuid()`
-  - `tmpRoot` は、サーバーが Claude Code に渡す `CLAUDE_CODE_TMPDIR`。`options.env` に `CLAUDE_CODE_TMPDIR: process.env.CLAUDE_CODE_TMPDIR ?? tmpdir()` を入れ、Claude Code の既定に頼らない
+  - `tmpRoot` は、サーバーが Claude Code に渡す `CLAUDE_CODE_TMPDIR`。Claude Code の既定に頼らない
+    - SDK の `env` は環境を丸ごと置き換えるので、今の `env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' }` に `CLAUDE_CODE_TMPDIR: tmpRoot` を**足すだけ**にする（`process.env` を外さない。外すと `PATH`・`HOME`・`ANTHROPIC_API_KEY` がなくなる）
+    - 値は `process.env.CLAUDE_CODE_TMPDIR ?? tmpdir()`
+    - 場所を比べるときは、`tmpRoot` も realpath したものを使う（`/tmp` がリンクでも合うように）
 - スキルのフォルダ：`ClaudeJobs` を作るときに 1 回だけ出す（`skillRoots(workspace)`）
   - ワークスペースから親へたどり、`.git`（フォルダでもファイルでもよい）のあるフォルダで止める。そこまでのそれぞれの `.claude/skills` のうち、あるものを realpath して並べる
   - `.git` が見つからなければ、ワークスペースのものだけにする。Claude Code が根の外まで読む場合は断る側に倒れる。git がないときの Claude Code の動きは、まだ確かめていない
@@ -177,11 +186,24 @@ export interface Guard {
 |---|---|---|
 | `guardTool` で断るもの | 断る | 断る（尋ねない） |
 | Bash | 断る | **尋ねる** |
-| `decisionReasonType === 'rule'`（規則で尋ねると決めた） | ツールによって許すか断る | **尋ねる**（ツールを問わない） |
+| 規則で尋ねると決めた（`matchedAskRule` があるか、`decisionReasonType === 'rule'`） | ツールによって許すか断る | **尋ねる**（ツールを問わない） |
 | そのほかの `CLAUDE_TOOLS` と canvcode の MCP | 許す | 許す（今どおり） |
 | そのほかのツール | 断る | 断る |
 
 `askTool` は `'allow' | 'deny' | 'ask'` を返し、`'ask'` のときに `ClaudeJobs` が画面に尋ねる。
+
+規則で尋ねたことは、型のある `matchedAskRule` を第一に見て、型にない `decisionReasonType === 'rule'` を予備として見る。どちらかがあれば規則で尋ねたとみなす。実験で付いたのは `decisionReasonType` だけだった（上の「確かめた事実」）。テストは両方の形で書く。
+
+**auto mode が使えないとき**（プランやモデルが対応していないと、`default` などで動く）
+
+- 今は Bash を断るので、「auto mode が使えないので、Bash は使えません」と出している（`jobs.ts` の `system/init` の扱い）
+- 段階 2 のあとは、Bash の呼び出しがみな `canUseTool` に来て、画面で尋ねることになる。使えないより、毎回尋ねるほうがよいので、これを受け入れる
+- 知らせは「auto mode が使えないので、Bash は毎回画面で許可を求めます（<モード> で動いています）」に変え、README も合わせる。テストも足す
+
+**待っている問い合わせの上限**
+
+- サブエージェントが並ぶと、問い合わせが一度にたくさん来うる
+- 1 つの会話で待てるのは 20 まで（`MAX_PENDING_PERMISSIONS`）。超えたものは尋ねずにすぐ断り、Claude には「待っている許可が多すぎます」と返す。パネルには `denied` として出す
 
 ### 型（`jobs.ts`）
 
@@ -233,10 +255,11 @@ export interface ThreadInfo extends ThreadSummary {
 - `defaultToNo` は画面に渡し、許可のボタンにフォーカスを置かない。`suppressAlwaysAllowRule` と `suggestions` は使わない（「いつも許す」は出さない）
 - 断ったときの `interrupt` は付けない。Claude はターンを続け、代わりの案か、ユーザーへの頼みを書ける
 
-Claude に返す言葉：
+Claude に返す言葉（今の `askTool` の言葉と同じく日本語にする）：
 
-- 断った：`The user declined this in the CanvCode panel. Do not run it again; say what you wanted to do and ask how to proceed.`
-- 時間切れ：`Nobody approved this in the CanvCode panel within 10 minutes, so it was denied. Ask the user to run it by hand or to ask you again.`
+- 断った：「ユーザーが画面で断りました。同じことをもう一度試さず、何をしたかったかを書いて、どうするかをユーザーに尋ねてください」
+- 時間切れ：「画面で 10 分のうちに誰も許可しなかったので断りました。ユーザーに、手で実行するか、もう一度頼むよう伝えてください」
+- 多すぎる：「待っている許可が多すぎます（1 つの会話で 20 まで）。前の許可の答えを待ってから、もう一度試してください」
 
 ### API（`http.ts`）
 
@@ -255,7 +278,7 @@ Claude に返す言葉：
 - **サーバーの再起動**：待っている問い合わせはメモリーにだけあり、プロセスと一緒になくなる
   - 止めるとき（`dispose`）は、取り消しにして `answer: cancelled` を残す
   - 落ちたときは何も残らない。次に起動したときに、ジョブは今どおり「途切れました」になる。画面は、答えのない `ask` を「答えないまま途切れました」と出す
-- **時間**：`ClaudeJobsDeps.permissionTimeoutMs`（既定は 10 分。テストでは短くする）。環境変数 `CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS` で変えられるようにする（決めること 2）
+- **時間**：`ClaudeJobsDeps.permissionTimeoutMs`（既定は 10 分。テストでは短くする）。環境変数 `CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS` で変えられるようにする（決めたこと 2）
 - **システムプロンプト**：`systemPromptAppend` は MAI-89 が行を足すので、こちらは最後の行（「…nobody is watching to approve the ones that are not.」）の 1 行だけを変える
   - 変えたあとの行：`Bash commands are approved or denied automatically; the ones that are not are shown to the user in the panel to approve or decline (unanswered ones are declined after 10 minutes).`
 
@@ -280,7 +303,7 @@ Claude に返す言葉：
 
 ### パネルの外
 
-`apps/web/src/App.tsx` の Claude のボタン（`claude-toggle`）：どれかの会話に待っている問い合わせがあれば、`waiting` のクラスを付けて印を出す（決めること 4）。パネルが閉じていても気づけるようにする。
+`apps/web/src/App.tsx` の Claude のボタン（`claude-toggle`）：どれかの会話に待っている問い合わせがあれば、`waiting` のクラスを付けて印を出す（決めたこと 4）。パネルが閉じていても気づけるようにする。
 
 ### キー操作
 
@@ -323,7 +346,7 @@ Claude に返す言葉：
 - スキルのフォルダ：ワークスペースから git の根までのものは読める。根より上は読めない。`.git` がなければワークスペースのものだけ
 - Glob：`/etc/host*`・`../outside/*` は断る。`notes/**` と、`tool-results` の中を探す `pattern` は許す
 - サブエージェントの呼び出し（`agent_id` つきで、`session_id` は親）も同じに許す
-- `askTool`：Bash は `ask`、`decisionReasonType: 'rule'` は（Write でも）`ask`。`guardTool` で断るものは尋ねない。そのほかは今どおり
+- `askTool`：Bash は `ask`。規則で尋ねたもの（`matchedAskRule` がある形と、`decisionReasonType: 'rule'` の形の両方）は、Write でも `ask`。`guardTool` で断るものは尋ねない。そのほかは今どおり
 
 ### `jobs.test.ts`（段階 2。今の `fakeSdk` に `canUseTool` を呼ぶ仕掛けを足す）
 
@@ -335,6 +358,9 @@ Claude に返す言葉：
 - 今のジョブがないとき（バックグラウンドのサブエージェント）は、会話の最後のジョブに `ask` と `answer` が残る。`agent` に作業の名前が入る
 - 待っているあいだは `scheduleIdle` で閉じず、`makeRoom` でも選ばれない
 - 規則で尋ねたものは、Bash でなくても尋ねる
+- 1 つの会話で 20 待っているとき、21 個目はすぐ断り、Claude に「待っている許可が多すぎます」が返り、`denied` が残る
+- auto mode が使えない（`system/init` の `permissionMode` が `default`）とき、「Bash は毎回画面で許可を求めます」の知らせが出る
+- `options.env` に `process.env` の中身（`PATH` など）と `CLAUDE_AGENT_SDK_CLIENT_APP`、`CLAUDE_CODE_TMPDIR` がそろって入る
 
 ### `http.test.ts`
 
@@ -385,28 +411,24 @@ Claude に返す言葉：
 
 段階 1 は単独でも入れられる（2 と 3 を待たずに PR にできる）。
 
-## 決めきれないこと（レビューで決めてほしい）
+## 決めたこと（2026-11-03 のレビュー）
 
-1. **画面で尋ねる呼び出し**
-   - A. Bash と、規則（`permissions.ask`）で尋ねると決めたもの（**おすすめ**。規則を書けば、ユーザーが尋ねてほしいものを選べる）
-   - B. `canUseTool` に来たもの全部（ワークスペースの外への Glob なども尋ねる。数が増える）
-   - C. Bash だけ（チケットどおり。規則で尋ねると決めた Write などは今どおり許してしまう）
-2. **打ち切りの時間**
-   - 10 分（**おすすめ**。チケットどおり）／30 分／打ち切らない（SDK には期限がない。同時に 2 つまでの枠を取り続ける）
-   - 環境変数で変えられるようにするか：**する**（おすすめ。確かめるときにも使う）／しない
-3. **許可を待つ依頼を「同時に 2 つまで」に数えるか**
-   - 数える（**おすすめ**。ターンの途中で、プロセスも動いている）／数えない（ほかの依頼を始めやすいが、答えたあとに 3 つ同時に書くことになる）
-4. **パネルが閉じているときの知らせ方**
-   - Claude のボタンに印（**おすすめ**）／パネルを自分で開く（作業の邪魔になる）／ブラウザの通知（許しが要る。あとで足せる）
-5. **断ったとき、そのターンを止めるか**
-   - 止めない（**おすすめ**。Claude が代わりの案か、ユーザーへの頼みを書ける）／止める（`interrupt: true`。Claude Code の「No, and tell Claude what to do differently」に近い）
-6. **スキルのフォルダを読めるようにする範囲**
-   - ワークスペースから git の根まで（**おすすめ**。Claude Code が読み込む範囲と同じ）
-   - ワークスペースの中だけ（今のまま。imozuru の参照ファイルは、Claude が Bash で読み直す）
-7. **履歴の残し方**
-   - 尋ねたときと答えたときの 2 つの出来事（**おすすめ**。落ちても「尋ねた」ことが残る）／答えたときだけ
-8. **Glob の穴を段階 1 で一緒に直すか**
-   - 直す（**おすすめ**）／別のチケットにする
+レビューで、どれもおすすめどおりにすると決めた。
+
+1. **画面で尋ねる呼び出し**：Bash と、規則（`permissions.ask`）で尋ねると決めたもの。規則で尋ねたことは、`matchedAskRule` を第一に、`decisionReasonType === 'rule'` を予備に見る
+2. **打ち切りの時間**：10 分。環境変数 `CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS` で変えられるようにする
+3. **許可を待つ依頼を「同時に 2 つまで」に数えるか**：数える
+4. **パネルが閉じているときの知らせ方**：Claude のボタンに印を出す
+5. **断ったとき、そのターンを止めるか**：止めない（`interrupt` を付けない）
+6. **スキルのフォルダを読めるようにする範囲**：ワークスペースから git の根まで（Claude Code が読み込む範囲と同じ）
+7. **履歴の残し方**：尋ねたとき（`ask`）と答えたとき（`answer`）の 2 つの出来事
+8. **Glob の穴**：段階 1 で一緒に直す
+
+レビューで足したこと：
+
+- `CLAUDE_CODE_TMPDIR` は、今の `env`（`process.env` を広げたもの）に足すだけにする。`tmpRoot` も realpath して比べる
+- auto mode が使えないときは、Bash を毎回画面で尋ねる。知らせの言葉と README を変える
+- 1 つの会話で待てる問い合わせは 20 まで。超えたらすぐに断る
 
 ## リスク
 
@@ -424,5 +446,5 @@ Claude に返す言葉：
 - スマホ・iPad 向けの「読むだけ」の会話（決めたこと。要るなら別のチケット）
 - ログインと、人ごとの許可
 - Claude からの質問（`AskUserQuestion`）。今は `CLAUDE_TOOLS` に入っていない
-- ブラウザの通知（決めること 4 で、あとで足せる）
+- ブラウザの通知（決めたこと 4。あとで足せる）
 - `systemPromptAppend` の、最後の 1 行のほかの行（MAI-89 が足す）
