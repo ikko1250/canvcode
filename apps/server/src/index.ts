@@ -222,7 +222,7 @@ const server = createServer(async (req, res) => {
   if (await markdownPdf.handle(req, res, url.pathname)) return
   if (await plot.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return
-  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, refImages, agent, presence: () => sync.latestPresence(), pdf: { assets, links: linkPreviews }, plot })) return
+  if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, refImages, agent, presence: () => sync.latestPresence(), pdf: { assets, links: linkPreviews }, plot, renders })) return
   if (url.pathname.startsWith('/api/')) {
     sendJson(res, 404, { error: 'not found' })
     return

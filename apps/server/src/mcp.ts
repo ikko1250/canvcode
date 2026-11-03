@@ -9,10 +9,11 @@ import { HttpError, type FileInfo } from './files.ts'
 import type { AgentHost } from './agent/host.ts'
 import { EditError, editCanvas, editCanvasInput, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
 import { preparePdfs, type PdfSources } from './agent/pdfSource.ts'
-import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes } from './agent/outline.ts'
+import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes, slideIdOf } from './agent/outline.ts'
 import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
 import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
+import { RenderError, type RenderBroker, type RenderResult, type RenderTarget } from './renders.ts'
 import { addFileLocations, pdfFileSummary, resolveReference, type FileSummary, type RefDeps } from './refs.ts'
 
 // AI から CanvCode を使うための MCP サーバー（MAI-59）。
@@ -27,12 +28,14 @@ import { addFileLocations, pdfFileSummary, resolveReference, type FileSummary, t
 // - 第 5 段で、ユーザーが見ている Canvas と範囲（ブラウザが /api/sync で知らせる presence）を、Canvas のツールの既定にした
 // - 第 6 段で、edit_canvas から PDF（ワークスペースのファイルか URL）を取り込み、空の Canvas の Portal を作れるようにした（agent/pdfSource.ts）
 // - 第 7 段で、表（CSV）からグラフ（matplotlib の PNG）を描いて画像のノードとして置くツールを足した（plot.ts。list_plot_styles・plot_csv）
+// - 第 8 段で、Canvas を画像にして見るツールを足した（render_canvas。描くのは開いているタブ。renders.ts。MAI-89）
 
 export const MCP_PATH = '/mcp'
 
 // agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）。
-// pdf がなければ、edit_canvas で PDF を取り込めない。plot がなければ（か pdf の Asset がなければ）、グラフのツールを出さない
-export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null; pdf?: Omit<PdfSources, 'files'>; plot?: Plotter }
+// pdf がなければ、edit_canvas で PDF を取り込めない。plot がなければ（か pdf の Asset がなければ）、グラフのツールを出さない。
+// renders がなければ、Canvas を画像にするツール（render_canvas）を出さない
+export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null; pdf?: Omit<PdfSources, 'files'>; plot?: Plotter; renders?: RenderBroker }
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const { files } = deps
@@ -51,6 +54,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details ' +
         '(its file fields carry the same absPath / textPath, also on a portal to the pages of a PDF). ' +
         'Canvas tools default to the canvas the user is viewing ("this", "here").' +
+        (deps.renders ? ' To see how slides or a diagram look, render_canvas returns a PNG drawn by an open CanvCode tab.' : '') +
         (deps.agent
           ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
             ' To make a presentation, put slides on a canvas (edit_canvas: create type "slide" with a template; get_canvas_format explains them).' +
@@ -211,14 +215,22 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
   )
 
-  registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot)
+  registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot, deps.renders)
   return server
 }
 
 // ---- Canvas の上のもの ----
 
 // 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
-function registerCanvasTools(server: McpServer, refDeps: RefDeps, agent?: AgentHost, presence?: () => Presence | null, pdf?: PdfSources, plot?: Plotter): void {
+function registerCanvasTools(
+  server: McpServer,
+  refDeps: RefDeps,
+  agent?: AgentHost,
+  presence?: () => Presence | null,
+  pdf?: PdfSources,
+  plot?: Plotter,
+  renders?: RenderBroker,
+): void {
   const { records } = refDeps
   // ユーザーが見ている所（その Canvas がまだあるときだけ）
   const viewing = (): Presence | null => {
@@ -292,6 +304,8 @@ function registerCanvasTools(server: McpServer, refDeps: RefDeps, agent?: AgentH
       return text(JSON.stringify(result))
     },
   )
+
+  if (renders) registerRenderTool(server, records, renders, viewing)
 
   if (!agent) return
   server.registerTool(
@@ -583,6 +597,102 @@ function json(value: unknown): CallToolResult {
 
 function error(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true }
+}
+
+// ---- Canvas を画像にする（MAI-89。docs/canvas-image-plan.md の 4.5） ----
+
+// AI の画像の長い辺の既定と上限。Claude が縮めずに読む長い辺（1568。高解像度に対応したモデルは 2576）
+const RENDER_MAX_EDGE = 1568
+const RENDER_MAX_EDGE_LIMIT = 2576
+const NO_TAB =
+  'No CanvCode tab is open to render the canvas. Ask the user to open CanvCode (any canvas) in a browser and call render_canvas again; until then, check the canvas with read_canvas.'
+
+function registerRenderTool(server: McpServer, records: RecordStore, renders: RenderBroker, viewing: () => Presence | null): void {
+  server.registerTool(
+    'render_canvas',
+    {
+      title: 'Render a canvas to an image',
+      description:
+        'PNG of part of a canvas, drawn by an open CanvCode tab, to check how slides and diagrams look after editing them (not after every small edit). ' +
+        'Give one of: slide (the n= number in read_canvas), ids (only those nodes and their children), or rect (everything in a world rectangle). ' +
+        'Default: what the user sees on the canvas they are viewing, else the whole canvas. Needs an open CanvCode tab.',
+      inputSchema: {
+        canvas_id: z.string().optional().describe('Canvas id (default: the one the user is viewing, else the root)'),
+        slide: z.number().int().min(1).optional().describe('Slide number (n= in read_canvas)'),
+        ids: z.array(z.string()).min(1).max(100).optional().describe('Node ids (node:...); only these nodes are drawn'),
+        rect: z.object({ x: z.number(), y: z.number(), w: z.number().positive(), h: z.number().positive() }).optional().describe('World rectangle; everything in it is drawn'),
+        max_edge: z.number().int().min(64).max(RENDER_MAX_EDGE_LIMIT).optional().describe(`Longest edge in pixels (default ${RENDER_MAX_EDGE})`),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ canvas_id, slide, ids, rect, max_edge }) => {
+      const current = viewing()
+      const canvasId = canvas_id ?? current?.canvasId ?? records.rootCanvasId
+      const canvas = records.get(canvasId)
+      if (!canvas || canvas.typeName !== 'canvas' || canvas.deletedAt) return error(`Unknown canvas id ${canvasId}. Use list_canvases to find one.`)
+      if ([slide, ids, rect].filter((value) => value !== undefined).length > 1) return error('Give only one of slide, ids and rect.')
+      let target: RenderTarget
+      let label: Record<string, unknown>
+      if (slide !== undefined) {
+        const found = slideIdOf(records, canvasId, slide)
+        if (!found.id) {
+          return error(found.count > 0 ? `There is no slide ${slide} on this canvas (slides 1-${found.count}; hidden slides have no number).` : 'This canvas has no numbered slides.')
+        }
+        target = { kind: 'slide', id: found.id }
+        label = { slide, id: found.id }
+      } else if (ids) {
+        const missing = ids.filter((id) => records.get(id)?.typeName !== 'node' || records.canvasOf(id) !== canvasId)
+        if (missing.length > 0) return error(`Not on canvas ${canvasId}: ${missing.join(', ')}. Use read_canvas to find node ids.`)
+        target = ids.length === 1 && records.get(ids[0])?.type === 'slide' ? { kind: 'slide', id: ids[0] } : { kind: 'nodes', ids }
+        label = { ids }
+      } else if (rect) {
+        target = { kind: 'rect', rect }
+        label = { rect }
+      } else if (current && current.canvasId === canvasId && current.viewport.w > 0 && current.viewport.h > 0) {
+        target = { kind: 'rect', rect: current.viewport }
+        label = { view: true }
+      } else {
+        target = { kind: 'canvas' }
+        label = { canvas: true }
+      }
+      if (!renders.hasTabs()) return error(NO_TAB)
+      let result: RenderResult
+      try {
+        result = await renders.request({ canvasId, target, maxEdge: max_edge ?? RENDER_MAX_EDGE, rev: records.rev })
+      } catch (err) {
+        if (!(err instanceof RenderError)) throw err
+        if (err.code === 'no-tab') return error(NO_TAB)
+        if (err.code === 'busy') return error(`${err.message} Wait a moment and call render_canvas again.`)
+        return error(err.message)
+      }
+      return {
+        content: [
+          // 画像を先に置く（画像を先に置くと読み取りがよくなる。MAI-64）
+          { type: 'image', data: result.png.toString('base64'), mimeType: 'image/png' },
+          { type: 'text', text: JSON.stringify(renderSummary(canvasId, label, result)) },
+        ],
+      }
+    },
+  )
+}
+
+// render_canvas の答えのテキスト：画像の画素とワールド座標の対応と、気をつけること
+function renderSummary(canvasId: string, target: Record<string, unknown>, result: RenderResult): Record<string, unknown> {
+  const round = (n: number) => Math.round(n * 100) / 100
+  const notes: string[] = []
+  if (result.empty) notes.push('There are no nodes in this rect.')
+  if (result.capped) notes.push('The area was too large, so it was drawn at a smaller scale.')
+  if (result.scale < 0.1) notes.push('The scale is very small; render a smaller rect, the ids, or a slide to see details.')
+  if (result.incomplete.length > 0) notes.push(`Some parts (${result.incomplete.join(', ')}) had not loaded in time and are drawn as placeholders.`)
+  if (result.missing.length > 0) notes.push(`Not found on the canvas: ${result.missing.join(', ')}.`)
+  return {
+    canvas: canvasId,
+    rev: result.rev,
+    target,
+    // 画像の (0, 0) がワールドの (x, y)。1 ワールド単位が scale 画素
+    image: { x: round(result.box.x), y: round(result.box.y), w: round(result.box.w), h: round(result.box.h), scale: Math.round(result.scale * 10000) / 10000, width: result.width, height: result.height },
+    ...(notes.length ? { notes } : {}),
+  }
 }
 
 // FileStore の失敗（HttpError）を、AI が読めるツールのエラーにする

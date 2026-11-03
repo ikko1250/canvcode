@@ -15,6 +15,7 @@ import { handleMcp, MCP_PATH } from './mcp.ts'
 import { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
 import { RefImageStore } from './refImages.ts'
+import { RenderError, type RenderBroker, type RenderRequest, type RenderResult } from './renders.ts'
 
 // AI から使う MCP サーバー（MAI-59）
 
@@ -23,7 +24,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 
-async function setup(): Promise<{
+async function setup(options: { renders?: RenderBroker } = {}): Promise<{
   client: Client
   files: FileStore
   records: RecordStore
@@ -62,7 +63,7 @@ async function setup(): Promise<{
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     void (async () => {
-      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, refImages, agent, presence: () => view.current, pdf }))) res.writeHead(404).end()
+      if (!(await handleMcp(req, res, url.pathname, { files, records, dataDir, refImages, agent, presence: () => view.current, pdf, renders: options.renders }))) res.writeHead(404).end()
     })()
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -713,5 +714,139 @@ describe('MCP server', () => {
       expect(result.text).toContain('copy it again')
       expect(result.text).toContain('deleted 3 days after')
     })
+  })
+})
+
+// Canvas を画像にする（MAI-89）。描くのは開いているタブなので、ここでは RenderBroker の代わりを使う
+describe('render_canvas', () => {
+  function fakeRenders(answer: (request: RenderRequest) => RenderResult | RenderError, tabs = true) {
+    const requests: RenderRequest[] = []
+    const renders = {
+      hasTabs: () => tabs,
+      request: async (request: RenderRequest) => {
+        requests.push(request)
+        const result = answer(request)
+        if (result instanceof RenderError) throw result
+        return result
+      },
+    } as unknown as RenderBroker
+    return { renders, requests }
+  }
+  const png = Buffer.from('fake png')
+  const result = (fields: Partial<RenderResult> = {}): RenderResult => ({
+    png,
+    width: 1568,
+    height: 882,
+    box: { x: 0, y: 0, w: 1920, h: 1080 },
+    scale: 1568 / 1920,
+    rev: 9,
+    capped: false,
+    empty: false,
+    incomplete: [],
+    missing: [],
+    ...fields,
+  })
+  const content = (r: Record<string, unknown>) => r.content as { type: string; text?: string; data?: string; mimeType?: string }[]
+
+  it('is listed only when the server can ask tabs to render', async () => {
+    const without = await setup()
+    expect((await without.client.listTools()).tools.map((t) => t.name)).not.toContain('render_canvas')
+    const { client } = await setup({ renders: fakeRenders(() => result()).renders })
+    const tool = (await client.listTools()).tools.find((t) => t.name === 'render_canvas')
+    expect(tool?.annotations?.readOnlyHint).toBe(true)
+  })
+
+  it('draws a slide by its number, image first, and maps the pixels to world coordinates', async () => {
+    const { renders, requests } = fakeRenders(() => result({ incomplete: ['pdf'] }))
+    const { client, records } = await setup({ renders })
+    const root = records.rootCanvasId
+    const edited = await call(client, 'edit_canvas', {
+      canvas_id: root,
+      ops: [
+        { op: 'create', type: 'slide', as: 'a', x: 0, y: 0, name: '1', template: 'title' },
+        { op: 'create', type: 'slide', as: 'b', x: 2200, y: 0, name: '2', template: 'bullets' },
+      ],
+    })
+    const second = edited.data.created.b
+    const answer = await client.callTool({ name: 'render_canvas', arguments: { canvas_id: root, slide: 2 } })
+    const [image, text] = content(answer)
+    expect(image).toEqual({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' })
+    expect(JSON.parse(text!.text!)).toEqual({
+      canvas: root,
+      rev: 9,
+      target: { slide: 2, id: second },
+      image: { x: 0, y: 0, w: 1920, h: 1080, scale: 0.8167, width: 1568, height: 882 },
+      notes: ['Some parts (pdf) had not loaded in time and are drawn as placeholders.'],
+    })
+    expect(requests).toEqual([{ canvasId: root, target: { kind: 'slide', id: second }, maxEdge: 1568, rev: records.rev }])
+
+    // ない番号
+    const missing = await call(client, 'render_canvas', { canvas_id: root, slide: 3 })
+    expect(missing.isError).toBe(true)
+    expect(missing.text).toContain('slides 1-2')
+    // スライドの id を 1 つだけなら、スライドとして描く
+    await client.callTool({ name: 'render_canvas', arguments: { canvas_id: root, ids: [second], max_edge: 2576 } })
+    expect(requests.at(-1)).toMatchObject({ target: { kind: 'slide', id: second }, maxEdge: 2576 })
+  })
+
+  it('draws nodes, a rect, what the user sees, or the whole canvas', async () => {
+    const { renders, requests } = fakeRenders(() => result())
+    const { client, records, view } = await setup({ renders })
+    const root = records.rootCanvasId
+    const edited = await call(client, 'edit_canvas', {
+      canvas_id: root,
+      ops: [
+        { op: 'create', type: 'note', as: 'a', x: 0, y: 0, text: 'a' },
+        { op: 'create', type: 'note', as: 'b', x: 400, y: 0, text: 'b' },
+      ],
+    })
+    const { a, b } = edited.data.created
+    // 成功した答えは画像が先なので、callTool で受け取る
+    const render = (args: Record<string, unknown>) => client.callTool({ name: 'render_canvas', arguments: args })
+    await render({ canvas_id: root, ids: [a, b] })
+    expect(requests.at(-1)?.target).toEqual({ kind: 'nodes', ids: [a, b] })
+    await render({ canvas_id: root, rect: { x: 1, y: 2, w: 3, h: 4 } })
+    expect(requests.at(-1)?.target).toEqual({ kind: 'rect', rect: { x: 1, y: 2, w: 3, h: 4 } })
+    // 見ていない Canvas なら全体
+    await render({})
+    expect(requests.at(-1)).toMatchObject({ canvasId: root, target: { kind: 'canvas' } })
+    // 見ている Canvas なら、見ている範囲
+    view.current = { canvasId: root, viewport: { x: 10, y: 20, w: 800, h: 600 }, at: Date.now(), visible: true }
+    const seen = await render({})
+    expect(requests.at(-1)?.target).toEqual({ kind: 'rect', rect: { x: 10, y: 20, w: 800, h: 600 } })
+    expect(seen.isError).not.toBe(true)
+
+    // ほかの Canvas のノード・ないノード・2 つ以上の指定は断る（タブには頼まない）
+    const count = requests.length
+    const wrong = await call(client, 'render_canvas', { canvas_id: root, ids: [a, 'node:nope'] })
+    expect(wrong).toMatchObject({ isError: true })
+    expect(wrong.text).toContain('node:nope')
+    expect((await call(client, 'render_canvas', { slide: 1, rect: { x: 0, y: 0, w: 1, h: 1 } })).isError).toBe(true)
+    expect((await call(client, 'render_canvas', { canvas_id: 'canvas:nope' })).text).toContain('list_canvases')
+    expect(requests).toHaveLength(count)
+  })
+
+  it('tells the AI to ask the user to open CanvCode when no tab can render, and passes other failures on', async () => {
+    const none = await setup({ renders: fakeRenders(() => result(), false).renders })
+    const noTab = await call(none.client, 'render_canvas', {})
+    expect(noTab.isError).toBe(true)
+    expect(noTab.text).toContain('No CanvCode tab is open')
+    expect(noTab.text).toContain('read_canvas')
+
+    const busy = await setup({ renders: fakeRenders(() => new RenderError('busy', 'Already rendering 4 images.')).renders })
+    expect((await call(busy.client, 'render_canvas', {})).text).toContain('Wait a moment')
+    const timeout = await setup({ renders: fakeRenders(() => new RenderError('timeout', 'Could not render the canvas: timed out (asked 2 tabs).')).renders })
+    expect((await call(timeout.client, 'render_canvas', {})).text).toBe('Could not render the canvas: timed out (asked 2 tabs).')
+  })
+
+  it('notes an empty, scaled down or very small image', async () => {
+    const { client } = await setup({ renders: fakeRenders(() => result({ empty: true, capped: true, scale: 0.05, missing: ['node:x'] })).renders })
+    const [, text] = content(await client.callTool({ name: 'render_canvas', arguments: { rect: { x: 0, y: 0, w: 50000, h: 100 } } }))
+    expect(JSON.parse(text!.text!).notes).toEqual([
+      'There are no nodes in this rect.',
+      'The area was too large, so it was drawn at a smaller scale.',
+      'The scale is very small; render a smaller rect, the ids, or a slide to see details.',
+      'Not found on the canvas: node:x.',
+    ])
   })
 })

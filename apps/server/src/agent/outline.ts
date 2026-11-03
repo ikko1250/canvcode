@@ -603,6 +603,20 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
 
 // ---- スライド ----
 
+// Canvas のスライドの番号（read_canvas の n=）から、そのスライドの id と、ある番号の数を返す（render_canvas。MAI-89）。
+// 番号は read_canvas と同じ数え方（slideOrder。非表示のスライドは番号を持たない）
+export function slideIdOf(records: RecordStore, canvasId: string, n: number): { id: string | null; count: number } {
+  const infos = slideInfos(loadTree(records, canvasId))
+  let count = 0
+  let id: string | null = null
+  for (const [slideId, info] of infos) {
+    if (info.number === null) continue
+    count = Math.max(count, info.number)
+    if (info.number === n) id = slideId
+  }
+  return { id, count }
+}
+
 interface SlideInfo {
   // 番号（1 から。非表示なら null）
   number: number | null
@@ -755,6 +769,11 @@ Paging: when next= is present, call again with cursor=<next>.
 ## Where the user is looking
 An open CanvCode tab reports the canvas the user is viewing and the world rect on their screen. list_canvases marks that canvas with "viewing"; read_canvas shows viewing=<rect> when it reads that canvas.
 read_canvas and edit_canvas default to that canvas when canvas_id is omitted (read_canvas falls back to the root canvas when no tab is open). read_canvas view=true lists only the nodes on the user's screen.
+
+## Seeing a canvas (render_canvas)
+render_canvas returns a PNG drawn by an open CanvCode tab, then JSON whose image maps pixels to world coordinates: pixel (px, py) is world (x + px / scale, y + py / scale).
+Use it after making or rearranging slides or a diagram, to check what the outline cannot show: overlaps, text that does not fit, arrows crossing other nodes, uneven spacing. Fix what you see with edit_canvas and render again; do not render after every small edit (images cost tokens).
+Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name and frame), ids (only those nodes and their children), or rect (everything in it). Without them it draws what the user sees, or the whole canvas. It fails when no CanvCode tab is open.
 
 ## Node types
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
