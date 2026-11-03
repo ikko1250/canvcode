@@ -26,6 +26,7 @@ import { STORAGE_SWEEP_INTERVAL_MS, sweepStorage } from './storageCleanup.ts'
 import { handleRefs } from './refs.ts'
 import { cleanupSlidesV1, describeSlidesV1Cleanup } from './slidesV1Cleanup.ts'
 import { SyncHub } from './sync.ts'
+import { RenderBroker } from './renders.ts'
 import { ThumbnailStore } from './thumbnails.ts'
 
 // CanvCode のサーバー（MAI-4）。
@@ -84,6 +85,8 @@ setInterval(() => void sweepRefs(records, refImages), REF_SWEEP_INTERVAL_MS).unr
 void sweepStorage({ workspace: WORKSPACE, dataDir: DATA_DIR, records })
 setInterval(() => void sweepStorage({ workspace: WORKSPACE, dataDir: DATA_DIR, records }), STORAGE_SWEEP_INTERVAL_MS).unref()
 const sync = new SyncHub(records)
+// Canvas を画像にする：開いているタブに頼んで描いてもらう（MAI-89。AI の render_canvas）
+const renders = new RenderBroker(sync)
 
 // ブラウザへの知らせ（MAI-10：ファイルが外で変わった、など）
 const sockets = new WebSocketServer({ noServer: true })
@@ -207,6 +210,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (sync.handle(req, res, url.pathname)) return
+  if (await renders.handle(req, res, url.pathname)) return
   if (await handleBackupStatus(req, res, url.pathname, DATA_DIR)) return
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (handleClaude(req, res, url.pathname, claude)) return

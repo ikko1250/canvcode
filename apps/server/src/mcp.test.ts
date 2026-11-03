@@ -357,7 +357,7 @@ describe('MCP server', () => {
     expect(missing.text).toContain('Pass canvas_id')
     expect((await call(client, 'read_canvas', { view: true })).isError).toBe(true)
 
-    view.current = { canvasId: root, viewport: { x: 1000, y: 1000, w: 800, h: 600 }, at: Date.now() }
+    view.current = { canvasId: root, viewport: { x: 1000, y: 1000, w: 800, h: 600 }, at: Date.now(), visible: true }
     const listed = (await client.callTool({ name: 'list_canvases', arguments: {} })).content as { text: string }[]
     expect(listed[0]!.text).toContain(`${root} "ホーム" nodes=2 viewing`)
     const all = ((await client.callTool({ name: 'read_canvas', arguments: {} })).content as { text: string }[])[0]!.text

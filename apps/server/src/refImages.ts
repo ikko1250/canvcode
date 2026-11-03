@@ -85,7 +85,13 @@ export class RefImageStore {
 
 // PNG の幅（IHDR）。PNG でなければ null
 function pngWidth(data: Buffer): number | null {
+  return pngSize(data)?.width ?? null
+}
+
+// PNG の幅と高さ（IHDR）。PNG でなければ null（Canvas を画像にしてタブが返したものの確かめにも使う。MAI-89）
+export function pngSize(data: Buffer): { width: number; height: number } | null {
   if (data.length < 24 || !data.subarray(0, 8).equals(PNG_SIGNATURE) || data.toString('ascii', 12, 16) !== 'IHDR') return null
   const width = data.readUInt32BE(16)
-  return width > 0 ? width : null
+  const height = data.readUInt32BE(20)
+  return width > 0 && height > 0 ? { width, height } : null
 }
