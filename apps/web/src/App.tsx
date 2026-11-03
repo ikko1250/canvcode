@@ -76,6 +76,7 @@ import { FileEditor } from './workspace/FileEditor.tsx'
 import { exportMarkdownPdf } from './markdownPdf.ts'
 import { downloadLinkPdf, isPdfUrl } from './linkPdf.ts'
 import { createSlidePdfExporter } from './slidePdfExport.ts'
+import { createRenderResponder } from './canvasRender.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
@@ -469,6 +470,18 @@ export function App(props: { initial: InitialRecords }) {
         const view = viewRef.current
         for (const asset of assets) view?.assets.register({ typeName: 'asset', id: assetIdFromHash(asset.hash), ...asset })
       },
+      // AI の render_canvas：サーバーから頼まれて、Canvas を画像にして返す（MAI-89）。開いていない Canvas の Editor は、
+      // 描くためだけに作って捨てる（editors に入れない）
+      onRender: createRenderResponder({
+        sync,
+        view: () => viewRef.current,
+        editorFor: (canvasId) => {
+          const open = editors.get(canvasId)
+          if (open) return { editor: open, temporary: false }
+          if (!sync.isLoaded(canvasId) || !workspace.getCanvas(canvasId)) return null
+          return { editor: new Editor({ workspace, canvasId }), temporary: true }
+        },
+      }),
     })
     files.setHandlers({
       notify,
@@ -486,7 +499,15 @@ export function App(props: { initial: InitialRecords }) {
         return (choice as ConflictChoice | null) ?? 'saveAs'
       },
     })
-  }, [files, sync, workspace, notify, ask])
+  }, [files, sync, workspace, notify, ask, editors])
+
+  // タブが見えているかをサーバーに知らせる（Canvas を画像にするタブは、見えているものを先に選ぶ。MAI-89）
+  useEffect(() => {
+    const update = () => sync.reportVisibility(document.visibilityState !== 'hidden')
+    update()
+    document.addEventListener('visibilitychange', update)
+    return () => document.removeEventListener('visibilitychange', update)
+  }, [sync])
 
   // 旧データ（.ricbackup）をサーバーに送って取り込む。数百 MB あるので、送った割合を出す
   const importBackup = useCallback(

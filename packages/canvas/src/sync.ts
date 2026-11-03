@@ -1,4 +1,5 @@
-import type { WorkspaceRecord } from '@canvcode/core'
+import type { Box, WorkspaceRecord } from '@canvcode/core'
+import type { ImageTarget } from './canvasImage.ts'
 import type { CitationLink, Workspace } from './workspace.ts'
 
 // サーバーとのレコードの同期（MAI-11、MAI-13、MAI-15）。
@@ -16,6 +17,8 @@ import type { CitationLink, Workspace } from './workspace.ts'
 //   evicted で届き、手元から外す。canvases がなければ（古いサーバー）、すべてを読んだものとして扱う
 // - 手元で作った Canvas は、作ったときに読んだ Canvas に入れる（ほかのタブで足した中身も届くように）
 // - 引用ノートのつながり（citations）は、読んだ Canvas によらず届く。ワークスペースの引用の索引に足す
+// - Canvas を画像にできることを hello の features で伝える。サーバーから render が届いたら onRender に渡す（AI の render_canvas。
+//   答えは PUT /api/renders/<attempt>。answerRender。MAI-89）。タブが見えているかも presence で伝える（reportVisibility）
 
 export interface InitialRecords {
   rootCanvasId: string
@@ -75,6 +78,61 @@ export interface SyncOptions {
   onAssets?: (assets: RemoteAsset[]) => void
   // 見ている範囲を、カメラが止まってから何ミリ秒後に送るか
   presenceDelayMs?: number
+  // サーバーから、Canvas を画像にしてほしいと頼まれたとき（MAI-89）。なければ、まだ描けないと答える
+  onRender?: (request: RenderRequestMessage) => void
+}
+
+// サーバーが、このタブに Canvas を画像にしてほしいと頼んできたもの（MAI-89。サーバーの renders.ts）
+export interface RenderRequestMessage {
+  // 答える先（PUT /api/renders/<attempt>）
+  attempt: string
+  canvasId: string
+  // 描く前に受け取っているべき変更番号
+  rev: number
+  target: ImageTarget
+  maxEdge: number
+}
+
+// render への答え。描けたら PNG と描いた範囲など、描けなければ理由（retry なら、サーバーはほかのタブに頼む）
+export type RenderAnswer =
+  | { png: Blob; box: Box; scale: number; rev: number; capped: boolean; empty: boolean; incomplete: string[]; missing: string[] }
+  | { error: string; retry: boolean }
+
+// render に答える。送れなくても投げない（サーバーは打ち切りで、ほかのタブに頼む）
+export async function answerRender(attempt: string, answer: RenderAnswer, baseUrl = ''): Promise<void> {
+  const url = `${baseUrl}/api/renders/${encodeURIComponent(attempt)}`
+  try {
+    if ('error' in answer) {
+      await fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: answer.error, retry: answer.retry }) })
+      return
+    }
+    const { box, scale, rev, capped, empty, incomplete, missing } = answer
+    const query = new URLSearchParams({ x: String(box.x), y: String(box.y), w: String(box.w), h: String(box.h), scale: String(scale), rev: String(rev) })
+    if (capped) query.set('capped', '1')
+    if (empty) query.set('empty', '1')
+    if (incomplete.length) query.set('incomplete', incomplete.join(','))
+    if (missing.length) query.set('missing', missing.slice(0, 100).join(','))
+    await fetch(`${url}?${query}`, { method: 'PUT', headers: { 'content-type': 'image/png' }, body: answer.png })
+  } catch (error) {
+    console.warn('Failed to answer a render request', error)
+  }
+}
+
+const RENDER_TARGET_KINDS = new Set(['rect', 'nodes', 'slide', 'canvas'])
+
+// サーバーから届いた render を確かめる。形が違えば null
+function renderRequestOf(message: Record<string, unknown>): RenderRequestMessage | null {
+  const { attempt, canvasId, rev, maxEdge } = message
+  const target = message.target as Record<string, unknown> | null | undefined
+  if (typeof attempt !== 'string' || typeof canvasId !== 'string' || typeof rev !== 'number' || typeof maxEdge !== 'number') return null
+  if (!target || typeof target.kind !== 'string' || !RENDER_TARGET_KINDS.has(target.kind)) return null
+  if (target.kind === 'rect') {
+    const rect = target.rect as Record<string, unknown> | undefined
+    if (!rect || ![rect.x, rect.y, rect.w, rect.h].every((v) => typeof v === 'number' && Number.isFinite(v))) return null
+  }
+  if (target.kind === 'nodes' && !(Array.isArray(target.ids) && target.ids.every((id) => typeof id === 'string'))) return null
+  if (target.kind === 'slide' && typeof target.id !== 'string') return null
+  return { attempt, canvasId, rev, maxEdge, target: target as unknown as ImageTarget }
 }
 
 const SEND_DELAY_MS = 100
@@ -133,6 +191,8 @@ export class SyncClient {
   private presence: { canvasId: string; viewport: Viewport } | null = null
   private presenceSent: string | null = null
   private presenceTimer: ReturnType<typeof setTimeout> | null = null
+  // タブが見えているか（presence に付けて送る。MAI-89）
+  private visible = true
   // 読んだ Canvas（all はすべて）と、読んでいる途中の Canvas
   private loaded: Set<string> | 'all'
   private readonly loading = new Map<string, { promise: Promise<void>; resolve: () => void; sent: boolean }>()
@@ -148,6 +208,7 @@ export class SyncClient {
       onAgentChange: options.onAgentChange ?? (() => {}),
       onAssets: options.onAssets ?? (() => {}),
       presenceDelayMs: options.presenceDelayMs ?? PRESENCE_DELAY_MS,
+      onRender: options.onRender ?? ((request) => void answerRender(request.attempt, { error: 'the tab is not ready', retry: true }, this.options.baseUrl)),
     }
     this.rev = initial.rev
     this.loaded = initial.canvases ? new Set(initial.canvases) : 'all'
@@ -172,11 +233,29 @@ export class SyncClient {
   }
 
   // あとから知らせる先を決める（画面を作る前に同期を始めるため）
-  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported' | 'onAgentChange' | 'onAssets'>): void {
+  setHandlers(handlers: Pick<SyncOptions, 'notify' | 'onImported' | 'onAgentChange' | 'onAssets' | 'onRender'>): void {
     if (handlers.notify) this.options.notify = handlers.notify
     if (handlers.onImported) this.options.onImported = handlers.onImported
     if (handlers.onAgentChange) this.options.onAgentChange = handlers.onAgentChange
     if (handlers.onAssets) this.options.onAssets = handlers.onAssets
+    if (handlers.onRender) this.options.onRender = handlers.onRender
+  }
+
+  // 受け取った変更番号（届いて、まだ当てていない変更も含む）
+  get revision(): number {
+    return this.rev
+  }
+
+  // ここまでに届いた変更（トランザクションの途中で後回しにしたものも）を当て終えたら解決する（Canvas を画像にする前。MAI-89）
+  afterRemote(): Promise<void> {
+    return new Promise((resolve) => this.applyRemote([], [], resolve))
+  }
+
+  // タブが見えているか（document.visibilityState）を知らせる。見ている所を知らせてあれば、すぐ送り直す（MAI-89）
+  reportVisibility(visible: boolean): void {
+    if (this.visible === visible) return
+    this.visible = visible
+    this.sendPresence()
   }
 
   // つながっていたのに、切れているか（読んでいない Canvas を、つながるまで待たずに断るとき。最初につながる前は false）
@@ -245,7 +324,7 @@ export class SyncClient {
 
   private sendPresence(): void {
     if (!this.presence || !this.open || !this.socket) return
-    const text = JSON.stringify({ type: 'presence', ...this.presence })
+    const text = JSON.stringify({ type: 'presence', ...this.presence, visible: this.visible })
     if (text === this.presenceSent) return
     this.presenceSent = text
     this.socket.send(text)
@@ -297,7 +376,7 @@ export class SyncClient {
       this.everOpened = true
       this.reconnectDelay = 500
       // 切れている間の変更をもらってから、手元の変更を送る。読んだ Canvas も伝える（その分の変更だけが届く）
-      socket.send(JSON.stringify({ type: 'hello', since: this.rev, ...(this.loaded === 'all' ? {} : { canvases: [...this.loaded] }) }))
+      socket.send(JSON.stringify({ type: 'hello', since: this.rev, ...(this.loaded === 'all' ? {} : { canvases: [...this.loaded] }), features: ['render'] }))
       // 読んでいる途中だった Canvas を、頼み直す
       for (const canvasId of this.loading.keys()) this.sendLoad(canvasId)
       this.presenceSent = null
@@ -374,6 +453,10 @@ export class SyncClient {
         this.loading.delete(canvasId)
         entry?.resolve()
       })
+    } else if (message.type === 'render') {
+      // Canvas を画像にしてほしい（MAI-89）。形が違えば答えない（サーバーは打ち切りで、ほかのタブに頼む）
+      const request = renderRequestOf(message as unknown as Record<string, unknown>)
+      if (request) this.options.onRender(request)
     } else if (message.type === 'ack' && message.seq !== undefined) {
       this.inflight.delete(message.seq)
       this.rev = Math.max(this.rev, message.rev ?? 0)
