@@ -905,6 +905,7 @@ export function systemPromptAppend(canvasId: string | undefined): string {
       ? `The user is viewing canvas ${canvasId}. Pass canvas_id: "${canvasId}" to canvas tools unless the user names another canvas.`
       : '',
     'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
+    'After making or rearranging slides or a diagram, look at it with render_canvas and fix what looks wrong (not after every small edit).',
     'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
     'Skills in the workspace .claude/skills/ are available through the Skill tool.',
     'Subagents and long commands can run in the background. When one finishes you are woken and continue on your own; that reply is shown in the panel too.',

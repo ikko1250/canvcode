@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NodeRecord, WorkspaceRecord } from '@canvcode/core'
 import { richTextFromPlain, type TextProps } from '@canvcode/nodes'
 import { Editor } from './editor.ts'
-import { SyncClient } from './sync.ts'
+import { answerRender, SyncClient } from './sync.ts'
 import { Workspace } from './workspace.ts'
 
 // サーバーから読んだレコード（WebSocket を外して、つながずに最初の読み込みだけを確かめる）
@@ -124,7 +124,7 @@ describe('sync', () => {
     // つながる前のものは、つながったときに送る
     sync.reportPresence('canvas:root', { x: 0.4, y: 0, w: 800, h: 600 })
     sockets[0]!.onopen!()
-    expect(presences()).toEqual([{ type: 'presence', canvasId: 'canvas:root', viewport: { x: 0, y: 0, w: 800, h: 600 } }])
+    expect(presences()).toEqual([{ type: 'presence', canvasId: 'canvas:root', viewport: { x: 0, y: 0, w: 800, h: 600 }, visible: true }])
     // カメラが動いている間は送らず、止まってから最後のものだけを送る
     sync.reportPresence('canvas:root', { x: 10, y: 0, w: 800, h: 600 })
     vi.advanceTimersByTime(300)
@@ -144,7 +144,7 @@ describe('sync', () => {
     sockets[0]!.onclose!()
     vi.advanceTimersByTime(1000)
     sockets[1]!.onopen!()
-    expect(presences(1)).toEqual([{ type: 'presence', canvasId: 'canvas:b', viewport: { x: 0, y: 0, w: 800, h: 600 } }])
+    expect(presences(1)).toEqual([{ type: 'presence', canvasId: 'canvas:b', viewport: { x: 0, y: 0, w: 800, h: 600 }, visible: true }])
     sync.dispose()
     vi.useRealTimers()
   })
@@ -197,7 +197,7 @@ describe('sync of loaded canvases', () => {
     expect(server.socket.sent).toEqual([])
     server.open()
     expect(server.socket.sent).toEqual([
-      { type: 'hello', since: 3, canvases: ['canvas:root'] },
+      { type: 'hello', since: 3, canvases: ['canvas:root'], features: ['render'] },
       { type: 'load', req: 'canvas:a', canvasId: 'canvas:a' },
     ])
     await Promise.resolve()
@@ -289,6 +289,70 @@ describe('sync of loaded canvases', () => {
     const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
     const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [] })
     expect(sync.isLoaded('canvas:any')).toBe(true)
+    sync.dispose()
+  })
+
+  // Canvas を画像にしてほしいと頼まれる（MAI-89）
+  it('hands render requests over, waits for changes held back by a drag, and says when the tab becomes hidden', async () => {
+    const server = fakeServer()
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const requests: unknown[] = []
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [geo('node:drag', 'canvas:root')], canvases: ['canvas:root'], citations: [] }, {
+      baseUrl: 'http://127.0.0.1',
+      presenceDelayMs: 0,
+      onRender: (request) => requests.push(request),
+    })
+    server.open()
+    const target = { kind: 'slide', id: 'node:s' }
+    server.receive({ type: 'render', attempt: 'a1', canvasId: 'canvas:root', rev: 2, target, maxEdge: 1568 })
+    // 形の違うものは渡さない
+    server.receive({ type: 'render', attempt: 'a2', canvasId: 'canvas:root', rev: 2, target: { kind: 'rect', rect: { x: 0 } }, maxEdge: 1568 })
+    server.receive({ type: 'render', attempt: 'a3', canvasId: 'canvas:root', rev: 2, target: { kind: 'other' }, maxEdge: 1568 })
+    expect(requests).toEqual([{ attempt: 'a1', canvasId: 'canvas:root', rev: 2, target, maxEdge: 1568 }])
+
+    // ドラッグの途中に届いた変更は、終わって当ててから afterRemote が解決する
+    const tx = workspace.store.begin('drag')
+    tx.put({ ...workspace.getNode('node:drag')!, x: 50 })
+    server.receive({ type: 'changes', rev: 2, records: [geo('node:new', 'canvas:root')], deleted: [] })
+    expect(sync.revision).toBe(2)
+    let applied = false
+    const waiting = sync.afterRemote().then(() => (applied = workspace.getNode('node:new') !== undefined))
+    await Promise.resolve()
+    expect(applied).toBe(false)
+    tx.commit()
+    await waiting
+    expect(applied).toBe(true)
+
+    // 見えなくなったら、見ている所と一緒に送り直す
+    sync.reportPresence('canvas:root', { x: 0, y: 0, w: 800, h: 600 })
+    sync.reportVisibility(false)
+    sync.reportVisibility(false)
+    const presences = server.socket.sent.filter((m) => m.type === 'presence')
+    expect(presences.map((m) => m.visible)).toEqual([true, false])
+    sync.dispose()
+  })
+
+  it('answers render requests it cannot take yet, so that the server asks another tab', async () => {
+    const server = fakeServer()
+    const calls: { url: string; init: RequestInit }[] = []
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      return new Response(null, { status: 200 })
+    })
+    const workspace = new Workspace({ rootCanvasId: 'canvas:root' })
+    const sync = new SyncClient(workspace, { rootCanvasId: 'canvas:root', rev: 0, records: [], canvases: ['canvas:root'], citations: [] }, { baseUrl: 'http://127.0.0.1' })
+    server.open()
+    server.receive({ type: 'render', attempt: 'a b', canvasId: 'canvas:root', rev: 0, target: { kind: 'canvas' }, maxEdge: 1568 })
+    await expect.poll(() => calls.length).toBe(1)
+    expect(calls[0]!.url).toBe('http://127.0.0.1/api/renders/a%20b')
+    expect(calls[0]!.init).toMatchObject({ method: 'PUT', body: JSON.stringify({ error: 'the tab is not ready', retry: true }) })
+
+    // 描けたら、PNG と描いた範囲を送る
+    await answerRender('a1', { png: new Blob(['png']), box: { x: 1, y: 2, w: 3, h: 4 }, scale: 0.5, rev: 7, capped: true, empty: false, incomplete: ['pdf'], missing: ['node:x'] }, 'http://127.0.0.1')
+    const url = new URL(calls[1]!.url)
+    expect(url.pathname).toBe('/api/renders/a1')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ x: '1', y: '2', w: '3', h: '4', scale: '0.5', rev: '7', capped: '1', incomplete: 'pdf', missing: 'node:x' })
+    expect(calls[1]!.init.headers).toEqual({ 'content-type': 'image/png' })
     sync.dispose()
   })
 })

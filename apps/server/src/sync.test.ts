@@ -209,4 +209,44 @@ describe('SyncHub', () => {
     early.send({ type: 'hello', since, canvases: ['canvas:a'] })
     expect((await early.next('changes')).records).toEqual([expect.objectContaining({ id: 'node:a' })])
   })
+
+  // Canvas を画像にするタブを選ぶための口（MAI-89）
+  it('lists the open tabs with what they read, see and can do, sends to one, and tells when one closes', async () => {
+    const { hub, base } = await setup()
+    const a = await connect(base)
+    const b = await connect(base)
+    const early = await connect(base)
+    a.send({ type: 'hello', since: 0, canvases: ['canvas:a'], features: ['render', 7] })
+    a.send({ type: 'presence', canvasId: 'canvas:a', viewport: { x: 1, y: 2, w: 3, h: 4 }, visible: false })
+    // 古いタブ：canvases も features も visible もない
+    b.send({ type: 'hello', since: 0 })
+    b.send({ type: 'presence', canvasId: 'canvas:b', viewport: { x: 0, y: 0, w: 10, h: 10 } })
+    await a.drain()
+    await b.drain()
+    const tabs = hub.tabs()
+    // hello がまだのタブは入れない
+    expect(tabs).toHaveLength(2)
+    const [ta, tb] = tabs
+    // drain は往復を待つために canvas:none を読む
+    expect(ta.scope).toEqual(new Set(['canvas:a', 'canvas:none']))
+    expect([...ta.features]).toEqual(['render'])
+    expect(ta.presence).toMatchObject({ canvasId: 'canvas:a', visible: false })
+    expect(tb.scope).toBe('all')
+    expect([...tb.features]).toEqual([])
+    expect(tb.presence).toMatchObject({ canvasId: 'canvas:b', visible: true })
+    expect(hub.latestPresence()).toMatchObject({ canvasId: 'canvas:b' })
+
+    expect(hub.sendTo(ta.socket, { type: 'render', attempt: 'x' })).toBe(true)
+    expect(await a.next('render')).toEqual({ type: 'render', attempt: 'x' })
+    const closed: unknown[] = []
+    const stop = hub.onClose((socket) => closed.push(socket))
+    ta.socket.close()
+    await expect.poll(() => closed).toEqual([ta.socket])
+    expect(hub.tabs().map((t) => t.socket)).toEqual([tb.socket])
+    expect(hub.sendTo(ta.socket, { type: 'render' })).toBe(false)
+    stop()
+    early.send({ type: 'hello', since: 0 })
+    await early.drain()
+    expect(hub.tabs()).toHaveLength(2)
+  })
 })

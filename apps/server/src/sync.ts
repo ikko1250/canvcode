@@ -3,12 +3,15 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { LIST_RECORD_TYPES, type RecordStore, type StoredRecord } from './records.ts'
 
 // レコードの同期（MAI-11、MAI-15）。/api/sync の WebSocket で、ブラウザと差分をやりとりする。
-// - ブラウザ → サーバー：{ type: 'hello', since, canvases? }（最後に受け取った変更番号。それより後の変更を返す。canvases は読んだ Canvas）
+// - ブラウザ → サーバー：{ type: 'hello', since, canvases?, features? }（最後に受け取った変更番号。それより後の変更を返す。canvases は読んだ Canvas。
+//                        features はタブにできること。'render' なら Canvas を画像にして返せる。renders.ts。MAI-89）
 //                        { type: 'load', req, canvasId }（Canvas を読む。購読に足し、{ type: 'canvas', req, canvasId, rev, records } を返す）
 //                        { type: 'push', seq, puts, deletes }（保存して ack を返し、ほかのタブに中継する）
-//                        { type: 'presence', canvasId, viewport: { x, y, w, h } }（いま見ている Canvas と範囲。ワールド座標）
+//                        { type: 'presence', canvasId, viewport: { x, y, w, h }, visible? }（いま見ている Canvas と範囲。ワールド座標。
+//                        visible はタブが見えているか。なければ見えているものとする）
 // - サーバー → ブラウザ：{ type: 'changes', rev, records, deleted, evicted?, citations?, origin? } / { type: 'ack', seq, rev } / { type: 'error', seq, message }
 //   origin はサーバーの中で作った変更の出どころ（AI の編集なら { kind: 'ai', batchId, label, canvasId, count }）
+//   { type: 'render', attempt, … }（Canvas を画像にしてほしい。答えは HTTP の PUT /api/renders/<attempt>。renders.ts。MAI-89）
 // 保存した変更は onChange の購読者（AI の編集に使うサーバーの中のワークスペース。agent/host.ts）にも知らせる
 // 同じレコードへの同時の変更は、後から届いたものを採用する（MAI-15）
 //
@@ -29,6 +32,18 @@ export interface Presence {
   viewport: { x: number; y: number; w: number; h: number }
   // 最後に知らせてきた時刻
   at: number
+  // タブが見えているか（裏に回ったタブは false。Canvas を画像にするタブを選ぶのに使う。MAI-89）
+  visible: boolean
+}
+
+// 開いているタブ（hello が済んだもの）。Canvas を画像にするタブを選ぶのに使う（renders.ts。MAI-89）
+export interface TabInfo {
+  socket: WebSocket
+  // 読んだ Canvas（all はすべて）
+  scope: Set<string> | 'all'
+  presence: Presence | null
+  // hello の features
+  features: ReadonlySet<string>
 }
 
 // 引用ノートのつながり。anchorId が null なら、そのノートは引用していない（つながりを外す）
@@ -43,10 +58,10 @@ export interface CitationLink {
 export const CITATION_HEAD_LENGTH = 64
 
 type ClientMessage =
-  | { type: 'hello'; since: number; canvases?: unknown }
+  | { type: 'hello'; since: number; canvases?: unknown; features?: unknown }
   | { type: 'load'; req: unknown; canvasId: unknown }
   | { type: 'push'; seq: number; puts: unknown[]; deletes: unknown[] }
-  | { type: 'presence'; canvasId: unknown; viewport: unknown }
+  | { type: 'presence'; canvasId: unknown; viewport: unknown; visible?: unknown }
 
 // タブの読んだ Canvas（all はすべて。null は hello がまだ来ていない）
 type Scope = Set<string> | 'all' | null
@@ -70,6 +85,8 @@ export class SyncHub {
   private readonly clients = new Map<WebSocket, Scope>()
   private readonly listeners = new Set<ChangeListener>()
   private readonly presences = new Map<WebSocket, Presence>()
+  private readonly features = new Map<WebSocket, ReadonlySet<string>>()
+  private readonly closeListeners = new Set<(socket: WebSocket) => void>()
 
   constructor(store: RecordStore) {
     this.store = store
@@ -79,6 +96,14 @@ export class SyncHub {
       socket.on('close', () => {
         this.clients.delete(socket)
         this.presences.delete(socket)
+        this.features.delete(socket)
+        for (const listener of this.closeListeners) {
+          try {
+            listener(socket)
+          } catch (error) {
+            console.error('a close listener failed', error)
+          }
+        }
       })
       socket.on('message', (data) => this.receive(socket, String(data)))
     })
@@ -143,6 +168,29 @@ export class SyncHub {
     let latest: Presence | null = null
     for (const presence of this.presences.values()) latest = presence
     return latest
+  }
+
+  // 開いているタブ（hello が済んだもの）。Canvas を画像にするタブを選ぶのに使う（MAI-89）
+  tabs(): TabInfo[] {
+    const out: TabInfo[] = []
+    for (const [socket, scope] of this.clients) {
+      if (scope === null || socket.readyState !== socket.OPEN) continue
+      out.push({ socket, scope, presence: this.presences.get(socket) ?? null, features: this.features.get(socket) ?? new Set() })
+    }
+    return out
+  }
+
+  // 1 つのタブに送る（Canvas を画像にしてほしい、など）。開いていなければ false
+  sendTo(socket: WebSocket, message: unknown): boolean {
+    if (socket.readyState !== socket.OPEN || !this.clients.has(socket)) return false
+    socket.send(JSON.stringify(message))
+    return true
+  }
+
+  // タブが閉じたら知らせる（やめる関数を返す）
+  onClose(listener: (socket: WebSocket) => void): () => void {
+    this.closeListeners.add(listener)
+    return () => this.closeListeners.delete(listener)
   }
 
   // サーバーの中で保存した変更（旧データの取り込み・AI の編集）を、開いているすべてのタブに知らせる。
@@ -215,6 +263,8 @@ export class SyncHub {
       const since = Number.isFinite(message.since) ? message.since : 0
       const scope: Scope = Array.isArray(message.canvases) ? new Set(message.canvases.filter((id): id is string => typeof id === 'string')) : 'all'
       this.clients.set(socket, scope)
+      const features = Array.isArray(message.features) ? message.features.filter((f): f is string => typeof f === 'string') : []
+      this.features.set(socket, new Set(features))
       const changes = this.store.changesSince(since)
       const citations = citationsOf(changes)
       socket.send(JSON.stringify({ type: 'changes', ...scoped(changes, scope), ...(citations.length ? { citations } : {}) }))
@@ -235,7 +285,7 @@ export class SyncHub {
       if (typeof message.canvasId !== 'string' || !v || ![v.x, v.y, v.w, v.h].every(finite)) return
       const viewport = { x: v.x as number, y: v.y as number, w: Math.max(0, v.w as number), h: Math.max(0, v.h as number) }
       this.presences.delete(socket)
-      this.presences.set(socket, { canvasId: message.canvasId, viewport, at: Date.now() })
+      this.presences.set(socket, { canvasId: message.canvasId, viewport, at: Date.now(), visible: message.visible !== false })
       return
     }
     if (message.type !== 'push') return
