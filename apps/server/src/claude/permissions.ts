@@ -7,7 +7,8 @@ import type { HookCallback, PermissionResult } from '@anthropic-ai/claude-agent-
 // - 見せるツールは CLAUDE_TOOLS だけ。MCP は canvcode だけ（strictMcpConfig）
 // - サブエージェント（Agent）とスキル（Skill）も使える。その中のツール呼び出しも、下のフック・canUseTool を同じように通る
 // - 許すかどうかは Claude Code の auto mode に任せる：分類のモデルが、危ないもの（ワークスペースの外を消す・秘密を送り出すなど）を断り、
-//   ほかは許す。分類で決められなかった呼び出しは canUseTool（askTool）に来る。画面で尋ねる仕組みはまだないので、Bash は断る
+//   ほかは許す。分類で決められなかった呼び出しは canUseTool（askTool）に来る。Bash と、ワークスペースの設定の ask の規則で尋ねると
+//   決めた呼び出しは、画面でユーザーに尋ねる（claude/jobs.ts）。auto mode が使えないときは、Bash の呼び出しがみなそうなる
 // - それとは別に、ファイルのツールで読み書きするのはワークスペースの中だけにし、.canvcode/（保存のデータ）と .claude/（Claude Code の設定）
 //   には書かせない（guardTool）。auto mode の判定より前に PreToolUse のフックで断るので、分類のモデルが許しても通らない。
 //   Bash はこの制限の外（どこを触るかは auto mode の判定に任せる）
@@ -99,18 +100,32 @@ export function preToolUseHook(
   }
 }
 
-// auto mode の判定で決められず、尋ねられた呼び出し（auto mode が使えないときは、尋ねるべき呼び出しすべて）
-export function askTool(name: string, input: Record<string, unknown>, guard: Guard | string): PermissionResult {
+// askTool の答え。ask は、画面でユーザーに尋ねる（claude/jobs.ts）
+export type AskDecision = PermissionResult | { behavior: 'ask' }
+
+// canUseTool の引数のうち、規則で尋ねたことがわかるもの
+export interface AskContext {
+  // 型のある印：ユーザーが書いた ask の規則（permissions.ask）で尋ねた
+  matchedAskRule?: unknown
+  // 型にない印（実際に届くのはこちら。docs/claude-permissions-plan.md の「確かめた事実」）
+  decisionReasonType?: unknown
+}
+
+// 規則（ワークスペースの .claude/settings.json の permissions.ask）で尋ねると決めた呼び出しか。
+// matchedAskRule を第一に、decisionReasonType === 'rule' を予備に見る
+export function askedByRule(context: AskContext | undefined): boolean {
+  return Boolean(context?.matchedAskRule) || context?.decisionReasonType === 'rule'
+}
+
+// auto mode の判定で決められず、尋ねられた呼び出し（auto mode が使えないときは、尋ねるべき呼び出しすべて）。
+// Bash と、規則で尋ねると決めたものは画面で尋ねる（ask）。guardTool で断るものは尋ねない
+export function askTool(name: string, input: Record<string, unknown>, guard: Guard | string, context?: AskContext): AskDecision {
   const reason = guardTool(name, input, guard)
   if (reason) return { behavior: 'deny', message: reason }
-  if (name === 'Bash') {
-    return {
-      behavior: 'deny',
-      message: 'このコマンドは自動では許せませんでした（画面から許可する仕組みはまだありません）。ユーザーに、手で実行するよう頼んでください',
-    }
-  }
-  if (CLAUDE_TOOLS.includes(name) || name.startsWith(CANVCODE_MCP_PREFIX)) return { behavior: 'allow', updatedInput: input }
-  return { behavior: 'deny', message: `CanvCode の画面からは ${name} を使えません` }
+  const listed = CLAUDE_TOOLS.includes(name) || name.startsWith(CANVCODE_MCP_PREFIX)
+  if (!listed) return { behavior: 'deny', message: `CanvCode の画面からは ${name} を使えません` }
+  if (name === 'Bash' || askedByRule(context)) return { behavior: 'ask' }
+  return { behavior: 'allow', updatedInput: input }
 }
 
 // その session の、Claude Code が自分で書くフォルダ（大きいツールの結果と、バックグラウンドの作業の出力）。

@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { handleClaude, parseStart } from './http.ts'
 import { ClaudeJobs, type RunQuery } from './jobs.ts'
 import { ClaudeStore } from './store.ts'
@@ -29,14 +29,29 @@ const run: RunQuery = ({ prompt }) => ({
   stopTask: async () => {},
 })
 
-function makeJobs(): ClaudeJobs {
+// 送られた文ごとに、Bash を使ってよいか canUseTool で尋ね、その答え（allow / deny）を文章にして返す偽の query
+const askingRun: RunQuery = ({ prompt, options }) => ({
+  async *[Symbol.asyncIterator]() {
+    for await (const message of prompt) {
+      const stamp = { user_message_uuids: [message.uuid] }
+      yield { type: 'assistant', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'text', text: '使います' }] }, ...stamp } as unknown as SDKMessage
+      const decision = await options.canUseTool!('Bash', { command: 'make' }, { signal: new AbortController().signal, toolUseID: 't', requestId: 'r' } as never)
+      yield { type: 'assistant', session_id: 's', parent_tool_use_id: null, message: { content: [{ type: 'text', text: decision!.behavior }] }, ...stamp } as unknown as SDKMessage
+      yield { type: 'result', subtype: 'success', is_error: false, session_id: 's', total_cost_usd: 0, duration_ms: 1, result: '', ...stamp } as unknown as SDKMessage
+    }
+  },
+  interrupt: async () => {},
+  stopTask: async () => {},
+})
+
+function makeJobs(query: RunQuery = run): ClaudeJobs {
   const dir = mkdtempSync(join(tmpdir(), 'canvcode-claude-http-'))
   const store = new ClaudeStore(dir)
   cleanups.push(() => {
     store.close()
     rmSync(dir, { recursive: true, force: true })
   })
-  const jobs = new ClaudeJobs({ workspace: '/srv/ws', mcpUrl: 'x', store, run, deleteSession: async () => {} })
+  const jobs = new ClaudeJobs({ workspace: '/srv/ws', mcpUrl: 'x', store, run: query, deleteSession: async () => {} })
   cleanups.push(() => jobs.dispose())
   return jobs
 }
@@ -129,6 +144,42 @@ describe('/api/claude', () => {
     expect((await post(`${thread}/tasks/a%20b/stop`, {})).status).toBe(400)
     expect((await fetch(`${thread}/stop`)).status).toBe(405)
     expect((await post(`${base}/api/claude/threads/00000000-0000-0000-0000-000000000000/stop`, {})).status).toBe(404)
+  })
+
+  it('shows a question on the thread (also in the snapshot of a tab that connects later), and takes the answer as JSON', async () => {
+    const base = await setup(makeJobs(askingRun))
+    const { job } = (await (await post(`${base}/api/claude/jobs`, { prompt: 'ビルドして' })).json()) as { job: { id: string } }
+    // あとからつないだタブも、snapshot で待っている問い合わせを受け取る
+    const asked = (messages: Record<string, unknown>[]) =>
+      messages.some((m) => m.type === 'snapshot' && (m.threads as { permissions: unknown[] }[])[0]?.permissions.length === 1) ||
+      messages.some((m) => m.type === 'thread' && (m.thread as { permissions: unknown[] }).permissions.length === 1)
+    const messages = await readEvents(base, asked)
+    const thread = (messages.at(-1)!.type === 'snapshot' ? (messages.at(-1)!.threads as unknown[])[0] : messages.at(-1)!.thread) as {
+      permissions: { id: string; name: string; detail: string; jobId: string }[]
+    }
+    const [question] = thread.permissions
+    expect(question).toMatchObject({ name: 'Bash', detail: 'make', jobId: job.id })
+    const { threads } = (await (await fetch(`${base}/api/claude/threads`)).json()) as { threads: { permissions: unknown[] }[] }
+    expect(threads[0]!.permissions).toHaveLength(1)
+
+    const url = `${base}/api/claude/threads/${job.id}/permissions/${question!.id}`
+    // JSON でなければ受けない（別のサイトのフォームから送らせない）。答えの形が違えば 400、POST でなければ 405
+    expect((await fetch(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'decision=allow' })).status).toBe(415)
+    expect((await fetch(url, { method: 'POST', body: '{"decision":"allow"}' })).status).toBe(415)
+    expect((await post(url, { decision: 'yes' })).status).toBe(400)
+    expect((await fetch(url)).status).toBe(405)
+    expect((await post(`${base}/api/claude/threads/${job.id}/permissions/not-a-uuid`, { decision: 'allow' })).status).toBe(404)
+    expect((await post(`${base}/api/claude/threads/00000000-0000-0000-0000-000000000000/permissions/${question!.id}`, { decision: 'allow' })).status).toBe(404)
+
+    expect((await post(url, { decision: 'allow' })).status).toBe(204)
+    // もう待っていない
+    expect((await post(url, { decision: 'deny' })).status).toBe(404)
+    await vi.waitFor(async () => {
+      const one = (await (await fetch(`${base}/api/claude/jobs/${job.id}`)).json()) as { job: { status: string; events: { kind: string; text?: string }[] } }
+      expect(one.job.status).toBe('done')
+      expect(one.job.events.map((event) => event.kind)).toEqual(['text', 'ask', 'answer', 'text'])
+      expect(one.job.events.at(-1)!.text).toBe('allow')
+    })
   })
 
   it('answers 404 when disabled', async () => {

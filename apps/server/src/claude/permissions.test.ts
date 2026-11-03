@@ -83,15 +83,27 @@ describe('guardTool', () => {
 })
 
 describe('askTool', () => {
-  it('denies Bash that auto mode could not decide (nobody can approve it), and allows the other listed tools inside the guard', () => {
+  it('asks the user in the panel about Bash that auto mode could not decide, and allows the other listed tools inside the guard', () => {
     const ws = workspace()
-    expect(askTool('Bash', { command: 'ls' }, ws).behavior).toBe('deny')
+    expect(askTool('Bash', { command: 'ls' }, ws).behavior).toBe('ask')
     expect(askTool('Write', { file_path: join(ws, 'a.md') }, ws).behavior).toBe('allow')
     expect(askTool('Write', { file_path: '/etc/passwd' }, ws).behavior).toBe('deny')
     expect(askTool('mcp__canvcode__edit_canvas', {}, ws).behavior).toBe('allow')
     expect(askTool('Agent', { prompt: 'x' }, ws).behavior).toBe('allow')
     expect(askTool('Skill', { skill: 'imozuru' }, ws).behavior).toBe('allow')
     expect(askTool('NotebookEdit', {}, ws).behavior).toBe('deny')
+  })
+
+  it('asks about any listed tool that an ask rule forced, by matchedAskRule or by decisionReasonType', () => {
+    const ws = workspace()
+    const write = { file_path: join(ws, 'a.md') }
+    // 型のある印（matchedAskRule）と、実際に届く型にない印（decisionReasonType）の両方
+    expect(askTool('Write', write, ws, { matchedAskRule: { source: 'projectSettings', toolName: 'Write' } }).behavior).toBe('ask')
+    expect(askTool('Write', write, ws, { decisionReasonType: 'rule' }).behavior).toBe('ask')
+    expect(askTool('Write', write, ws, { decisionReasonType: 'workingDir' }).behavior).toBe('allow')
+    // 規則があっても、ガードで断るものは尋ねない。使わせないツールも尋ねない
+    expect(askTool('Write', { file_path: '/etc/passwd' }, ws, { decisionReasonType: 'rule' }).behavior).toBe('deny')
+    expect(askTool('NotebookEdit', {}, ws, { matchedAskRule: { source: 'projectSettings', toolName: 'NotebookEdit' } }).behavior).toBe('deny')
   })
 })
 
