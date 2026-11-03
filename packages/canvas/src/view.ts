@@ -68,7 +68,7 @@ import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { SLIDE_IMAGE_SCALE, slideImageRegion, type SlideImage } from './slideImage.ts'
-import { imageRegion, imageSize, type ImageRegion, type ImageTarget } from './canvasImage.ts'
+import { imageFileName, imageRegion, imageSize, selectionImageTarget, type ImageRegion, type ImageSize, type ImageTarget } from './canvasImage.ts'
 import { decodeTableFile, markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
@@ -242,6 +242,8 @@ export class CanvasView {
   private fontRelayoutPending = false
   private readonly thumbnailRequests = new Set<string>()
   private readonly documents: DocumentResolver
+  // 右クリック・パイメニューから頼まれた画像の書き出し（1 つずつ描く。MAI-89）
+  private imageExport: Promise<void> = Promise.resolve()
   private spaceHeld = false
   private cursorOverride: string | null = null
   private panPointer: { id: number; last: { x: number; y: number } } | null = null
@@ -1318,6 +1320,77 @@ export class CanvasView {
       nodesInBrush: (rect) => editor.nodesInBrush(rect),
       pdfPagesIn: (rect) => this.pdfPagesIn(editor, rect),
     }
+  }
+
+  // ---- 選んでいる所を画像にする（右クリック・パイメニューの「画像として保存／画像をコピー」。MAI-89） ----
+
+  // 画像にする所（直前の範囲選択か、選んでいるノード。スライドを 1 枚だけならスライド）。どちらもなければ null
+  selectionImage(): ImageTarget | null {
+    const editor = this.editor
+    return selectionImageTarget(this.canvasRefSource(), (id) => editor.getNode(id)?.type)
+  }
+
+  // 倍率 scale で画像にしたときの大きさ（メニューに出す）。画像にする所がなければ null
+  selectionImageSize(scale: number): ImageSize | null {
+    const target = this.selectionImage()
+    const region = target && imageRegion(this.editor, target)
+    return region ? imageSize(region.box, { scale }) : null
+  }
+
+  // 選んでいる所を倍率 scale で画像にして、保存する（ダウンロード）か、クリップボードに載せる。
+  // 描くのは 1 つずつ（前のものを描いている間に頼まれたら、そのあとで描く）。カードの本文と画像も待つ
+  exportImage(mode: 'save' | 'copy', scale: number): Promise<void> {
+    const editor = this.editor
+    const target = this.selectionImage()
+    if (!target) {
+      this.options.notify('画像にする所を、選ぶか範囲選択で囲んでください')
+      return Promise.resolve()
+    }
+    this.options.notify('画像を作っています…')
+    const rendering = this.imageExport.then(() => this.renderImage(editor, target, { scale }, { complete: true }))
+    this.imageExport = rendering.then(
+      () => undefined,
+      () => undefined,
+    )
+    const drawn = rendering.then(
+      (image) => (image && !image.empty ? image : null),
+      (error: unknown) => {
+        console.error('Failed to render an image', error)
+        return null
+      },
+    )
+    return mode === 'copy' ? this.copyImage(drawn) : this.saveImage(editor, drawn)
+  }
+
+  private async saveImage(editor: Editor, drawn: Promise<RenderedImage | null>): Promise<void> {
+    const image = await drawn
+    if (!image) return this.options.notify('画像を作れませんでした（範囲の中に描くものがないか、描けませんでした）')
+    const title = editor.workspace.getCanvas(editor.canvasId)?.title ?? ''
+    const name = imageFileName(title, image.slideId ? editor.slides.number(image.slideId) : null)
+    downloadBlob(image.png, name)
+    this.options.notify(`${name} を保存しました（${imageNote(image)}）`)
+  }
+
+  private async copyImage(drawn: Promise<RenderedImage | null>): Promise<void> {
+    // クリップボードには、押した処理の中ですぐに書き始める（Safari は、押したすぐあとでないと書かせない）。中身は描き終えるのを待つ
+    let written: Promise<void>
+    try {
+      const png = drawn.then((image) => {
+        if (!image) throw new Error('nothing to copy')
+        return image.png
+      })
+      written = navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+    } catch (error) {
+      written = Promise.reject(error)
+    }
+    const image = await drawn
+    try {
+      await written
+    } catch (error) {
+      console.warn('Failed to copy an image', error)
+      return this.options.notify(image ? 'コピーできませんでした。「画像として保存」を使ってください' : '画像を作れませんでした（範囲の中に描くものがないか、描けませんでした）')
+    }
+    if (image) this.options.notify(`画像をコピーしました（${imageNote(image)}）`)
   }
 
   // 今の Canvas の範囲を AI に渡す。範囲がなければ、そう知らせる
@@ -2771,6 +2844,24 @@ async function beforeDeadline(promise: Promise<unknown>, deadline: number): Prom
   } finally {
     if (timer !== null) clearTimeout(timer)
   }
+}
+
+// 知らせに出す画像の大きさと、縮めた・間に合わなかったこと
+function imageNote(image: RenderedImage): string {
+  const parts = [`${image.width}×${image.height}`]
+  if (image.capped) parts.push(`大きいので ${Math.round(image.scale * 100) / 100} 倍に縮めました`)
+  if (image.incomplete.length > 0) parts.push('読み込みが間に合わなかったものは仮の絵のままです')
+  return parts.join('。')
+}
+
+// 作った画像をダウンロードする（スライドの PDF の downloadSlidePdf と同じやり方）
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
 
 // PNG にしたら、canvas の中身を手放す（Safari は GC まで持ち続ける。大きい画像は数十 MB になる）

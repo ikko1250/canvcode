@@ -107,6 +107,8 @@ export interface PieMenuContext {
   createPdfPortal(): void
   // 選んでいる画像を指す Markdown の画像のリンクをコピーする（#33）
   copyImageMarkdownLink(): void
+  // 選んでいる所を、倍率 scale の画像にして保存する（ダウンロード）・コピーする（MAI-89）
+  exportSelectionImage(mode: 'save' | 'copy', scale: 1 | 2): void
 }
 
 export interface PdfMenuContext {
@@ -149,6 +151,8 @@ export interface SelectionMenuContext {
   pdfLink: boolean
   // 画像を 1 つだけ選んでいるか（「Markdown のリンクをコピー」を出す。#33）
   image: boolean
+  // 画像にできる所（直前の範囲選択か、選んでいるノード）があるか（「画像 ›」を出す。MAI-89）
+  exportImage: boolean
 }
 
 const ALIGN_EDGES: [AlignEdge, string][] = [
@@ -227,6 +231,14 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 // 8 つを超えるときは、まず文字の項目（3 つ）を「文字 ›」にまとめ、まだ超えるならスライドの項目を「スライド ›」にまとめる
 // （まとめれば選択の項目は 8 つに収まる）
 function buildActionItems(ctx: PieMenuContext): PieEntry[] {
+  // 「画像 ›」（MAI-89）を足して 8 つを超えるとき（PDF のページの Canvas で、文字とスライドを含む 3 つ以上を選んだとき）は、
+  // 今の並びを変えないよう「画像 ›」を出さない（右クリックからは出せる）
+  const items = buildActionItemsWith(ctx)
+  if (items.length <= 8 || !ctx.selection.exportImage) return items
+  return buildActionItemsWith({ ...ctx, selection: { ...ctx.selection, exportImage: false } })
+}
+
+function buildActionItemsWith(ctx: PieMenuContext): PieEntry[] {
   const { pdf, selection } = ctx
   const pages: PieEntry[] = []
   if (pdf.hasPages) {
@@ -262,6 +274,18 @@ function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   if (selection.count >= 1) {
     items.push({ label: '固定する', onSelect: ctx.lockSelection })
     items.push({ label: '複製', onSelect: ctx.duplicateSelection })
+  }
+  // 範囲選択か選んでいるノードを画像にする（MAI-89）。範囲選択だけ（ノードを選んでいない）でも出す
+  if (selection.exportImage) {
+    items.push({
+      label: '画像',
+      items: [
+        { label: '保存（等倍）', onSelect: () => ctx.exportSelectionImage('save', 1) },
+        { label: '保存（2 倍）', onSelect: () => ctx.exportSelectionImage('save', 2) },
+        { label: 'コピー（等倍）', onSelect: () => ctx.exportSelectionImage('copy', 1) },
+        { label: 'コピー（2 倍）', onSelect: () => ctx.exportSelectionImage('copy', 2) },
+      ],
+    })
   }
   const slides: PieEntry[] = []
   if (selection.slideCount >= 1) {
