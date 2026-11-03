@@ -222,3 +222,47 @@ describe('MissingImageRecorder', () => {
     expect(await recorder.loadAll()).toBe(0)
   })
 })
+
+// Canvas を画像にしたあとに、描くためだけに読んだ画像を捨てる（MAI-89）
+describe('ImageCache.forget', () => {
+  it('drops only the given levels, keeps other levels and other images, and gives the bytes back', async () => {
+    const cache = new ImageCache({ onReady: () => {} })
+    await cache.load('screen', 'v1', 1, async () => fakeImage(1))
+    await cache.load('asset:page', 'v1', 1, async () => fakeImage(1))
+    const before = cache.stats.bytes
+    expect(cache.has('asset:page', 'v1', 4)).toBe(false)
+    await cache.load('asset:page', 'v1', 4, async () => fakeImage(4))
+    await cache.load('asset:other', 'v1', 2, async () => fakeImage(2))
+    expect(cache.has('asset:page', 'v1', 4)).toBe(true)
+    expect(cache.has('asset:page', 'v2', 4)).toBe(false)
+    cache.forget([
+      { key: 'asset:page', level: 4 },
+      { key: 'asset:other', level: 2 },
+      // ないものは何もしない
+      { key: 'asset:gone', level: 1 },
+      { key: 'screen', level: 8 },
+    ])
+    expect(cache.stats.bytes).toBe(before)
+    expect(cache.has('asset:page', 'v1', 1)).toBe(true)
+    expect(cache.has('asset:page', 'v1', 4)).toBe(false)
+    expect(cache.has('asset:other', 'v1', 2)).toBe(false)
+    expect(cache.stats.entries).toBe(2)
+    expect(cache.has('screen', 'v1', 1)).toBe(true)
+  })
+
+  it('remembers what a recorder loaded, but not what was already there or failed', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cache = new ImageCache({ onReady: () => {} })
+    await cache.load('asset:have', 'v1', 2, async () => fakeImage(2))
+    const recorder = new MissingImageRecorder(cache, () => true)
+    recorder.get('asset:have', 'v1', 2, async () => fakeImage(2))
+    recorder.get('node:card', 'v1', 2, async () => fakeImage(2))
+    recorder.get('asset:broken', 'v1', 2, async () => Promise.reject(new Error('404')))
+    expect(await recorder.loadAll()).toBe(1)
+    expect(recorder.loaded).toEqual([{ key: 'node:card', level: 2 }])
+    cache.forget(recorder.loaded)
+    expect(cache.has('node:card', 'v1', 2)).toBe(false)
+    expect(cache.has('asset:have', 'v1', 2)).toBe(true)
+    errors.mockRestore()
+  })
+})

@@ -32,7 +32,7 @@ import {
   resetTextMetrics,
   textMetricsGeneration,
   type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageProps, type ImageRequester, type PdfPageProps, type RasterImage, type TableCardProps, type TableCardType, type TableColumnInfo, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
-import { AssetManager, IMAGE_MIME_TYPES, assetMarkdownImage, isPdf, isSupportedImage, type PdfService } from './assets.ts'
+import { AssetManager, IMAGE_MIME_TYPES, assetMarkdownImage, isPdf, isSupportedImage, type PdfRenderIntent, type PdfService } from './assets.ts'
 import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
   CLIPBOARD_MIME,
@@ -60,7 +60,6 @@ import {
   putReferenceImage,
   REF_IMAGE_MAX_EDGE,
   refImageRegion,
-  refImageSize,
   type CanvasRefSource,
   type PdfPageInRange,
   type PdfRegionRequest,
@@ -68,7 +67,8 @@ import {
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
 import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
-import { slideImageRegion, type SlideImage } from './slideImage.ts'
+import { SLIDE_IMAGE_SCALE, slideImageRegion, type SlideImage } from './slideImage.ts'
+import { imageRegion, imageSize, type ImageRegion, type ImageTarget } from './canvasImage.ts'
 import { decodeTableFile, markdownTableFromClipboard } from './table.ts'
 import type { OwnerPortalDeletion } from './workspace.ts'
 import { drawGrid } from './grid.ts'
@@ -688,40 +688,148 @@ export class CanvasView {
     this.refreshTextLayout(editor, false)
   }
 
-  // ---- PDF に出すスライドの画像（スライド v2） ----
+  // ---- Canvas を画像にする（MAI-89。docs/canvas-image-plan.md）。スライドの PDF・AI に渡す ref の画像もここで描く ----
 
-  // スライド 1 枚を、PDF の 1 ページ用の PNG に描く（範囲・倍率・描くノードは slideImageRegion）。
-  // 印刷用に描くので、スライドの名前（番号）と枠の線は描かず、非表示のスライドも薄くしない。
-  // width / height はページの大きさ（ワールド単位）。スライドが見つからない・slide でなければ null
-  async renderSlideImage(slideId: string, editor: Editor = this.editor): Promise<SlideImage | null> {
+  // 範囲・ノード・スライドを PNG に描く（右クリックの「画像として保存／画像をコピー」と、AI の render_canvas）。
+  // 範囲と大きさは canvasImage.ts で決める。描くものがなければ null。options は RenderImageOptions
+  async renderImage(
+    editor: Editor,
+    target: ImageTarget,
+    want: { scale: number } | { maxEdge: number },
+    options: RenderImageOptions = {},
+  ): Promise<RenderedImage | null> {
+    // 読み込み中のフォントがあれば、読み込んでから測った形で描く（MAI-75）
     await this.settleFonts(editor)
-    const region = slideImageRegion(editor, slideId)
+    const region = imageRegion(editor, target)
     if (!region) return null
-    const { box, scale, width, height, only, size } = region
-    const png = await this.renderNodesPng(editor, box, scale, width, height, only, true)
-    return png ? { png, width: size.w, height: size.h } : null
+    const size = imageSize(region.box, want)
+    const complete = options.complete === true
+    const wait: RenderWait = {
+      all: complete,
+      deadline: complete ? performance.now() + (options.budgetMs ?? RENDER_IMAGE_BUDGET_MS) : Infinity,
+      loaded: [],
+      pending: [],
+      incomplete: new Set(),
+    }
+    try {
+      if (complete) await this.loadCardTexts(editor, region, wait)
+      const pages = this.loadPdfPages(editor, region.box, size.scale, options.pdfIntent, wait.loaded)
+      wait.pending.push(pages)
+      if (!(await beforeDeadline(pages, wait.deadline))) wait.incomplete.add('pdf')
+      const canvas = await this.renderRegionLoaded(editor, region.box, size.scale, size.width, size.height, region.only ?? undefined, region.print, complete ? wait : undefined)
+      const png = await canvasToPng(canvas)
+      if (!png) return null
+      return {
+        png,
+        box: region.box,
+        scale: size.scale,
+        width: size.width,
+        height: size.height,
+        capped: size.capped,
+        empty: region.only === null && editor.index.search(region.box).length === 0,
+        incomplete: [...wait.incomplete],
+        missing: region.missing,
+        ...(region.slideId ? { slideId: region.slideId } : {}),
+      }
+    } finally {
+      // 描くためだけに読んだ画像を捨てる。待ちきれなかった読み込みが終わってから（先に捨てると、あとから入ったものが残る）
+      if (options.release) void Promise.allSettled(wait.pending).then(() => this.images.forget(wait.loaded))
+    }
   }
 
-  // 範囲のうち only のノードだけを、PDF のページを読んでから描き、PNG にする（PDF に出すスライドの画像）
-  private async renderNodesPng(editor: Editor, box: Box, scale: number, width: number, height: number, only: ReadonlySet<string>, print = false): Promise<Blob | null> {
-    await this.loadPdfPages(editor, box, scale)
-    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height, only, print)
-    return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+  // スライド 1 枚を、PDF の 1 ページ用の PNG に描く（スライド v2。範囲・倍率・描くノードは slideImageRegion）。
+  // 印刷用に描くので、スライドの名前（番号）と枠の線は描かず、非表示のスライドも薄くしない。
+  // width / height はページの大きさ（ワールド単位）。スライドが見つからない・slide でなければ null。
+  // MAI-89 で renderImage を通す形にした。設定は前と同じ（倍率 2・カードを待たない・PDF は画面用）
+  async renderSlideImage(slideId: string, editor: Editor = this.editor): Promise<SlideImage | null> {
+    const page = slideImageRegion(editor, slideId)
+    if (!page) return null
+    const image = await this.renderImage(editor, { kind: 'slide', id: slideId }, { scale: SLIDE_IMAGE_SCALE })
+    return image ? { png: image.png, width: page.size.w, height: page.size.h } : null
+  }
+
+  // ワールド座標の範囲を、白い背景の PNG にする（AI に渡す ref の画像。MAI-64）。長い辺は maxEdge まで。作れなければ null。
+  // MAI-89 で renderImage を通す形にした。設定は前と同じ（refImageSize と同じ大きさ・カードを待たない・PDF は画面用）
+  async renderRegionPng(editor: Editor, box: Box, maxEdge = REF_IMAGE_MAX_EDGE): Promise<Blob | null> {
+    return (await this.renderImage(editor, { kind: 'rect', rect: box }, { maxEdge }))?.png ?? null
   }
 
   // renderRegion で描き、描くときに頼まれた Asset の画像（画像ノード・画像の塗り（MAI-83）・PDF のページ）と表のカードのタイルのうち、
   // 頼んだ解像度のものが手元になかったものを読み込んでから、描き直す（読み込み中のプレースホルダーや粗い画像を写さない）。
   // 読み込めなかった画像（404・壊れた画像など）は諦める（MissingImageRecorder）。頼み方（キー・解像度）は描画のときと同じなので、型ごとの読み方を知らなくてよい。読み込んだ画像は画像キャッシュに入る
-  // （上限を超えれば、いつもどおり古いものから捨てる）
-  private async renderRegionLoaded(editor: Editor, box: Box, scale: number, width: number, height: number, only?: ReadonlySet<string>, print = false): Promise<HTMLCanvasElement> {
+  // （上限を超えれば、いつもどおり古いものから捨てる）。
+  // wait を渡すと（Canvas を画像にするとき。MAI-89）、カードの画像も含めて手元になかったものを全部待ち、描き直しても足りなければもう一度読む。
+  // 待つのは wait.deadline まで。読み込んだものは wait.loaded に入れる
+  private async renderRegionLoaded(
+    editor: Editor,
+    box: Box,
+    scale: number,
+    width: number,
+    height: number,
+    only?: ReadonlySet<string>,
+    print = false,
+    wait?: RenderWait,
+  ): Promise<HTMLCanvasElement> {
     // PDF のページは、前もって作った画像があるかを確かめている間は描かないので、確かめ終えてから描く
     await Promise.all([...new Set(this.pdfPagesIn(editor, box).map((page) => page.assetId))].map((assetId) => this.assets.preparePdfPreview(assetId)))
+    if (wait) return this.renderRegionComplete(editor, box, scale, width, height, only, print, wait)
     const recorder = new MissingImageRecorder(this.images, (key) => key.startsWith('asset:') || isTableTileKey(key))
     const canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
     if (recorder.size === 0) return canvas
     // 読み込めなかった画像は諦め、プレースホルダーのまま書き出す（1 つの失敗で書き出し全体を失敗させない）
     if ((await recorder.loadAll()) === 0) return canvas
     return this.renderRegion(editor, box, scale, width, height, only, this.images, print)
+  }
+
+  // renderRegionLoaded の、全部を待つ描き方（MAI-89）。カードは本文から画像を作り（全体の画像のあとで、高い解像度のタイルを頼む）、
+  // 1 回では揃わないので、手元になかったものがなくなるまで RENDER_IMAGE_PASSES 回まで読んで描き直す
+  private async renderRegionComplete(
+    editor: Editor,
+    box: Box,
+    scale: number,
+    width: number,
+    height: number,
+    only: ReadonlySet<string> | undefined,
+    print: boolean,
+    wait: RenderWait,
+  ): Promise<HTMLCanvasElement> {
+    let recorder = new MissingImageRecorder(this.images, () => true)
+    let canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
+    for (let pass = 0; pass < RENDER_IMAGE_PASSES && recorder.size > 0; pass++) {
+      const current = recorder
+      const loading = current.loadAll().then((count) => {
+        wait.loaded.push(...current.loaded)
+        return count
+      })
+      wait.pending.push(loading)
+      if (!(await beforeDeadline(loading, wait.deadline))) {
+        wait.incomplete.add('image')
+        return canvas
+      }
+      if ((await loading) === 0) return canvas
+      releaseCanvas(canvas)
+      recorder = new MissingImageRecorder(this.images, () => true)
+      canvas = this.renderRegion(editor, box, scale, width, height, only, recorder, print)
+    }
+    if (recorder.size > 0) wait.incomplete.add('image')
+    return canvas
+  }
+
+  // 範囲の中のカード（Markdown・Python・表）の本文を読み込む（描くときに読み始めるので、見ていない Canvas のカードは仮の絵になる。MAI-89）
+  private async loadCardTexts(editor: Editor, region: ImageRegion, wait: RenderWait): Promise<void> {
+    const files = this.files
+    if (!files) return
+    const fileIds = new Set<string>()
+    for (const id of editor.index.search(region.box)) {
+      if (region.only && !region.only.has(id)) continue
+      const fileId = (editor.getNode(id)?.props as { fileId?: unknown } | undefined)?.fileId
+      const kind = typeof fileId === 'string' ? editor.workspace.getFile(fileId)?.kind : undefined
+      if (kind === 'markdown' || kind === 'code' || kind === 'table') fileIds.add(fileId as string)
+    }
+    if (fileIds.size === 0) return
+    const loading = Promise.allSettled([...fileIds].map((id) => files.text(id)))
+    wait.pending.push(loading)
+    if (!(await beforeDeadline(loading, wait.deadline))) wait.incomplete.add('card')
   }
 
   // ワールド座標の範囲を、白い背景の canvas に描く（サムネイルと、AI に渡す ref の画像、PDF に出すスライドの画像）。
@@ -760,24 +868,19 @@ export class CanvasView {
     return canvas
   }
 
-  // ワールド座標の範囲を、白い背景の PNG にする（MAI-64）。長い辺は maxEdge まで。作れなければ null
-  async renderRegionPng(editor: Editor, box: Box, maxEdge = REF_IMAGE_MAX_EDGE): Promise<Blob | null> {
-    const { width, height, scale } = refImageSize(box, maxEdge)
-    await this.settleFonts(editor)
-    await this.loadPdfPages(editor, box, scale)
-    const canvas = await this.renderRegionLoaded(editor, box, scale, width, height)
-    return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
-  }
-
   // 範囲にかかった PDF のページを、描く倍率の画像で読んでおく（画像キャッシュには、画面の倍率のものしかないことがあるので）。
-  // 読めなければ、手元にある画像で描く
-  private async loadPdfPages(editor: Editor, box: Box, scale: number): Promise<void> {
+  // 読めなければ、手元にある画像で描く。intent は描き方（裏のタブで頼まれたら print。MAI-89）。
+  // loaded を渡すと、新しく読んだもの（前は手元になかったもの）を入れる（描いたあとに捨てるため）
+  private async loadPdfPages(editor: Editor, box: Box, scale: number, intent: PdfRenderIntent = 'display', loaded?: { key: string; level: number }[]): Promise<void> {
     const assets = this.assets
     const level = pickImageLevel(scale)
     await Promise.all(
-      this.pdfPagesIn(editor, box).map(({ assetId, pageIndex }) =>
-        this.images.load(`${assetId}#${pageIndex}`, 'v1', level, () => assets.renderPdfPage(assetId, pageIndex, level)),
-      ),
+      this.pdfPagesIn(editor, box).map(async ({ assetId, pageIndex }) => {
+        const key = `${assetId}#${pageIndex}`
+        const fresh = loaded !== undefined && !this.images.has(key, 'v1', level)
+        const image = await this.images.load(key, 'v1', level, () => assets.renderPdfPage(assetId, pageIndex, level, intent))
+        if (fresh && image) loaded.push({ key, level })
+      }),
     )
   }
 
@@ -2604,6 +2707,84 @@ function rejectMessage(files: File[]): string {
 }
 
 // クリップボードに文字を書く。書けたかどうかを返す（投げない）
+// ---- Canvas を画像にする（MAI-89） ----
+
+export interface RenderImageOptions {
+  // 描く前に、範囲の中のカード（Markdown・Python・表）の本文と画像も待つ（右クリックの書き出しと AI）。
+  // 渡さなければ、今までの ref の画像・スライドの PDF と同じく、Asset と表のタイルの画像だけを待つ
+  complete?: boolean
+  // complete のとき、待つのはここまで（ミリ秒）。間に合わなかったものは incomplete に入れて、ある絵で描く
+  budgetMs?: number
+  // PDF のページの描き方。裏に回ったタブで頼まれたら print（PDF.js は display だと requestAnimationFrame で描き進め、止まる）
+  pdfIntent?: PdfRenderIntent
+  // 描くためだけに読んだ画像を、描いたあとで捨てる（見ていない Canvas を描いたとき。iPad のメモリー。MAI-66）
+  release?: boolean
+}
+
+export interface RenderedImage {
+  png: Blob
+  // 描いた範囲（ワールド座標）と、1 ワールド単位あたりの画素
+  box: Box
+  scale: number
+  width: number
+  height: number
+  // 上限で倍率を下げた
+  capped: boolean
+  // 範囲の中に描くノードが 1 つもなかった
+  empty: boolean
+  // 待ちきれなかったもの（pdf・card・image）
+  incomplete: string[]
+  // 頼まれたが、この Canvas になかったノード
+  missing: string[]
+  slideId?: string
+}
+
+// renderImage が描く前に待つものと、読んだもの
+interface RenderWait {
+  // 手元になかった画像を全部待つ（false なら Asset と表のタイルだけ）
+  all: boolean
+  deadline: number
+  // 新しく読んだ画像（描いたあとに捨てるため）
+  loaded: { key: string; level: number }[]
+  // 始めた読み込み（捨てるのは、これが全部終わってから）
+  pending: Promise<unknown>[]
+  incomplete: Set<string>
+}
+
+// カードの本文と画像を待つ時間
+const RENDER_IMAGE_BUDGET_MS = 10_000
+// 手元になかった画像を読んで描き直す回数の上限（カードの全体の画像 → 高い解像度のタイル）
+const RENDER_IMAGE_PASSES = 3
+
+// deadline（performance.now() の値）までに終われば true。Infinity なら終わるまで待つ
+async function beforeDeadline(promise: Promise<unknown>, deadline: number): Promise<boolean> {
+  if (deadline === Infinity) {
+    await promise.catch(() => {})
+    return true
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const late = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, deadline - performance.now()))
+  })
+  try {
+    return await Promise.race([promise.then(() => true, () => true), late])
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+}
+
+// PNG にしたら、canvas の中身を手放す（Safari は GC まで持ち続ける。大きい画像は数十 MB になる）
+async function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+  releaseCanvas(canvas)
+  return png
+}
+
+function releaseCanvas(canvas: HTMLCanvasElement): void {
+  canvas.width = 0
+  canvas.height = 0
+}
+
 async function writeClipboardText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text)
