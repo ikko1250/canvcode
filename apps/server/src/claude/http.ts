@@ -179,7 +179,7 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJob
   })
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+export async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -194,7 +194,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-function sendError(res: ServerResponse, error: unknown): void {
+export function sendError(res: ServerResponse, error: unknown): void {
   if (error instanceof JobError) {
     sendJson(res, error.status, { error: error.message })
     return
@@ -208,7 +208,7 @@ function methodNotAllowed(res: ServerResponse): true {
   return true
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
   res.end(JSON.stringify(body))
 }

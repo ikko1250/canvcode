@@ -38,6 +38,7 @@ import {
   PORTAL_DEFAULT_SIZE,
   SHORTCUT_CARD_HEIGHT,
   type NoteProps,
+  plainTextOf,
   type QuoteCardProps,
   type TableCardProps,
   type TableFilterOp,
@@ -66,6 +67,7 @@ import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
+import { memoParagraphs, requestMemo } from './claude/memo.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
 import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
@@ -914,6 +916,38 @@ export function App(props: { initial: InitialRecords }) {
     [placePlot, notify],
   )
 
+  // 付箋の文字（音声入力で入れた話し言葉など）を、Haiku に箇条書きのメモにしてもらい、付箋の文字と置き換える（Undo 1 回で戻る）。
+  // 待っている間に付箋が変わった・消えた・編集を始めた・別の Canvas に移ったなら、置き換えない。同じ付箋を重ねて頼まない
+  const memoizing = useRef(new Set<string>())
+  const noteToMemo = useCallback(
+    async (nodeId: string) => {
+      const editor = viewRef.current?.editor
+      const node = editor?.getNode(nodeId)
+      if (!editor || node?.type !== 'note' || memoizing.current.has(nodeId)) return
+      const before = (node.props as NoteProps).paragraphs
+      const text = plainTextOf(before).trim()
+      if (!text) return
+      memoizing.current.add(nodeId)
+      notify('箇条書きのメモにしています…')
+      try {
+        const items = await requestMemo(text)
+        const view = viewRef.current
+        const current = editor.getNode(nodeId)
+        if (view?.editor !== editor || current?.type !== 'note') return notify('付箋が見えなくなったので、メモにしませんでした')
+        const props = current.props as NoteProps
+        if (view.textEditor.editingId === nodeId || JSON.stringify(props.paragraphs) !== JSON.stringify(before)) {
+          return notify('待っている間に付箋が変わったので、置き換えませんでした')
+        }
+        editor.transact('箇条書きのメモにする', (tx) => tx.put({ ...current, props: { ...props, paragraphs: memoParagraphs(items, before[0]?.runs[0]?.format) } }))
+      } catch (error) {
+        notify(`メモにできませんでした：${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        memoizing.current.delete(nodeId)
+      }
+    },
+    [notify],
+  )
+
   // 「Claude におまかせ」：表のカード（かグラフの画像）を選んで添え、頼み方の下書きを入れて Claude のパネルを開く
   const askClaudeForPlot = useCallback(
     (target: PlotTarget) => {
@@ -1036,9 +1070,10 @@ export function App(props: { initial: InitialRecords }) {
           })
         }
       }
-      // 付箋の高さ：文字に合わせる／固定する
+      // 付箋の高さ：文字に合わせる／固定する。文字があれば、箇条書きのメモにする（Haiku）
       if (single?.type === 'note') {
         const props = single.props as NoteProps
+        if (plainTextOf(props.paragraphs).trim()) items.push({ label: '箇条書きのメモにする', onSelect: () => void noteToMemo(single.id) })
         items.push({
           label: props.sizing === 'auto' ? '高さを固定' : '高さを文字に合わせる',
           onSelect: () => {
@@ -1292,7 +1327,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo],
   )
 
 
