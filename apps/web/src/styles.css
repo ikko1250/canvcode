@@ -1264,21 +1264,78 @@ body,
   background: #fff5f5;
 }
 
-/* PDF のページの Canvas で、今のページの PDF の中での番号と総ページ数（MAI-92）。札の形は .sync-status と同じ */
+/* PDF のページの Canvas で、今のページの PDF の中での番号と総ページ数（MAI-92）。札の形は .sync-status と同じ。
+   押すと（G でも）その場で番号の入力欄（.editing）に変わる */
 .pdf-page-number {
   position: absolute;
   left: 50%;
   bottom: calc(12px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
-  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 24px;
+  margin: 0;
+  padding: 0 10px;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   border-radius: 999px;
   color: var(--muted);
+  font: inherit;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  pointer-events: none;
+}
+
+button.pdf-page-number {
+  cursor: pointer;
+}
+
+button.pdf-page-number:hover {
+  background: #ffffff;
+  border-color: #b6bcc5;
+  color: var(--text);
+}
+
+.pdf-page-number.editing {
+  color: var(--text);
+}
+
+.pdf-page-number input {
+  box-sizing: content-box;
+  height: 16px;
+  margin: 0 3px;
+  padding: 0 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  text-align: center;
+  outline: none;
+}
+
+.pdf-page-number input:focus {
+  border-color: var(--accent);
+}
+
+.pdf-page-number input[aria-invalid='true'] {
+  border-color: #cf222e;
+}
+
+/* 番号が使えないときの注意。札の上に出す */
+.pdf-page-number-error {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  background: #fff5f5;
+  border: 1px solid #f5c2c7;
+  border-radius: 6px;
+  color: #cf222e;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* 定期バックアップ（Google Drive）のアイコン。「保存済み」「未接続」の左に出す */

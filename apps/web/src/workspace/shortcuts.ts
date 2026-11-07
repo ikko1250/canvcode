@@ -8,3 +8,9 @@ export function isParentCanvasKey(e: KeyLike): boolean {
   if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false
   return e.key.toLowerCase() === 'u'
 }
+
+// G：PDF のページの番号を入れて移る欄を開く（MAI-92）。U と同じく、修飾キーを押していれば別のキー（Ctrl+G は group）
+export function isPdfPageJumpKey(e: KeyLike): boolean {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false
+  return e.key.toLowerCase() === 'g'
+}

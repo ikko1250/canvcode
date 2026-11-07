@@ -65,7 +65,14 @@ import {
   type PdfRegionRequest,
 } from './refs.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
-import { currentPdfPage as currentPdfPageOf, pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
+import {
+  currentPdfPage as currentPdfPageOf,
+  pageJumpTarget,
+  pageNavigation as pageNavigationOf,
+  pageNavigationTarget,
+  type PageDirection,
+  type PdfPageEntry,
+} from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { SLIDE_IMAGE_SCALE, slideImageRegion, type SlideImage } from './slideImage.ts'
 import { imageFileName, imageRegion, imageSize, selectionImageTarget, type ImageRegion, type ImageSize, type ImageTarget } from './canvasImage.ts'
@@ -2631,15 +2638,29 @@ export class CanvasView {
     return this.pdfPages().map((page) => page.box)
   }
 
-  // 今のページ（画面の中心があるページ）の、PDF の中での番号（1 から）と総ページ数。画面の下の「p.12 / 80」に出す（MAI-92）。
-  // PDF のページがなければ null
-  currentPdfPage(): { page: number; count: number } | null {
-    const pages = this.pdfPages().map(({ props, box }) => ({
+  // この Canvas の PDF のページの、箱と PDF の中での番号と総ページ数（MAI-92）
+  private pdfPageEntries(): PdfPageEntry[] {
+    return this.pdfPages().map(({ props, box }) => ({
       box,
       pageIndex: props.pageIndex,
       pageCount: this.editor.workspace.getFile(props.fileId)?.pageCount,
     }))
-    return currentPdfPageOf(pages, this.editor.session.get().camera, this.width, this.height)
+  }
+
+  // 今のページ（画面の中心があるページ）の、PDF の中での番号（1 から）と総ページ数。画面の下の「p.12 / 80」に出す（MAI-92）。
+  // PDF のページがなければ null
+  currentPdfPage(): { page: number; count: number } | null {
+    return currentPdfPageOf(this.pdfPageEntries(), this.editor.session.get().camera, this.width, this.height)
+  }
+
+  // PDF の中での番号（1 から）のページへ移る（MAI-92。画面の下の札・G）。倍率はそのままに、ページを横は画面の中央に、
+  // 縦は画面に収まれば中央に、収まらなければ頭を上のバーの下に置く（pageJumpTarget）。
+  // そのページがなければ（範囲の外・消した）何もせず false
+  goToPdfPage(pageNumber: number): boolean {
+    const target = pageJumpTarget(this.pdfPageEntries(), pageNumber, this.editor.session.get().camera, this.width, this.height)
+    if (!target) return false
+    this.setCamera(target)
+    return true
   }
 
   // 次・前のページがあるか（パイメニュー「操作」の項目を決める。MAI-57）

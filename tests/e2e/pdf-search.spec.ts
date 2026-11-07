@@ -160,6 +160,144 @@ test('finds words in PDF pages, and moves through the matches from the top of ea
   await expect(page.locator('.pdf-search')).toHaveCount(0)
 })
 
+// PDF の中での番号のページへ移る（MAI-92）：画面の下の「p.N / M」を押すか G で番号の欄になり、Enter で移る
+const surface = (page: Page) => page.locator('.canvas-container > div[tabindex]')
+const cameraOf = (page: Page) => page.evaluate(() => (window as any).canvcode.editor.session.get().camera as { x: number; y: number; zoom: number })
+// 1 ページ目の左上を、倍率 1 で画面の左上に合わせる
+const showFirstPage = (page: Page) => page.evaluate(() => (window as any).canvcode.view.setCamera({ x: 0, y: 0, zoom: 1 }))
+// 移った先のカメラ（pageJumpTarget）：倍率はそのままに、ページを横は画面の中央に、縦は上下の余白（56px）と合わせて
+// 画面に収まれば中央に、収まらなければ上端を画面の上から 56px に置く
+async function expectAtPage(page: Page, pageIndex: number, zoom: number) {
+  const { width, height } = await page.evaluate(() => (window as any).canvcode.view.size as { width: number; height: number })
+  const w = PAGE.width * SCALE
+  const h = PAGE.height * SCALE
+  const y = h * zoom + 56 * 2 <= height ? pageTop(pageIndex) + h / 2 - height / 2 / zoom : pageTop(pageIndex) - 56 / zoom
+  const camera = await cameraOf(page)
+  expect(camera.zoom).toBe(zoom)
+  expect(camera.x).toBeCloseTo(w / 2 - width / 2 / zoom, 6)
+  expect(camera.y).toBeCloseTo(y, 6)
+}
+
+test('jumps to the page with the number typed into the label at the bottom (MAI-92)', async ({ page }) => {
+  await openApp(page, [])
+  await showFirstPage(page)
+  const label = page.locator('.pdf-page-number')
+  await expect(label).toHaveText('p.1 / 3')
+  await expect(label).toHaveAttribute('title', 'ページの番号を入れて移る（G）')
+  await label.click()
+  const input = label.locator('input')
+  await expect(input).toBeFocused()
+  // 今の番号を選んだ状態で入る
+  await expect(input).toHaveValue('1')
+  expect(await input.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([0, 1])
+  await page.keyboard.type('3')
+  await page.keyboard.press('Enter')
+  await expect(input).toHaveCount(0)
+  // 倍率 1 ではページが画面に収まらないので、ページの頭を上のバーの下に置く
+  await expectAtPage(page, 2, 1)
+  await expect(label).toHaveText('p.3 / 3')
+  // キャンバスにフォーカスが戻る
+  await expect(surface(page)).toBeFocused()
+
+  // 全角の数字と、前後の空白。倍率はそのまま（0.5 ではページが収まるので、画面の中央に置く）
+  await page.evaluate(() => (window as any).canvcode.view.setCamera({ x: 0, y: 0, zoom: 0.5 }))
+  await page.keyboard.press('g')
+  await input.fill('　２ ')
+  await input.press('Enter')
+  await expect(input).toHaveCount(0)
+  await expectAtPage(page, 1, 0.5)
+  await expect(label).toHaveText('p.2 / 3')
+})
+
+test('shows the typed number in the label after the jump, even zoomed out with every page in view (MAI-92)', async ({ page }) => {
+  await openApp(page, [])
+  // 3 ページがすべて見える倍率。ページの左上を画面の左上に合わせると、画面の中心は隣のページに入ってしまう
+  await page.evaluate(() => (window as any).canvcode.view.setCamera({ x: 0, y: 0, zoom: 0.2 }))
+  const label = page.locator('.pdf-page-number')
+  const input = label.locator('input')
+  await surface(page).focus()
+  for (const [pageNumber, from] of [[1, 'p.2 / 3'], [3, 'p.1 / 3'], [2, 'p.3 / 3']] as const) {
+    await expect(label).toHaveText(from)
+    await page.keyboard.press('g')
+    await input.fill(String(pageNumber))
+    await input.press('Enter')
+    await expect(input).toHaveCount(0)
+    await expect(label).toHaveText(`p.${pageNumber} / 3`)
+    await expectAtPage(page, pageNumber - 1, 0.2)
+  }
+})
+
+test('warns about a page number it cannot go to, and closes without moving on Esc or leaving the box (MAI-92)', async ({ page }) => {
+  await openApp(page, [])
+  await showFirstPage(page)
+  const input = page.locator('.pdf-page-number input')
+  const error = page.locator('.pdf-page-number-error')
+  await surface(page).focus()
+  await page.keyboard.press('g')
+  await expect(input).toBeFocused()
+  await expect(input).toHaveValue('1')
+
+  // 範囲の外・数でない値：移らずに注意を出し、欄は開いたまま
+  for (const value of ['4', '0', 'abc']) {
+    await input.fill(value)
+    await input.press('Enter')
+    await expect(error).toHaveText('1〜3 の番号を入れてください')
+    await expect(input).toBeFocused()
+  }
+  // 打ち直すと注意は消える
+  await input.fill('2')
+  await expect(error).toHaveCount(0)
+  // 消したページ
+  await page.evaluate(() => (window as any).canvcode.editor.deleteNodes(['node:page1']))
+  await input.press('Enter')
+  await expect(error).toHaveText('2 ページは消されています')
+  await expect(input).toBeFocused()
+  expect(await cameraOf(page)).toEqual({ x: 0, y: 0, zoom: 1 })
+
+  // Esc：移らずに閉じて、キャンバスにフォーカスを戻す
+  await input.fill('3')
+  await input.press('Escape')
+  await expect(input).toHaveCount(0)
+  await expect(surface(page)).toBeFocused()
+  expect(await cameraOf(page)).toEqual({ x: 0, y: 0, zoom: 1 })
+
+  // ほかを押して欄を離れても、移らずに閉じる（ページの右の、何もない所）
+  await page.keyboard.press('g')
+  await input.fill('3')
+  await surface(page).click({ position: { x: 1000, y: 300 } })
+  await expect(input).toHaveCount(0)
+  expect(await cameraOf(page)).toEqual({ x: 0, y: 0, zoom: 1 })
+  await expect(page.locator('.pdf-page-number')).toHaveText('p.1 / 3')
+})
+
+test('G is typed as a letter while editing a note or in the search box (MAI-92)', async ({ page }) => {
+  await openApp(page, [])
+  await showFirstPage(page)
+  const input = page.locator('.pdf-page-number input')
+  // 1 ページ目の上の付箋の文字を編集する
+  await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    editor.createNodes([editor.makeNode('note', { x: 100, y: 300 })])
+  })
+  const box = (await surface(page).boundingBox())!
+  await page.mouse.dblclick(box.x + 150, box.y + 350)
+  const textEditor = page.locator('.canvcode-text-editor')
+  await expect(textEditor).toBeFocused()
+  await page.keyboard.press('g')
+  await expect(textEditor).toContainText('g')
+  await expect(input).toHaveCount(0)
+  await page.keyboard.press('Escape')
+
+  // PDF の単語検索の欄
+  await surface(page).focus()
+  await page.keyboard.press('ControlOrMeta+f')
+  const search = page.locator('.pdf-search input')
+  await expect(search).toBeFocused()
+  await page.keyboard.press('g')
+  await expect(search).toHaveValue('g')
+  await expect(input).toHaveCount(0)
+})
+
 test('leaves Ctrl+F to the browser on a canvas without PDF pages', async ({ page }) => {
   await page.addInitScript(() => localStorage.clear())
   const canvas = {
