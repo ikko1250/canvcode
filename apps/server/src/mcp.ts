@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { normalizeRefId } from '@canvcode/core'
-import { findPlotColumn, PLOT_KINDS, plotTable, plotUsesX, type ImageProps, type PlotKind, type PlotSpec } from '@canvcode/nodes'
+import { findPlotColumn, normalizePlotSpec, PLOT_KINDS, PLOT_MAX_LEGEND_NCOL, plotTable, plotUsesX, type ImageProps, type PlotKind, type PlotSpec } from '@canvcode/nodes'
 import { HttpError, type FileInfo } from './files.ts'
 import type { AgentHost } from './agent/host.ts'
 import { EditError, editCanvas, editCanvasInput, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
@@ -370,7 +370,8 @@ function registerPlotTools(
       title: 'List chart styles',
       description:
         `Styles for plot_csv, defined in ${STYLE_FILE_NAME} at the workspace root (matplotlib rcParams; the user can edit it, or ask you to add a style there). ` +
-        'Returns name, description and series colours of each style, and the absolute path of the style file.',
+        'Returns name, description and series colours of each style (with size, the default image pixels, and legend_ncol, the default legend columns, ' +
+        'when the style sets them), and the absolute path of the style file.',
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -401,9 +402,17 @@ function registerPlotTools(
         xlabel: z.string().nullable().optional().describe('Horizontal axis label; null = from the column name, "" = none'),
         ylabel: z.string().nullable().optional().describe('Vertical axis label; null = from the column name, "" = none'),
         legend: z.boolean().nullable().optional().describe('Default: only with 2+ series'),
+        legend_ncol: z
+          .number()
+          .int()
+          .min(1)
+          .max(PLOT_MAX_LEGEND_NCOL)
+          .nullable()
+          .optional()
+          .describe("Legend columns; null = the style's default (fewer when the legend does not fit the image). 1-2 when series names are long"),
         header: z.boolean().optional().describe('First row is the header (default true)'),
-        width: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size)"),
-        height: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size)"),
+        width: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size). 1440×1440 for a high-resolution 1:1 image"),
+        height: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size). 1440×1440 for a high-resolution 1:1 image"),
         canvas_id: z.string().optional().describe("Canvas id (default: the one the user is viewing)"),
         at: z.object({ x: z.number(), y: z.number() }).optional().describe('World top-left of a new chart'),
         place: z
@@ -418,15 +427,15 @@ function registerPlotTools(
     (input) =>
       plotGuard(async () => {
         const user = viewing()
-        let existing: { canvasId: string; props: ImageProps } | null = null
+        let existing: { canvasId: string; plot: PlotSpec } | null = null
         if (input.node) {
           const node = records.get(input.node)
-          if (!node || node.typeName !== 'node' || node.type !== 'image' || !(node.props as ImageProps).plot) {
-            throw new PlotError(`${input.node} is not a chart image made by plot_csv`)
-          }
-          existing = { canvasId: canvasOf(records, node.id), props: node.props as ImageProps }
+          // 作り方は前の版・ほかのタブが書いたものかもしれないので、形を確かめ、足りない項目（legendNcol など）を埋める（MAI-95）
+          const plot = node && node.typeName === 'node' && node.type === 'image' ? normalizePlotSpec((node.props as ImageProps).plot) : null
+          if (!node || !plot) throw new PlotError(`${input.node} is not a chart image made by plot_csv`)
+          existing = { canvasId: canvasOf(records, node.id), plot }
         }
-        const base = existing?.props.plot
+        const base = existing?.plot
         const fileId = input.document ? resolveTable(files, input.document) : base?.fileId
         if (!fileId) throw new PlotError('Pass document (a table document id or path)')
         const header = input.header ?? base?.header ?? true
@@ -460,6 +469,7 @@ function registerPlotTools(
           xlabel: input.xlabel !== undefined ? input.xlabel : (base?.xlabel ?? null),
           ylabel: input.ylabel !== undefined ? input.ylabel : (base?.ylabel ?? null),
           legend: input.legend !== undefined ? input.legend : (base?.legend ?? null),
+          legendNcol: input.legend_ncol !== undefined ? input.legend_ncol : (base?.legendNcol ?? null),
           width: input.width ?? size?.[0] ?? base?.width ?? 1280,
           height: input.height ?? size?.[1] ?? base?.height ?? 800,
         }

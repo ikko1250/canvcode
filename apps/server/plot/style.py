@@ -15,12 +15,19 @@ CanvCode は STYLES を読む。キーがスタイルの名前（画面の一覧
 
 - description：一覧に出す短い説明（AI がスタイルを選ぶときにも読む）
 - setup：描く前に呼ぶ関数（引数なし）。rcParams を整える
-- legend：凡例を置く関数 legend(ax, ncol)。CanvCode が ax.legend() を呼んだあとに呼ぶ（ncol は系列の数から決める。4 まで）
+- legend：凡例を置く関数 legend(ax, ncol)。CanvCode が ax.legend() を呼んだあとに呼ぶ。ncol は凡例の列の数で、
+  グラフで指定した列の数 → legend_ncol → 系列の数（4 まで）の順に決める。指定がなく凡例が図に収まらないときは、
+  CanvCode が凡例を消し、列の数を変えて ax.legend() とこの関数を呼び直す（何度も呼ぶことがある。凡例のほかに文字などを
+  足す関数だと重なるので、凡例を置くだけにする。ほかのものは after で足す）。ncol を使わずに列の数を決め打ちすると、
+  グラフで指定した列の数が効かない（そう知らせる）
+- legend_ncol：グラフで列の数を指定しないときの、凡例の列の数（1〜20。なければ系列の数から決める。legend の関数も
+  legend_ncol もなければ、matplotlib の既定の 1 列。MAI-95）
 - size：新しく作るときの画像の大きさ（画素の (幅, 高さ)。画面と AI がこの大きさから始める）
 - colors：一覧に出す系列の色（#rrggbb）
 - ほかに rc（rcParams の辞書）・base（matplotlib の組み込みのスタイル）・after（描いたあとに呼ぶ関数 after(fig, ax)）も使える
 
-画像の大きさと解像度は CanvCode が決める（figure.figsize・figure.dpi・savefig.dpi は、画面で選んだ大きさで上書きされる）。
+画像の大きさと解像度は CanvCode が決める（figure.figsize・figure.dpi・savefig.dpi は、画面で選んだ大きさで上書きされる。
+savefig.bbox の "tight" も使わない）。解像度は 200 dpi で、1440 画素が 7.2 インチ（下の figure.figsize の 7.2 はこれに合わせてある）。
 font_family に並べたフォントのうち、入っていないものは使わない。日本語を出すには、日本語のフォントがサーバーに入っている必要がある
 （Ubuntu なら sudo apt install fonts-noto-cjk）。
 """
@@ -152,8 +159,9 @@ STYLES = {
     "資料": {
         "description": "文字を小さめにした notebook。報告書・Markdown に貼る図向け。凡例は軸の右の外",
         "setup": lambda: set_presentation_style(context="notebook", font_scale=0.8, legend_loc="center left", legend_bbox_to_anchor=(1.02, 0.5)),
-        # 右の外に置く凡例は縦に 1 列（横に並べると、軸が細くなる）
-        "legend": lambda ax, ncol: place_legend(ax, ncol=1),
+        # 右の外に置く凡例は、指定がなければ縦に 1 列（横に並べると、軸が細くなる）
+        "legend": place_legend,
+        "legend_ncol": 1,
         "size": (1280, 800),
         "colors": _palette("colorblind"),
     },
