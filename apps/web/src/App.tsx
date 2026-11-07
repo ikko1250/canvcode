@@ -1525,15 +1525,36 @@ export function App(props: { initial: InitialRecords }) {
   // 文字の入力中（パネルの中も。パイメニューと同じ条件）は、ただの文字として扱う。既定の動作は止める（フォーカスを移した入力欄に c が入らないように）
   useEffect(() => {
     if (openFileId || dialog || renaming || tableFilter) return
-    const onKey = (e: KeyboardEvent) => {
+    // C で開いて、まだ離していないキー（e.code）。押し続けたときのリピートの keydown は、フォーカスを移した入力欄に届くので、
+    // 入力の場所かどうかを見る前に止める（止めないと c が入る）。離すまでなので、入力欄で押し続けて c を打つのは今までどおり
+    let held: string | null = null
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat && e.code === held) {
+        e.preventDefault()
+        return
+      }
       if (e.defaultPrevented || e.repeat || !isClaudePanelKey(e) || claude.state.availability !== 'on') return
       if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
       if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
       e.preventDefault()
+      held = e.code
       askClaude('')
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === held) held = null
+    }
+    // ほかのウィンドウに移ると keyup が届かないことがある
+    const onBlur = () => {
+      held = null
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+    }
   }, [claude, askClaude, openFileId, dialog, renaming, tableFilter])
 
   // サイドバーからの操作は、今の Canvas の履歴に入る（MAI-11）
@@ -2079,8 +2100,8 @@ export function App(props: { initial: InitialRecords }) {
                 setClaudeOpen(false)
                 setClaudeDraft(null)
               }}
-              title="Claude に頼むパネルを開け閉めする（C で開く。Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
-              aria-keyshortcuts="C"
+              // C はこのボタンと違って閉じないので、aria-keyshortcuts は付けず、ここに書く（MAI-91）
+              title="Claude に頼むパネルを開け閉めする（C で開くか、開いていれば入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
             >
               Claude
             </button>

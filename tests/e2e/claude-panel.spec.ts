@@ -363,6 +363,23 @@ test('C with the panel open moves the focus back to the prompt box and keeps wha
   await expect(promptBox(page)).toHaveValue('途中まで書いた')
 })
 
+test('holding C opens the panel without typing c into the prompt box (MAI-91)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await page.keyboard.down('c')
+  await expect(promptBox(page)).toBeFocused()
+  // キーリピート（repeat の keydown）は、フォーカスを移した入力欄に届く
+  await page.keyboard.down('c')
+  await page.keyboard.down('c')
+  await page.keyboard.up('c')
+  await expect(promptBox(page)).toHaveValue('')
+  // 離したあとに入力欄で押せば、押し続けても文字になる
+  await page.keyboard.press('c')
+  await page.keyboard.down('c')
+  await page.keyboard.down('c')
+  await page.keyboard.up('c')
+  await expect(promptBox(page)).toHaveValue('ccc')
+})
+
 test('C in the prompt box is just a letter (MAI-91)', async ({ page }) => {
   await openApp(page)
   await promptBox(page).click()
