@@ -2629,6 +2629,17 @@ body,
   color: #1f2328;
 }
 
+.table-filter-input input[aria-invalid] {
+  border-color: #cf222e;
+}
+
+/* 大小を比べる条件で、数・日付として読めない値（MAI-94） */
+.table-filter-warning {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #cf222e;
+}
+
 /* Claude に頼むパネル（claude/ClaudePanel.tsx）。キャンバスの右に並べる（右上のデザインパネルと重ならない）。
    狭い画面（スマホ）では、画面いっぱいに重ねる */
 .claude-panel {

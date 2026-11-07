@@ -317,6 +317,33 @@ describe('edit_canvas', () => {
     expect(() => edit([{ op: 'create', type: 'markdown-card', file: 'file:csv', x: 0, y: 0 }])).toThrow(/use type table-card/)
   })
 
+  it('checks the filters of a table card, and refuses malformed ones so that the AI fixes them (MAI-94)', () => {
+    const { records, edit } = setup()
+    const now = Date.now()
+    const file = { typeName: 'file', id: 'file:csv', kind: 'table', title: '株価', path: '株価.csv', size: 1, mtime: now, hash: 'h', missing: false, parentCanvasId: null, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null }
+    records.apply([file], [])
+    const filters = [{ col: 0, op: 'ge', value: '2012' }, { col: 1, op: 'notEmpty' }]
+    const made = edit([{ op: 'create', type: 'card', as: 'c', file: 'file:csv', x: 0, y: 0, props: { filters } }]).created
+    // 値の要らない条件は、値を '' にして入れる
+    const stored = [{ col: 0, op: 'ge', value: '2012' }, { col: 1, op: 'notEmpty', value: '' }]
+    expect(records.get(made.c!)).toMatchObject({ type: 'table-card', props: { filters: stored } })
+    const update = (filters: unknown) => edit([{ op: 'update', id: made.c, props: { filters } }])
+    expect(() => update([{ col: 0, op: 'ge', value: 2012 }])).toThrow(/ops\[0\] \(update\): props\.filters\.0\.value: .*expected string/)
+    expect(() => update([{ col: 0, op: 'between', value: '1' }])).toThrow(/props\.filters\.0\.op: .*"contains"/)
+    expect(() => update([{ col: '1', op: 'empty' }])).toThrow(/props\.filters\.0\.col: /)
+    expect(() => update([{ col: -1, op: 'empty' }])).toThrow(/props\.filters\.0\.col: /)
+    expect(() => update([{ col: 0.5, op: 'empty' }])).toThrow(/props\.filters\.0\.col: /)
+    expect(() => update([stored[0], { col: 0, op: 'ge' }])).toThrow(/props\.filters\.1\.value: ge needs a value/)
+    expect(() => update([{ col: 0, op: 'ge', value: '2012', extra: 1 }])).toThrow(/props\.filters\.0: .*extra/)
+    expect(() => update([null])).toThrow(/props\.filters\.0: /)
+    expect(() => update({ col: 0, op: 'ge', value: '2012' })).toThrow(/props\.filters: .*expected array/)
+    expect(() => edit([{ op: 'create', type: 'card', file: 'file:csv', x: 0, y: 0, props: { filters: [{ col: 0, op: 'gte', value: '1' }] } }])).toThrow(/ops\[0\] \(create\): props\.filters\.0\.op/)
+    // 断ったときは何も変えない。[] なら条件を外す
+    expect(records.get(made.c!)).toMatchObject({ props: { filters: stored } })
+    update([])
+    expect(records.get(made.c!)).toMatchObject({ props: { filters: [] } })
+  })
+
   it('places a second card of a document as a small fixed shortcut (h overrides the height)', () => {
     const { records, edit } = setup()
     const now = Date.now()
