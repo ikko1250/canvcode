@@ -61,9 +61,21 @@ describe('normalizePlotSpec', () => {
       xlabel: null,
       ylabel: null,
       legend: null,
+      legendNcol: null,
       width: 4000,
       height: 800,
     })
+  })
+
+  it('keeps the legend columns only when they are a whole number from 1 to 20 (MAI-95)', () => {
+    const spec = (legendNcol: unknown) => normalizePlotSpec({ fileId: 'file:a', y: [1], legendNcol })?.legendNcol
+    expect(spec(2)).toBe(2)
+    expect(spec(1)).toBe(1)
+    expect(spec(20)).toBe(20)
+    for (const bad of [0, 2.5, 21, 'x', '2', null, true]) expect(spec(bad)).toBeNull()
+    // 前の版で作ったグラフ（legendNcol がない）は自動
+    expect(normalizePlotSpec({ fileId: 'file:a', y: [1], legend: true, width: 1280, height: 800 })).toMatchObject({ legend: true, legendNcol: null })
+    expect(defaultPlotSpec('file:a', plotTable(CSV, 'sales.csv', true), true, '').legendNcol).toBeNull()
   })
 
   it('rejects a spec without a file or value columns, and drops broken columns and kinds', () => {

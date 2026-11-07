@@ -4,7 +4,7 @@ import { defaultPlotSpec, PLOT_KIND_LABELS, PLOT_KINDS, plotTable, plotUsesX, ty
 import { fetchPlotStyles, renderPlot, type PlotStyle, type RenderedPlot } from './plotClient.ts'
 
 // CSV からグラフを作る・作り方を変えるダイアログ（plot.ts）。
-// - 種類・横の軸の列・値の列・スタイル（style.py）・タイトル・軸の名前・大きさを選ぶと、少し待ってサーバーが描いたプレビューを出す
+// - 種類・横の軸の列・値の列・スタイル（style.py）・タイトル・軸の名前・凡例・大きさを選ぶと、少し待ってサーバーが描いたプレビューを出す
 // - 「置く」（作り方を変えるときは「描き直す」）で、描いた PNG を画像のノードにする（どこに置くかは呼んだ側が決める）
 // - 「Claude におまかせ」で、表を添えて Claude のパネルを開き、列と種類とスタイルを選ばせる
 // - 中のキー入力はキャンバスに渡さない（data-own-keys）。Esc でやめる
@@ -12,11 +12,18 @@ import { fetchPlotStyles, renderPlot, type PlotStyle, type RenderedPlot } from '
 const PREVIEW_DELAY_MS = 400
 
 const SIZES: { label: string; width: number; height: number }[] = [
+  // 1440 画素は 200 dpi で 7.2 インチ。同梱の style.py の字の大きさはこの大きさに合わせてある（MAI-95）
+  { label: '正方形（1440×1440）', width: 1440, height: 1440 },
+  { label: '16:9（1920×1080）', width: 1920, height: 1080 },
   { label: '横長（1280×800）', width: 1280, height: 800 },
   { label: '16:9（1600×900）', width: 1600, height: 900 },
   { label: '正方形（1000×1000）', width: 1000, height: 1000 },
   { label: '縦長（800×1100）', width: 800, height: 1100 },
 ]
+
+// 凡例の列の数の選択肢（自動のほか。AI はこれより多い列の数も指定できる。MAI-95）
+const LEGEND_NCOLS = [1, 2, 3, 4, 5, 6]
+const LEGEND_VALUES = { auto: null, on: true, off: false } as const
 
 // スタイルに大きさ（style.py の size）があれば、その大きさにする（スタイルを選ぶと、大きさもそのスタイルのものになる）
 function withStyleSize<T extends Partial<PlotSpec>>(spec: T, style: PlotStyle | undefined): T {
@@ -145,6 +152,9 @@ export function PlotDialog(props: PlotDialogProps) {
 
   const style = styles?.find((s) => s.name === current?.style)
   const usesX = current ? plotUsesX(current.kind) : true
+  // 円と箱ひげは凡例を描かない（plot.py）。凡例を描かないときは、列の数も選べない
+  const legendKind = current !== null && current.kind !== 'pie' && current.kind !== 'box'
+  const legendShown = legendKind && (current.legend ?? current.y.length > 1)
   const size = SIZES.findIndex((s) => s.width === current?.width && s.height === current?.height)
   return (
     <div className="dialog-backdrop" onPointerDown={onClose}>
@@ -248,6 +258,39 @@ export function PlotDialog(props: PlotDialogProps) {
                 </label>
               </div>
             )}
+            <div className="plot-field-row">
+              <label className="plot-field">
+                <span>凡例</span>
+                <select
+                  aria-label="凡例"
+                  value={current?.legend === true ? 'on' : current?.legend === false ? 'off' : 'auto'}
+                  disabled={!legendKind}
+                  onChange={(e) => update({ legend: LEGEND_VALUES[e.target.value as keyof typeof LEGEND_VALUES] })}
+                >
+                  <option value="auto">自動</option>
+                  <option value="on">出す</option>
+                  <option value="off">出さない</option>
+                </select>
+              </label>
+              <label className="plot-field">
+                <span>凡例の列の数</span>
+                <select
+                  aria-label="凡例の列の数"
+                  value={current?.legendNcol ?? ''}
+                  disabled={!legendShown}
+                  onChange={(e) => update({ legendNcol: e.target.value === '' ? null : Number(e.target.value) })}
+                >
+                  <option value="">自動</option>
+                  {/* AI が選択肢より多い列の数を指定したときも、そのまま出す */}
+                  {current?.legendNcol != null && !LEGEND_NCOLS.includes(current.legendNcol) && <option value={current.legendNcol}>{`${current.legendNcol} 列`}</option>}
+                  {LEGEND_NCOLS.map((n) => (
+                    <option key={n} value={n}>
+                      {`${n} 列`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <div className="plot-field-row">
               <label className="plot-field">
                 <span>大きさ</span>

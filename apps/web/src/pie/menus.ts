@@ -1,5 +1,5 @@
 import type { AlignEdge, Axis, PageDirection, ReorderDirection, ToolId } from '@canvcode/canvas'
-import { FILTER_OP_LABELS, filterNeedsValue, type SlideLayoutKind, type SlideRatio, type TableFilterOp, type TextAlign } from '@canvcode/nodes'
+import { FILTER_OP_LABELS, filterNeedsValue, type SlideLayoutKind, type SlideRatio, type TableColumnKind, type TableFilterOp, type TextAlign } from '@canvcode/nodes'
 import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 
 // パイメニューの中身（MAI-39。以前は画面の下端のツールバーに並べていたもの）。
@@ -122,8 +122,8 @@ export interface PdfMenuContext {
 }
 
 export interface TableMenuContext {
-  // 開いた位置の列（列の上でなければ null）
-  column: { numeric: boolean; sorted: boolean; filtered: boolean } | null
+  // 開いた位置の列（列の上でなければ null）。kind は列の種類（数・日付・文字。MAI-94）
+  column: { kind: TableColumnKind; sorted: boolean; filtered: boolean } | null
   // 並び替えているか・絞り込みの条件の数・折り返しているか
   sorted: boolean
   filterCount: number
@@ -179,7 +179,8 @@ const SLIDE_TEMPLATES: [SlideLayoutKind, string][] = [
   ['table-images', '表＋2画像'],
 ]
 
-// 絞り込みの条件（文字の列と数の列。値の要るものは「…」を付け、選んだあとに値を尋ねる）
+// 絞り込みの条件（文字の列と、数・日付の列。日付の列も数の列と同じく大小を比べる。MAI-94。
+// 値の要るものは「…」を付け、選んだあとに値を尋ねる）
 const TEXT_FILTERS: TableFilterOp[] = ['contains', 'notContains', 'equals', 'notEquals', 'empty', 'notEmpty']
 const NUMBER_FILTERS: TableFilterOp[] = ['equals', 'notEquals', 'gt', 'ge', 'lt', 'le', 'empty', 'notEmpty']
 
@@ -194,7 +195,7 @@ function buildTableItems(ctx: PieMenuContext, table: TableMenuContext): PieEntry
     ]
     if (table.sorted) sort.push({ label: '並び替えをやめる', onSelect: () => ctx.sortTable(null) })
     items.push({ label: '並び替え', items: sort })
-    const ops = column.numeric ? NUMBER_FILTERS : TEXT_FILTERS
+    const ops = column.kind === 'text' ? TEXT_FILTERS : NUMBER_FILTERS
     items.push({
       label: 'フィルター',
       items: ops.map((op) => ({ label: FILTER_OP_LABELS[op] + (filterNeedsValue(op) ? '…' : ''), onSelect: () => ctx.filterTable(op) })),
