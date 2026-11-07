@@ -15,7 +15,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, GEO_SHAPES, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio } from '@canvcode/nodes'
+import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -77,6 +77,28 @@ function headsProps(heads: Heads): { arrowheadStart: ArrowheadKind; arrowheadEnd
 }
 
 export class EditError extends Error {}
+
+// 表のカードの絞り込みの条件（props.filters）。画面は形の崩れた条件を捨てるが（activeTableFilters）、
+// AI には EditError を返して直させる（MAI-94）。値の要らない条件（empty・notEmpty）は value を省ける
+const tableFilters = z.array(
+  z.strictObject({
+    col: z.number().int().min(0),
+    op: z.enum(Object.keys(FILTER_OP_LABELS) as [TableFilterOp, ...TableFilterOp[]]),
+    value: z.string().optional(),
+  }),
+)
+
+function checkTableFilters(value: unknown): TableFilter[] {
+  const result = tableFilters.safeParse(value)
+  if (!result.success) {
+    const issue = result.error.issues[0]!
+    throw new EditError(`${['props', 'filters', ...issue.path].join('.')}: ${issue.message}`)
+  }
+  return result.data.map((f, i) => {
+    if (filterNeedsValue(f.op) && (f.value ?? '').trim() === '') throw new EditError(`props.filters.${i}.value: ${f.op} needs a value`)
+    return { col: f.col, op: f.op, value: f.value ?? '' }
+  })
+}
 
 // ---- 操作の形 ----
 
@@ -1238,6 +1260,7 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
   const rejected = [...used].filter((field) => !accepted.has(field))
   if (rejected.length) throw new EditError(`${rejected.join(', ')} ${rejected.length > 1 ? 'are' : 'is'} not supported for ${type}`)
   if (raw) Object.assign(props, raw)
+  if (raw && type === 'table-card' && 'filters' in raw) props.filters = checkTableFilters(raw.filters)
   return props
 }
 

@@ -242,7 +242,15 @@ test('filters a date column by year, and warns about a value that is not a date'
   await expect(page.locator('.table-filter-warning')).toContainText('日付として読めません')
   await expect(input).toBeFocused()
   expect((await tableState(page)).filters).toEqual([])
+  // 読めない値のまま、ほかを押して離れると、決めずに閉じる
+  const rect = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  await page.mouse.click(rect.x + 850, rect.y + 650)
+  await expect(page.locator('.table-filter-input')).toHaveCount(0)
+  expect((await tableState(page)).filters).toEqual([])
   // 年だけを入れると、2012 年からの 3 行になる
+  await pointAtColumn(page, 0)
+  await choose(page, 'o', ['フィルター', '≧…'])
+  await expect(input).toBeFocused()
   await input.fill('2012')
   await input.press('Enter')
   await expect(page.locator('.table-filter-input')).toHaveCount(0)

@@ -48,6 +48,23 @@ export const FILTER_OP_LABELS: Record<TableFilterOp, string> = {
   notEmpty: '空でない',
 }
 
+// カードの filters のうち、使う条件（絞り込み・見出しの印・条件の数はどれもこれを使う。MAI-94）。
+// AI の edit_canvas が形の崩れた値を入れることもあるので揃える：配列でない・要素がオブジェクトでない・
+// op が FILTER_OP_LABELS にない・col が 0 以上の整数でない条件は捨て、value は文字にする。値の要る条件で値が空のものも使わない
+export function activeTableFilters(filters: unknown): TableFilter[] {
+  if (!Array.isArray(filters)) return []
+  const out: TableFilter[] = []
+  for (const f of filters as unknown[]) {
+    if (typeof f !== 'object' || f === null) continue
+    const { col, op, value } = f as Record<string, unknown>
+    if (typeof op !== 'string' || !Object.hasOwn(FILTER_OP_LABELS, op) || !Number.isInteger(col) || (col as number) < 0) continue
+    const filter: TableFilter = { col: col as number, op: op as TableFilterOp, value: String(value ?? '') }
+    if (filterNeedsValue(filter.op) && filter.value.trim() === '') continue
+    out.push(filter)
+  }
+  return out
+}
+
 // 列が数だけか（見出しを除く、空でないセルがすべて数として読める。空でないセルがなければ数でない）。
 // 多い表でも、見るのは先頭の limit 行まで
 export function isNumericColumn(rows: string[][], col: number, start: number, limit = 2000): boolean {
@@ -64,14 +81,18 @@ export function isNumericColumn(rows: string[][], col: number, start: number, li
 
 // ---- 欠損の印・日付・列の種類（MAI-94） ----
 
-// 欠損の印（NFKC と前後の空白の除去・小文字にしたあとの形。「…」は NFKC で「...」になる）
-const MISSING_MARKS = new Set(['n/a', 'na', '#n/a', '(na)', 'nan', 'null', '-', '—', 'ー', '...'])
+// 欠損の印（NFKC と前後の空白の除去・小文字にしたあとの形。「…」は NFKC で「...」になる）。
+// 表計算のエラー（#VALUE!・#DIV/0!）と Bloomberg の #N/A N/A も。―（U+2015）と −（U+2212）は NFKC で変わらない
+const MISSING_MARKS = new Set(['n/a', 'na', '#n/a', '(na)', 'nan', 'null', '-', '—', 'ー', '...', '.', '--', 'n.a.', '#value!', '#div/0!', '#n/a n/a', '―', '−'])
+// いちばん長い印の文字の数（NFKC で長くなるのは「…」だけなので、元のセルがこれより長ければ印でない）
+const MISSING_MAX_LENGTH = Math.max(...[...MISSING_MARKS].map((mark) => mark.length))
 
-// セルが欠損の印か（N/A・NA・#N/A・(NA)・NaN・null・-・—・ー・…。大文字小文字・全角半角を区別しない）。空のセルは印でない
+// セルが欠損の印か（N/A・NA・#N/A・(NA)・NaN・null・-・—・ー・…・.・--・n.a.・#VALUE!・#DIV/0!・#N/A N/A・―・−。
+// 大文字小文字・全角半角を区別しない）。空のセルは印でない。負の数（-5・−5）や小数（.5）は印でない
 export function isMissingValue(text: string): boolean {
   const trimmed = text.trim()
-  // 印はどれも 4 文字まで（NFKC で長くなるのは「…」だけ）。長いセルは揃えずに外す
-  if (trimmed === '' || trimmed.length > 4) return false
+  // 長いセルは揃えずに外す
+  if (trimmed === '' || trimmed.length > MISSING_MAX_LENGTH) return false
   return MISSING_MARKS.has(trimmed.normalize('NFKC').trim().toLowerCase())
 }
 
@@ -233,7 +254,7 @@ const collator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' })
 
 // 見せる行：見出し（あれば）のあとに、絞り込んで並べ替えたデータの行。何もしなければ rows をそのまま返す
 export function applyTableView(rows: string[][], view: { header: boolean; sort?: TableSort | null; filters?: readonly TableFilter[] }): string[][] {
-  const filters = (view.filters ?? []).filter((f) => !filterNeedsValue(f.op) || f.value.trim() !== '')
+  const filters = activeTableFilters(view.filters)
   const sort = view.sort ?? null
   if (filters.length === 0 && !sort) return rows
   const start = view.header && rows.length > 0 ? 1 : 0
@@ -290,14 +311,15 @@ export function withTableSort<T extends TableViewProps>(props: T, sort: TableSor
   return { ...props, sort }
 }
 
-// 絞り込みの条件を足す。同じ列・同じ条件のものがあれば、値を置き換える（「≧ 100」と「≦ 200」は両方持てる）
+// 絞り込みの条件を足す。同じ列・同じ条件のものがあれば、値を置き換える（「≧ 100」と「≦ 200」は両方持てる）。
+// 足す・外すときに、使えない条件（activeTableFilters で捨てるもの）は消す
 export function withTableFilter<T extends TableViewProps>(props: T, filter: TableFilter): T {
-  const filters = props.filters ?? []
+  const filters = activeTableFilters(props.filters)
   const index = filters.findIndex((f) => f.col === filter.col && f.op === filter.op)
   return { ...props, filters: index < 0 ? [...filters, filter] : filters.map((f, i) => (i === index ? filter : f)) }
 }
 
 // 絞り込みの条件を外す（col を渡せばその列だけ、省けばすべて）
 export function withoutTableFilters<T extends TableViewProps>(props: T, col?: number): T {
-  return { ...props, filters: col === undefined ? [] : (props.filters ?? []).filter((f) => f.col !== col) }
+  return { ...props, filters: col === undefined ? [] : activeTableFilters(props.filters).filter((f) => f.col !== col) }
 }

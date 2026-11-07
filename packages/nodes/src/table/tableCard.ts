@@ -4,7 +4,7 @@ import { tilesInRect, visibleLocalRect } from '../markdown/tiles.ts'
 import { requestFontLoad, textMetricsGeneration, TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { parseDelimited } from './delimited.ts'
 import { TABLE_METRICS, columnAtX, drawCellBars, drawCells, estimateTextWidth, layoutTable, tableFont, type ColumnMark, type TableLayout, type TableMeasure } from './tableLayout.ts'
-import { applyTableView, columnKind, filterNeedsValue, withThousandsSeparators, type TableColumnKind, type TableFilter, type TableSort } from './tableView.ts'
+import { activeTableFilters, applyTableView, columnKind, withThousandsSeparators, type TableColumnKind, type TableFilter, type TableSort } from './tableView.ts'
 
 // 表のカード（`table-card`）。ワークスペースの .csv / .tsv の File を表にして見せる（.md・.py のカードと同じく、本文は File が持つ）。
 // - DOM や SVG は使わない。列の幅を 1 度だけ測り（tableLayout.ts）、見えているところだけを TILE_SIZE の正方形のタイルに分けて、
@@ -94,15 +94,11 @@ function layoutRows(rows: string[][], view: TableView): TableLayout {
   const marks: ColumnMark[] = []
   if (view.header) {
     if (view.sort) marks[view.sort.col] = { sort: view.sort.dir }
-    for (const f of activeFilters(view)) marks[f.col] = { ...marks[f.col], filtered: true }
+    // 使えない条件（形の崩れたもの・値のないもの）には印を付けない（activeTableFilters。MAI-94）
+    for (const f of activeTableFilters(view.filters)) marks[f.col] = { ...marks[f.col], filtered: true }
   }
   const shown = applyTableView(rows, view)
   return layoutTable(view.thousands === false ? shown : withThousandsSeparators(shown, view.header), { header: view.header, measure: measureText, wrap: view.wrap, marks })
-}
-
-// 値を入れてある絞り込みの条件（値の要らない条件はそのまま）
-function activeFilters(view: TableView): TableFilter[] {
-  return (view.filters ?? []).filter((f) => !filterNeedsValue(f.op) || f.value.trim() !== '')
 }
 
 // 取り込んだ表のカードの大きさ：幅は表に合わせ（IMPORT_MAX_WIDTH まで）、行が多ければ高さを固定にする。
@@ -135,7 +131,7 @@ export function createTableCardType(options: TableCardOptions = {}) {
   const layoutOf = (props: TableCardProps) => {
     const content = textOf(props)
     if (!content) return null
-    const view: TableView = { header: props.header, wrap: props.wrap === true, thousands: props.thousands !== false, sort: props.sort ?? null, filters: activeFilters(props) }
+    const view: TableView = { header: props.header, wrap: props.wrap === true, thousands: props.thousands !== false, sort: props.sort ?? null, filters: activeTableFilters(props.filters) }
     const version = `${content.version}|${content.path ?? ''}|${JSON.stringify(view)}|${textMetricsGeneration()}`
     let cached = layoutCache.get(version)
     if (!cached) {

@@ -42,6 +42,7 @@ import {
   type QuoteCardProps,
   type TableCardProps,
   FILTER_OP_LABELS,
+  activeTableFilters,
   filterNeedsValue,
   withTableFilter,
   withTableSort,
@@ -1669,7 +1670,8 @@ export function App(props: { initial: InitialRecords }) {
   ): Pick<PieMenuContext, 'table' | 'sortTable' | 'filterTable' | 'clearTableFilters' | 'toggleTableWrap'> => {
     const props = under?.node.props
     const column = under?.column ?? null
-    const filters = props?.filters ?? []
+    // 使える条件だけを数える（形の崩れた条件は、漏斗の印にも条件の数にも入れない。MAI-94）
+    const filters = activeTableFilters(props?.filters)
     return {
       table:
         under && props
