@@ -123,11 +123,15 @@ test('finds words in PDF pages, and moves through the matches from the top of ea
 
   // 1 ページ目の上・中・下、2 ページ目の順
   const expected = [lineY(0, 700), lineY(0, 400), lineY(0, 100), lineY(1, 700)]
+  // 画面の下の中央に、今のページ（画面の中心があるページ）の PDF の中での番号と総ページ数が出る（MAI-92）
+  const pageNumber = page.locator('.pdf-page-number')
   for (const [i, y] of expected.entries()) {
     await input.press('Enter')
     await expect(count).toHaveText(`${i + 1} / 4`)
     await expect.poll(() => centerY(page)).toBeCloseTo(y, -1)
+    if (i === 0) await expect(pageNumber).toHaveText('p.1 / 3')
   }
+  await expect(pageNumber).toHaveText('p.2 / 3')
   // 最後の次は最初に戻り、Shift+Enter で前へ（最初の前は最後）
   await input.press('Enter')
   await expect(count).toHaveText('1 / 4')

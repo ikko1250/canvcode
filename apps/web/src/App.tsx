@@ -1626,6 +1626,8 @@ export function App(props: { initial: InitialRecords }) {
   const templateSlideId =
     session.selectedIds.size === 1 && selectedSlides.length === 1 && editor.index.childrenOf(selectedSlides[0].id).length === 0 ? selectedSlides[0].id : null
   const pageNavigation = pdfPageIds.length > 0 && view ? view.pageNavigation() : { canNext: false, canPrev: false }
+  // 画面の下の中央に出す、今のページの PDF の中での番号と総ページ数（「p.12 / 80」。MAI-92）。全画面のエディタの間は出さない
+  const pdfPageNumber = pdfPageIds.length > 0 && view && !openFileId ? view.currentPdfPage() : null
   // PDF の URL のリンクのカードを 1 つだけ選んでいれば、PDF ポータルを作れる
   const [onlySelectedId] = session.selectedIds.size === 1 ? session.selectedIds : []
   const onlySelected = onlySelectedId ? editor.getNode(onlySelectedId) : undefined
@@ -2073,6 +2075,12 @@ export function App(props: { initial: InitialRecords }) {
             {syncStatus === 'offline' ? '未接続' : loadingCanvas ? 'キャンバスを読み込み中…' : SYNC_LABELS[syncStatus]}
           </div>
         </div>
+
+        {pdfPageNumber && (
+          <div className="pdf-page-number">
+            p.{pdfPageNumber.page} / {pdfPageNumber.count}
+          </div>
+        )}
 
         <AgentToasts sync={sync} />
 

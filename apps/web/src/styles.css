@@ -1264,6 +1264,23 @@ body,
   background: #fff5f5;
 }
 
+/* PDF のページの Canvas で、今のページの PDF の中での番号と総ページ数（MAI-92）。札の形は .sync-status と同じ */
+.pdf-page-number {
+  position: absolute;
+  left: 50%;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* 定期バックアップ（Google Drive）のアイコン。「保存済み」「未接続」の左に出す */
 /* 説明は .status-bar の右端にそろえる（アイコンの右には「保存済み」がある） */
 .backup-status-wrap {

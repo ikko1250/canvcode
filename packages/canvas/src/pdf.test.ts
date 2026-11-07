@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { NodeRecord } from '@canvcode/core'
-import { PDF_POINT_SCALE, type PdfPageProps } from '@canvcode/nodes'
+import { PDF_POINT_SCALE, type PdfPageProps, type RasterImage } from '@canvcode/nodes'
 import { Editor } from './editor.ts'
+import { drawNodes, visibleIds, type Viewport } from './renderer.ts'
 import { Workspace } from './workspace.ts'
 
 // PDF の取り込み・固定（MAI-32）
@@ -139,5 +140,51 @@ describe('locking all pages (MAI-56)', () => {
     expect(pageNodes().every((p) => !p.locked)).toBe(true)
     pagesEditor.undo()
     expect(pageNodes().every((p) => p.locked)).toBe(true)
+  })
+})
+
+// 描いた文字を記録する ctx
+function recordingContext() {
+  const texts: string[] = []
+  const state: Record<string, unknown> = { globalAlpha: 1 }
+  const ctx = new Proxy(state, {
+    get(target, key) {
+      if (key === 'fillText') return (text: string) => texts.push(text)
+      if (key === 'measureText') return (text: string) => ({ width: text.length * 6 })
+      if (key in target) return target[key as string]
+      return () => {}
+    },
+    set(target, key, value) {
+      target[key as string] = value
+      return true
+    },
+  })
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, texts }
+}
+
+describe('page number labels (MAI-92)', () => {
+  // 画面（CanvasView.viewport）は pageNumbers を立て、画像の書き出し・サムネイル（renderRegion）は立てない
+  function draw(editor: Editor, extra: Partial<Viewport>) {
+    const raster: RasterImage = { image: {} as CanvasImageSource, width: 1, height: 1, level: 1 }
+    const view: Viewport = {
+      camera: { x: -100, y: -100, zoom: 0.25 },
+      width: 2000,
+      height: 2000,
+      dpr: 1,
+      // ページの画像がある（読み込み中の仮の表示の番号を描かない）ことにする
+      images: { get: () => raster },
+      assets: { get: () => undefined, load: async () => raster, renderPdfPage: async () => raster, pdfPreviewLevels: () => [] },
+      ...extra,
+    }
+    const recorded = recordingContext()
+    drawNodes(recorded.ctx, editor, visibleIds(editor, view), view)
+    return recorded.texts
+  }
+
+  it('labels each imported page with its number in the PDF, only on the screen', () => {
+    const { pagesEditor } = setup()
+    expect(draw(pagesEditor, { pageNumbers: true })).toEqual(['1', '2', '3', '4', '5', '6'])
+    expect(draw(pagesEditor, {})).toEqual([])
+    expect(draw(pagesEditor, { print: true })).toEqual([])
   })
 })

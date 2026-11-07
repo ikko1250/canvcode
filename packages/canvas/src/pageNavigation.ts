@@ -50,6 +50,23 @@ export function pageNavigationTarget(
   return { x: page.x + page.w + margin - width / zoom, y: page.y + page.h + margin - height / zoom, zoom }
 }
 
+// 今のページを数えるための、PDF のページ（MAI-92）。pageIndex は PDF の中での番号（0 から）、pageCount は PDF の総ページ数
+export interface PdfPageEntry {
+  box: Box
+  pageIndex: number
+  pageCount?: number
+}
+
+// 今のページの、PDF の中での番号（1 から）と総ページ数（画面の下の「p.12 / 80」。MAI-92）。ページがなければ null。
+// 間のページを消すと pages の添字はページの番号とずれるので、ページが持つ番号（pageIndex）を使う。
+// 総ページ数は PDF の File のページ数。分からなければ pages の数
+export function currentPdfPage(pages: readonly PdfPageEntry[], camera: Camera, width: number, height: number): { page: number; count: number } | null {
+  const current = currentPageIndex(pages.map((page) => page.box), camera, width, height)
+  if (current < 0) return null
+  const { pageIndex, pageCount } = pages[current]
+  return { page: pageIndex + 1, count: pageCount ?? pages.length }
+}
+
 // 次・前のページがあるか（メニューに出す項目を決めるため）
 export function pageNavigation(pages: readonly Box[], camera: Camera, width: number, height: number): { canNext: boolean; canPrev: boolean } {
   const current = currentPageIndex(pages, camera, width, height)

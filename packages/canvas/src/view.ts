@@ -65,7 +65,7 @@ import {
   type PdfRegionRequest,
 } from './refs.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
-import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
+import { currentPdfPage as currentPdfPageOf, pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { SLIDE_IMAGE_SCALE, slideImageRegion, type SlideImage } from './slideImage.ts'
 import { imageFileName, imageRegion, imageSize, selectionImageTarget, type ImageRegion, type ImageSize, type ImageTarget } from './canvasImage.ts'
@@ -1874,6 +1874,9 @@ export class CanvasView {
       files: this.files ?? undefined,
       citations: this.citations,
       search: this.searchHighlights,
+      // PDF のページの番号の札（MAI-92）は画面にだけ描く。renderRegion（画像の書き出し・サムネイル・render_canvas・
+      // AI に渡す範囲の画像・スライドの PDF）の Viewport では立てない。ほかで Viewport を作るときも立てない
+      pageNumbers: true,
       editingId: this.editor.session.get().editingId,
     }
   }
@@ -2614,12 +2617,29 @@ export class CanvasView {
     return screenToWorld(this.editor.session.get().camera, { x: this.width / 2, y: this.height / 2 })
   }
 
-  // この Canvas の PDF のページの箱（ワールド座標。ページ番号の順。MAI-57）
-  private pageBoxes(): Box[] {
+  // この Canvas の PDF のページの props と箱（ワールド座標。ページ番号の順）。組で持つ（間のページを消すと、
+  // 添字はページの番号とずれるので。MAI-92）
+  private pdfPages(): { props: PdfPageProps; box: Box }[] {
     return this.editor.pdfPageIds().flatMap((id) => {
       const entry = this.editor.index.get(id)
-      return entry ? [entry.worldBounds] : []
+      return entry ? [{ props: entry.node.props as PdfPageProps, box: entry.worldBounds }] : []
     })
+  }
+
+  // この Canvas の PDF のページの箱（ワールド座標。ページ番号の順。MAI-57）
+  private pageBoxes(): Box[] {
+    return this.pdfPages().map((page) => page.box)
+  }
+
+  // 今のページ（画面の中心があるページ）の、PDF の中での番号（1 から）と総ページ数。画面の下の「p.12 / 80」に出す（MAI-92）。
+  // PDF のページがなければ null
+  currentPdfPage(): { page: number; count: number } | null {
+    const pages = this.pdfPages().map(({ props, box }) => ({
+      box,
+      pageIndex: props.pageIndex,
+      pageCount: this.editor.workspace.getFile(props.fileId)?.pageCount,
+    }))
+    return currentPdfPageOf(pages, this.editor.session.get().camera, this.width, this.height)
   }
 
   // 次・前のページがあるか（パイメニュー「操作」の項目を決める。MAI-57）

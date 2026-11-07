@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { currentPageIndex, pageNavigation, pageNavigationTarget } from './pageNavigation.ts'
+import { currentPageIndex, currentPdfPage, pageNavigation, pageNavigationTarget } from './pageNavigation.ts'
 
 // ページの移動（MAI-57）。横 4 枚ずつの格子で確かめる
 
@@ -73,5 +73,26 @@ describe('pageNavigation', () => {
     expect(pageNavigation(pages, at(pages[5].x, pages[5].y), view.width, view.height)).toEqual({ canNext: false, canPrev: true })
     expect(pageNavigation([], at(0, 0), view.width, view.height)).toEqual({ canNext: false, canPrev: false })
     expect(pageNavigation([pages[0]], at(0, 0), view.width, view.height)).toEqual({ canNext: false, canPrev: false })
+  })
+})
+
+describe('currentPdfPage (MAI-92)', () => {
+  const entries = pages.map((box, pageIndex) => ({ box, pageIndex, pageCount: 6 }))
+
+  it('is the number in the PDF (from 1) of the page at the viewport centre, out of the page count', () => {
+    expect(currentPdfPage(entries, at(0, 0), view.width, view.height)).toEqual({ page: 1, count: 6 })
+    expect(currentPdfPage(entries, at(pages[5].x, pages[5].y), view.width, view.height)).toEqual({ page: 6, count: 6 })
+    expect(currentPdfPage([], at(0, 0), view.width, view.height)).toBeNull()
+  })
+
+  it('uses the page number, not the position in the list, when a page in between is deleted', () => {
+    // 2 ページ目を消した。3 ページ目は、並びの 2 番目だが番号は 3。総ページ数は PDF のページ数のまま
+    const remaining = entries.filter((entry) => entry.pageIndex !== 1)
+    expect(currentPdfPage(remaining, at(pages[2].x, 0), view.width, view.height)).toEqual({ page: 3, count: 6 })
+  })
+
+  it('counts the pages on the canvas when the PDF page count is unknown', () => {
+    const unknown = entries.slice(0, 4).map(({ box, pageIndex }) => ({ box, pageIndex }))
+    expect(currentPdfPage(unknown, at(pages[1].x, 0), view.width, view.height)).toEqual({ page: 2, count: 4 })
   })
 })

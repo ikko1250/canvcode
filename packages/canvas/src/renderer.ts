@@ -73,6 +73,9 @@ export interface Viewport {
   search?: SearchHighlightResolver
   // PDF に出す画像を描くか（スライド v2）。型に RenderInfo.print で渡し、非表示のスライドも薄くしない
   print?: boolean
+  // PDF のページに番号の札を描くか（MAI-92）。型に RenderInfo.pageNumbers で渡す。
+  // 画面に描く Viewport（CanvasView.viewport）だけが立てる。画像の書き出し・サムネイル・render_canvas などで作る Viewport では立てない
+  pageNumbers?: boolean
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
 }
@@ -132,6 +135,7 @@ export function drawNodes(
     // スライドの番号は Editor が計算する（スライド v2）
     slides: editor.slides,
     print: view.print,
+    pageNumbers: view.pageNumbers,
     noEffects,
   }
   let drawn = 0

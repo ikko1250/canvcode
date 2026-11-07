@@ -30,6 +30,15 @@ export const PREVIEW_STRETCH = 0.8
 const PAGE_BORDER = 'rgba(31, 35, 40, 0.2)'
 const PLACEHOLDER_LINE = '#eef0f3'
 
+// ページの番号の札（MAI-92）。大きさは倍率によらず画面上で決める（CSS ピクセル）
+const PAGE_NUMBER_FONT_PX = 11
+// ページの左上の角から札までの間
+const PAGE_NUMBER_INSET_PX = 4
+const PAGE_NUMBER_PAD_X_PX = 5
+const PAGE_NUMBER_PAD_Y_PX = 2
+// ページの画面上の短い辺がこれより短ければ、札を描かない（全体表示の小さなページを札で埋めないように）
+const PAGE_NUMBER_MIN_PAGE_PX = 48
+
 export const pdfPageType = defineNodeType<PdfPageProps>({
   type: 'pdf-page',
   version: 1,
@@ -84,6 +93,7 @@ export const pdfPageType = defineNodeType<PdfPageProps>({
     ctx.lineWidth = 1 / info.zoom
     ctx.strokeStyle = PAGE_BORDER
     ctx.strokeRect(0, 0, w, h)
+    if (info.pageNumbers) drawPageNumber(ctx, pageIndex + 1, w, h, info.zoom)
   },
 
   roughColor: () => '#ffffff',
@@ -92,6 +102,28 @@ export const pdfPageType = defineNodeType<PdfPageProps>({
   minSize: { w: 40, h: 40 },
   lockAspectRatio: true,
 })
+
+// ページの番号の札（MAI-92）。紙に刷った番号ではなく、PDF の中での通し番号（1 から）を、ページの内側の左上に描く。
+// 文字は倍率によらず画面上で 11px（フレームの名前と同じ考え方）。白く半透明の地と細い枠で、ページの中身の上でも読めるようにする
+function drawPageNumber(ctx: CanvasRenderingContext2D, pageNumber: number, w: number, h: number, zoom: number): void {
+  if (Math.min(w, h) * zoom < PAGE_NUMBER_MIN_PAGE_PX) return
+  const px = 1 / zoom
+  const label = `${pageNumber}`
+  ctx.font = `500 ${PAGE_NUMBER_FONT_PX * px}px ${TEXT_FONT_FAMILY}`
+  const x = PAGE_NUMBER_INSET_PX * px
+  const y = PAGE_NUMBER_INSET_PX * px
+  const boxW = ctx.measureText(label).width + PAGE_NUMBER_PAD_X_PX * 2 * px
+  const boxH = (PAGE_NUMBER_FONT_PX + PAGE_NUMBER_PAD_Y_PX * 2) * px
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)'
+  ctx.fillRect(x, y, boxW, boxH)
+  ctx.lineWidth = px
+  ctx.strokeStyle = PAGE_BORDER
+  ctx.strokeRect(x, y, boxW, boxH)
+  ctx.fillStyle = '#57606a'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, x + PAGE_NUMBER_PAD_X_PX * px, y + boxH / 2)
+}
 
 // ページの画像を画像キャッシュに頼む。need は 1 単位あたりに要る画素数（倍率 × devicePixelRatio）。
 // 頼んだ解像度ができるまでは、手元にあるいちばん近い解像度の画像が返る
