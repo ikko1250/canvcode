@@ -1298,12 +1298,13 @@ button.pdf-page-number:hover {
 }
 
 .pdf-page-number.editing {
+  height: 30px;
   color: var(--text);
 }
 
 .pdf-page-number input {
   box-sizing: content-box;
-  height: 16px;
+  height: 22px;
   margin: 0 3px;
   padding: 0 2px;
   border: 1px solid var(--panel-border);
@@ -1311,8 +1312,21 @@ button.pdf-page-number:hover {
   background: #ffffff;
   color: var(--text);
   font: inherit;
+  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする（Claude の入力欄と同じ） */
+  font-size: 16px;
   text-align: center;
   outline: none;
+}
+
+@media (pointer: fine) {
+  .pdf-page-number.editing {
+    height: 24px;
+  }
+
+  .pdf-page-number input {
+    height: 16px;
+    font-size: 12px;
+  }
 }
 
 .pdf-page-number input:focus {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   currentPageIndex,
   currentPdfPage,
-  PAGE_JUMP_TOP_MARGIN_PX,
+  PAGE_JUMP_MARGIN_PX,
   pageJumpTarget,
   pageNavigation,
   pageNavigationTarget,
@@ -124,17 +124,22 @@ describe('pageJumpTarget (MAI-92)', () => {
   const jump = (list: typeof entries, pageNumber: number, camera = at(0, 0), size = view) => pageJumpTarget(list, pageNumber, camera, size.width, size.height)
 
   it('centres the page on the screen when it fits with the margins, keeping the zoom', () => {
-    expect(PAGE_JUMP_TOP_MARGIN_PX).toBe(56)
-    // 倍率 0.5：ページの高さ 400 + 余白 56 × 2 は画面の高さ 800 に収まる。5 ページ目（x 0〜600・y 840〜1640）の中心が画面の中心に
+    expect(PAGE_JUMP_MARGIN_PX).toEqual({ top: 56, side: 24 })
+    // 倍率 0.5：ページの高さ 400 + 余白 56 × 2 は画面の高さ 800 に、幅 300 + 余白 24 × 2 は画面の幅 1000 に収まる。
+    // 5 ページ目（x 0〜600・y 840〜1640）の中心が画面の中心に
     expect(jump(entries, 5, at(3000, 3000, 0.5))).toEqual({ x: 300 - 500 / 0.5, y: 1240 - 400 / 0.5, zoom: 0.5 })
   })
 
-  it('puts the top of the page below the top bar when it does not fit, still centred across', () => {
-    // 倍率 1：ページの高さ 800 は余白と合わせて画面に収まらない。上端を画面の上から 56px に
+  it('puts the top of the page below the top bar when it does not fit the height, still centred across', () => {
+    // 倍率 1：ページの高さ 800 は余白と合わせて画面に収まらない。上端を画面の上から 56px に。幅 600 は収まるので横は中央
     expect(jump(entries, 5, at(3000, 3000, 1))).toEqual({ x: 300 - 500, y: 840 - 56, zoom: 1 })
-    expect(jump(entries, 2, at(0, 0, 2))).toEqual({ x: W + GAP + 300 - 250, y: -56 / 2, zoom: 2 })
+  })
+
+  it('puts the left edge of the page near the screen left when it does not fit the width either', () => {
+    // 倍率 2：幅 1200 も画面の幅 1000 に収まらない。左端を画面の左から 24px に（中央に置くと、ページの左の 100px が切れる）
+    expect(jump(entries, 2, at(0, 0, 2))).toEqual({ x: W + GAP - 24 / 2, y: -56 / 2, zoom: 2 })
     // 余白は指定できる
-    expect(pageJumpTarget(entries, 2, at(0, 0, 2), view.width, view.height, 0)).toEqual({ x: W + GAP + 300 - 250, y: 0, zoom: 2 })
+    expect(pageJumpTarget(entries, 2, at(0, 0, 2), view.width, view.height, { top: 0, side: 0 })).toEqual({ x: W + GAP, y: 0, zoom: 2 })
   })
 
   it('finds the page by its number, not by its position in the list, when a page in between is deleted', () => {
@@ -151,8 +156,10 @@ describe('pageJumpTarget (MAI-92)', () => {
   })
 
   // 移ったあとの今のページ（画面の下の札）は、入れた番号と同じになる。全体が見えるくらいの縮小・中くらい・ページが画面より
-  // 大きい拡大の倍率と、いろいろな画面の大きさで確かめる。ページは取り込んだときと同じ横 3 枚の格子（横長のページを 1 枚含む）
-  it('always lands with the viewport centre on the page with that number', () => {
+  // 大きい拡大（縦にも横にも収まらない）の倍率と、いろいろな画面の大きさで確かめる。
+  // あわせて、ページの左上の角（左端と上端）は、いつも画面の中に見えている（拡大して読むとき、ページの頭と左端から読めるように）。
+  // ページは取り込んだときと同じ横 3 枚の格子（横長のページを 1 枚含む）
+  it('always lands with the viewport centre on the page with that number, and its top-left corner on the screen', () => {
     const PW = 816
     const PH = 1056
     const grid = Array.from({ length: 12 }, (_, i) => {
@@ -172,10 +179,18 @@ describe('pageJumpTarget (MAI-92)', () => {
     for (const list of [grid, withDeleted]) {
       for (const zoom of zooms) {
         for (const screen of screens) {
-          for (const { pageIndex } of list) {
+          for (const { pageIndex, box } of list) {
             const target = pageJumpTarget(list, pageIndex + 1, at(-5000, 7000, zoom), screen.width, screen.height)!
+            const where = `page ${pageIndex + 1} at zoom ${zoom} on ${screen.width}×${screen.height}`
             expect(target.zoom).toBe(zoom)
-            expect(currentPdfPage(list, target, screen.width, screen.height)?.page, `page ${pageIndex + 1} at zoom ${zoom} on ${screen.width}×${screen.height}`).toBe(pageIndex + 1)
+            expect(currentPdfPage(list, target, screen.width, screen.height)?.page, where).toBe(pageIndex + 1)
+            // ページの左上の角の、画面上の位置
+            const left = (box.x - target.x) * zoom
+            const top = (box.y - target.y) * zoom
+            expect(left, where).toBeGreaterThanOrEqual(0)
+            expect(left, where).toBeLessThanOrEqual(screen.width)
+            expect(top, where).toBeGreaterThanOrEqual(0)
+            expect(top, where).toBeLessThanOrEqual(screen.height)
           }
         }
       }

@@ -62,7 +62,8 @@ const pageTop = (pageIndex: number) => pageIndex * (PAGE.height * SCALE + GAP)
 // 文字の行の中ほどの、ワールド座標の y
 const lineY = (pageIndex: number, y: number) => pageTop(pageIndex) + (PAGE.height - y - 8) * SCALE
 
-async function openApp(page: Page, searches: string[]) {
+// extra：ほかに置くレコード（別の Canvas など）
+async function openApp(page: Page, searches: string[], extra: object[] = []) {
   const canvas = {
     typeName: 'canvas', id: CANVAS_ID, title: 'PDF search', parentCanvasId: null, ownerNodeId: null,
     createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
@@ -80,7 +81,7 @@ async function openApp(page: Page, searches: string[]) {
   // サーバーが pages.json から取り出すテキスト（行ごと。書いた順のまま）
   const texts = PAGES.map((lines) => lines.map((line) => `${line.text}\n`).join(''))
   await page.addInitScript(() => localStorage.clear())
-  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, file, ...pages] } }))
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, file, ...pages, ...extra] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
   await page.route('**/api/assets**', async (route) => {
     const url = new URL(route.request().url())
@@ -227,6 +228,36 @@ test('shows the typed number in the label after the jump, even zoomed out with e
   }
 })
 
+test('counts the pages in a group or a frame, and jumps to them (MAI-92)', async ({ page }) => {
+  await openApp(page, [])
+  await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    // 2・3 ページをグループに（「すべてのページの固定を外す」→ 選んで Ctrl+G と同じ）
+    editor.setLocked(['node:page1', 'node:page2'], false)
+    editor.setSelection(['node:page1', 'node:page2'])
+    editor.groupSelected()
+    // 1 ページをフレームの中に。フレームは原点から離して置く（ページの座標はフレームからの相対になる）
+    const frame = editor.makeNode('frame', { x: -300, y: -200, props: { w: 1500, h: 1400, name: 'frame' } })
+    editor.createNodes([frame])
+    editor.transact('into frame', (tx: unknown) => editor.reparent(tx, ['node:page0'], frame.id))
+  })
+  // Canvas の直下のページはなくなったが、下の札も G も効く
+  await showFirstPage(page)
+  const label = page.locator('.pdf-page-number')
+  const input = label.locator('input')
+  await expect(label).toHaveText('p.1 / 3')
+  await surface(page).focus()
+  for (const pageNumber of [3, 2, 1]) {
+    await page.keyboard.press('g')
+    await input.fill(String(pageNumber))
+    await input.press('Enter')
+    await expect(page.locator('.pdf-page-number-error')).toHaveCount(0)
+    await expect(input).toHaveCount(0)
+    await expect(label).toHaveText(`p.${pageNumber} / 3`)
+    await expectAtPage(page, pageNumber - 1, 1)
+  }
+})
+
 test('warns about a page number it cannot go to, and closes without moving on Esc or leaving the box (MAI-92)', async ({ page }) => {
   await openApp(page, [])
   await showFirstPage(page)
@@ -268,6 +299,26 @@ test('warns about a page number it cannot go to, and closes without moving on Es
   await expect(input).toHaveCount(0)
   expect(await cameraOf(page)).toEqual({ x: 0, y: 0, zoom: 1 })
   await expect(page.locator('.pdf-page-number')).toHaveText('p.1 / 3')
+})
+
+test('closes the page number box when moving to another canvas, and does not reopen it on the way back (MAI-92)', async ({ page }) => {
+  const other = {
+    typeName: 'canvas', id: 'canvas:pdf-search-other', title: 'Other', parentCanvasId: CANVAS_ID, ownerNodeId: null,
+    createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
+  }
+  await openApp(page, [], [other])
+  await showFirstPage(page)
+  const label = page.locator('.pdf-page-number')
+  const input = label.locator('input')
+  await surface(page).focus()
+  await page.keyboard.press('g')
+  await expect(input).toBeFocused()
+  // 欄にフォーカスを置いたまま Canvas を移る（ブラウザの「戻る」「進む」と同じく、欄の外を押さずに）
+  await page.evaluate((id) => (window as any).canvcode.navigate(id), other.id)
+  await expect(label).toHaveCount(0)
+  await page.evaluate((id) => (window as any).canvcode.navigate(id), CANVAS_ID)
+  await expect(label).toHaveText('p.1 / 3')
+  await expect(input).toHaveCount(0)
 })
 
 test('G is typed as a letter while editing a note or in the search box (MAI-92)', async ({ page }) => {

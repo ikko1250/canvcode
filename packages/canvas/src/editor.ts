@@ -52,6 +52,7 @@ import {
 } from './arrange.ts'
 import { unbind } from './bindings.ts'
 import { NodeIndex, type IndexEntry } from './nodeIndex.ts'
+import type { PdfPage } from './pageNavigation.ts'
 import type { QuoteDraft } from './quotes.ts'
 import { reorderSiblings, type ReorderDirection } from './reorder.ts'
 import { Session } from './session.ts'
@@ -175,6 +176,8 @@ export class Editor {
   private slideOrderCache: SlideOrder | null = null
   // 計算したスライドのあふれと、そのときのレイアウトの世代（ストアが変わって slide-layout の中に関わるときと、フォントを読み込み終えたときに捨てる）
   private slideOverflowCache: { generation: number; overflows: ReadonlyMap<string, SlideOverflow> } | null = null
+  // この Canvas の PDF のページの一覧（pdfPages・pdfPageIds。MAI-92）。ノードか File が変わったら捨てる
+  private pdfPageCache: { pages: PdfPage[]; topLevelIds: string[] } | null = null
   // この Editor が始めたトランザクション（終わりに slide-layout を並べ直す対象）。外で始めたもの（サーバーの AI の操作）は
   // arrangeSlideLayoutsOnCommit で足す
   private readonly ownTransactions = new WeakSet<Transaction<WorkspaceRecord>>()
@@ -195,9 +198,13 @@ export class Editor {
     })
     this.unlisten = this.store.listen((event) => {
       const nodes: Patch<NodeRecord> = new Map()
+      let filesChanged = false
       for (const [id, change] of event.patch) {
         if (isNodeRecord(change.before) || isNodeRecord(change.after)) nodes.set(id, change as Change<NodeRecord>)
+        else if (change.before?.typeName === 'file' || change.after?.typeName === 'file') filesChanged = true
       }
+      // PDF のページの一覧（MAI-92）は、ノード（グループを動かすと中のページの箱も変わる）か File（ページ数・ページの Canvas）が変わったら作り直す
+      if (nodes.size > 0 || filesChanged) this.pdfPageCache = null
       if (nodes.size > 0) {
         this.index.applyPatch(nodes)
         // あふれはスライドの id を忘れる前に見る（消したスライドの中の変更も、この Canvas のものと分かる）
@@ -530,7 +537,10 @@ export class Editor {
       const node = this.getNode(id)
       return node !== undefined && this.workspace.referenceOf(node) !== null
     })
-    if (ids.length > 0) this.index.refresh(ids)
+    if (ids.length > 0) {
+      this.index.refresh(ids)
+      this.pdfPageCache = null
+    }
   }
 
   refreshReferences(documentId: string): string[] {
@@ -539,7 +549,10 @@ export class Editor {
       const node = this.getNode(id)
       if (node && this.workspace.referenceOf(node)?.targetId === documentId) ids.push(id)
     }
-    if (ids.length > 0) this.index.refresh(ids)
+    if (ids.length > 0) {
+      this.index.refresh(ids)
+      this.pdfPageCache = null
+    }
     return ids
   }
 
@@ -617,18 +630,36 @@ export class Editor {
     return { canvasId: canvas.id, fileId }
   }
 
-  // この Canvas の PDF のページ（File の pagesCanvasId がこの Canvas のもの）を、ページ番号の順に返す（MAI-56）。
-  // ショートカットの Portal などから届く、ほかの Canvas のページは含めない
-  pdfPageIds(): string[] {
-    const pages: { id: string; pageIndex: number }[] = []
-    for (const id of this.index.allIds()) {
-      const node = this.getNode(id)
-      if (node?.type !== 'pdf-page') continue
-      const props = node.props as PdfPageProps
-      if (this.workspace.getFile(props.fileId)?.pagesCanvasId !== this.canvasId) continue
-      pages.push({ id, pageIndex: props.pageIndex })
+  // この Canvas の PDF のページ（File の pagesCanvasId がこの Canvas のもの）を、ページ番号の順に返す（MAI-92）。
+  // グループ・フレームの中（子孫）のページも含み、箱はワールド座標。ショートカットの Portal などから届く、ほかの Canvas の
+  // ページは含めない。画面の下の番号・番号のページへ移る・次と前のページ（MAI-57）に使う。
+  // App はカメラが動くたびに引くので、ノードか File が変わるまで取っておく
+  pdfPages(): readonly PdfPage[] {
+    return this.pdfPageList().pages
+  }
+
+  // Canvas の直下にある PDF のページの id（ページ番号の順。MAI-56）。「すべてのページの固定を外す・固定する」に使う。
+  // グループの中の子は直接選ばない（選ぶのは今の階層のノード）ので、グループ・フレームの中のページは含めない
+  pdfPageIds(): readonly string[] {
+    return this.pdfPageList().topLevelIds
+  }
+
+  private pdfPageList(): { pages: PdfPage[]; topLevelIds: string[] } {
+    if (this.pdfPageCache) return this.pdfPageCache
+    const pages: PdfPage[] = []
+    const topLevel = new Set<string>()
+    for (const id of this.index.nodeIds()) {
+      const entry = this.index.get(id)
+      if (entry?.node.type !== 'pdf-page') continue
+      const props = entry.node.props as PdfPageProps
+      const file = this.workspace.getFile(props.fileId)
+      if (file?.pagesCanvasId !== this.canvasId) continue
+      pages.push({ id, pageIndex: props.pageIndex, box: entry.worldBounds, pageCount: file.pageCount })
+      if (entry.node.parentId === this.canvasId) topLevel.add(id)
     }
-    return pages.sort((a, b) => a.pageIndex - b.pageIndex).map((p) => p.id)
+    pages.sort((a, b) => a.pageIndex - b.pageIndex || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    this.pdfPageCache = { pages, topLevelIds: pages.flatMap((page) => (topLevel.has(page.id) ? [page.id] : [])) }
+    return this.pdfPageCache
   }
 
   // すべてのページの固定を外して、（すでに外れていたページも含めて）全部を選ぶ（MAI-56）。1 回の Undo で戻る

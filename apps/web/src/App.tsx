@@ -1533,7 +1533,7 @@ export function App(props: { initial: InitialRecords }) {
       if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
       if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
       const current = viewRef.current?.editor
-      if (!current || current.pdfPageIds().length === 0) return
+      if (!current || current.pdfPages().length === 0) return
       e.preventDefault()
       setPageJumpCanvas(current.canvasId)
     }
@@ -1636,7 +1636,9 @@ export function App(props: { initial: InitialRecords }) {
 
   // パイメニュー「操作」（MAI-57）に出す項目を決める状態。
   // session（カメラ・選択）を購読しているので、カメラが動くたびに描き直され、次・前のページの有無もそのたびに決め直す。
-  // ページを数えるのは全ノードを 1 度なめるだけなので、描き直しごとに計算してよい
+  // ページの一覧は Editor がノードか File が変わるまで取っておくので、カメラが動いただけでは作り直さない（MAI-92）。
+  // hasPdfPages はグループ・フレームの中のページも数え（次・前のページ・下の番号）、pdfPageIds は Canvas の直下のページだけ（固定・選択）
+  const hasPdfPages = editor.pdfPages().length > 0
   const pdfPageIds = editor.pdfPageIds()
   const lockedPageCount = pdfPageIds.filter((id) => editor.getNode(id)?.locked).length
   // 選んでいるスライド（スライド v2）。比率の切り替え・非表示にする／表示するを出す
@@ -1646,9 +1648,9 @@ export function App(props: { initial: InitialRecords }) {
   // スライドを 1 つだけ選んでいて、そのスライドに子が無ければ、テンプレートを置ける
   const templateSlideId =
     session.selectedIds.size === 1 && selectedSlides.length === 1 && editor.index.childrenOf(selectedSlides[0].id).length === 0 ? selectedSlides[0].id : null
-  const pageNavigation = pdfPageIds.length > 0 && view ? view.pageNavigation() : { canNext: false, canPrev: false }
+  const pageNavigation = hasPdfPages && view ? view.pageNavigation() : { canNext: false, canPrev: false }
   // 画面の下の中央に出す、今のページの PDF の中での番号と総ページ数（「p.12 / 80」。MAI-92）。全画面のエディタの間は出さない
-  const pdfPageNumber = pdfPageIds.length > 0 && view && !openFileId ? view.currentPdfPage() : null
+  const pdfPageNumber = hasPdfPages && view && !openFileId ? view.currentPdfPage() : null
   // 番号の欄（MAI-92）は、ほかの Canvas へ移ったときや札を出さなくなったときに閉じる（戻ったときに開いたままにならないように）
   if (pageJumpCanvas !== null && (pageJumpCanvas !== canvasId || !pdfPageNumber)) setPageJumpCanvas(null)
   // PDF の URL のリンクのカードを 1 つだけ選んでいれば、PDF ポータルを作れる
@@ -1789,7 +1791,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       markdownCardCount: CARD_COUNT,
       pdf: {
-        hasPages: pdfPageIds.length > 0,
+        hasPages: hasPdfPages,
         canNext: pageNavigation.canNext,
         canPrev: pageNavigation.canPrev,
         allLocked: lockedPageCount === pdfPageIds.length,
