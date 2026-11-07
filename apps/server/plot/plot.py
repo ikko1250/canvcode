@@ -1,9 +1,10 @@
 """CanvCode のグラフを描く（CSV の列 → PNG）。サーバー（apps/server/src/plot.ts）が子プロセスとして呼ぶ。
 
   python3 plot.py styles <style.py>
-      スタイルの一覧を JSON（[{"name", "description", "colors", "size"?}]）で標準出力に書く
+      スタイルの一覧を JSON（[{"name", "description", "colors", "size"?, "legend_ncol"?}]）で標準出力に書く
   python3 plot.py render <style.py> <出力の PNG>
       標準入力の JSON（下の「入力」）を描いて PNG に書き、{"width", "height", "warnings"} を標準出力に書く
+      （width・height は書いた PNG の実際の画素）
 
 入力（サーバーが CSV を読んで、列ごとの文字の並びにして渡す。数への読み替えはここで行う）：
   kind     line・bar・barh・stacked・area・scatter・pie・hist・box
@@ -12,7 +13,8 @@
   series   [{"name", "values"}]（1 つ以上）
   title・xlabel・ylabel  文字（空なら出さない。xlabel・ylabel が null なら列の名前）
   legend   true・false・null（null なら系列が 2 つ以上のときだけ）
-  width・height  画素、dpi
+  legend_ncol  凡例の列の数（1〜20）か null（null ならスタイルの legend_ncol、それもなければ min(系列の数, 4)。MAI-95）
+  width・height  画素、dpi（figsize は width / dpi・height / dpi。保存した PNG はこの大きさになる）
 
 使う人の誤り（列が数でない・スタイルがないなど）は、メッセージを標準エラーに書いて終了コード 2。
 """
@@ -49,6 +51,17 @@ MIN_PIXELS = 150
 # 棒（行 × 系列）と扇の数の上限。棒は 1 本ずつ図形になり、数千本で何十秒もかかるうえ読めない
 MAX_BARS = 2000
 MAX_WEDGES = 40
+# 凡例の列の数の上限（画面・サーバーの normalizePlotSpec と同じ。MAI-95）
+MAX_LEGEND_NCOL = 20
+# 自動の列の数で凡例が収まらないとき、列を減らして描き直す回数の上限
+MAX_LEGEND_FITS = 4
+# 軸の横に置いた凡例に場所を取られて、軸の幅が図の幅のこの割合より狭くなったら、凡例が収まらないとみなす。
+# 同梱のスタイルをそれぞれの大きさで描いた普通のグラフでは、軸の幅は図の幅の 0.46 以上（資料・1280×800・長い系列名の 1 列。
+# 短い名前なら 0.7 以上。プレゼン・白黒は凡例が軸の下なので当てはまらない）。資料に長い系列名の 2 列を指定して軸がつぶれると
+# 0.01〜0.03 になる。その間で、軸が図の 3 割より細いとグラフが読みにくいので 0.3 にする
+MIN_AXES_WIDTH_RATIO = 0.3
+LEGEND_TOO_WIDE = "凡例が図の幅に収まりません。列の数を減らしてください"
+LEGEND_TOO_BIG = "凡例が大きく、グラフの幅が狭くなっています。列の数を減らしてください"
 
 
 class PlotError(Exception):
@@ -84,6 +97,7 @@ def list_styles(path):
             "description": str(style.get("description", "")),
             "colors": [str(c) for c in style.get("colors", [])][:12],
             **({"size": style_size(style)} if style_size(style) else {}),
+            **({"legend_ncol": style_ncol(style)} if style_ncol(style) else {}),
         }
         for name, style in styles.items()
     ]
@@ -97,6 +111,16 @@ def style_size(style):
     except (TypeError, ValueError):
         return None
     return [max(MIN_PIXELS, min(MAX_PIXELS, width)), max(MIN_PIXELS, min(MAX_PIXELS, height))]
+
+
+def legend_ncol(value):
+    """凡例の列の数（1〜MAX_LEGEND_NCOL の整数）。ほかは None（MAI-95）"""
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_LEGEND_NCOL else None
+
+
+def style_ncol(style):
+    """style の legend_ncol（凡例の列の数の既定）。なければ・読めなければ None"""
+    return legend_ncol(style.get("legend_ncol"))
 
 
 def installed_fonts():
@@ -402,24 +426,113 @@ def render(spec, styles, out_path):
             fig.autofmt_xdate()
         legend = spec.get("legend")
         if kind != "pie" and (legend if legend is not None else len(series) > 1 and kind != "box"):
-            ax.legend()
-            place = style.get("legend")
-            if callable(place):
-                try:
-                    place(ax, min(len(series), 4))
-                except Exception as error:
-                    raise PlotError(f"style.py の legend でエラーになりました：{type(error).__name__}: {error}") from error
+            misfit = put_legend(fig, ax, style, len(series), legend_ncol(spec.get("legend_ncol")))
+            if misfit:
+                warnings_out.append(misfit)
         after = style.get("after")
         if callable(after):
             try:
                 after(fig, ax)
             except Exception as error:
                 raise PlotError(f"style.py の after でエラーになりました：{type(error).__name__}: {error}") from error
+        # 頼んだ大きさの PNG にする（MAI-95）。rc の savefig.bbox が "tight" だと図の外の文字まで広げて大きさが変わり
+        # （bbox_inches=None でも rc の値になる）、after が大きさを変えることもあるので、保存の直前に戻す
+        plt.rcParams["savefig.bbox"] = "standard"
+        fig.set_size_inches(width / dpi, height / dpi)
+        fig.set_dpi(dpi)
         fig.savefig(out_path, format="png", dpi=dpi)
     plt.close(fig)
     if any("Glyph" in str(w.message) and "missing" in str(w.message) for w in caught) or (not has_cjk_font() and text_has_cjk(spec)):
         warnings_out.append("日本語のフォントが見つからないため、文字が欠けているかもしれません（Ubuntu なら sudo apt install fonts-noto-cjk）")
-    return {"width": width, "height": height, "warnings": warnings_out}
+    # 返す大きさは、書いた PNG の実際の画素（小数の丸めで 1 画素ずれても、画面・Asset と食い違わない）
+    actual_width, actual_height = png_size(out_path)
+    return {"width": actual_width, "height": actual_height, "warnings": warnings_out}
+
+
+def png_size(path):
+    """PNG の IHDR の幅と高さ"""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def put_legend(fig, ax, style, count, asked):
+    """凡例を置く（MAI-95）。列の数は、グラフの指定（asked）→ スタイルの legend_ncol → min(系列の数, 4)。
+    指定がなければ、凡例が収まらない（legend_misfit）ときは収まるまで列を減らす。
+    指定したときは減らさず、収まらなければ知らせの文を返す（収まれば None）"""
+    default = style_ncol(style)
+    ncol = asked or default or min(count, 4)
+    before = list(fig.legends)
+    # 指定もスタイルの既定もなければ、今までどおり ax.legend() に ncol を渡さない
+    make_legend(fig, ax, style, ncol, pass_ncol=asked is not None or default is not None)
+    misfit = legend_misfit(fig, ax, before)
+    if misfit is None:
+        return None
+    if asked is not None:
+        # 1 列を指定して収まらないときは、列を減らすようには言わない
+        return misfit[0] if asked > 1 else None
+    available = fig.bbox.width
+    for _ in range(MAX_LEGEND_FITS):
+        if ncol <= 1:
+            break
+        # 凡例の幅はおよそ列の数に比例する。少なくとも 1 列は減らす
+        width = misfit[1]
+        ncol = max(1, min(ncol - 1, math.floor(ncol * available / width)))
+        remove_legends(fig, ax, before)
+        make_legend(fig, ax, style, ncol, pass_ncol=True)
+        misfit = legend_misfit(fig, ax, before)
+        # 収まった。または style.py の legend が列の数を見ない（減らしても幅が変わらない）
+        if misfit is None or misfit[1] >= width - 0.5:
+            break
+    return None
+
+
+def make_legend(fig, ax, style, ncol, pass_ncol):
+    """軸の凡例を作り、style.py の legend(ax, ncol) で置く"""
+    if pass_ncol:
+        # ncols= は matplotlib 3.6 からなので、前からある ncol= を使う
+        ax.legend(ncol=ncol)
+    else:
+        ax.legend()
+    place = style.get("legend")
+    if callable(place):
+        try:
+            place(ax, ncol)
+        except Exception as error:
+            raise PlotError(f"style.py の legend でエラーになりました：{type(error).__name__}: {error}") from error
+
+
+def placed_legends(fig, ax, before):
+    """置いた凡例（軸の凡例と、style.py の legend が足した図の凡例）"""
+    return [legend for legend in [ax.get_legend(), *fig.legends] if legend is not None and legend not in before]
+
+
+def remove_legends(fig, ax, before):
+    for legend in placed_legends(fig, ax, before):
+        legend.remove()
+
+
+def legend_misfit(fig, ax, before):
+    """置いた凡例が収まっていなければ (知らせの文, 凡例の幅（画素）)。収まっていれば None。
+    収まっていないのは、(a) 凡例が図の幅からはみ出す、(b) 軸の横に置いた凡例に場所を取られて、軸の幅が図の幅の
+    MIN_AXES_WIDTH_RATIO より狭い、のどちらか（b は資料のような軸の右の外の凡例で、constrained layout が軸を細くするとき）"""
+    legends = placed_legends(fig, ax, before)
+    if not legends:
+        return None
+    # 描いてみて（constrained layout が凡例と軸の場所を決める）、凡例と軸の外枠を測る
+    if hasattr(fig, "draw_without_rendering"):
+        fig.draw_without_rendering()
+    else:
+        fig.canvas.draw()
+    boxes = [legend.get_window_extent() for legend in legends]
+    width = max(box.width for box in boxes)
+    if min(box.x0 for box in boxes) < fig.bbox.x0 - 0.5 or max(box.x1 for box in boxes) > fig.bbox.x1 + 0.5:
+        return LEGEND_TOO_WIDE, width
+    # 軸の上・下・中の凡例は軸の幅を取らない（軸が細いのは目盛りの文字などのせいなので、列を減らしても変わらない）
+    beside = any(box.x0 >= ax.bbox.x1 - 1 or box.x1 <= ax.bbox.x0 + 1 for box in boxes)
+    if beside and ax.bbox.width < fig.bbox.width * MIN_AXES_WIDTH_RATIO:
+        return LEGEND_TOO_BIG, width
+    return None
 
 
 def text_has_cjk(spec):

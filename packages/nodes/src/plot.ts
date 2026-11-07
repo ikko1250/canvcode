@@ -44,6 +44,9 @@ export interface PlotSpec {
   ylabel: string | null
   // 凡例。null なら系列が 2 つ以上のときだけ
   legend: boolean | null
+  // 凡例の列の数（1〜PLOT_MAX_LEGEND_NCOL）。null なら自動（style.py の legend_ncol、なければ系列の数から決め、
+  // 図の幅からはみ出すときは列を減らす）（MAI-95）
+  legendNcol: number | null
   // 描く画像の大きさ（画素）
   width: number
   height: number
@@ -54,6 +57,7 @@ export const PLOT_DEFAULT_HEIGHT = 800
 export const PLOT_MAX_SIDE = 4000
 export const PLOT_MIN_SIDE = 150
 export const PLOT_MAX_SERIES = 20
+export const PLOT_MAX_LEGEND_NCOL = 20
 // 置くときの画像のノードの幅（ワールド座標）。画素の半分にして、2 倍に拡大しても粗くならないようにする
 export const PLOT_NODE_SCALE = 0.5
 
@@ -61,6 +65,7 @@ const clampSide = (value: unknown, fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.min(PLOT_MAX_SIDE, Math.max(PLOT_MIN_SIDE, value))) : fallback
 const columnIndex = (value: unknown) => (typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null)
 const textOrNull = (value: unknown) => (typeof value === 'string' ? value : null)
+const legendNcol = (value: unknown) => (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= PLOT_MAX_LEGEND_NCOL ? value : null)
 
 // 保存してある作り方を読む（ほかのタブ・AI が書いたものも、形を確かめてから使う）。読めなければ null
 export function normalizePlotSpec(raw: unknown): PlotSpec | null {
@@ -81,6 +86,7 @@ export function normalizePlotSpec(raw: unknown): PlotSpec | null {
     xlabel: textOrNull(spec.xlabel),
     ylabel: textOrNull(spec.ylabel),
     legend: typeof spec.legend === 'boolean' ? spec.legend : null,
+    legendNcol: legendNcol(spec.legendNcol),
     width: clampSide(spec.width, PLOT_DEFAULT_WIDTH),
     height: clampSide(spec.height, PLOT_DEFAULT_HEIGHT),
   }
@@ -128,6 +134,7 @@ export function defaultPlotSpec(fileId: string, table: PlotTable, header: boolea
     xlabel: null,
     ylabel: null,
     legend: null,
+    legendNcol: null,
     width: PLOT_DEFAULT_WIDTH,
     height: PLOT_DEFAULT_HEIGHT,
   }

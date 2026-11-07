@@ -8,6 +8,8 @@ export interface PlotStyle {
   colors: string[]
   // 新しく作るときの画像の大きさ（画素の [幅, 高さ]。style.py の size）
   size?: [number, number]
+  // グラフで指定しないときの凡例の列の数（style.py の legend_ncol。MAI-95）
+  legend_ncol?: number
 }
 
 export interface RenderedPlot {

@@ -29,6 +29,8 @@ const MAX_RUNNING = 2
 // 渡す行の数の上限（それより多い行は使わない）
 export const PLOT_MAX_ROWS = 200_000
 const MAX_BODY_BYTES = 64 * 1024
+// 描く解像度。1440 px = 7.2 in（同梱の style.py の figure.figsize (7.2, 7.2) は、この解像度で字の大きさを合わせてある。MAI-95）
+export const PLOT_DPI = 200
 
 export interface PlotStyle {
   name: string
@@ -36,6 +38,8 @@ export interface PlotStyle {
   colors: string[]
   // 新しく作るときの画像の大きさ（画素の [幅, 高さ]。style.py の size）
   size?: [number, number]
+  // グラフで指定しないときの凡例の列の数（style.py の legend_ncol。MAI-95）
+  legend_ncol?: number
 }
 
 export interface RenderedPlot {
@@ -120,11 +124,12 @@ export class Plotter {
       xlabel: spec.xlabel,
       ylabel: spec.ylabel,
       legend: spec.legend,
+      legend_ncol: spec.legendNcol,
       x: plotUsesX(spec.kind) && spec.x !== null ? column(spec.x) : null,
       series: spec.y.map(column),
       width: spec.width,
       height: spec.height,
-      dpi: 200,
+      dpi: PLOT_DPI,
     }
     await this.ensureStyleFile()
     const out = join(tmpdir(), `canvcode-plot-${randomBytes(8).toString('hex')}.png`)
