@@ -172,6 +172,7 @@ def parse_number(text):
     return value if math.isfinite(value) else None
 
 
+# 受ける書き方は、画面の表の絞り込みの parseTableDate（packages/nodes/src/table/tableView.ts）と揃える（MAI-94）
 def parse_date(text):
     s = unicodedata.normalize("NFKC", str(text)).strip()
     if s == "":

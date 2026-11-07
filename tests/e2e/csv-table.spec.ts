@@ -129,7 +129,7 @@ test('dropping a Shift_JIS CSV saves it as a UTF-8 table file and places a table
 
 const SMALL = '店舗,売上,備考\n渋谷,300,駅の近く\n新宿,1200,大きな店舗で、売り場が広く、品ぞろえも多い。週末はとても混み合う。\n池袋,50,\n'
 
-async function openSmall(page: Page) {
+async function openSmall(page: Page, csv = SMALL) {
   const canvas = {
     typeName: 'canvas', id: CANVAS_ID, title: 'CSV', parentCanvasId: null, ownerNodeId: null,
     createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
@@ -139,11 +139,11 @@ async function openSmall(page: Page) {
     props: { fileId: FILE_ID, w: 600, h: 200, sizing: 'auto', role: 'owner', header: true },
     meta: {},
   }
-  const file = { id: FILE_ID, kind: 'table', title: '店舗', path: '店舗.csv', size: SMALL.length, mtime: 0, hash: 'test', missing: false }
+  const file = { id: FILE_ID, kind: 'table', title: '店舗', path: '店舗.csv', size: csv.length, mtime: 0, hash: 'test', missing: false }
   await page.addInitScript(() => localStorage.clear())
   await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas, card] } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
-  await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: SMALL, headers: { etag: '"test"' } }))
+  await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: csv, headers: { etag: '"test"' } }))
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()
   await setCamera(page, 0, 0, 1)
@@ -221,6 +221,40 @@ test('sorts, filters and wraps a table card from the actions pie menu over a col
   await page.locator('.table-filter-input input').press('Escape')
   await expect(page.locator('.table-filter-input')).toHaveCount(0)
   expect((await tableState(page)).filters).toEqual([])
+})
+
+// 日付の列（株価の日次データのような形。値の列の先頭は N/A）：「≧…」で年だけを入れると、その年からの行だけになる（MAI-94）
+const STOCKS = 'Date,Close,Note\n2011-12-29,N/A,\n2011-12-30,10.5,\n2012-01-03,11.2,\n2012-01-04,N/A,\n2013-06-03,12.8,\n'
+
+test('filters a date column by year, and warns about a value that is not a date', async ({ page }) => {
+  await openSmall(page, STOCKS)
+  await expect.poll(async () => (await tableState(page)).h).toBe(36 + 6 * 28)
+
+  // 日付の列にも「≧…」がある。入力欄には日付の例が出る
+  await pointAtColumn(page, 0)
+  await choose(page, 'o', ['フィルター', '≧…'])
+  const input = page.locator('.table-filter-input input')
+  await expect(input).toBeFocused()
+  await expect(input).toHaveAttribute('placeholder', '例：2012・2026-11・2026-01-01')
+  // 日付として読めない値は、注意を出して決めない
+  await input.fill('来年')
+  await input.press('Enter')
+  await expect(page.locator('.table-filter-warning')).toContainText('日付として読めません')
+  await expect(input).toBeFocused()
+  expect((await tableState(page)).filters).toEqual([])
+  // 年だけを入れると、2012 年からの 3 行になる
+  await input.fill('2012')
+  await input.press('Enter')
+  await expect(page.locator('.table-filter-input')).toHaveCount(0)
+  await expect.poll(() => tableState(page)).toMatchObject({ filters: [{ col: 0, op: 'ge', value: '2012' }], h: 36 + 4 * 28 })
+
+  // 先頭が N/A の値の列も、数の列（「＞…」が出る。N/A の行は大小の比べに当たらない）
+  await pointAtColumn(page, 1)
+  await choose(page, 'o', ['フィルター', '＞…'])
+  await expect(page.locator('.table-filter-input input')).toHaveAttribute('placeholder', '例：1,000')
+  await page.locator('.table-filter-input input').fill('11')
+  await page.locator('.table-filter-input input').press('Enter')
+  await expect.poll(() => tableState(page)).toMatchObject({ filters: [{ col: 0, op: 'ge', value: '2012' }, { col: 1, op: 'gt', value: '11' }], h: 36 + 3 * 28 })
 })
 
 // 数の 3 桁区切り（既定は区切る）：右クリックで外し、また入れる（どれも Undo 1 回。CSV のファイルは変えない）

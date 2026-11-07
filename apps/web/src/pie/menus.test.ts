@@ -340,7 +340,7 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
   })
 
   it('shows sort and filter for the column under the pointer of a table card, before the selection items', () => {
-    const table: TableMenuContext = { column: { numeric: false, sorted: false, filtered: false }, sorted: false, filterCount: 0, wrap: false }
+    const table: TableMenuContext = { column: { kind: 'text', sorted: false, filtered: false }, sorted: false, filterCount: 0, wrap: false }
     const ctx = context({}, { count: 1 }, false, table)
     const menu = actionsOf(ctx)
     expect(labels(menu?.items)).toEqual(['並び替え', 'フィルター', '折り返す', '固定する', '複製'])
@@ -355,7 +355,7 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
   })
 
   it('offers number comparisons on a number column, and undoing sort, filters and wrap when they are set', () => {
-    const table: TableMenuContext = { column: { numeric: true, sorted: true, filtered: true }, sorted: true, filterCount: 2, wrap: true }
+    const table: TableMenuContext = { column: { kind: 'number', sorted: true, filtered: true }, sorted: true, filterCount: 2, wrap: true }
     const ctx = context({}, {}, false, table)
     const menu = actionsOf(ctx)
     expect(labels(menu?.items)).toEqual(['並び替え', 'フィルター', 'フィルターを外す', '折り返さない'])
@@ -369,13 +369,29 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     expect(ctx.clearTableFilters).toHaveBeenLastCalledWith('all')
   })
 
+  it('offers the same comparisons on a date column as on a number column, within 8 items on every ring (MAI-94)', () => {
+    const table: TableMenuContext = { column: { kind: 'date', sorted: true, filtered: true }, sorted: true, filterCount: 2, wrap: false }
+    const ctx = context({}, {}, false, table)
+    const filters = sub(actionsOf(ctx), 'フィルター')
+    expect(labels(filters)).toEqual(['＝…', '≠…', '＞…', '≧…', '＜…', '≦…', '空', '空でない'])
+    run(filters, '≧…')
+    expect(ctx.filterTable).toHaveBeenLastCalledWith('ge')
+    // 選択の項目が多く、表の項目を「表 ›」にまとめるときも、どの輪も 8 項目まで
+    const rings = (items: PieEntry[]): number[] => [items.length, ...items.flatMap((item) => (isSubmenu(item) ? rings(item.items) : []))]
+    const busy = actionsOf(context({}, { count: 3, arrangeCount: 3, reorderCount: 3, hasText: true, slideCount: 1 }, true, table))
+    expect(labels(busy?.items)[0]).toBe('表')
+    for (const menu of [actionsOf(ctx), busy]) {
+      for (const count of rings(menu?.items ?? [])) expect(count).toBeLessThanOrEqual(8)
+    }
+  })
+
   it('shows only wrap and clearing the filters outside the columns, and folds the table items when the ring is full', () => {
     const outside: TableMenuContext = { column: null, sorted: false, filterCount: 1, wrap: false }
     const ctx = context({}, {}, false, outside)
     expect(labels(actionsOf(ctx)?.items)).toEqual(['フィルターを外す', '折り返す'])
     run(actionsOf(ctx)?.items, 'フィルターを外す')
     expect(ctx.clearTableFilters).toHaveBeenLastCalledWith('all')
-    const busy = context({}, { count: 3, arrangeCount: 3, reorderCount: 3 }, true, { ...outside, column: { numeric: false, sorted: false, filtered: false } })
+    const busy = context({}, { count: 3, arrangeCount: 3, reorderCount: 3 }, true, { ...outside, column: { kind: 'text', sorted: false, filtered: false } })
     const menu = actionsOf(busy)
     expect(labels(menu?.items)[0]).toBe('表')
     expect(labels(sub(menu, '表'))).toEqual(['並び替え', 'フィルター', 'フィルターを外す', '折り返す'])

@@ -4,7 +4,7 @@ import { tilesInRect, visibleLocalRect } from '../markdown/tiles.ts'
 import { requestFontLoad, textMetricsGeneration, TEXT_FONT_FAMILY } from '../text/fonts.ts'
 import { parseDelimited } from './delimited.ts'
 import { TABLE_METRICS, columnAtX, drawCellBars, drawCells, estimateTextWidth, layoutTable, tableFont, type ColumnMark, type TableLayout, type TableMeasure } from './tableLayout.ts'
-import { applyTableView, filterNeedsValue, withThousandsSeparators, type TableFilter, type TableSort } from './tableView.ts'
+import { applyTableView, columnKind, filterNeedsValue, withThousandsSeparators, type TableColumnKind, type TableFilter, type TableSort } from './tableView.ts'
 
 // 表のカード（`table-card`）。ワークスペースの .csv / .tsv の File を表にして見せる（.md・.py のカードと同じく、本文は File が持つ）。
 // - DOM や SVG は使わない。列の幅を 1 度だけ測り（tableLayout.ts）、見えているところだけを TILE_SIZE の正方形のタイルに分けて、
@@ -35,7 +35,8 @@ export interface TableColumnInfo {
   col: number
   // 見出しの文字（見出しがない・空なら「列 N」）
   name: string
-  numeric: boolean
+  // 列の種類（フィルターの項目を選ぶ）。絞り込む前の行で決める（0 行に絞っても変わらない。MAI-94）
+  kind: TableColumnKind
 }
 
 export type TableCardNode = NodeRecord<TableCardProps>
@@ -146,6 +147,22 @@ export function createTableCardType(options: TableCardOptions = {}) {
     return cached
   }
 
+  // 列の種類は、絞り込む前の行から、本文の版と見出しの有無ごとに一度だけ求める（列ごとに、引かれたときに。MAI-94）
+  const kindsCache = new Map<string, TableColumnKind[]>()
+  const kindOf = (props: TableCardProps, col: number): TableColumnKind => {
+    const content = textOf(props)
+    if (!content) return 'text'
+    const key = `${content.version}|${content.path ?? ''}|${props.header}`
+    let kinds = kindsCache.get(key)
+    if (!kinds) {
+      kinds = []
+      kindsCache.set(key, kinds)
+      if (kindsCache.size > 16) kindsCache.delete(kindsCache.keys().next().value!)
+    }
+    const rows = rowsOf(content)
+    return (kinds[col] ??= columnKind(rows, col, props.header && rows.length > 0 ? 1 : 0))
+  }
+
   // カードのローカル座標の点にある列（表の中、名前の帯より下だけ）
   const columnAt = (node: NodeRecord<TableCardProps>, point: { x: number; y: number }): TableColumnInfo | null => {
     const cached = layoutOf(node.props)
@@ -154,7 +171,7 @@ export function createTableCardType(options: TableCardOptions = {}) {
     const col = columnAtX(layout, point.x)
     if (col === null) return null
     const name = (layout.header ? layout.cells[0]?.[col] : '')?.trim() || `列 ${col + 1}`
-    return { col, name, numeric: layout.numeric[col] }
+    return { col, name, kind: kindOf(node.props, col) }
   }
 
   const contentHeight = (props: TableCardProps) => {

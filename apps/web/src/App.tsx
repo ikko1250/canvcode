@@ -41,7 +41,6 @@ import {
   plainTextOf,
   type QuoteCardProps,
   type TableCardProps,
-  type TableFilterOp,
   FILTER_OP_LABELS,
   filterNeedsValue,
   withTableFilter,
@@ -347,7 +346,7 @@ export function App(props: { initial: InitialRecords }) {
   // 検索の結果はその Canvas の PDF のものなので、Canvas を移ったら見せない
   const [pdfSearch, setPdfSearch] = useState<{ canvasId: string; request: number } | null>(null)
   // 表のカードの絞り込みの値を尋ねている入力欄
-  const [tableFilter, setTableFilter] = useState<(TableFilterRequest & { op: TableFilterOp }) | null>(null)
+  const [tableFilter, setTableFilter] = useState<TableFilterRequest | null>(null)
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
   const navigating = useRef(false)
   // 移動を頼まれるたびに増やす（読み終えるのを待っている移動が、あとから頼まれた移動に替わったか）
@@ -1675,7 +1674,7 @@ export function App(props: { initial: InitialRecords }) {
       table:
         under && props
           ? {
-              column: column && { numeric: column.numeric, sorted: props.sort?.col === column.col, filtered: filters.some((f) => f.col === column.col) },
+              column: column && { kind: column.kind, sorted: props.sort?.col === column.col, filtered: filters.some((f) => f.col === column.col) },
               sorted: Boolean(props.sort),
               filterCount: filters.length,
               wrap: props.wrap === true,
@@ -1694,6 +1693,7 @@ export function App(props: { initial: InitialRecords }) {
           nodeId: under.node.id,
           col: column.col,
           op,
+          kind: column.kind,
           label: `「${column.name}」 ${FILTER_OP_LABELS[op]}`,
           value: current?.value ?? '',
           at: origin ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 },
