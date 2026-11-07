@@ -65,7 +65,7 @@ import {
   type PdfRegionRequest,
 } from './refs.ts'
 import { PDF_PAGE_GAP, type Editor } from './editor.ts'
-import { pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
+import { currentPdfPage as currentPdfPageOf, pageJumpTarget, pageNavigation as pageNavigationOf, pageNavigationTarget, type PageDirection } from './pageNavigation.ts'
 import type { FileManager } from './files.ts'
 import { SLIDE_IMAGE_SCALE, slideImageRegion, type SlideImage } from './slideImage.ts'
 import { imageFileName, imageRegion, imageSize, selectionImageTarget, type ImageRegion, type ImageSize, type ImageTarget } from './canvasImage.ts'
@@ -76,7 +76,7 @@ import { isEditableKeyboardTarget, isImeEvent } from './imeGuard.ts'
 import { isMacPlatform, linkHintText } from './linkHint.ts'
 import { paintEditingTarget, removeSelectedStop } from './gradientHandles.ts'
 import { cropEditingTarget, startCropEditing, stopCropEditing } from './cropHandles.ts'
-import { clearCanvas, drawNodes, drawOverlay, drawScene, drawSceneRegion, visibleIds, type Viewport } from './renderer.ts'
+import { clearCanvas, drawNodes, drawOverlay, drawScene, drawSceneRegion, imageViewport, screenViewport, visibleIds, type Viewport, type ViewportSources } from './renderer.ts'
 import type { SessionState, ToolId } from './session.ts'
 import { ImageCache, MissingImageRecorder } from './imageCache.ts'
 import { FrameStats, type StatsSummary } from './stats.ts'
@@ -853,18 +853,8 @@ export class CanvasView {
     const ctx = canvas.getContext('2d')!
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, width, height)
-    const viewport: Viewport = {
-      camera: { x: box.x, y: box.y, zoom: scale },
-      width,
-      height,
-      dpr: 1,
-      images,
-      assets: this.assets,
-      documents: this.documents,
-      files: this.files ?? undefined,
-      citations: this.citations,
-      print,
-    }
+    // 画面にだけ描くもの（PDF のページの番号の札（MAI-92）・検索の一致）は描かない
+    const viewport = imageViewport(box, scale, width, height, this.viewportSources(images), print)
     const ids = visibleIds(editor, viewport)
     drawNodes(ctx, editor, only ? ids.filter((id) => only.has(id)) : ids, viewport)
     return canvas
@@ -1862,20 +1852,15 @@ export class CanvasView {
     }, SCENE_SETTLE_MS)
   }
 
+  // 画面に描く Viewport。PDF のページの番号の札（MAI-92）は画面にだけ描く（screenViewport が立て、renderRegion の imageViewport は立てない）
   private viewport(): Viewport {
-    return {
-      camera: this.editor.session.get().camera,
-      width: this.width,
-      height: this.height,
-      dpr: this.dpr,
-      images: this.images,
-      assets: this.assets,
-      documents: this.documents,
-      files: this.files ?? undefined,
-      citations: this.citations,
-      search: this.searchHighlights,
-      editingId: this.editor.session.get().editingId,
-    }
+    const { camera, editingId } = this.editor.session.get()
+    return screenViewport(camera, this.width, this.height, this.dpr, this.viewportSources(), { search: this.searchHighlights, editingId })
+  }
+
+  // 画面にも画像にも渡す引く先。images は、画像に描くときに別の画像キャッシュを使うことがある（renderRegion）
+  private viewportSources(images: ImageRequester = this.images): ViewportSources {
+    return { images, assets: this.assets, documents: this.documents, files: this.files ?? undefined, citations: this.citations }
   }
 
   private resize(): void {
@@ -2614,12 +2599,27 @@ export class CanvasView {
     return screenToWorld(this.editor.session.get().camera, { x: this.width / 2, y: this.height / 2 })
   }
 
-  // この Canvas の PDF のページの箱（ワールド座標。ページ番号の順。MAI-57）
+  // この Canvas の PDF のページの props と箱（ワールド座標。ページ番号の順）。組で持つ（間のページを消すと、
+  // 添字はページの番号とずれるので。MAI-92）
+  // この Canvas の PDF のページの箱（ワールド座標。ページ番号の順。グループ・フレームの中のページも含む。MAI-57・MAI-92）
   private pageBoxes(): Box[] {
-    return this.editor.pdfPageIds().flatMap((id) => {
-      const entry = this.editor.index.get(id)
-      return entry ? [entry.worldBounds] : []
-    })
+    return this.editor.pdfPages().map((page) => page.box)
+  }
+
+  // 今のページ（画面の中心があるページ）の、PDF の中での番号（1 から）と総ページ数。画面の下の「p.12 / 80」に出す（MAI-92）。
+  // PDF のページがなければ null。ページの一覧は Editor が取っておくので、カメラが動くたびに引いても作り直さない
+  currentPdfPage(): { page: number; count: number } | null {
+    return currentPdfPageOf(this.editor.pdfPages(), this.editor.session.get().camera, this.width, this.height)
+  }
+
+  // PDF の中での番号（1 から）のページへ移る（MAI-92。画面の下の札・G）。倍率はそのままに、ページを横・縦それぞれ、
+  // 画面に収まれば中央に、収まらなければ左端（頭）を画面の左（上のバーの下）に置く（pageJumpTarget）。
+  // グループ・フレームの中のページへも移る。そのページが Canvas のどこにもなければ（範囲の外・消した）何もせず false
+  goToPdfPage(pageNumber: number): boolean {
+    const target = pageJumpTarget(this.editor.pdfPages(), pageNumber, this.editor.session.get().camera, this.width, this.height)
+    if (!target) return false
+    this.setCamera(target)
+    return true
   }
 
   // 次・前のページがあるか（パイメニュー「操作」の項目を決める。MAI-57）

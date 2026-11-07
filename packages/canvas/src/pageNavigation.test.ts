@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { currentPageIndex, pageNavigation, pageNavigationTarget } from './pageNavigation.ts'
+import {
+  currentPageIndex,
+  currentPdfPage,
+  PAGE_JUMP_MARGIN_PX,
+  pageJumpTarget,
+  pageNavigation,
+  pageNavigationTarget,
+  parsePageNumber,
+} from './pageNavigation.ts'
 
 // ページの移動（MAI-57）。横 4 枚ずつの格子で確かめる
 
@@ -73,5 +81,119 @@ describe('pageNavigation', () => {
     expect(pageNavigation(pages, at(pages[5].x, pages[5].y), view.width, view.height)).toEqual({ canNext: false, canPrev: true })
     expect(pageNavigation([], at(0, 0), view.width, view.height)).toEqual({ canNext: false, canPrev: false })
     expect(pageNavigation([pages[0]], at(0, 0), view.width, view.height)).toEqual({ canNext: false, canPrev: false })
+  })
+})
+
+describe('currentPdfPage (MAI-92)', () => {
+  const entries = pages.map((box, pageIndex) => ({ box, pageIndex, pageCount: 6 }))
+
+  it('is the number in the PDF (from 1) of the page at the viewport centre, out of the page count', () => {
+    expect(currentPdfPage(entries, at(0, 0), view.width, view.height)).toEqual({ page: 1, count: 6 })
+    expect(currentPdfPage(entries, at(pages[5].x, pages[5].y), view.width, view.height)).toEqual({ page: 6, count: 6 })
+    expect(currentPdfPage([], at(0, 0), view.width, view.height)).toBeNull()
+  })
+
+  it('uses the page number, not the position in the list, when a page in between is deleted', () => {
+    // 2 ページ目を消した。3 ページ目は、並びの 2 番目だが番号は 3。総ページ数は PDF のページ数のまま
+    const remaining = entries.filter((entry) => entry.pageIndex !== 1)
+    expect(currentPdfPage(remaining, at(pages[2].x, 0), view.width, view.height)).toEqual({ page: 3, count: 6 })
+  })
+
+  it('counts the pages on the canvas when the PDF page count is unknown', () => {
+    const unknown = entries.slice(0, 4).map(({ box, pageIndex }) => ({ box, pageIndex }))
+    expect(currentPdfPage(unknown, at(pages[1].x, 0), view.width, view.height)).toEqual({ page: 2, count: 4 })
+  })
+})
+
+describe('parsePageNumber (MAI-92)', () => {
+  it('reads a page number from 1 to the page count, in full-width digits too, ignoring spaces', () => {
+    expect(parsePageNumber('5', 6)).toBe(5)
+    expect(parsePageNumber(' 6 ', 6)).toBe(6)
+    expect(parsePageNumber('１', 6)).toBe(1)
+    expect(parsePageNumber('　０３　', 6)).toBe(3)
+  })
+
+  it('is null outside the range and for anything but a whole number', () => {
+    for (const text of ['0', '7', '', ' ', '-1', '2.5', '1e1', 'p.3', 'abc']) expect(parsePageNumber(text, 6)).toBeNull()
+  })
+})
+
+describe('pageJumpTarget (MAI-92)', () => {
+  const entries = pages.map((box, pageIndex) => ({ box, pageIndex, pageCount: 6 }))
+
+  const jump = (list: typeof entries, pageNumber: number, camera = at(0, 0), size = view) => pageJumpTarget(list, pageNumber, camera, size.width, size.height)
+
+  it('centres the page on the screen when it fits with the margins, keeping the zoom', () => {
+    expect(PAGE_JUMP_MARGIN_PX).toEqual({ top: 56, side: 24 })
+    // 倍率 0.5：ページの高さ 400 + 余白 56 × 2 は画面の高さ 800 に、幅 300 + 余白 24 × 2 は画面の幅 1000 に収まる。
+    // 5 ページ目（x 0〜600・y 840〜1640）の中心が画面の中心に
+    expect(jump(entries, 5, at(3000, 3000, 0.5))).toEqual({ x: 300 - 500 / 0.5, y: 1240 - 400 / 0.5, zoom: 0.5 })
+  })
+
+  it('puts the top of the page below the top bar when it does not fit the height, still centred across', () => {
+    // 倍率 1：ページの高さ 800 は余白と合わせて画面に収まらない。上端を画面の上から 56px に。幅 600 は収まるので横は中央
+    expect(jump(entries, 5, at(3000, 3000, 1))).toEqual({ x: 300 - 500, y: 840 - 56, zoom: 1 })
+  })
+
+  it('puts the left edge of the page near the screen left when it does not fit the width either', () => {
+    // 倍率 2：幅 1200 も画面の幅 1000 に収まらない。左端を画面の左から 24px に（中央に置くと、ページの左の 100px が切れる）
+    expect(jump(entries, 2, at(0, 0, 2))).toEqual({ x: W + GAP - 24 / 2, y: -56 / 2, zoom: 2 })
+    // 余白は指定できる
+    expect(pageJumpTarget(entries, 2, at(0, 0, 2), view.width, view.height, { top: 0, side: 0 })).toEqual({ x: W + GAP, y: 0, zoom: 2 })
+  })
+
+  it('finds the page by its number, not by its position in the list, when a page in between is deleted', () => {
+    const remaining = entries.filter((entry) => entry.pageIndex !== 1)
+    expect(jump(remaining, 3)).toEqual({ x: pages[2].x + 300 - 500, y: -56, zoom: 1 })
+  })
+
+  it('is null for a deleted page and for numbers outside the PDF', () => {
+    const remaining = entries.filter((entry) => entry.pageIndex !== 1)
+    expect(jump(remaining, 2)).toBeNull()
+    expect(jump(entries, 0)).toBeNull()
+    expect(jump(entries, 7)).toBeNull()
+    expect(jump([], 1)).toBeNull()
+  })
+
+  // 移ったあとの今のページ（画面の下の札）は、入れた番号と同じになる。全体が見えるくらいの縮小・中くらい・ページが画面より
+  // 大きい拡大（縦にも横にも収まらない）の倍率と、いろいろな画面の大きさで確かめる。
+  // あわせて、ページの左上の角（左端と上端）は、いつも画面の中に見えている（拡大して読むとき、ページの頭と左端から読めるように）。
+  // ページは取り込んだときと同じ横 3 枚の格子（横長のページを 1 枚含む）
+  it('always lands with the viewport centre on the page with that number, and its top-left corner on the screen', () => {
+    const PW = 816
+    const PH = 1056
+    const grid = Array.from({ length: 12 }, (_, i) => {
+      const landscape = i === 7
+      return { box: { x: (i % 3) * (PW + GAP), y: Math.floor(i / 3) * (PH + GAP), w: PW, h: landscape ? PW * 0.75 : PH }, pageIndex: i, pageCount: 12 }
+    })
+    // 6 ページ目を消したもの
+    const withDeleted = grid.filter((entry) => entry.pageIndex !== 5)
+    const zooms = [0.05, 0.12, 0.25, 0.45, 0.8, 1, 2, 4]
+    const screens = [
+      { width: 1280, height: 720 },
+      { width: 1000, height: 800 },
+      { width: 375, height: 667 },
+      { width: 2560, height: 1440 },
+      { width: 300, height: 80 },
+    ]
+    for (const list of [grid, withDeleted]) {
+      for (const zoom of zooms) {
+        for (const screen of screens) {
+          for (const { pageIndex, box } of list) {
+            const target = pageJumpTarget(list, pageIndex + 1, at(-5000, 7000, zoom), screen.width, screen.height)!
+            const where = `page ${pageIndex + 1} at zoom ${zoom} on ${screen.width}×${screen.height}`
+            expect(target.zoom).toBe(zoom)
+            expect(currentPdfPage(list, target, screen.width, screen.height)?.page, where).toBe(pageIndex + 1)
+            // ページの左上の角の、画面上の位置
+            const left = (box.x - target.x) * zoom
+            const top = (box.y - target.y) * zoom
+            expect(left, where).toBeGreaterThanOrEqual(0)
+            expect(left, where).toBeLessThanOrEqual(screen.width)
+            expect(top, where).toBeGreaterThanOrEqual(0)
+            expect(top, where).toBeLessThanOrEqual(screen.height)
+          }
+        }
+      }
+    }
   })
 })

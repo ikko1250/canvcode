@@ -73,8 +73,34 @@ export interface Viewport {
   search?: SearchHighlightResolver
   // PDF に出す画像を描くか（スライド v2）。型に RenderInfo.print で渡し、非表示のスライドも薄くしない
   print?: boolean
+  // PDF のページに番号の札を描くか（MAI-92）。型に RenderInfo.pageNumbers で渡す。
+  // 画面に描く Viewport（screenViewport）だけが立てる。画像の書き出し・サムネイル・render_canvas などで作る Viewport
+  // （imageViewport）では立てない。ほかで Viewport を作るときも立てない
+  pageNumbers?: boolean
   // 文字を編集中のノード。文字以外（付箋の紙や図形）は描き、文字だけを描かない
   editingId?: string | null
+}
+
+// 画面にも画像にも渡す、引く先
+export type ViewportSources = Pick<Viewport, 'images' | 'assets' | 'documents' | 'files' | 'citations'>
+
+// 画面に描く Viewport（CanvasView）。画面にだけ描くもの（PDF のページの番号の札（MAI-92）・単語検索の一致・編集中の文字）は、
+// ここでだけ渡す
+export function screenViewport(
+  camera: Camera,
+  width: number,
+  height: number,
+  dpr: number,
+  sources: ViewportSources,
+  screen: Pick<Viewport, 'search' | 'editingId'>,
+): Viewport {
+  return { camera, width, height, dpr, ...sources, ...screen, pageNumbers: true }
+}
+
+// ワールド座標の範囲 box を、scale の倍率で画像に描く Viewport（CanvasView.renderRegion：画像の書き出し・サムネイル・
+// render_canvas・AI に渡す範囲の画像・スライドの PDF）。画面にだけ描くもの（番号の札・検索の一致）は渡さない。print は印刷用に描くか
+export function imageViewport(box: Box, scale: number, width: number, height: number, sources: ViewportSources, print: boolean): Viewport {
+  return { camera: { x: box.x, y: box.y, zoom: scale }, width, height, dpr: 1, ...sources, print }
 }
 
 // ノードのローカル座標 → 物理ピクセルの行列を ctx に設定する。
@@ -132,6 +158,7 @@ export function drawNodes(
     // スライドの番号は Editor が計算する（スライド v2）
     slides: editor.slides,
     print: view.print,
+    pageNumbers: view.pageNumbers,
     noEffects,
   }
   let drawn = 0

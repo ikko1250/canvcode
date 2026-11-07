@@ -32,6 +32,8 @@ export interface RenderInfo {
   slides?: SlideNumberResolver
   // PDF に出す画像を描いているか（スライド v2）。スライドは名前（番号）と枠の線を描かず、白い地だけを描く
   print?: boolean
+  // PDF のページに、PDF の中での番号の札を描くか（MAI-92）。画面に描くときだけ立てる（画像の書き出し・サムネイルには入れない）
+  pageNumbers?: boolean
 }
 
 // スライドの番号を引く先（スライド v2）。番号は保存せず、キャンバス上の位置から計算したものを引く

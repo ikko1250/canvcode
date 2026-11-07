@@ -82,8 +82,9 @@ import { createRenderResponder } from './canvasRender.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
-import { isClaudePanelKey, isParentCanvasKey } from './workspace/shortcuts.ts'
+import { isClaudePanelKey, isParentCanvasKey, isPdfPageJumpKey } from './workspace/shortcuts.ts'
 import { PdfSearchBar } from './workspace/PdfSearchBar.tsx'
+import { PdfPageNumber } from './workspace/PdfPageNumber.tsx'
 import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
 import { usePresence } from './workspace/usePresence.ts'
@@ -346,6 +347,8 @@ export function App(props: { initial: InitialRecords }) {
   // PDF の単語検索の入力欄（試作）。開いた Canvas と、Ctrl+F を押した回数（押すたびに入力欄に戻る）。
   // 検索の結果はその Canvas の PDF のものなので、Canvas を移ったら見せない
   const [pdfSearch, setPdfSearch] = useState<{ canvasId: string; request: number } | null>(null)
+  // PDF のページの番号を入れて移る欄（画面の下の札。MAI-92）を開いている Canvas。Canvas を移ったら閉じる
+  const [pageJumpCanvas, setPageJumpCanvas] = useState<string | null>(null)
   // 表のカードの絞り込みの値を尋ねている入力欄
   const [tableFilter, setTableFilter] = useState<TableFilterRequest | null>(null)
   const [renaming, setRenaming] = useState<(PortalRenameTarget & { canvasOfPortal: string }) | null>(null)
@@ -1557,6 +1560,24 @@ export function App(props: { initial: InitialRecords }) {
     }
   }, [claude, askClaude, openFileId, dialog, renaming, tableFilter])
 
+  // G で、PDF のページの番号を入れて移る欄を開く（画面の下の札を押したのと同じ。MAI-92）。PDF のページの Canvas でだけ受ける。
+  // U と同じく、全画面のエディタ・ダイアログ・名前の変更・表のフィルターの入力の間と、文字の入力中は、ただの文字として扱う。
+  // 既定の動作は止める（フォーカスを移した欄に g が入らないように）
+  useEffect(() => {
+    if (openFileId || dialog || renaming || tableFilter) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || !isPdfPageJumpKey(e)) return
+      if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
+      if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
+      const current = viewRef.current?.editor
+      if (!current || current.pdfPages().length === 0) return
+      e.preventDefault()
+      setPageJumpCanvas(current.canvasId)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [openFileId, dialog, renaming, tableFilter])
+
   // サイドバーからの操作は、今の Canvas の履歴に入る（MAI-11）
   const sidebarActions = {
     onOpen: (id: string) => void navigate(id),
@@ -1652,7 +1673,9 @@ export function App(props: { initial: InitialRecords }) {
 
   // パイメニュー「操作」（MAI-57）に出す項目を決める状態。
   // session（カメラ・選択）を購読しているので、カメラが動くたびに描き直され、次・前のページの有無もそのたびに決め直す。
-  // ページを数えるのは全ノードを 1 度なめるだけなので、描き直しごとに計算してよい
+  // ページの一覧は Editor がノードか File が変わるまで取っておくので、カメラが動いただけでは作り直さない（MAI-92）。
+  // hasPdfPages はグループ・フレームの中のページも数え（次・前のページ・下の番号）、pdfPageIds は Canvas の直下のページだけ（固定・選択）
+  const hasPdfPages = editor.pdfPages().length > 0
   const pdfPageIds = editor.pdfPageIds()
   const lockedPageCount = pdfPageIds.filter((id) => editor.getNode(id)?.locked).length
   // 選んでいるスライド（スライド v2）。比率の切り替え・非表示にする／表示するを出す
@@ -1662,7 +1685,11 @@ export function App(props: { initial: InitialRecords }) {
   // スライドを 1 つだけ選んでいて、そのスライドに子が無ければ、テンプレートを置ける
   const templateSlideId =
     session.selectedIds.size === 1 && selectedSlides.length === 1 && editor.index.childrenOf(selectedSlides[0].id).length === 0 ? selectedSlides[0].id : null
-  const pageNavigation = pdfPageIds.length > 0 && view ? view.pageNavigation() : { canNext: false, canPrev: false }
+  const pageNavigation = hasPdfPages && view ? view.pageNavigation() : { canNext: false, canPrev: false }
+  // 画面の下の中央に出す、今のページの PDF の中での番号と総ページ数（「p.12 / 80」。MAI-92）。全画面のエディタの間は出さない
+  const pdfPageNumber = hasPdfPages && view && !openFileId ? view.currentPdfPage() : null
+  // 番号の欄（MAI-92）は、ほかの Canvas へ移ったときや札を出さなくなったときに閉じる（戻ったときに開いたままにならないように）
+  if (pageJumpCanvas !== null && (pageJumpCanvas !== canvasId || !pdfPageNumber)) setPageJumpCanvas(null)
   // PDF の URL のリンクのカードを 1 つだけ選んでいれば、PDF ポータルを作れる
   const [onlySelectedId] = session.selectedIds.size === 1 ? session.selectedIds : []
   const onlySelected = onlySelectedId ? editor.getNode(onlySelectedId) : undefined
@@ -1803,7 +1830,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       markdownCardCount: CARD_COUNT,
       pdf: {
-        hasPages: pdfPageIds.length > 0,
+        hasPages: hasPdfPages,
         canNext: pageNavigation.canNext,
         canPrev: pageNavigation.canPrev,
         allLocked: lockedPageCount === pdfPageIds.length,
@@ -2113,6 +2140,26 @@ export function App(props: { initial: InitialRecords }) {
             {syncStatus === 'offline' ? '未接続' : loadingCanvas ? 'キャンバスを読み込み中…' : SYNC_LABELS[syncStatus]}
           </div>
         </div>
+
+        {pdfPageNumber && view && (
+          <PdfPageNumber
+            page={pdfPageNumber.page}
+            count={pdfPageNumber.count}
+            editing={pageJumpCanvas === canvasId}
+            onEdit={() => setPageJumpCanvas(canvasId)}
+            onJump={(page) => {
+              if (!view.goToPdfPage(page)) return false
+              // 移ったら閉じて、キャンバスにフォーカスを戻す（そのまま矢印キーなどが効くように）
+              setPageJumpCanvas(null)
+              view.root.focus({ preventScroll: true })
+              return true
+            }}
+            onClose={(refocus) => {
+              setPageJumpCanvas(null)
+              if (refocus) view.root.focus({ preventScroll: true })
+            }}
+          />
+        )}
 
         <AgentToasts sync={sync} />
 
