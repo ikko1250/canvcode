@@ -409,7 +409,7 @@ function registerPlotTools(
           .max(PLOT_MAX_LEGEND_NCOL)
           .nullable()
           .optional()
-          .describe("Legend columns; null = the style's default (fewer when the legend is wider than the image). 1-2 when series names are long"),
+          .describe("Legend columns; null = the style's default (fewer when the legend does not fit the image). 1-2 when series names are long"),
         header: z.boolean().optional().describe('First row is the header (default true)'),
         width: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size). 1440×1440 for a high-resolution 1:1 image"),
         height: z.number().int().min(150).max(4000).optional().describe("Image pixels (default: the style's size). 1440×1440 for a high-resolution 1:1 image"),

@@ -53,15 +53,24 @@ MAX_BARS = 2000
 MAX_WEDGES = 40
 # 凡例の列の数の上限（画面・サーバーの normalizePlotSpec と同じ。MAI-95）
 MAX_LEGEND_NCOL = 20
-# 自動の列の数で凡例が収まらないとき、列を減らして描き直す回数の上限
-MAX_LEGEND_FITS = 4
+# 自動の列の数で凡例が収まらないとき、列の数を変えて描き直す回数の上限（自動の列の数が 4 までなら、1 列まで減らし、
+# 減らしすぎて縦に収まらなければ戻すのに足りる）
+MAX_LEGEND_FITS = 6
 # 軸の横に置いた凡例に場所を取られて、軸の幅が図の幅のこの割合より狭くなったら、凡例が収まらないとみなす。
 # 同梱のスタイルをそれぞれの大きさで描いた普通のグラフでは、軸の幅は図の幅の 0.46 以上（資料・1280×800・長い系列名の 1 列。
 # 短い名前なら 0.7 以上。プレゼン・白黒は凡例が軸の下なので当てはまらない）。資料に長い系列名の 2 列を指定して軸がつぶれると
 # 0.01〜0.03 になる。その間で、軸が図の 3 割より細いとグラフが読みにくいので 0.3 にする
 MIN_AXES_WIDTH_RATIO = 0.3
+# 軸の上・下の外に置いた凡例に場所を取られて、軸の高さが図の高さのこの割合より低くなったら、凡例が収まらないとみなす。
+# 同梱のスタイルをそれぞれの大きさ（とプレゼンの 1000×1000）で、系列 10 個までの折れ線・棒を自動の列の数で描くと、軸の高さは
+# 図の高さの 0.16 以上（白黒・長い系列名 10 個の 1 列）、5 個までなら 0.29 以上。凡例に場所を取られて軸がつぶれると
+# 0.03〜0.11 になる（長い系列名 20 個など）。その間の 0.15 にする（列を減らして軸がつぶれるなら、減らしすぎ）
+MIN_AXES_HEIGHT_RATIO = 0.15
 LEGEND_TOO_WIDE = "凡例が図の幅に収まりません。列の数を減らしてください"
 LEGEND_TOO_BIG = "凡例が大きく、グラフの幅が狭くなっています。列の数を減らしてください"
+LEGEND_TOO_TALL = "凡例が大きく、グラフの高さが足りません。列の数を増やしてください"
+LEGEND_NO_FIT = "凡例が図に収まりません。系列の名前を短くするか、系列を減らすか、画像を大きくしてください"
+LEGEND_NCOL_IGNORED = "style.py の legend が凡例の列の数を決めているため、指定した {ncol} 列は効きません（legend(ax, ncol) が受け取った ncol を使うようにすると効きます）"
 
 
 class PlotError(Exception):
@@ -424,11 +433,12 @@ def render(spec, styles, out_path):
             ax.set_ylabel(value_label if ylabel is None else ylabel)
         if xkind == "date" and kind in ("line", "scatter", "area"):
             fig.autofmt_xdate()
+        # 円と箱ひげは凡例を描かない（系列の名前は扇・目盛りの文字に出る。箱ひげで凡例を出すと、中身のない枠になる）
         legend = spec.get("legend")
-        if kind != "pie" and (legend if legend is not None else len(series) > 1 and kind != "box"):
-            misfit = put_legend(fig, ax, style, len(series), legend_ncol(spec.get("legend_ncol")))
-            if misfit:
-                warnings_out.append(misfit)
+        if kind not in ("pie", "box") and (legend if legend is not None else len(series) > 1):
+            notice = put_legend(fig, ax, style, len(series), legend_ncol(spec.get("legend_ncol")))
+            if notice:
+                warnings_out.append(notice)
         after = style.get("after")
         if callable(after):
             try:
@@ -457,38 +467,73 @@ def png_size(path):
 
 
 def put_legend(fig, ax, style, count, asked):
-    """凡例を置く（MAI-95）。列の数は、グラフの指定（asked）→ スタイルの legend_ncol → min(系列の数, 4)。
-    指定がなければ、凡例が収まらない（legend_misfit）ときは収まるまで列を減らす。
-    指定したときは減らさず、収まらなければ知らせの文を返す（収まれば None）"""
+    """凡例を置き、知らせの文を返す（なければ None）（MAI-95）。
+    列の数は、グラフの指定（asked）→ スタイルの legend_ncol → min(系列の数, 4)。ただし style.py に legend の関数も
+    legend_ncol もなければ、matplotlib の既定と同じ 1 列（今までどおり ax.legend() に ncol を渡さない）にし、それより増やさない。
+    指定がなければ、凡例が収まらない（measure_legend）ときは列を減らして試し、収まったもの（なければいちばん収まりに近いもの）を残す。
+    指定したときは減らさず、収まらないときと、style.py の legend が列の数を変えたときに知らせる"""
     default = style_ncol(style)
-    ncol = asked or default or min(count, 4)
+    ncol = asked or default or (min(count, 4) if callable(style.get("legend")) else 1)
+    pass_ncol = asked is not None or default is not None
     before = list(fig.legends)
-    # 指定もスタイルの既定もなければ、今までどおり ax.legend() に ncol を渡さない
-    make_legend(fig, ax, style, ncol, pass_ncol=asked is not None or default is not None)
-    misfit = legend_misfit(fig, ax, before)
-    if misfit is None:
+    make_legend(fig, ax, style, ncol, pass_ncol)
+    fit = measure_legend(fig, ax, before)
+    if fit is None:
         return None
     if asked is not None:
-        # 1 列を指定して収まらないときは、列を減らすようには言わない
-        return misfit[0] if asked > 1 else None
-    available = fig.bbox.width
+        if fit["ncol"] is not None and fit["ncol"] != asked:
+            # 決め打ちの列の数で描かれた。「列の数を減らしてください」は当てはまらない
+            return LEGEND_NCOL_IGNORED.format(ncol=asked)
+        return asked_notice(fit, asked)
+    best = (fit, ncol, pass_ncol)
+    tried = {ncol}
+    # 横に収まらなかったいちばん少ない列の数
+    too_wide = None
     for _ in range(MAX_LEGEND_FITS):
-        if ncol <= 1:
+        if fit["badness"] == 0:
             break
-        # 凡例の幅はおよそ列の数に比例する。少なくとも 1 列は減らす
-        width = misfit[1]
-        ncol = max(1, min(ncol - 1, math.floor(ncol * available / width)))
+        # 頼んだ列の数と、描いた凡例の列の数（style.py の legend が変えたかもしれない）の小さいほう
+        drawn = min(ncol, fit["ncol"] or ncol)
+        if fit["wide"]:
+            # 少なくとも 1 列減らす。凡例の幅はおよそ列の数に比例するので、はみ出すなら収まりそうな列の数まで一度に減らす
+            too_wide = drawn
+            ncol = max(1, min(drawn - 1, math.floor(drawn * fig.bbox.width / fit["width"])))
+        elif too_wide is not None and drawn + 1 < too_wide:
+            # 縦にだけ収まらない：減らしすぎた。飛ばした列の数を 1 列ずつ増やして試す
+            ncol = drawn + 1
+        else:
+            # 縦にだけ収まらない（列を減らすと凡例が縦に伸び、もっと悪くなる）
+            break
+        if ncol in tried or (fit["wide"] and drawn <= 1):
+            break
+        tried.add(ncol)
         remove_legends(fig, ax, before)
         make_legend(fig, ax, style, ncol, pass_ncol=True)
-        misfit = legend_misfit(fig, ax, before)
-        # 収まった。または style.py の legend が列の数を見ない（減らしても幅が変わらない）
-        if misfit is None or misfit[1] >= width - 0.5:
-            break
-    return None
+        fit = measure_legend(fig, ax, before)
+        if fit is None:
+            return None
+        if fit["badness"] < best[0]["badness"]:
+            best = (fit, ncol, True)
+    if fit is not best[0]:
+        # 試した中でいちばんよかった列の数で置き直す
+        remove_legends(fig, ax, before)
+        make_legend(fig, ax, style, best[1], best[2])
+    return LEGEND_NO_FIT if best[0]["badness"] > 0 else None
+
+
+def asked_notice(fit, asked):
+    """指定した列の数で収まらないときの知らせ。横にだけ収まらなければ列を減らす、縦にだけなら増やすように言う"""
+    if fit["badness"] == 0:
+        return None
+    if fit["wide"] and not fit["tall"] and asked > 1:
+        return LEGEND_TOO_WIDE if fit["over_x"] > 0 else LEGEND_TOO_BIG
+    if fit["tall"] and not fit["wide"]:
+        return LEGEND_TOO_TALL
+    return LEGEND_NO_FIT
 
 
 def make_legend(fig, ax, style, ncol, pass_ncol):
-    """軸の凡例を作り、style.py の legend(ax, ncol) で置く"""
+    """軸の凡例を作り、style.py の legend(ax, ncol) で置く（列の数を変えて、何度も呼ぶことがある）"""
     if pass_ncol:
         # ncols= は matplotlib 3.6 からなので、前からある ncol= を使う
         ax.legend(ncol=ncol)
@@ -512,27 +557,54 @@ def remove_legends(fig, ax, before):
         legend.remove()
 
 
-def legend_misfit(fig, ax, before):
-    """置いた凡例が収まっていなければ (知らせの文, 凡例の幅（画素）)。収まっていれば None。
-    収まっていないのは、(a) 凡例が図の幅からはみ出す、(b) 軸の横に置いた凡例に場所を取られて、軸の幅が図の幅の
-    MIN_AXES_WIDTH_RATIO より狭い、のどちらか（b は資料のような軸の右の外の凡例で、constrained layout が軸を細くするとき）"""
+def measure_legend(fig, ax, before):
+    """置いた凡例を描いてみて（constrained layout が凡例と軸の場所を決める）測る。凡例がなければ None。
+    収まらない量（画素。1 画素までは収まっているとみなす）を次のように測る：
+    - 横（wide）：凡例が図の左右からはみ出す（over_x）。軸の左右の外の凡例（資料など）に場所を取られて、
+      軸の幅が図の幅の MIN_AXES_WIDTH_RATIO より狭い
+    - 縦（tall）：凡例が図の上下からはみ出す。軸の上下の外の凡例（プレゼンなど）に場所を取られて、軸の高さが図の高さの
+      MIN_AXES_HEIGHT_RATIO より低い。軸の外に置くはずの図の凡例（"outside ..."）が軸に重なる
+      （constrained layout が場所を空けられなかった）
+    軸の中の凡例は、軸の幅も高さも取らない（軸が細いのは目盛りの文字などのせいなので、列の数を変えても変わらない）"""
     legends = placed_legends(fig, ax, before)
     if not legends:
         return None
-    # 描いてみて（constrained layout が凡例と軸の場所を決める）、凡例と軸の外枠を測る
     if hasattr(fig, "draw_without_rendering"):
         fig.draw_without_rendering()
     else:
         fig.canvas.draw()
+    f, a = fig.bbox, ax.bbox
     boxes = [legend.get_window_extent() for legend in legends]
-    width = max(box.width for box in boxes)
-    if min(box.x0 for box in boxes) < fig.bbox.x0 - 0.5 or max(box.x1 for box in boxes) > fig.bbox.x1 + 0.5:
-        return LEGEND_TOO_WIDE, width
-    # 軸の上・下・中の凡例は軸の幅を取らない（軸が細いのは目盛りの文字などのせいなので、列を減らしても変わらない）
-    beside = any(box.x0 >= ax.bbox.x1 - 1 or box.x1 <= ax.bbox.x0 + 1 for box in boxes)
-    if beside and ax.bbox.width < fig.bbox.width * MIN_AXES_WIDTH_RATIO:
-        return LEGEND_TOO_BIG, width
-    return None
+    over_x = sum(excess(f.x0 - b.x0) + excess(b.x1 - f.x1) for b in boxes)
+    over_y = sum(excess(f.y0 - b.y0) + excess(b.y1 - f.y1) for b in boxes)
+    beside = any(b.x0 >= a.x1 - 1 or b.x1 <= a.x0 + 1 for b in boxes)
+    stacked = any(b.y0 >= a.y1 - 1 or b.y1 <= a.y0 + 1 for b in boxes)
+    narrow = excess(f.width * MIN_AXES_WIDTH_RATIO - a.width) if beside else 0
+    short = excess(f.height * MIN_AXES_HEIGHT_RATIO - a.height) if stacked else 0
+    covered = sum(overlap(b, a) for legend, b in zip(legends, boxes) if getattr(legend, "_outside_loc", None))
+    # 描いた凡例の列の数（matplotlib 3.6 から _ncols、その前は _ncol）
+    ncols = [getattr(legend, "_ncols", getattr(legend, "_ncol", None)) for legend in legends]
+    ncols = [n for n in ncols if isinstance(n, int)]
+    return {
+        "ncol": max(ncols) if ncols else None,
+        "width": max(b.width for b in boxes),
+        "over_x": over_x,
+        "wide": over_x + narrow > 0,
+        "tall": over_y + short + covered > 0,
+        "badness": over_x + narrow + over_y + short + covered,
+    }
+
+
+def excess(pixels):
+    """1 画素を超える分（はみ出し・足りない量）。1 画素までは 0"""
+    return pixels if pixels > 1 else 0
+
+
+def overlap(b, a):
+    """2 つの外枠の重なりの深さ（重なった範囲の幅と高さの小さいほう）"""
+    width = min(b.x1, a.x1) - max(b.x0, a.x0)
+    height = min(b.y1, a.y1) - max(b.y0, a.y0)
+    return excess(min(width, height)) if width > 0 and height > 0 else 0
 
 
 def text_has_cjk(spec):

@@ -152,6 +152,9 @@ export function PlotDialog(props: PlotDialogProps) {
 
   const style = styles?.find((s) => s.name === current?.style)
   const usesX = current ? plotUsesX(current.kind) : true
+  // 円と箱ひげは凡例を描かない（plot.py）。凡例を描かないときは、列の数も選べない
+  const legendKind = current !== null && current.kind !== 'pie' && current.kind !== 'box'
+  const legendShown = legendKind && (current.legend ?? current.y.length > 1)
   const size = SIZES.findIndex((s) => s.width === current?.width && s.height === current?.height)
   return (
     <div className="dialog-backdrop" onPointerDown={onClose}>
@@ -261,7 +264,7 @@ export function PlotDialog(props: PlotDialogProps) {
                 <select
                   aria-label="凡例"
                   value={current?.legend === true ? 'on' : current?.legend === false ? 'off' : 'auto'}
-                  disabled={!current || current.kind === 'pie'}
+                  disabled={!legendKind}
                   onChange={(e) => update({ legend: LEGEND_VALUES[e.target.value as keyof typeof LEGEND_VALUES] })}
                 >
                   <option value="auto">自動</option>
@@ -274,7 +277,7 @@ export function PlotDialog(props: PlotDialogProps) {
                 <select
                   aria-label="凡例の列の数"
                   value={current?.legendNcol ?? ''}
-                  disabled={!current || current.kind === 'pie' || current.legend === false}
+                  disabled={!legendShown}
                   onChange={(e) => update({ legendNcol: e.target.value === '' ? null : Number(e.target.value) })}
                 >
                   <option value="">自動</option>

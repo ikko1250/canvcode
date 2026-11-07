@@ -49,9 +49,54 @@ function spec(fileId: string, change: Partial<PlotSpec> = {}): PlotSpec {
 const CSV = '月,東京,大阪\n1月,"1,200",800\n2月,1500,950\n3月,1700,x\n'
 // 系列の名前が長い 5 系列（プレゼンのスタイルで 4 列に並べると、1000×1000 の図の幅からはみ出す）
 const LONG_NAMES = ['東京都の売上高（前年同月比）', '大阪府の売上高（前年同月比）', '愛知県の売上高（前年同月比）', '福岡県の売上高（前年同月比）', '北海道の売上高（前年同月比）']
-const LONG_CSV = `月,${LONG_NAMES.join(',')}\n${['1月', '2月', '3月', '4月'].map((m, i) => [m, ...LONG_NAMES.map((_, j) => 100 + i * (j + 1))].join(',')).join('\n')}\n`
+const tableCsv = (names: readonly string[]) =>
+  `月,${names.join(',')}\n${['1月', '2月', '3月', '4月'].map((m, i) => [m, ...names.map((_, j) => 100 + i * (j + 1))].join(',')).join('\n')}\n`
+const LONG_CSV = tableCsv(LONG_NAMES)
+// 長い名前の 20 系列（1 列に並べると、1440×1440 のプレゼンでも縦に収まらない）
+const PREFECTURES = ['北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県', '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県', '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県']
+const MANY_CSV = tableCsv(PREFECTURES.map((p) => `${p}の売上高（前年同月比）`))
 const LEGEND_TOO_WIDE = '凡例が図の幅に収まりません。列の数を減らしてください'
 const LEGEND_TOO_BIG = '凡例が大きく、グラフの幅が狭くなっています。列の数を減らしてください'
+const LEGEND_TOO_TALL = '凡例が大きく、グラフの高さが足りません。列の数を増やしてください'
+const LEGEND_NO_FIT = '凡例が図に収まりません。系列の名前を短くするか、系列を減らすか、画像を大きくしてください'
+const legendIgnored = (ncol: number) =>
+  `style.py の legend が凡例の列の数を決めているため、指定した ${ncol} 列は効きません（legend(ax, ncol) が受け取った ncol を使うようにすると効きます）`
+
+// 同梱の style.py に、確かめのためのスタイルを足したもの（MAI-95）
+// - 「〜・測る」：描いたあとの凡例の列の数・位置と軸の大きさを after で知らせる（after の ValueError の文になる。legendGeometry が読む）
+// - 「決め打ち」「上限2」：列の数を決め打ちする・上限を付ける前の書き方（ユーザーの style.py の資料・プレゼン（凡例2列）と同じ）
+// - 「素」：legend の関数も legend_ncol もないスタイル
+const MEASURED_STYLE = [
+  '',
+  'def report(fig, ax):',
+  '    fig.draw_without_rendering()',
+  '    legend = fig.legends[-1] if fig.legends else ax.get_legend()',
+  '    b, a, f = legend.get_window_extent(), ax.bbox, fig.bbox',
+  '    inside = b.x0 >= f.x0 - 1 and b.x1 <= f.x1 + 1 and b.y0 >= f.y0 - 1 and b.y1 <= f.y1 + 1',
+  '    clear = b.x1 <= a.x0 + 1 or b.x0 >= a.x1 - 1 or b.y1 <= a.y0 + 1 or b.y0 >= a.y1 - 1',
+  '    raise ValueError(f"ncols={legend._ncols} inside={inside} clear={clear} axes={a.width / f.width:.3f}x{a.height / f.height:.3f}")',
+  'STYLES["決め打ち"] = {**{k: v for k, v in STYLES["資料"].items() if k != "legend_ncol"}, "legend": lambda ax, ncol: place_legend(ax, ncol=1)}',
+  'STYLES["上限2"] = {**STYLES["プレゼン"], "legend": lambda ax, ncol: place_legend(ax, ncol=min(ncol, 2))}',
+  'STYLES["素"] = {"rc": {}}',
+  'for name in list(STYLES):',
+  '    STYLES[name + "・測る"] = {**STYLES[name], "after": report}',
+  '',
+].join('\n')
+
+function writeMeasuredStyle(workspace: string): void {
+  writeFileSync(join(workspace, 'style.py'), readFileSync(DEFAULT_STYLE_FILE, 'utf8') + MEASURED_STYLE)
+}
+
+// 「〜・測る」のスタイルで描いたときの凡例（after の知らせを読む）
+async function legendGeometry(rendering: Promise<unknown>) {
+  const error = await rendering.then(
+    () => new Error('after did not report'),
+    (e: unknown) => e as Error,
+  )
+  const m = /ncols=(\d+) inside=(True|False) clear=(True|False) axes=([\d.]+)x([\d.]+)/.exec(error.message)
+  if (!m) throw error
+  return { ncols: Number(m[1]), inside: m[2] === 'True', clear: m[3] === 'True', axesWidth: Number(m[4]), axesHeight: Number(m[5]) }
+}
 
 describe('Plotter', () => {
   it('turns plot.py failures into messages', () => {
@@ -157,26 +202,27 @@ describe('Plotter', () => {
     expect((await plot.styles()).map((s) => s.legend_ncol)).toEqual([undefined, 1, undefined])
   }, 30_000)
 
-  it.skipIf(!hasMatplotlib)('narrows an automatic legend that is wider than the image, and warns about a chosen one (MAI-95)', async () => {
+  it.skipIf(!hasMatplotlib)('narrows an automatic legend until it fits, and warns about a chosen one that does not (MAI-95)', async () => {
     const { plot, files, workspace } = await setup()
+    writeMeasuredStyle(workspace)
     const table = await files.create('table', '長い名前', LONG_CSV)
     const long = (change: Partial<PlotSpec>) => spec(table.id, { y: [1, 2, 3, 4, 5], style: 'プレゼン', width: 1000, height: 1000, ...change })
-    const chosen = await plot.render(long({ legendNcol: 4 }))
-    expect(chosen.warnings).toContain(LEGEND_TOO_WIDE)
+    expect((await plot.render(long({ legendNcol: 4 }))).warnings).toEqual([LEGEND_TOO_WIDE])
+    // 自動では 4 列から 1 列に減らし、凡例は図の中・グラフの外に収まる。収まる 1 列を指定しても同じ
     const auto = await plot.render(long({}))
-    expect(auto.warnings).not.toContain(LEGEND_TOO_WIDE)
-    expect(auto).toMatchObject({ width: 1000, height: 1000 })
-    // 収まる列の数を指定すれば知らせない
-    expect((await plot.render(long({ legendNcol: 1 }))).warnings).not.toContain(LEGEND_TOO_WIDE)
+    expect(auto).toMatchObject({ width: 1000, height: 1000, warnings: [] })
+    expect((await plot.render(long({ legendNcol: 1 }))).warnings).toEqual([])
+    for (const legendNcol of [null, 1]) {
+      expect(await legendGeometry(plot.render(long({ style: 'プレゼン・測る', legendNcol })))).toMatchObject({ ncols: 1, inside: true, clear: true })
+    }
 
-    // 資料（凡例は軸の右の外）に 2 列を指定すると、凡例は図に収まるが軸がつぶれる：知らせる。自動（1 列）では知らせない
+    // 資料（凡例は軸の右の外）に 2 列を指定すると、凡例は図に収まるが軸がつぶれる：知らせる。自動（1 列）では軸の幅が残る
     const docs = (change: Partial<PlotSpec>) => long({ style: '資料', width: 1280, height: 800, ...change })
-    const crushed = await plot.render(docs({ legendNcol: 2 }))
-    expect(crushed.warnings).toContain(LEGEND_TOO_BIG)
-    expect(crushed.warnings).not.toContain(LEGEND_TOO_WIDE)
-    const docsAuto = await plot.render(docs({}))
-    expect(docsAuto.warnings).not.toContain(LEGEND_TOO_BIG)
-    expect(docsAuto.warnings).not.toContain(LEGEND_TOO_WIDE)
+    expect((await plot.render(docs({ legendNcol: 2 }))).warnings).toEqual([LEGEND_TOO_BIG])
+    expect((await plot.render(docs({}))).warnings).toEqual([])
+    const docsAuto = await legendGeometry(plot.render(docs({ style: '資料・測る' })))
+    expect(docsAuto).toMatchObject({ ncols: 1, inside: true, clear: true })
+    expect(docsAuto.axesWidth).toBeGreaterThanOrEqual(0.3)
 
     // 自動では 4 列から減らして呼び直し、収まる。指定した列の数は減らさない（呼んだ列の数と、収まったかを after で知らせる）
     writeFileSync(
@@ -198,7 +244,52 @@ describe('Plotter', () => {
     )
     await expect(plot.render(long({ style: 'wide' }))).rejects.toThrow(/calls=\[4(, [123])+\] fits=True/)
     await expect(plot.render(long({ style: 'wide', legendNcol: 4 }))).rejects.toThrow('calls=[4] fits=False')
+  }, 60_000)
+
+  it.skipIf(!hasMatplotlib)('keeps the one-column legend of a style without a legend function (MAI-95)', async () => {
+    const { plot, files, workspace } = await setup()
+    writeMeasuredStyle(workspace)
+    const names = ['Tokyo sales per month (thousand yen)', 'Osaka sales per month (thousand yen)', 'Nagoya sales per month (thousand yen)']
+    const table = await files.create('table', 'plain', tableCsv(names))
+    const plain = (change: Partial<PlotSpec>) => spec(table.id, { y: [1, 2, 3], width: 640, height: 400, ...change })
+    // legend の関数も legend_ncol もなければ matplotlib の既定の 1 列で、それより増やさない
+    // （前は自動の列の数を 3 として 2 列に「減らし」、凡例が広がって軸がつぶれた）
+    expect(await legendGeometry(plot.render(plain({ style: '素・測る' })))).toMatchObject({ ncols: 1 })
+    // 1 列でも図からはみ出すことは知らせる
+    expect((await plot.render(plain({ style: '素' }))).warnings).toContain(LEGEND_NO_FIT)
   }, 30_000)
+
+  it.skipIf(!hasMatplotlib)('narrows a style that caps the columns down to one, and says when a chosen count does not take effect (MAI-95)', async () => {
+    const { plot, files, workspace } = await setup()
+    writeMeasuredStyle(workspace)
+    const table = await files.create('table', '長い名前', LONG_CSV)
+    const big = (change: Partial<PlotSpec>) => spec(table.id, { y: [1, 2, 3, 4, 5], width: 1440, height: 1440, ...change })
+    // 上限 2 列のスタイル：4・3 列を頼んでも 2 列で描かれる。描いた列の数から減らして、1 列で収まる（前は 2 列のまま左右で切れた）
+    expect(await legendGeometry(plot.render(big({ style: '上限2・測る' })))).toMatchObject({ ncols: 1, inside: true, clear: true })
+    expect((await plot.render(big({ style: '上限2' }))).warnings).toEqual([])
+    // 指定した列の数にならなければ、そう知らせる（効かないので「列の数を減らしてください」とは言わない）
+    expect((await plot.render(big({ style: '上限2', legendNcol: 4 }))).warnings).toEqual([legendIgnored(4)])
+    expect((await plot.render(big({ style: '上限2', legendNcol: 2 }))).warnings).toEqual([LEGEND_TOO_WIDE])
+    // 1 列に決め打ちするスタイル（前の資料）に 3 列を指定しても 1 列：知らせる。1 列の指定なら知らせない
+    const fixed = (legendNcol: number) => big({ style: '決め打ち', width: 1280, height: 800, legendNcol })
+    expect((await plot.render(fixed(3))).warnings).toEqual([legendIgnored(3)])
+    expect((await plot.render(fixed(1))).warnings).toEqual([])
+  }, 60_000)
+
+  it.skipIf(!hasMatplotlib)('does not let a tall legend cover the chart, and says when no column count fits (MAI-95)', async () => {
+    const { plot, files, workspace } = await setup()
+    writeMeasuredStyle(workspace)
+    const table = await files.create('table', '20 系列', MANY_CSV)
+    const many = (change: Partial<PlotSpec>) => spec(table.id, { y: PREFECTURES.map((_, i) => i + 1), style: 'プレゼン', width: 1440, height: 1440, ...change })
+    // 1 列（前の自動）は縦に長く、constrained layout が場所を空けられずにグラフに重なる。2 列は左右が少し切れるが、グラフは見える
+    const auto = await legendGeometry(plot.render(many({ style: 'プレゼン・測る' })))
+    expect(auto).toMatchObject({ ncols: 2, clear: true })
+    expect(auto.axesHeight).toBeGreaterThanOrEqual(0.15)
+    // どの列の数でも収まらないので、自動でも知らせる
+    expect((await plot.render(many({}))).warnings).toEqual([LEGEND_NO_FIT])
+    // 1 列を指定すると縦にだけ収まらないので、列を増やすように言う
+    expect((await plot.render(many({ legendNcol: 1 }))).warnings).toEqual([LEGEND_TOO_TALL])
+  }, 60_000)
 
   it.skipIf(!hasMatplotlib)('keeps working when style.py prints, and stops a render that was given up', async () => {
     const { plot, files, workspace } = await setup()
@@ -248,7 +339,8 @@ describe('Plotter', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('image/png')
     expect(response.headers.get('x-canvcode-width')).toBe('640')
-    expect(JSON.parse(decodeURIComponent(response.headers.get('x-canvcode-warnings')!))).toHaveLength(1)
+    // 知らせは日本語のまま届く（640×400 はプレゼンには小さく、凡例が収まらないことも知らせる）
+    expect(JSON.parse(decodeURIComponent(response.headers.get('x-canvcode-warnings')!))).toEqual(['列「大阪」の 3 行目「x」は数でないので飛ばしました', LEGEND_NO_FIT])
     const bad = await fetch(`${base}/api/plot`, { method: 'POST', body: JSON.stringify({ fileId: table.id, y: [] }) })
     expect(bad.status).toBe(400)
     expect(((await bad.json()) as { error: string }).error).toContain('値の列')
