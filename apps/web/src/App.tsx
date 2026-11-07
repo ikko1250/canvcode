@@ -82,7 +82,7 @@ import { createRenderResponder } from './canvasRender.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
-import { isParentCanvasKey } from './workspace/shortcuts.ts'
+import { isClaudePanelKey, isParentCanvasKey } from './workspace/shortcuts.ts'
 import { PdfSearchBar } from './workspace/PdfSearchBar.tsx'
 import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
@@ -1520,6 +1520,43 @@ export function App(props: { initial: InitialRecords }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [workspace, canvasId, openFileId, dialog, renaming, navigate])
 
+  // C で Claude のパネルを開き、入力欄にフォーカスする（MAI-91）。開いていれば入力欄にフォーカスを戻すだけで、閉じない（閉じるのは Esc・×・右上の「Claude」）。
+  // 選んでいる所は添えない（添えるのは Ctrl+Alt+Enter）。全画面のエディタ・ダイアログ・名前の変更・表のフィルターの入力の間と、
+  // 文字の入力中（パネルの中も。パイメニューと同じ条件）は、ただの文字として扱う。既定の動作は止める（フォーカスを移した入力欄に c が入らないように）
+  useEffect(() => {
+    if (openFileId || dialog || renaming || tableFilter) return
+    // C で開いて、まだ離していないキー（e.code）。押し続けたときのリピートの keydown は、フォーカスを移した入力欄に届くので、
+    // 入力の場所かどうかを見る前に止める（止めないと c が入る）。離すまでなので、入力欄で押し続けて c を打つのは今までどおり
+    let held: string | null = null
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat && e.code === held) {
+        e.preventDefault()
+        return
+      }
+      if (e.defaultPrevented || e.repeat || !isClaudePanelKey(e) || claude.state.availability !== 'on') return
+      if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
+      if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
+      e.preventDefault()
+      held = e.code
+      askClaude('')
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === held) held = null
+    }
+    // ほかのウィンドウに移ると keyup が届かないことがある
+    const onBlur = () => {
+      held = null
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [claude, askClaude, openFileId, dialog, renaming, tableFilter])
+
   // サイドバーからの操作は、今の Canvas の履歴に入る（MAI-11）
   const sidebarActions = {
     onOpen: (id: string) => void navigate(id),
@@ -2063,7 +2100,8 @@ export function App(props: { initial: InitialRecords }) {
                 setClaudeOpen(false)
                 setClaudeDraft(null)
               }}
-              title="Claude に頼むパネルを開け閉めする（Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
+              // C はこのボタンと違って閉じないので、aria-keyshortcuts は付けず、ここに書く（MAI-91）
+              title="Claude に頼むパネルを開け閉めする（C で開くか、開いていれば入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
             >
               Claude
             </button>
