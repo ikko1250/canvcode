@@ -82,7 +82,7 @@ import { createRenderResponder } from './canvasRender.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
-import { isParentCanvasKey } from './workspace/shortcuts.ts'
+import { isClaudePanelKey, isParentCanvasKey } from './workspace/shortcuts.ts'
 import { PdfSearchBar } from './workspace/PdfSearchBar.tsx'
 import { selectedTextNodes as textNodesOf, setTextAlign, stepTextFontSize } from './workspace/textStyle.ts'
 import { Sidebar } from './workspace/Sidebar.tsx'
@@ -1520,6 +1520,22 @@ export function App(props: { initial: InitialRecords }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [workspace, canvasId, openFileId, dialog, renaming, navigate])
 
+  // C で Claude のパネルを開き、入力欄にフォーカスする（MAI-91）。開いていれば入力欄にフォーカスを戻すだけで、閉じない（閉じるのは Esc・×・右上の「Claude」）。
+  // 選んでいる所は添えない（添えるのは Ctrl+Alt+Enter）。全画面のエディタ・ダイアログ・名前の変更・表のフィルターの入力の間と、
+  // 文字の入力中（パネルの中も。パイメニューと同じ条件）は、ただの文字として扱う。既定の動作は止める（フォーカスを移した入力欄に c が入らないように）
+  useEffect(() => {
+    if (openFileId || dialog || renaming || tableFilter) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || !isClaudePanelKey(e) || claude.state.availability !== 'on') return
+      if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
+      if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
+      e.preventDefault()
+      askClaude('')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [claude, askClaude, openFileId, dialog, renaming, tableFilter])
+
   // サイドバーからの操作は、今の Canvas の履歴に入る（MAI-11）
   const sidebarActions = {
     onOpen: (id: string) => void navigate(id),
@@ -2063,7 +2079,8 @@ export function App(props: { initial: InitialRecords }) {
                 setClaudeOpen(false)
                 setClaudeDraft(null)
               }}
-              title="Claude に頼むパネルを開け閉めする（Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
+              title="Claude に頼むパネルを開け閉めする（C で開く。Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
+              aria-keyshortcuts="C"
             >
               Claude
             </button>

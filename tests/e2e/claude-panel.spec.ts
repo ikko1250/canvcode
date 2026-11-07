@@ -3,12 +3,15 @@ import { expect, test, type Page } from '@playwright/test'
 // Claude のパネルの回答を選んでコピーしても、キャンバスで選んでいるノードのコピーに横取りされない。
 // パネルの中のキー（Delete・矢印・Ctrl+A・Esc）は、キャンバスのショートカットに渡らない。
 // バックグラウンドの作業が並び、1 つずつ・まるごと止められる。
-// 画面で許可を待っている問い合わせが並び、JSON で答えられ、閉じたパネルの Claude のボタンに印が出る
+// 画面で許可を待っている問い合わせが並び、JSON で答えられ、閉じたパネルの Claude のボタンに印が出る。
+// C で開く（MAI-91）
 
-// claude は、会話 t1 に足すもの（バックグラウンドの作業・待っている問い合わせ・ジョブ）。events は /api/claude/events の差し替え
+// claude は、会話 t1 に足すもの（バックグラウンドの作業・待っている問い合わせ・ジョブ）。events は /api/claude/events の差し替え。
+// open が false なら、パネルを開かずに返す（C で開くのを確かめる）
 async function openApp(
   page: Page,
   claude: { tasks?: object[]; permissions?: object[]; jobs?: object[]; events?: Parameters<Page['route']>[1] } = {},
+  { open = true }: { open?: boolean } = {},
 ) {
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto')
   await page.waitForFunction(() => Boolean((window as any).canvasInputFixture))
@@ -36,14 +39,37 @@ async function openApp(
   const rect = (await root.boundingBox())!
   await page.mouse.click(rect.x + 140, rect.y + 140)
   await expect.poll(() => selectedIds(page)).toHaveLength(1)
-  await page.locator('.claude-toggle').click()
-  await expect(page.locator('.claude-text').first()).toHaveText('Answer from Claude')
+  if (open) {
+    await page.locator('.claude-toggle').click()
+    await expect(page.locator('.claude-text').first()).toHaveText('Answer from Claude')
+  } else {
+    // Claude を使える（会話の一覧を読めた）と、右上のボタンが出る
+    await expect(page.locator('.claude-toggle')).toBeVisible()
+  }
   // キャンバスの copy の処理（window で受ける）が既定の動作を止めたかを記録する
   await page.evaluate(() => {
     ;(window as any).copyPrevented = []
     window.addEventListener('copy', (e) => (window as any).copyPrevented.push(e.defaultPrevented))
   })
   return root
+}
+
+const panel = (page: Page) => page.locator('.claude-panel')
+const promptBox = (page: Page) => page.locator('.claude-compose textarea')
+// 押したキーの処理と描き直しが済むのを待つ（開かないことを確かめる前に）
+const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+
+// openApp で置いた付箋の真ん中（画面の座標）
+async function noteCenter(page: Page) {
+  const box = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  const at = await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const id = editor.index.allIds().find((id: string) => editor.getNode(id)?.type === 'note')
+    const bounds = editor.index.get(id).worldBounds
+    const camera = editor.session.get().camera
+    return { x: (bounds.x + bounds.w / 2 - camera.x) * camera.zoom, y: (bounds.y + bounds.h / 2 - camera.y) * camera.zoom }
+  })
+  return { x: box.x + at.x, y: box.y + at.y }
 }
 
 const selectedIds = (page: Page) => page.evaluate(() => [...(window as any).canvcode.editor.session.get().selectedIds] as string[])
@@ -310,4 +336,89 @@ test('shows how each question ended in the job, and one left unanswered when the
   ])
   await expect(page.locator('.claude-permissions')).toHaveCount(0)
   await expect(page.locator('.claude-toggle')).not.toHaveClass(/waiting/)
+})
+
+test('C on the canvas opens the panel and focuses the empty prompt box (MAI-91)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await expect(panel(page)).toHaveCount(0)
+  await page.keyboard.press('c')
+  await expect(panel(page)).toBeVisible()
+  await expect(promptBox(page)).toBeFocused()
+  // 押した c は入力欄に入らない。選んでいる所は添えない（添えるのは Ctrl+Alt+Enter）
+  await expect(promptBox(page)).toHaveValue('')
+  await expect(page.locator('.claude-attachment')).toHaveCount(0)
+  expect(await selectedIds(page)).toHaveLength(1)
+})
+
+test('C with the panel open moves the focus back to the prompt box and keeps what was written (MAI-91)', async ({ page }) => {
+  const root = await openApp(page)
+  await promptBox(page).fill('途中まで書いた')
+  const rect = (await root.boundingBox())!
+  await page.mouse.click(rect.x + 140, rect.y + 140)
+  await expect(promptBox(page)).not.toBeFocused()
+  await page.keyboard.press('c')
+  // 閉じない
+  await expect(panel(page)).toBeVisible()
+  await expect(promptBox(page)).toBeFocused()
+  await expect(promptBox(page)).toHaveValue('途中まで書いた')
+})
+
+test('C in the prompt box is just a letter (MAI-91)', async ({ page }) => {
+  await openApp(page)
+  await promptBox(page).click()
+  await page.keyboard.type('cC')
+  await expect(promptBox(page)).toHaveValue('cC')
+  await expect(promptBox(page)).toBeFocused()
+})
+
+test('C with Ctrl, Meta or Shift does not open the panel (MAI-91)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await page.keyboard.press('Control+c')
+  await page.keyboard.press('Meta+c')
+  await page.keyboard.press('Shift+C')
+  await settle(page)
+  await expect(panel(page)).toHaveCount(0)
+})
+
+test('C is typed as a letter while editing a note or a card, without opening the panel (MAI-91)', async ({ page }) => {
+  const root = await openApp(page, {}, { open: false })
+  // 付箋の文字の編集
+  const note = await noteCenter(page)
+  await page.mouse.dblclick(note.x, note.y)
+  const textEditor = page.locator('.canvcode-text-editor')
+  await expect(textEditor).toBeFocused()
+  await page.keyboard.press('c')
+  await expect(textEditor).toContainText('c')
+  await settle(page)
+  await expect(panel(page)).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(textEditor).toHaveCount(0)
+
+  // カードのその場の編集（CodeMirror）
+  const rect = (await root.boundingBox())!
+  await page.mouse.dblclick(rect.x + 140, rect.y + 140)
+  const content = page.locator('.canvcode-document-editor .cm-content')
+  await expect(content).toBeFocused()
+  await expect(content).toContainText('Card')
+  await page.keyboard.press('c')
+  await expect(content).toContainText('c')
+  await settle(page)
+  await expect(panel(page)).toHaveCount(0)
+})
+
+test('C does nothing in the fullscreen file editor (MAI-91)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await page.getByRole('button', { name: '☰' }).click()
+  await page.locator('.sidebar-title', { hasText: 'Input test' }).click()
+  const content = page.locator('.file-editor .cm-content')
+  await expect(content).toBeFocused()
+  await expect(content).toContainText('Card')
+  await page.keyboard.press('c')
+  await expect(content).toContainText('c')
+  // 入力欄の外（フォーカスのない所）で押しても開かない
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('c')
+  await settle(page)
+  await expect(panel(page)).toHaveCount(0)
+  await expect(page.locator('.file-editor')).toBeVisible()
 })

@@ -94,3 +94,28 @@ test('vim: with the IME on, I enters insert mode without typing い, and dd dele
   await cdp.send('Input.insertText', { text: 'あ' })
   await expect.poll(doc).toBe('あefgh\nijkl')
 })
+
+test('canvas: C typed with the IME on does not open the Claude panel (MAI-91)', async ({ page }) => {
+  const canvas = {
+    typeName: 'canvas', id: CANVAS_ID, title: 'IME', parentCanvasId: null, ownerNodeId: null, createdAt: 0, updatedAt: 0, deletedAt: null, trash: null,
+  }
+  await page.addInitScript(() => localStorage.clear())
+  await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: CANVAS_ID, rev: 0, records: [canvas] } }))
+  await page.route('**/api/files', (route) => route.fulfill({ json: { files: [] } }))
+  await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [] } }))
+  await page.route('**/api/claude/events', (route) => route.fulfill({ status: 204 }))
+  await page.goto('/')
+  const surface = page.locator('.canvas-container > div[tabindex]')
+  await expect(surface).toBeVisible()
+  await expect(page.locator('.claude-toggle')).toBeVisible()
+  const rect = (await surface.boundingBox())!
+  await page.mouse.click(rect.x + 300, rect.y + 300)
+
+  const cdp = await page.context().newCDPSession(page)
+  await imeKey(cdp, 'c', 'KeyC')
+  await page.waitForTimeout(100)
+  await expect(page.locator('.claude-panel')).toHaveCount(0)
+  // IME を通らない c なら開く
+  await page.keyboard.press('c')
+  await expect(page.locator('.claude-compose textarea')).toBeFocused()
+})
