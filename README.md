@@ -35,14 +35,15 @@ npm start       # http://127.0.0.1:8787
 - Canvas ごとの最後のカメラは、ブラウザ（端末ごと）に覚える
 - 旧アプリ（recursive-infinite-canvas）の `.ricbackup` は、画面にドロップするか、VPS の上にあるなら `npm run import -- --workspace <フォルダ> <ファイル>` で取り込む（サーバーが動いていればサーバーに頼み、開いているタブにもすぐ届く）。ワークスペースが空なら旧のルートがそのままホームに、空でなければホームの下の「取り込み（日付）」に入る。ゴミ箱の中のものと AI 会話は取り込まない。元のファイルは残さない（`npm run import` は渡したファイルをその場所から読み、写さない。ドロップしたファイルは取り込みに使った一時ファイルを消す）
 - バックアップは `npm run backup -- --workspace <フォルダ> --out <置く場所> [--keep <残す数>]` で、復元に要るもの（`workspace.db` の揃った写し・.md / .py などのファイル・Asset・サムネイルなど）を 1 つの `.tar.gz` にまとめる。サーバーを動かしたままでよい。キャッシュ（`texmf` など）と取り込んだ元の `.ricbackup`（`--imports` で入れる）は入れない。`--no-assets` にすると Asset を入れない（Asset は書き換わらないので、別に増えた分だけ写しておく。使われなくなった Asset はサーバーが消すので、写し先から消さない `rclone copy` などで写す）
-- 復元は `npm run restore -- <バックアップ.tar.gz> --workspace <新しいフォルダ> [--assets <Asset のフォルダ>]`。ないか空のフォルダにだけ展開し、`workspace.db` を確かめてから置く。そのあとサーバーをそのフォルダで起動する。`tar -xzf` でも展開できる（そのときは `canvcode-backup.json` を消す）
+- 復元は `npm run restore -- <バックアップ.tar.gz> --workspace <新しいフォルダ> [--assets <Asset のフォルダ>] [--blobs <中身のフォルダ>]`。ないか空のフォルダにだけ展開し、`workspace.db` を確かめてから置く。そのあとサーバーをそのフォルダで起動する。`npm run backup` で作ったものは `tar -xzf` でも展開できる（そのときは `canvcode-backup.json` を消す）。定期バックアップのアーカイブは、PDF・画像などの中身が入っていないので、`--assets` と `--blobs` を付けて `npm run restore` で戻す（下の「定期バックアップ」）
 
 ### 定期バックアップ（Google Drive）
 
 `npm run backup:sync` が、バックアップを作って Google Drive へ送るまでを 1 回で行う。systemd のユーザータイマーで 5 分ごとに動かす。
 
 - 前回から変わっていれば（`workspace.db` の中身とファイルの名前・大きさ・更新時刻で判定）、Asset を入れないバックアップ（`--no-assets` と同じ）を `<ワークスペース>/.canvcode/backups/` に作る。手元には 96 個まで残す（`--keep`）。変わっていなければ作らない
-- `rclone about gdrive:` で Drive につながるか確かめてから、`rclone copy` で `gdrive:CanvCode-backup/archives` に送る。送り損ねた分は、変わっていない回にも送り直す
+- PDF・画像・音声・動画・Office・圧縮ファイルなどの種類のファイル（大きさによらず。Canvas のサムネイルも）と 1 MiB 以上のファイルは、アーカイブに入れない。アーカイブにはパスと中身の SHA-256 だけを書き、中身は `<ワークスペース>/.canvcode/backup-blobs/` に、ハッシュを名前にして 1 回だけ置く（変わらない PDF が、5 分ごとのアーカイブに毎回入らないように）。置いた中身は消さない。パス・大きさ・更新時刻が前と同じファイルは読み直さない。`workspace.db` の写しと `.md` などのテキストは、今までどおりアーカイブに入る
+- `rclone about gdrive:` で Drive につながるか確かめてから、まず `backup-blobs` の中身を `gdrive:CanvCode-backup/blobs` に追加だけで写し（Drive からは消さない。増えていなければ写さない）、それから `rclone copy` でアーカイブを `gdrive:CanvCode-backup/archives` に送る。中身を送れなかった回は、アーカイブを送らず、Drive の古いアーカイブも消さない。送り損ねた分は、変わっていない回にも送り直す
 - Drive の archives は、2 日以内は 1 時間に 1 個、30 日以内は 1 日に 1 個（それぞれその間でいちばん新しいもの）に間引き、それより古いものは消す（ゴミ箱に入れない）。いちばん新しいものは古くても残す
 - Asset（`.canvcode/assets`）は `gdrive:CanvCode-backup/assets` に追加だけで写す（`*.tmp` などは除く。Drive からは消さない）。変わっていなければ写さない
 - 結果は `.canvcode/backup-status.json` に書く。Drive につながらない（rclone の失敗・認証切れ・ネットワーク）、バックアップに失敗した、15 分以上動いていない、のどれかなら、画面右上の「保存済み」「未接続」の左にアイコンが出る（ホバーで理由、クリックで詳しく）。うまくいっているときと、定期バックアップを入れていないときは出ない
@@ -54,14 +55,14 @@ npm start       # http://127.0.0.1:8787
 ```bash
 deploy/systemd/install.sh --workspace /path/to/workspace --dry-run   # 書き出すユニットを見るだけ
 deploy/systemd/install.sh --workspace /path/to/workspace
-systemctl --user start canvcode-backup.service   # すぐに 1 回動かす（初回は Asset を全部送るので時間がかかる）
+systemctl --user start canvcode-backup.service   # すぐに 1 回動かす（初回は Asset と PDF・画像などの中身を全部送るので時間がかかる）
 systemctl --user list-timers canvcode-backup.timer
 journalctl --user -u canvcode-backup.service -n 50
 ```
 
 リモートや rclone の場所を変えるときは `~/.config/canvcode/backup.env` に `CANVCODE_BACKUP_REMOTE=...` などを書く。Drive の認証が切れたら `rclone config reconnect gdrive:` で認証し直す。ユーザーのタイマーをログアウト中も動かすには `loginctl enable-linger` が要る。
 
-復元するときは、Drive の archives からアーカイブを、assets を 1 つのフォルダに取ってきて、`npm run restore -- <アーカイブ> --workspace <新しいフォルダ> --assets <Asset のフォルダ>`。
+復元するときは、Drive の archives からアーカイブを 1 つ、assets と blobs をそれぞれ 1 つのフォルダに取ってきて（`rclone copy gdrive:CanvCode-backup/assets <Asset のフォルダ>`、`rclone copy gdrive:CanvCode-backup/blobs <中身のフォルダ>`）、`npm run restore -- <アーカイブ> --workspace <新しいフォルダ> --assets <Asset のフォルダ> --blobs <中身のフォルダ>`。手元のアーカイブから戻すなら、`--assets <ワークスペース>/.canvcode/assets --blobs <ワークスペース>/.canvcode/backup-blobs`。中身はハッシュと大きさを確かめながら戻し、足りない・合わないものがあれば、どのファイルかを挙げて止まる。PDF・画像などを外に出す前のアーカイブ（Drive に最長 30 日残る）は、`--blobs` なしで戻せる。
 
 VPS 上で動かし、手元の PC からは SSH のポートフォワードで開く。
 
