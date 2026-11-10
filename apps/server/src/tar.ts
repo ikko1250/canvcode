@@ -104,7 +104,7 @@ export async function extractTar(source: AsyncIterable<Buffer>, dest: string): P
 }
 
 // 展開してよい相対パスか確かめ、正規化したものを返す
-function safePath(path: string): string {
+export function safePath(path: string): string {
   const normalized = posix.normalize(path.replace(/\\/g, '/'))
   if (!normalized || normalized === '.' || normalized.startsWith('/') || normalized === '..' || normalized.startsWith('../') || /^[A-Za-z]:/.test(normalized)) {
     throw new Error(`tar: 使えない名前です: ${path}`)

@@ -5,7 +5,10 @@ import { createBackup, restoreBackup } from './backup.ts'
 // ワークスペースのバックアップと復元（backup.ts）。サーバーを動かしたままバックアップできる。
 // npm run backup -- [--workspace <フォルダ>] [--out <置く場所>] [--keep <残す数>] [--no-assets] [--imports]
 //   置く場所を省くと <ワークスペース>/.canvcode/backups（ワークスペースと同じディスクなので、外へ写すこと）
-// npm run restore -- <バックアップ.tar.gz> --workspace <復元先（ないか空のフォルダ）> [--assets <Asset のフォルダ>]
+// npm run restore -- <バックアップ.tar.gz> --workspace <復元先（ないか空のフォルダ）> [--assets <Asset のフォルダ>] [--blobs <中身のフォルダ>]
+//   --assets：Asset を入れていないバックアップ（--no-assets・定期バックアップ）のとき、Asset を置いたフォルダ
+//   --blobs：PDF・画像などの中身を別に置いたバックアップ（定期バックアップ）のとき、中身を置いたフォルダ
+//     （手元なら <ワークスペース>/.canvcode/backup-blobs、Drive なら CanvCode-backup/blobs を写したもの）
 //   復元したら、サーバーの CANVCODE_WORKSPACE（または --workspace）を復元先に向けて起動する
 const { values: args, positionals } = parseArgs({
   options: {
@@ -15,6 +18,7 @@ const { values: args, positionals } = parseArgs({
     'no-assets': { type: 'boolean' },
     imports: { type: 'boolean' },
     assets: { type: 'string' },
+    blobs: { type: 'string' },
   },
   allowPositionals: true,
   strict: false,
@@ -26,10 +30,10 @@ try {
   if (command === 'restore') {
     const archive = rest[0]
     if (!archive || !workspaceArg) {
-      console.error('使い方：npm run restore -- <バックアップ.tar.gz> --workspace <復元先（ないか空のフォルダ）> [--assets <Asset のフォルダ>]')
+      console.error('使い方：npm run restore -- <バックアップ.tar.gz> --workspace <復元先（ないか空のフォルダ）> [--assets <Asset のフォルダ>] [--blobs <中身のフォルダ>]')
       process.exit(1)
     }
-    const result = await restoreBackup({ archive, workspace: workspaceArg, assetsFrom: typeof args.assets === 'string' ? args.assets : undefined })
+    const result = await restoreBackup({ archive, workspace: workspaceArg, assetsFrom: typeof args.assets === 'string' ? args.assets : undefined, blobsFrom: typeof args.blobs === 'string' ? args.blobs : undefined })
     console.log(`復元しました：${result.workspace}（${result.files} 個のファイル、${result.manifest.createdAt} の時点、変更番号 ${result.manifest.rev}）`)
     console.log(`サーバーを止めてから、CANVCODE_WORKSPACE=${result.workspace} で起動してください`)
   } else if (command === undefined || command === 'create') {
