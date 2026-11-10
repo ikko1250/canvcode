@@ -3,22 +3,29 @@ import { createHash } from 'node:crypto'
 import { open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { backupTime, BACKUP_NAME_PATTERN, createBackup, fingerprintWorkspace, isTemp } from './backup.ts'
+import { BLOB_NAME_PATTERN } from './backupBlobs.ts'
 import { isPdfPreviewFile } from './pdfPreview.ts'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // 定期バックアップと Google Drive へのアップロード（npm run backup:sync。systemd のタイマーから 5 分ごとに呼ぶ）。
 // 1. 前のバックアップから変わっていれば、Asset を入れないバックアップ（--no-assets）を手元に作る（手元には keep 個まで）。
-//    変わっていなければ作らない（指紋は backup.ts の fingerprintWorkspace）
+//    変わっていなければ作らない（指紋は backup.ts の fingerprintWorkspace）。
+//    PDF・画像などのファイルはアーカイブに入れず、中身を .canvcode/backup-blobs に 1 回だけ置く（MAI-101。backupBlobs.ts）
 // 2. rclone about で Drive につながるか確かめる（つながらなければ、ここで終えて状態ファイルに書く）
-// 3. 手元と Drive のアーカイブの一覧から、Drive に残すものを決め（planArchives）、まだ送っていないものを rclone copy で送り、
+// 3. アーカイブの外に置いた中身（.canvcode/backup-blobs）を、Drive の blobs に追加だけで写す（消さない）。
+//    前に写したときから増えていなければ写さない。アーカイブより先に送る（Drive のアーカイブが、まだない中身を指さないように）。
+//    送れなければ、その回はアーカイブを送らず、Drive の古いものも消さない（次の回に送り直す）
+// 4. 手元と Drive のアーカイブの一覧から、Drive に残すものを決め（planArchives）、まだ送っていないものを rclone copy で送り、
 //    残さないものを Drive から消す。前に送れなかった分は、変わっていなくても毎回ここで送り直す
-// 4. Asset（.canvcode/assets）を、Drive の assets に追加だけで写す（消さない）。前に写したときから変わっていなければ写さない。
+// 5. Asset（.canvcode/assets）を、Drive の assets に追加だけで写す（消さない）。前に写したときから変わっていなければ写さない。
 //    PDF のページの画像（<ハッシュ>.preview-v*）はサーバーが作り直せるので写さない
-// 5. 結果を .canvcode/backup-status.json に書く。サーバーがそれを読んで、画面に Drive の未接続などを出す（backupStatus.ts）
+// 6. 結果を .canvcode/backup-status.json に書く。サーバーがそれを読んで、画面に Drive の未接続などを出す（backupStatus.ts）
 // rclone はテストで差し替えられるように、引数を受け取る関数（RcloneRunner）で呼ぶ
 
 export const BACKUP_STATUS_FILE = 'backup-status.json'
 const LOCK_FILE = 'backup-sync.lock'
+// アーカイブの外に置く中身の、手元の置き場所（.canvcode の中。backup.ts の EXCLUDED_DATA で、バックアップと指紋から外している）
+export const BLOBS_DIR = 'backup-blobs'
 export const DEFAULT_REMOTE = 'gdrive:CanvCode-backup'
 export const DEFAULT_KEEP = 96
 
@@ -43,6 +50,8 @@ export interface BackupStatusFile {
   archive: { name: string; createdAt: string; rev: number; fingerprint: string } | null
   // 最後に Drive へ写し終えた Asset の指紋
   assetsFingerprint: string | null
+  // 最後に Drive へ写し終えた、アーカイブの外の中身（backup-blobs）の指紋（MAI-101 より前の状態ファイルにはない）
+  blobsFingerprint?: string | null
   lastRun: { archived: boolean; uploaded: string[]; deletedRemote: string[]; removedLocal: string[] }
 }
 
@@ -79,6 +88,7 @@ export async function runBackupSync(options: BackupSyncOptions): Promise<BackupS
   const workspace = resolve(options.workspace)
   const dataDir = join(workspace, '.canvcode')
   const outDir = resolve(options.outDir ?? join(dataDir, 'backups'))
+  const blobsDir = join(dataDir, BLOBS_DIR)
   const remote = (options.remote ?? DEFAULT_REMOTE).replace(/\/+$/, '')
   const keep = options.keep ?? DEFAULT_KEEP
   const now = options.now ?? (() => new Date())
@@ -94,6 +104,7 @@ export async function runBackupSync(options: BackupSyncOptions): Promise<BackupS
     drive: previous?.drive ?? { ok: false, checkedAt: startedAt.toISOString(), lastOkAt: null, error: null },
     archive: previous?.archive ?? null,
     assetsFingerprint: previous?.assetsFingerprint ?? null,
+    blobsFingerprint: previous?.blobsFingerprint ?? null,
     lastRun: { archived: false, uploaded: [], deletedRemote: [], removedLocal: [] },
   }
   const fail = (step: NonNullable<BackupStatusFile['lastError']>['step'], error: unknown) => {
@@ -118,12 +129,13 @@ export async function runBackupSync(options: BackupSyncOptions): Promise<BackupS
       if (last && lastExists && last.fingerprint === fingerprint.hash) {
         log(`変わっていないので、アーカイブは作りません（変更番号 ${fingerprint.rev}、前回 ${last.name}）`)
       } else {
-        const created = await createBackup({ workspace, outDir, assets: false, keep, now: now() })
+        const created = await createBackup({ workspace, outDir, assets: false, blobsDir, keep, now: now() })
         const name = created.path.slice(outDir.length + 1)
         status.archive = { name, createdAt: created.manifest.createdAt, rev: created.manifest.rev, fingerprint: fingerprint.hash }
         status.lastRun.archived = true
         status.lastRun.removedLocal = created.removed
         log(`アーカイブを作りました：${created.path}（変更番号 ${created.manifest.rev}）`)
+        log(`・PDF・画像などの ${created.blobs.files} 個はアーカイブの外に置いています（新しく置いた中身は ${created.blobs.added} 個、${(created.blobs.addedBytes / 1024 / 1024).toFixed(1)} MB）`)
         for (const path of created.removed) log(`・手元の古いアーカイブを消しました：${path}`)
       }
     } catch (error) {
@@ -141,33 +153,50 @@ export async function runBackupSync(options: BackupSyncOptions): Promise<BackupS
     }
 
     if (status.drive.ok) {
-      // 3. アーカイブを送り、Drive の古いものを間引く
+      // 3. アーカイブの外に置いた中身を、追加だけで写す
+      let blobsSent = true
       try {
-        const local = (await readdir(outDir).catch(() => [] as string[])).filter((name) => BACKUP_NAME_PATTERN.test(name))
-        const remoteNames = await listRemote(rclone, `${remote}/archives`)
-        const plan = planArchives(local, remoteNames, now().getTime())
-        if (plan.upload.length > 0) {
-          const list = join(outDir, `.upload-${process.pid}-${Date.now()}.tmp`)
-          await writeFile(list, plan.upload.map((name) => `${name}\n`).join(''))
-          try {
-            await rclone(['copy', outDir, `${remote}/archives`, '--files-from-raw', list, '--no-traverse'], { timeoutMs: 30 * 60_000 })
-          } finally {
-            await rm(list, { force: true })
-          }
-          status.lastRun.uploaded = plan.upload
-          for (const name of plan.upload) log(`・Drive に送りました：${name}`)
-        }
-        for (const name of plan.remove) {
-          await rclone(['deletefile', `${remote}/archives/${name}`, '--drive-use-trash=false'], { timeoutMs: 5 * 60_000 })
-          status.lastRun.deletedRemote.push(name)
-          log(`・Drive の古いアーカイブを消しました：${name}`)
+        const fingerprint = await fingerprintBlobs(blobsDir)
+        if (fingerprint !== null && fingerprint !== status.blobsFingerprint) {
+          await rclone(['copy', blobsDir, `${remote}/blobs`, '--exclude', '*.tmp', '--exclude', '*.partial', '--exclude', '.*'], { timeoutMs: 60 * 60_000 })
+          status.blobsFingerprint = fingerprint
+          log('PDF・画像などの中身を Drive に写しました')
         }
       } catch (error) {
+        blobsSent = false
         markDriveError(status, error)
         fail('upload', error)
       }
 
-      // 4. Asset を追加だけで写す
+      // 4. アーカイブを送り、Drive の古いものを間引く（中身を送れなかった回は、どちらもしない）
+      if (blobsSent) {
+        try {
+          const local = (await readdir(outDir).catch(() => [] as string[])).filter((name) => BACKUP_NAME_PATTERN.test(name))
+          const remoteNames = await listRemote(rclone, `${remote}/archives`)
+          const plan = planArchives(local, remoteNames, now().getTime())
+          if (plan.upload.length > 0) {
+            const list = join(outDir, `.upload-${process.pid}-${Date.now()}.tmp`)
+            await writeFile(list, plan.upload.map((name) => `${name}\n`).join(''))
+            try {
+              await rclone(['copy', outDir, `${remote}/archives`, '--files-from-raw', list, '--no-traverse'], { timeoutMs: 30 * 60_000 })
+            } finally {
+              await rm(list, { force: true })
+            }
+            status.lastRun.uploaded = plan.upload
+            for (const name of plan.upload) log(`・Drive に送りました：${name}`)
+          }
+          for (const name of plan.remove) {
+            await rclone(['deletefile', `${remote}/archives/${name}`, '--drive-use-trash=false'], { timeoutMs: 5 * 60_000 })
+            status.lastRun.deletedRemote.push(name)
+            log(`・Drive の古いアーカイブを消しました：${name}`)
+          }
+        } catch (error) {
+          markDriveError(status, error)
+          fail('upload', error)
+        }
+      }
+
+      // 5. Asset を追加だけで写す
       if (status.drive.ok) {
         try {
           const assetsDir = join(dataDir, 'assets')
@@ -260,6 +289,18 @@ async function listRemote(rclone: RcloneRunner, path: string): Promise<string[]>
     if (/directory not found/i.test(errorMessage(error))) return []
     throw error
   }
+}
+
+// アーカイブの外に置いた中身の、名前（ハッシュ）と大きさの指紋（まだ 1 つもなければ null）。中身は書き換えないので、増えたかどうかが分かればよい
+async function fingerprintBlobs(dir: string): Promise<string | null> {
+  const names = (await readdir(dir).catch(() => [] as string[])).filter((name) => BLOB_NAME_PATTERN.test(name)).sort()
+  if (names.length === 0) return null
+  const hash = createHash('sha256')
+  for (const name of names) {
+    const info = await stat(join(dir, name)).catch(() => null)
+    if (info?.isFile()) hash.update(`${name}\t${info.size}\n`)
+  }
+  return hash.digest('hex')
 }
 
 // Asset の名前と大きさの指紋（Asset のフォルダがなければ null）
