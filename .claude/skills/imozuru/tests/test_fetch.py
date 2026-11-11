@@ -1,6 +1,7 @@
 """再取得が失敗したときの原文保全と、成功時の保存先を検査する。"""
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import importlib.util
 import io
@@ -8,6 +9,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -324,6 +326,58 @@ class SourceRecordTests(unittest.TestCase):
                  for n in range(4)]
         self.assertEqual([proc.wait(60) for proc in procs], [0] * 4)
         self.assertEqual(len(self.record()), 80)
+
+    def test_reserved_name_preserves_catalog_and_does_not_download(self):
+        self.html("blog", "https://example.test/blog")
+        before = (self.sources / "sources.json").read_bytes()
+        for name in ("sources", "SOURCES", "Sources"):
+            with self.subTest(name=name), patch.object(fetch, "download") as download:
+                self.assertEqual(self.run_fetch(name, "https://example.test/data.json"), 1)
+                download.assert_not_called()
+                self.assertEqual((self.sources / "sources.json").read_bytes(), before)
+
+    def test_parallel_same_name_keeps_pdf_text_and_url_together(self):
+        attempts = []
+        for label in ("a", "b"):
+            folder = self.sources.parent / label
+            folder.mkdir()
+            pdf, text = folder / "paper.pdf", folder / "paper.txt"
+            pdf.write_bytes(label.encode())
+            text.write_text(label, encoding="utf-8")
+            attempts.append((pdf, text, self.sources, "paper", f"https://example.test/{label}"))
+        saved_a, release_a, started_b, finished_b = (threading.Event() for _ in range(4))
+        save = fetch.save_verified
+
+        def paused_save(saved, kept, destination):
+            result = save(saved, kept, destination)
+            if saved.parent.name == "a":
+                saved_a.set()
+                if not release_a.wait(5):
+                    raise TimeoutError("first save was not released")
+            return result
+
+        def save_b():
+            started_b.set()
+            try:
+                return fetch.keep(*attempts[1])
+            finally:
+                finished_b.set()
+
+        with patch.object(fetch, "save_verified", side_effect=paused_save), ThreadPoolExecutor(2) as pool:
+            first = pool.submit(fetch.keep, *attempts[0])
+            try:
+                self.assertTrue(saved_a.wait(5))
+                second = pool.submit(save_b)
+                self.assertTrue(started_b.wait(5))
+                finished_early = finished_b.wait(0.2)
+            finally:
+                release_a.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+        self.assertFalse(finished_early, "second save ran before the first source record was committed")
+        self.assertEqual((self.sources / "paper.pdf").read_bytes(), b"b")
+        self.assertEqual((self.sources / "paper.txt").read_text(encoding="utf-8"), "b")
+        self.assertEqual(self.record()["paper"]["url"], "https://example.test/b")
 
     def test_source_line_encodes_what_breaks_the_autolink(self):
         self.assertEqual(fetch.source_line("https://example.test/a b?q=<x>", "2026-11-11"),

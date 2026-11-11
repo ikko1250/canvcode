@@ -437,21 +437,26 @@ def record_source(destination: Path, name: str, files: list[str], url: str, fetc
 
     壊れた sources.json は上書きしない（ほかの原文の URL が消えるので）。そのときは標準エラーに書いて False。
     """
-    path = destination / SOURCES_JSON
     with _locked(destination / f".{SOURCES_JSON}.lock"):
-        data: dict = {}
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    raise ValueError("an object is expected")
-            except ValueError as e:
-                print(f"{path} が読めないので、{name} の URL を書き足さなかった（{e}）", file=sys.stderr)
-                return False
-        data[name] = {"files": files, "url": url, "fetched": fetched}
-        tmp = path.with_name(f".{SOURCES_JSON}.tmp")
-        tmp.write_text(json.dumps(dict(sorted(data.items())), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        return _record_source(destination, name, files, url, fetched)
+
+
+def _record_source(destination: Path, name: str, files: list[str], url: str, fetched: str) -> bool:
+    """呼び手がロックを持ったまま出典一覧を書き換える。"""
+    path = destination / SOURCES_JSON
+    data: dict = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("an object is expected")
+        except ValueError as e:
+            print(f"{path} が読めないので、{name} の URL を書き足さなかった（{e}）", file=sys.stderr)
+            return False
+    data[name] = {"files": files, "url": url, "fetched": fetched}
+    tmp = path.with_name(f".{SOURCES_JSON}.tmp")
+    tmp.write_text(json.dumps(dict(sorted(data.items())), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    tmp.replace(path)
     return True
 
 
@@ -467,7 +472,8 @@ def save_verified(saved: Path, kept: Path, destination: Path) -> Path:
 def valid_source_name(name: str) -> bool:
     """保存する原文の名前は、パスではなく単一のファイル名に限る。"""
     device = name.split(".", 1)[0].rstrip(" ").upper()
-    return (bool(name.strip(" .")) and name == name.rstrip(" .")
+    return (name.casefold() != "sources"
+            and bool(name.strip(" .")) and name == name.rstrip(" .")
             and not any(c in name for c in "/\\:")
             and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name)
             and device not in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
@@ -477,7 +483,7 @@ def valid_source_name(name: str) -> bool:
 def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     """sources は今回の取得専用の一時置き場。取得・変換・検査中は保存済みの原文に触れない。"""
     if not valid_source_name(name):
-        print(f"FAIL\t{name!r}\t原文の名前は単一のファイル名にする")
+        print(f"FAIL\t{name!r}\t原文の名前は管理用の sources を除く単一のファイル名にする")
         return 1
     # file:// や ftp:// を渡すと urllib が手元のファイルまで読み、sources/ に写してしまう
     if urllib.parse.urlsplit(url).scheme.lower() not in {"http", "https"}:
@@ -583,9 +589,11 @@ def keep(saved: Path, kept: Path, destination: Path, name: str, url: str) -> Pat
     fetched = datetime.date.today().isoformat()
     if kept.suffix == ".md":
         stamp_md(kept, url, fetched)
-    target = save_verified(saved, kept, destination)
-    files = sorted({saved.name, kept.name})
-    record_source(destination, name, files, url, fetched)
+    # 同名の取得が重なっても、原文とその URL は必ず同じ取得のものを保存する。
+    with _locked(destination / f".{SOURCES_JSON}.lock"):
+        target = save_verified(saved, kept, destination)
+        files = sorted({saved.name, kept.name})
+        _record_source(destination, name, files, url, fetched)
     return target
 
 
@@ -595,7 +603,7 @@ def main() -> int:
         return 2
     sources, name, url = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
     if not valid_source_name(name):
-        print(f"FAIL\t{name!r}\t原文の名前は単一のファイル名にする")
+        print(f"FAIL\t{name!r}\t原文の名前は管理用の sources を除く単一のファイル名にする")
         return 1
     sources.mkdir(parents=True, exist_ok=True)
     # 変換や FAIL の後始末は一時置き場だけで行う。同名の原文を検査前に上書きしない。
