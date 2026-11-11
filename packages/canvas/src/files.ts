@@ -14,6 +14,8 @@ export interface FileManagerOptions {
   workspace: Workspace
   baseUrl?: string
   eventsUrl?: string
+  // ファイルのカードの変換（MAI-100。既定は /api/convert）
+  convertUrl?: string
   notify?: (message: string) => void
   // 保存していない編集があるときに、外で本文が変わった。どうするかを尋ねる（MAI-10 の「衝突」）
   onConflict?: (file: FileRecord) => Promise<ConflictChoice>
@@ -28,6 +30,14 @@ interface ServerFile {
   mtime: number
   hash: string
   missing: boolean
+}
+
+// サーバーが変換できる種類（GET /api/convert。apps/server の fileConvert.ts。MAI-100）
+export interface ConvertCapabilities {
+  // 変換できる拡張子（. なし）
+  markdown: string[]
+  table: string[]
+  pandoc: { available: boolean; reason?: string }
 }
 
 interface Entry {
@@ -51,6 +61,9 @@ export class FileManager implements FileContentSource {
   private readonly workspace: Workspace
   private readonly baseUrl: string
   private readonly eventsUrl: string
+  private readonly convertUrl: string
+  private capabilities: ConvertCapabilities | null = null
+  private capabilitiesLoading: Promise<ConvertCapabilities | null> | null = null
   private notify: (message: string) => void
   private onConflict: (file: FileRecord) => Promise<ConflictChoice>
   private readonly entries = new Map<string, Entry>()
@@ -64,6 +77,7 @@ export class FileManager implements FileContentSource {
     this.workspace = options.workspace
     this.baseUrl = options.baseUrl ?? '/api/files'
     this.eventsUrl = options.eventsUrl ?? '/api/events'
+    this.convertUrl = options.convertUrl ?? '/api/convert'
     this.notify = options.notify ?? ((message) => console.warn(message))
     this.onConflict = options.onConflict ?? (async () => 'theirs')
   }
@@ -156,6 +170,40 @@ export class FileManager implements FileContentSource {
     this.workspace.applyServerFile(file)
     this.entries.set(file.id, makeEntry(content, file.hash))
     return this.workspace.getFile(file.id)!
+  }
+
+  // ファイルのカードの原本（Asset）を、文書（Markdown・表）の写しにしてもらう（MAI-100）。作った File と、写せなかったものの知らせを返す。
+  // 断られたら、サーバーの理由（pandoc がない など）を付けて投げる
+  async convert(assetId: string, name: string, to: 'markdown' | 'table'): Promise<{ files: FileRecord[]; warnings: string[] }> {
+    const response = await fetch(this.convertUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assetId, name, to }),
+    })
+    const body = (await response.json().catch(() => ({}))) as { files?: ServerFile[]; warnings?: string[]; error?: string }
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`)
+    const files = body.files ?? []
+    for (const file of files) this.workspace.applyServerFile(file)
+    return { files: files.flatMap((file) => this.workspace.getFile(file.id) ?? []), warnings: body.warnings ?? [] }
+  }
+
+  // サーバーが変換できる種類。まだ聞いていなければ聞き始めて null を返す（右クリックのメニューは、聞けたものを使う）
+  conversions(): ConvertCapabilities | null {
+    if (!this.capabilities && !this.capabilitiesLoading) void this.loadConversions()
+    return this.capabilities
+  }
+
+  async loadConversions(): Promise<ConvertCapabilities | null> {
+    this.capabilitiesLoading ??= fetch(this.convertUrl)
+      .then(async (response) => (response.ok ? ((await response.json()) as ConvertCapabilities) : null))
+      .catch(() => null)
+      .then((capabilities) => {
+        this.capabilities = capabilities
+        // 聞けなかったときは、次に聞き直す
+        if (!capabilities) this.capabilitiesLoading = null
+        return capabilities
+      })
+    return this.capabilitiesLoading
   }
 
   // 名前を変える（ファイル名も変わる。MAI-10）

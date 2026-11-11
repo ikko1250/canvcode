@@ -9,7 +9,7 @@ import {
   type SourceAnchorRecord,
   type Vec,
 } from '@canvcode/core'
-import { LINK_CARD_DEFAULT_WIDTH, QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type QuoteCardProps } from '@canvcode/nodes'
+import { ATTACHMENT_DEFAULT_WIDTH, ATTACHMENT_HEIGHT, LINK_CARD_DEFAULT_WIDTH, QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type QuoteCardProps } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 import type { QuoteDraft } from './quotes.ts'
@@ -362,6 +362,31 @@ export function insertLinkCard(editor: Editor, url: string, center: Vec): string
     editor.setSelection([node.id])
   })
   return node.id
+}
+
+// ファイルのカード（attachment。MAI-100）を、center を中心に並べて置く（横に 3 枚ずつ）。置いたノードの id を返す
+const ATTACHMENT_GAP = 16
+const ATTACHMENT_COLUMNS = 3
+
+export function insertAttachments(editor: Editor, files: { asset: AssetRecord; name: string; mime: string }[], center: Vec): string[] {
+  if (files.length === 0) return []
+  const columns = Math.min(ATTACHMENT_COLUMNS, files.length)
+  const rows = Math.ceil(files.length / columns)
+  const totalW = columns * ATTACHMENT_DEFAULT_WIDTH + (columns - 1) * ATTACHMENT_GAP
+  const totalH = rows * ATTACHMENT_HEIGHT + (rows - 1) * ATTACHMENT_GAP
+  const nodes = files.map(({ asset, name, mime }, i) =>
+    editor.makeNode('attachment', {
+      x: center.x - totalW / 2 + (i % columns) * (ATTACHMENT_DEFAULT_WIDTH + ATTACHMENT_GAP),
+      y: center.y - totalH / 2 + Math.floor(i / columns) * (ATTACHMENT_HEIGHT + ATTACHMENT_GAP),
+      props: { assetId: asset.id, name, mime, size: asset.size, w: ATTACHMENT_DEFAULT_WIDTH },
+    }),
+  )
+  const indices = indicesBetween(editor.index.topmost()?.index ?? null, null, nodes.length)
+  editor.transact('place file', (tx) => {
+    for (const [i, node] of nodes.entries()) tx.put({ ...node, index: indices[i] })
+    editor.setSelection(nodes.map((n) => n.id))
+  })
+  return nodes.map((n) => n.id)
 }
 
 // 画像ノードを、center を中心に横に並べて置く。maxSize（ワールド座標）に収まるよう縮める

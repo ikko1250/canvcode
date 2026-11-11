@@ -1,5 +1,5 @@
 import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
-import { noteHeight, noteType, slideSize, type NoteProps, type SlideRatio } from '@canvcode/nodes'
+import { ATTACHMENT_HEIGHT, formatFileSize, noteHeight, noteType, slideSize, type NoteProps, type SlideRatio } from '@canvcode/nodes'
 import { slideOrder } from '@canvcode/canvas/slideOrder'
 import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
 import { getMaxRowCount, getStandardMaxRowCount, TABLE_IMAGE_SPEC, TABLE_SPEC, TABLE_IMAGE_WIDTH_RANGE, TABLE_IMAGES_SPEC } from '@canvcode/slides'
@@ -235,6 +235,9 @@ function localBox(item: Item): { box: Box; estimated: boolean } {
     }
     case 'link-card':
       return { box: { x: 0, y: 0, w: num(p.w, 400), h: typeof p.description === 'string' && p.description ? 110 : 70 }, estimated: true }
+    // ファイルのカード（MAI-100）の高さは決まっている
+    case 'attachment':
+      return { box: { x: 0, y: 0, w: num(p.w, 300), h: ATTACHMENT_HEIGHT }, estimated: false }
     default:
       return { box: { x: 0, y: 0, w: num(p.w), h: num(p.h) }, estimated: false }
   }
@@ -381,6 +384,10 @@ function outlineLine(item: Item, ctx: LineContext): string {
     case 'link-card':
       if (typeof p.url === 'string') parts.push(p.url)
       break
+    // ファイルのカード（MAI-100）：大きさ
+    case 'attachment':
+      if (typeof p.size === 'number') parts.push(`size=${formatFileSize(p.size).replace(' ', '')}`)
+      break
     // 番号（非表示なら hidden）と、文字があふれている・並べられなかった行があるときの overflow
     case 'slide': {
       const info = ctx.slides.get(record.id)
@@ -421,6 +428,8 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
       return str(p.quote) || str(p.memo)
     case 'link-card':
       return str(p.title)
+    case 'attachment':
+      return str(p.name)
     case 'chart':
       return describeChart(p).rows.map((row) => row.label).join(', ')
     case 'portal':
@@ -576,6 +585,10 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       break
     case 'link-card':
       copy('url', 'title', 'description', 'siteName')
+      break
+    // ファイルのカード（MAI-100）。原本の場所（absPath）は refs.ts の addFileLocations が足す
+    case 'attachment':
+      copy('name', 'mime', 'size', 'assetId')
       break
     case 'pdf-page':
       file()
@@ -790,6 +803,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - table-card: a table document (a .csv / .tsv file) drawn as a grid; its text is the CSV (read_document). header = whether the first row is shown as the header; wrap = long cells wrap; thousands = number columns are shown with thousands separators (default true; false shows them as written); sort {col, dir} and filters [{col, op, value}] (col is 0-based; filters are ANDed) only change what the card shows, not the file. op is contains / notContains / equals / notEquals / gt / ge / lt / le / empty / notEmpty; value is a string, even for numbers and dates (e.g. "2012"), and may be omitted for empty / notEmpty; malformed filters are refused. Text is compared ignoring case and full-width forms. gt / ge / lt / le match only cells that can be compared with value: as numbers when both are numbers ("12%" is 12, "¥1,000" is 1000), or as dates when the cell is a date (2026-11-06, 2026/1/5, 2026.1.5, 2026-11, 2026年11月6日, optionally with a time) and value is a date or a year alone, compared up to value's precision (ge "2012" keeps 2012-01-01 and later, le "2020" keeps all of 2020, gt "2026-11" keeps December 2026 and later). equals / notEquals compare the same way (equals "2026-11" matches every day of November 2026), otherwise as text. Empty cells and missing marks (N/A, NA, #N/A, (NA), NaN, null, -, —, ー, …, ., --, n.a., #VALUE!, #DIV/0!, #N/A N/A, ―, −; not negative numbers or decimals like .5) never match gt / ge / lt / le; empty matches only blank cells
 - quote-card: quotation from a PDF or Markdown file with a memo
 - link-card: a web link pasted as a card (url, and the page's title, description and thumbnail when they could be fetched)
+- attachment: a file of any other kind (docx, xlsx, pptx, zip, …) dropped on the canvas, shown as a card with its name, kind and size (size= in the outline). It is not a document: read_document cannot read it. read_nodes gives name, mime, size and absPath (the original file on disk; read it with your own tools if you can). The user can convert a .docx to a Markdown document or an .xlsx to table documents (one per sheet) from its right-click menu; those copies are ordinary documents placed next to the card (editing them does not change the original)
 - pdf-page: one page of a PDF (p= is 1-based)
 - chart: pie or donut chart (rows of label and value)
 - slide: a 16:9 (1920x1080) or 4:3 (1440x1080) page of the canvas's slide deck (name, ratio, hidden). One canvas = one deck; slides are exported to PDF in reading order: rows from top to bottom (slides overlapping vertically by half or more form a row), left to right in a row. n= is that number; hidden slides get none. Slides cannot be resized or rotated.

@@ -4,6 +4,7 @@ import { imagePaint, pickImageVariant, plainTextOf, richTextFromPlain, type Text
 import {
   copySelection,
   duplicateSelection,
+  insertAttachments,
   insertImages,
   insertLinkCard,
   insertPayload,
@@ -212,6 +213,30 @@ describe('pasting from outside', () => {
     expect(big.h).toBeCloseTo(600, 6)
     expect(little.w).toBe(100)
     expect([...editor.session.get().selectedIds]).toEqual(ids)
+  })
+
+  // ファイルのカード（MAI-100）：横に 3 枚ずつ並べ、コピーするときは原本の Asset も載せる。Ctrl+クリックで原本を開く
+  it('places attachment cards in rows of three, and copies their assets', () => {
+    const { editor } = setup()
+    const file = (n: number): AssetRecord => ({ typeName: 'asset', id: `asset:${String(n).repeat(64)}`, mime: 'application/zip', size: 1000 * n, hash: String(n).repeat(64), width: 0, height: 0, variants: [] })
+    const ids = insertAttachments(editor, [1, 2, 3, 4].map((n) => ({ asset: file(n), name: `資料${n}.zip`, mime: 'application/zip' })), { x: 0, y: 0 })
+    expect([...editor.session.get().selectedIds]).toEqual(ids)
+    const boxes = ids.map((id) => editor.index.get(id)!.worldBounds)
+    expect(boxes.map((b) => [b.x, b.y, b.w, b.h])).toEqual([
+      [-466, -80, 300, 72],
+      [-150, -80, 300, 72],
+      [166, -80, 300, 72],
+      [-466, 8, 300, 72],
+    ])
+    const node = editor.getNode(ids[0])!
+    expect(node.props).toEqual({ assetId: file(1).id, name: '資料1.zip', mime: 'application/zip', size: 1000, w: 300 })
+    expect(editor.getType(node).linkAt!(node, { x: 10, y: 10 })).toBe(`/api/assets/${'1'.repeat(64)}?${new URLSearchParams({ name: '資料1.zip' })}`)
+    editor.setSelection([ids[0]])
+    const payload = copySelection(editor, (id) => (id === file(1).id ? file(1) : undefined))!
+    expect(payload.assets).toEqual([file(1)])
+    expect(payloadText(editor, payload)).toBe('')
+    // 幅だけを変えられる
+    expect(editor.getType(node).resize!(node, { w: 500, h: 300 })).toMatchObject({ w: 500 })
   })
 
   it('keeps the aspect ratio when resizing an image', () => {

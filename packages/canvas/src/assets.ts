@@ -93,6 +93,9 @@ export function isSupportedImage(file: Blob): boolean {
   return IMAGE_MIME_TYPES.includes(file.type)
 }
 
+// ファイルのカード（attachment。MAI-100）に置けるファイルの大きさの上限（サーバーの AssetStore の MAX_ORIGINAL_BYTES と同じ）
+export const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024
+
 // サーバーが原本を保存するときの拡張子（apps/server/src/assets.ts の ORIGINAL_TYPES と同じ）
 const ORIGINAL_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
@@ -364,9 +367,15 @@ export class AssetManager implements AssetResolver {
     return this.uploads.has(assetId)
   }
 
-  // 画像の Asset（PDF を除く）。新しく取り込んだもの・あとで登録したものほど後ろ（画像の塗りを選ぶ一覧。MAI-83）
+  // 画像の Asset（PDF を除く）。新しく取り込んだもの・あとで登録したものほど後ろ（画像の塗りを選ぶ一覧。MAI-83）。
+  // ファイルのカードの原本（MAI-100）の SVG・TIFF などは、画像として描けないので入れない
   images(): AssetRecord[] {
-    return [...this.records.values()].filter((record) => record.mime.startsWith('image/'))
+    return [...this.records.values()].filter((record) => IMAGE_MIME_TYPES.includes(record.mime))
+  }
+
+  // アップロードが済むまで待つ（済んでいれば、すぐに返る。失敗しても投げない）。ファイルのカードを変換する前に（MAI-100）
+  async whenUploaded(assetId: string): Promise<void> {
+    await this.uploads.get(assetId)
   }
 
   // すでにある Asset のレコードを登録する（貼り付けたノードが別のタブの Asset を参照しているときなど）
@@ -430,6 +439,34 @@ export class AssetManager implements AssetResolver {
     return record
   }
 
+  // 画像・PDF のほかの種類のファイルを、ファイルのカード（attachment。MAI-100）の原本として取り込み、裏でアップロードを始める。
+  // サーバーは、元の名前の拡張子を付けて置く（x-canvcode-file-ext）
+  async importFile(file: Blob & { name?: string }): Promise<AssetRecord> {
+    if (file.size > MAX_ATTACHMENT_BYTES) throw new Error(`File too large: ${file.size}`)
+    const hash = await sha256Hex(file)
+    const id = assetIdFromHash(hash)
+    const existing = this.records.get(id)
+    if (existing) return existing
+    const record: AssetRecord = { typeName: 'asset', id, mime: file.type || 'application/octet-stream', size: file.size, hash, width: 0, height: 0, variants: [] }
+    this.records.set(id, record)
+    this.local.set(id, new Map([[0, file]]))
+    const dot = (file.name ?? '').lastIndexOf('.')
+    // ヘッダーに入れられない文字（日本語など）を含む拡張子は送らない（サーバーは bin にする）
+    const ext = dot > 0 ? (file.name ?? '').slice(dot + 1) : ''
+    const safeExt = /^[A-Za-z0-9]{1,16}$/.test(ext) ? ext : ''
+    const upload = this.upload(record, new Map([[0, file]]), { 'x-canvcode-file-ext': safeExt })
+      .then(() => {
+        this.local.delete(id)
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to upload a file', id, error)
+        this.notify(`${file.name ?? 'ファイル'} をサーバーに保存できませんでした。このタブを閉じると、ファイルは失われます。`)
+      })
+      .finally(() => this.uploads.delete(id))
+    this.uploads.set(id, upload)
+    return record
+  }
+
   // PDF の中の単語を探す（サーバーが、取り出しておいたテキストで探す。PDF の単語検索の試作）。
   // アップロードが済んでいなければ、サーバーにはまだテキストがないので 'pending'
   async searchPdf(assetId: string, query: string, signal?: AbortSignal): Promise<PdfSearchResponse> {
@@ -463,7 +500,7 @@ export class AssetManager implements AssetResolver {
     return response.blob()
   }
 
-  private async upload(record: AssetRecord, blobs: Map<number, Blob>): Promise<void> {
+  private async upload(record: AssetRecord, blobs: Map<number, Blob>, extraHeaders: Record<string, string> = {}): Promise<void> {
     const original = blobs.get(Math.max(record.width, record.height))!
     // record.variants が空（PDF など）なら、原本だけを送る
     const response = await fetch(this.baseUrl, {
@@ -473,6 +510,7 @@ export class AssetManager implements AssetResolver {
         'x-canvcode-sha256': record.hash,
         'x-canvcode-width': String(record.width),
         'x-canvcode-height': String(record.height),
+        ...extraHeaders,
       },
       body: original,
     })

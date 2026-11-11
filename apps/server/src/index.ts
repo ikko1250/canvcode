@@ -14,6 +14,7 @@ import { handleClaude } from './claude/http.ts'
 import { ClaudeJobs, claudeLimitsFromEnv } from './claude/jobs.ts'
 import { ClaudeStore } from './claude/store.ts'
 import { handleMemo, MemoWriter } from './claude/memo.ts'
+import { FileConverter } from './fileConvert.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
@@ -44,6 +45,8 @@ import { ThumbnailStore } from './thumbnails.ts'
 // - 付箋の文字を箇条書きのメモにする（/api/claude/memo。claude/memo.ts）。Claude Code を 1 回だけ、ツールなしで動かす。
 //   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
+// - ファイルのカード（attachment）の docx・xlsx を、Markdown・表（CSV）の写しにする（/api/convert。fileConvert.ts。MAI-100）。
+//   docx には pandoc が要る（CANVCODE_PANDOC で場所を変える）。なければ、変換を断ってそのことを知らせる
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
 const HOST = '127.0.0.1'
@@ -108,6 +111,8 @@ await files.init()
 const markdownPdf = new MarkdownPdf(files, WORKSPACE, DATA_DIR)
 // CSV から作るグラフ（matplotlib。plot.ts）。CANVCODE_PYTHON で python の場所を変える
 const plot = new Plotter({ workspace: WORKSPACE, files, ...(process.env.CANVCODE_PYTHON ? { python: process.env.CANVCODE_PYTHON } : {}) })
+// ファイルのカードの docx・xlsx を、文書の写しにする（MAI-100）
+const converter = new FileConverter({ files, assets, ...(process.env.CANVCODE_PANDOC ? { pandoc: process.env.CANVCODE_PANDOC } : {}) })
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
 // 画面から頼む Claude Code
@@ -227,6 +232,7 @@ const server = createServer(async (req, res) => {
   if (await handleRefs(req, res, url.pathname, records, refImages, url.searchParams)) return
   if (await markdownPdf.handle(req, res, url.pathname)) return
   if (await plot.handle(req, res, url.pathname)) return
+  if (await converter.handle(req, res, url.pathname)) return
   if (await files.handle(req, res, url.pathname)) return
   if (await handleMcp(req, res, url.pathname, { files, records, dataDir: DATA_DIR, refImages, agent, presence: () => sync.latestPresence(), pdf: { assets, links: linkPreviews }, plot, renders })) return
   if (url.pathname.startsWith('/api/')) {

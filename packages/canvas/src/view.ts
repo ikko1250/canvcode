@@ -24,20 +24,24 @@ import {
   type Vec,
 } from '@canvcode/core'
 import {
+  ATTACHMENT_HEIGHT,
   SOURCE_LINK_PREFIX,
   BLOCK_ARROW_SHAPES,
+  attachmentUrl,
+  type AttachmentProps,
   fontsSettled,
   onMarkdownImageSize,
   pickImageLevel,
   resetTextMetrics,
   textMetricsGeneration,
   type CitationResolver, type SearchHighlightResolver, type DocumentResolver, type ImageProps, type ImageRequester, type PdfPageProps, type RasterImage, type TableCardProps, type TableCardType, type TableColumnInfo, isTableTileKey, tableCardImportSize } from '@canvcode/nodes'
-import { AssetManager, IMAGE_MIME_TYPES, assetMarkdownImage, isPdf, isSupportedImage, type PdfRenderIntent, type PdfService } from './assets.ts'
+import { AssetManager, IMAGE_MIME_TYPES, MAX_ATTACHMENT_BYTES, assetMarkdownImage, isPdf, isSupportedImage, type PdfRenderIntent, type PdfService } from './assets.ts'
 import { canHoldImageFill, imageFillTargetAt, setImageFill } from './imageFill.ts'
 import {
   CLIPBOARD_MIME,
   copySelection,
   duplicateSelection,
+  insertAttachments,
   insertImages,
   insertPayloadWithResult,
   insertLinkCard,
@@ -2477,7 +2481,8 @@ export class CanvasView {
     return setImageFill(editor, targets, asset.id)
   }
 
-  // 画像は Asset にして、.md は File にして、center を中心に並べる。受け付けないファイルは、そのことを知らせる。
+  // 画像は Asset にして、.md は File にして、center を中心に並べる。そのほかの種類のファイル（docx・xlsx・zip など）は、
+  // Asset にしてファイルのカード（attachment。MAI-100）を置く。大きすぎるファイルは、そのことを知らせる。
   // ドロップ・貼り付けのほか、ベンチマーク（MAI-67）からも呼ぶ
   async importFiles(all: File[], center: Vec): Promise<void> {
     // 旧データ（.ricbackup）は、サーバーに送って取り込む（MAI-36）
@@ -2500,8 +2505,19 @@ export class CanvasView {
     for (const [i, file] of pdfs.entries()) await this.importPdf(file, { x: center.x + i * 40, y: center.y + i * 40 })
     const rest = files.filter((file) => !documents.includes(file) && !pdfs.includes(file))
     const images = rest.filter(isSupportedImage)
-    const rejected = rest.filter((file) => !isSupportedImage(file))
+    const others = rest.filter((file) => !isSupportedImage(file))
+    const rejected = others.filter((file) => file.size > MAX_ATTACHMENT_BYTES)
     if (rejected.length > 0) this.options.notify(rejectMessage(rejected))
+    const attachments = []
+    for (const file of others.filter((file) => !rejected.includes(file))) {
+      try {
+        attachments.push({ asset: await this.assets.importFile(file), name: file.name, mime: file.type || 'application/octet-stream' })
+      } catch (error) {
+        // フォルダを落としたとき（中身を読めない）など
+        console.error('Failed to import a file', file.name, error)
+        this.options.notify(`ファイルを読み込めませんでした：${file.name}`)
+      }
+    }
     const assets = []
     for (const file of images) {
       try {
@@ -2514,7 +2530,76 @@ export class CanvasView {
     const zoom = this.editor.session.get().camera.zoom
     const maxSize = { w: (this.width * IMAGE_FIT_RATIO) / zoom, h: (this.height * IMAGE_FIT_RATIO) / zoom }
     this.editor.focusGroup(null)
-    insertImages(this.editor, assets, center, maxSize)
+    const imageIds = insertImages(this.editor, assets, center, maxSize)
+    // 画像と一緒に落としたときは、画像の下に並べる
+    const imageBox = unionBoxes(imageIds.flatMap((id) => this.editor.index.get(id)?.worldBounds ?? []))
+    const attachmentCenter = imageBox ? { x: center.x, y: imageBox.y + imageBox.h + 40 + ATTACHMENT_HEIGHT / 2 } : center
+    const attachmentIds = insertAttachments(this.editor, attachments, attachmentCenter)
+    if (imageIds.length > 0 && attachmentIds.length > 0) this.editor.setSelection([...imageIds, ...attachmentIds])
+  }
+
+  // ---- ファイルのカード（attachment。MAI-100） ----
+
+  // ファイルのカードの原本を、新しいタブで開く（download なら、元の名前で保存させる）。まだ送っている途中なら知らせる
+  openAttachment(nodeId: string, options: { download?: boolean } = {}): void {
+    const node = this.editor.getNode(nodeId)
+    if (node?.type !== 'attachment') return
+    const props = node.props as AttachmentProps
+    const url = attachmentUrl(props, options)
+    if (!url) return
+    if (this.assets.isUploading(props.assetId)) {
+      this.options.notify(`${props.name} をまだサーバーに送っているところです。少し待ってから、もう一度押してください`)
+      return
+    }
+    if (!options.download) {
+      window.open(url, '_blank', 'noopener,noreferrer')
+      return
+    }
+    const link = document.createElement('a')
+    link.href = url
+    link.download = props.name
+    link.rel = 'noopener'
+    document.body.append(link)
+    link.click()
+    link.remove()
+  }
+
+  // ファイルのカードの docx を Markdown に、xlsx をシートごとの表（CSV）に変換し、できた文書のカードを元のカードの右に並べる。
+  // 元のファイルは残す（できた文書は写し）。置いたカードの id を返す（できなければ知らせて空）
+  async convertAttachment(nodeId: string, to: 'markdown' | 'table'): Promise<string[]> {
+    const editor = this.editor
+    const node = editor.getNode(nodeId)
+    if (node?.type !== 'attachment' || !this.files) return []
+    const props = node.props as AttachmentProps
+    this.options.notify(`${props.name} を${to === 'markdown' ? ' Markdown ' : '表（CSV）'}に変換しています…`)
+    try {
+      await this.assets.whenUploaded(props.assetId)
+      const { files, warnings } = await this.files.convert(props.assetId, props.name, to)
+      if (this.editor !== editor) return []
+      const source = editor.index.get(nodeId)?.worldBounds
+      let x = source ? source.x + source.w + CONVERTED_GAP : this.viewportCenter().x
+      const y = source?.y ?? this.viewportCenter().y
+      const ids: string[] = []
+      for (const file of files) {
+        const content = file.kind === 'table' ? await this.files.text(file.id) : null
+        if (this.editor !== editor) return ids
+        const sizeProps = content !== null ? tableCardImportSize(content, file.path) : undefined
+        const type = editor.types.get(file.kind === 'table' ? 'table-card' : 'markdown-card')
+        const w = (sizeProps?.w as number | undefined) ?? (type?.defaultProps() as { w?: number } | undefined)?.w ?? 400
+        const id = editor.createFileCard(file.id, { x: x + w / 2, y }, { props: sizeProps })
+        if (!id) continue
+        ids.push(id)
+        x += (editor.index.get(id)?.worldBounds.w ?? w) + CONVERTED_GAP
+      }
+      if (ids.length > 0) editor.setSelection(ids)
+      const done = `${files.map((file) => file.path).join('、')} を作りました（元のファイルはそのままです）`
+      this.options.notify(warnings.length > 0 ? `${done}\n${warnings.join('\n')}` : done)
+      return ids
+    } catch (error) {
+      console.warn('Failed to convert a file', props.name, error)
+      this.options.notify(`${props.name} を変換できませんでした：${error instanceof Error ? error.message : String(error)}`)
+      return []
+    }
   }
 
   // PDF を取り込む：Asset にしてアップロードを始め、ページの大きさを読み、ページの Canvas と Portal を作る。
@@ -2776,8 +2861,11 @@ const KIND_LABELS = { markdown: 'Markdown', code: 'Python', table: 'CSV' } as co
 // 受け付けないファイルの知らせ（MAI-12 の「9. ファイルのドラッグ＆ドロップ」）
 function rejectMessage(files: File[]): string {
   const names = files.map((file) => file.name).join('、')
-  return `${names}：取り込めない種類のファイルです（今取り込めるのは、画像（PNG・JPEG・GIF・WebP・AVIF・BMP）、Markdown（.md）、Python（.py）、CSV（.csv・.tsv）、PDF、旧アプリの .ricbackup）`
+  return `${names}：大きすぎるので置けません（${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB まで）`
 }
+
+// 変換してできた文書のカードと、元のカードの間（MAI-100）
+const CONVERTED_GAP = 40
 
 // クリップボードに文字を書く。書けたかどうかを返す（投げない）
 // ---- Canvas を画像にする（MAI-89） ----
