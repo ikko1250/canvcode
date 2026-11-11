@@ -57,7 +57,9 @@ class FileBoundaryTests(unittest.TestCase):
         with patch.object(fetch, "download", return_value=(body, "text/plain")):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(fetch.fetch_source(self.sources, name, "https://example.test/a", self.sources), 0)
-        self.assertEqual((self.sources / f"{name}.md").read_bytes(), body)
+        saved = (self.sources / f"{name}.md").read_bytes()
+        self.assertTrue(saved.startswith("出典: <https://example.test/a>（取得: ".encode()))
+        self.assertTrue(saved.endswith(b"\n\n" + body))
 
     def test_report_rejects_outside_paths(self):
         outside = self.topic / "outside.md"

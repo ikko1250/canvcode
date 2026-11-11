@@ -1,11 +1,15 @@
 """再取得が失敗したときの原文保全と、成功時の保存先を検査する。"""
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
+import datetime
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +19,9 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/fetch.py"
 SPEC = importlib.util.spec_from_file_location("imozuru_fetch", SCRIPT)
 fetch = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fetch)
+
+
+TODAY = datetime.date.today().isoformat()
 
 
 class FetchPreservationTests(unittest.TestCase):
@@ -145,7 +152,9 @@ class FetchPreservationTests(unittest.TestCase):
                 with patch.object(fetch, "download", return_value=(body, ctype)):
                     self.assertEqual(self.run_fetch(), 0)
                 target = self.sources / f"paper{suffix}"
-                self.assertEqual(target.read_text(encoding="utf-8"), body.decode())
+                # .md には先頭に出典の行と空行が付く。.json・.csv は形が崩れるので付けない
+                head = f"出典: <https://example.test/source>（取得: {TODAY}）\n\n" if suffix == ".md" else ""
+                self.assertEqual(target.read_text(encoding="utf-8"), head + body.decode())
                 self.assertIn(f"OK\tpaper\t{target}\t", self.stdout.getvalue())
                 self.assertFalse(any(p.is_dir() for p in self.sources.iterdir()))
                 self.assertEqual((self.sources / "unrelated.md").read_bytes(), b"Unrelated source\n")
@@ -179,7 +188,8 @@ class FetchPreservationTests(unittest.TestCase):
         with patch.object(fetch, "youtube_to_md", side_effect=self.markdown(text)):
             self.assertEqual(self.run_fetch("https://www.youtube.com/watch?v=example"), 0)
         target = self.sources / "paper.md"
-        self.assertEqual(target.read_text(encoding="utf-8"), text)
+        self.assertEqual(target.read_text(encoding="utf-8"),
+                         f"出典: <https://www.youtube.com/watch?v=example>（取得: {TODAY}）\n\n{text}")
         self.assertIn(f"OK\tpaper\t{target}\t", self.stdout.getvalue())
         self.assertFalse(any(p.is_dir() for p in self.sources.iterdir()))
 
@@ -199,6 +209,182 @@ class FetchPreservationTests(unittest.TestCase):
                 download.assert_not_called()
                 self.assertEqual(list(self.sources.iterdir()), [])
         self.assertIn("http(s) の URL だけを取りに行く", self.stdout.getvalue())
+
+
+class SourceRecordTests(unittest.TestCase):
+    """取れた原文の名前・URL・取った日を sources.json に、.md の先頭に出典の行を書く（MAI-97）。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.sources = Path(tmp.name) / "sources"
+        self.sources.mkdir()
+        self.stdout = io.StringIO()
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(contextlib.redirect_stdout(self.stdout))
+        stack.enter_context(patch.object(fetch, "HAS_AX", False))
+        stack.enter_context(patch.object(fetch, "missing", return_value=[]))
+
+    def run_fetch(self, name, url):
+        with patch.object(sys, "argv", [str(SCRIPT), str(self.sources), name, url]):
+            return fetch.main()
+
+    def html(self, name, url, text="Article body "):
+        body = b"<article>" + text.encode() * 100 + b"</article>"
+        with patch.object(fetch, "download", return_value=(body, "text/html")):
+            return self.run_fetch(name, url)
+
+    def pdf(self, name, url):
+        def convert(pdf):
+            pdf.with_suffix(".txt").write_text("PDF body text\n" * 300, encoding="utf-8")
+            return "PDF body text\n" * 300
+        with patch.object(fetch, "download", return_value=(b"%PDF-1.4\nbody", "application/pdf")), \
+                patch.object(fetch, "pdf_to_text", side_effect=convert):
+            return self.run_fetch(name, url)
+
+    def record(self):
+        return json.loads((self.sources / "sources.json").read_text(encoding="utf-8"))
+
+    def test_records_name_files_url_and_date(self):
+        self.assertEqual(self.html("blog", "https://example.test/blog"), 0)
+        self.assertEqual(self.pdf("paper", "https://example.test/paper.pdf"), 0)
+        self.assertEqual(self.record(), {
+            "blog": {"files": ["blog.md"], "url": "https://example.test/blog", "fetched": TODAY},
+            "paper": {"files": ["paper.pdf", "paper.txt"], "url": "https://example.test/paper.pdf", "fetched": TODAY},
+        })
+
+    def test_same_name_overwrites_and_others_stay(self):
+        self.html("blog", "https://example.test/old")
+        self.pdf("paper", "https://example.test/paper.pdf")
+        self.html("blog", "https://example.test/new")
+        record = self.record()
+        self.assertEqual(record["blog"]["url"], "https://example.test/new")
+        self.assertEqual(record["paper"]["url"], "https://example.test/paper.pdf")
+        self.assertIn("出典: <https://example.test/new>", (self.sources / "blog.md").read_text(encoding="utf-8"))
+
+    def test_failure_records_nothing(self):
+        self.html("blog", "https://example.test/blog")
+        before = (self.sources / "sources.json").read_bytes()
+        with patch.object(fetch, "download", return_value=(b"Short", "text/plain")):
+            self.assertEqual(self.run_fetch("blog", "https://example.test/other"), 1)
+        self.assertEqual((self.sources / "sources.json").read_bytes(), before)
+
+    def test_broken_record_is_not_overwritten(self):
+        (self.sources / "sources.json").write_text("{broken", encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.html("blog", "https://example.test/blog"), 0)
+        self.assertEqual((self.sources / "sources.json").read_text(encoding="utf-8"), "{broken")
+        self.assertIn("読めない", err.getvalue())
+        self.assertTrue((self.sources / "blog.md").is_file())
+
+    def test_html_md_starts_with_source_line_and_lines_follow(self):
+        self.html("blog", "https://example.test/blog", "Article body\n")
+        lines = (self.sources / "blog.md").read_text(encoding="utf-8").split("\n")
+        self.assertEqual(lines[:2], [f"出典: <https://example.test/blog>（取得: {TODAY}）", ""])
+        # 機械で取り出せる（MAI-98 の引用が使う）
+        m = fetch.SOURCE_LINE.match(lines[0])
+        self.assertEqual((m["url"], m["fetched"]), ("https://example.test/blog", TODAY))
+        # 本文は3行目から。OK の先頭の一行は本文のもの
+        self.assertIn("Article body", lines[2])
+        self.assertIn("\tArticle body", self.stdout.getvalue())
+
+    def test_youtube_md_starts_with_source_line(self):
+        def transcript(url, out):
+            out.write_text(f"# Talk\n\n{url}\n\n" + "[00:00] words\n" * 40, encoding="utf-8")
+            return "[00:00] words\n" * 40
+        url = "https://www.youtube.com/watch?v=abc"
+        with patch.object(fetch, "youtube_to_md", side_effect=transcript):
+            self.assertEqual(self.run_fetch("talk", url), 0)
+        text = (self.sources / "talk.md").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith(f"出典: <{url}>（取得: {TODAY}）\n\n# Talk\n"))
+        self.assertEqual(self.record()["talk"], {"files": ["talk.md"], "url": url, "fetched": TODAY})
+
+    def test_pdf_text_and_data_get_no_source_line(self):
+        self.pdf("paper", "https://example.test/paper.pdf")
+        self.assertTrue((self.sources / "paper.txt").read_text(encoding="utf-8").startswith("PDF body text"))
+        with patch.object(fetch, "download", return_value=(b'{"a": 1}' * 200, "application/json")):
+            self.assertEqual(self.run_fetch("data", "https://example.test/data.json"), 0)
+        self.assertTrue((self.sources / "data.json").read_text(encoding="utf-8").startswith('{"a": 1}'))
+        self.assertEqual(self.record()["data"]["files"], ["data.json"])
+
+    def test_saved_sources_are_not_rewritten(self):
+        old = self.sources / "old.md"
+        old.write_text("Saved before MAI-97\n", encoding="utf-8")
+        self.html("blog", "https://example.test/blog")
+        self.assertEqual(old.read_text(encoding="utf-8"), "Saved before MAI-97\n")
+        self.assertNotIn("old", self.record())
+
+    def test_parallel_fetches_keep_every_record(self):
+        # 親が fetch.py を並べて回しても、読んで書き戻す間に別の書き足しを消さない
+        code = ("import importlib.util, sys; from pathlib import Path\n"
+                "spec = importlib.util.spec_from_file_location('f', sys.argv[1]); f = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(f)\n"
+                "for i in range(20): f.record_source(Path(sys.argv[2]), f'{sys.argv[3]}-{i}', ['x.md'], 'https://example.test/', '2026-11-11')\n")
+        procs = [subprocess.Popen([sys.executable, "-I", "-c", code, str(SCRIPT), str(self.sources), f"p{n}"])
+                 for n in range(4)]
+        self.assertEqual([proc.wait(60) for proc in procs], [0] * 4)
+        self.assertEqual(len(self.record()), 80)
+
+    def test_reserved_name_preserves_catalog_and_does_not_download(self):
+        self.html("blog", "https://example.test/blog")
+        before = (self.sources / "sources.json").read_bytes()
+        for name in ("sources", "SOURCES", "Sources"):
+            with self.subTest(name=name), patch.object(fetch, "download") as download:
+                self.assertEqual(self.run_fetch(name, "https://example.test/data.json"), 1)
+                download.assert_not_called()
+                self.assertEqual((self.sources / "sources.json").read_bytes(), before)
+
+    def test_parallel_same_name_keeps_pdf_text_and_url_together(self):
+        attempts = []
+        for label in ("a", "b"):
+            folder = self.sources.parent / label
+            folder.mkdir()
+            pdf, text = folder / "paper.pdf", folder / "paper.txt"
+            pdf.write_bytes(label.encode())
+            text.write_text(label, encoding="utf-8")
+            attempts.append((pdf, text, self.sources, "paper", f"https://example.test/{label}"))
+        saved_a, release_a, started_b, finished_b = (threading.Event() for _ in range(4))
+        save = fetch.save_verified
+
+        def paused_save(saved, kept, destination):
+            result = save(saved, kept, destination)
+            if saved.parent.name == "a":
+                saved_a.set()
+                if not release_a.wait(5):
+                    raise TimeoutError("first save was not released")
+            return result
+
+        def save_b():
+            started_b.set()
+            try:
+                return fetch.keep(*attempts[1])
+            finally:
+                finished_b.set()
+
+        with patch.object(fetch, "save_verified", side_effect=paused_save), ThreadPoolExecutor(2) as pool:
+            first = pool.submit(fetch.keep, *attempts[0])
+            try:
+                self.assertTrue(saved_a.wait(5))
+                second = pool.submit(save_b)
+                self.assertTrue(started_b.wait(5))
+                finished_early = finished_b.wait(0.2)
+            finally:
+                release_a.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+        self.assertFalse(finished_early, "second save ran before the first source record was committed")
+        self.assertEqual((self.sources / "paper.pdf").read_bytes(), b"b")
+        self.assertEqual((self.sources / "paper.txt").read_text(encoding="utf-8"), "b")
+        self.assertEqual(self.record()["paper"]["url"], "https://example.test/b")
+
+    def test_source_line_encodes_what_breaks_the_autolink(self):
+        self.assertEqual(fetch.source_line("https://example.test/a b?q=<x>", "2026-11-11"),
+                         "出典: <https://example.test/a%20b?q=%3Cx%3E>（取得: 2026-11-11）")
+        self.assertEqual(fetch.source_line("https://kotobank.jp/word/漆", "2026-11-11"),
+                         "出典: <https://kotobank.jp/word/漆>（取得: 2026-11-11）")
+        self.assertTrue(fetch.SOURCE_LINE.match(fetch.source_line("https://example.test/a b", "2026-11-11")))
 
 
 class YoutubeCaptionTests(unittest.TestCase):

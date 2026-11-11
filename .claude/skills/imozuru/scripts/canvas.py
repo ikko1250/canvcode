@@ -6,14 +6,18 @@ report.html は縦に長い1枚のページ。CanvCode では同じ抜き書き�
 各列の右の帯に、その列が引く原文のショートカットを置いて、付箋からそのショートカットへ矢印を引く
 （1つの原文に多くの列から長い矢印が集まって、ほかの列を横切らないように）。
 原文はワークスペースの中のファイルのままなので、カードや Portal からそのまま開いて前後を読める。
+PDF の Portal のすぐ下には、fetch.py が sources/sources.json に残した URL のリンクカードを置く。
+届かなかったもの（unreached）は、1件ずつリンクカード（URL の無いものは付箋）にする。
+リンクカードは edit_canvas の create type link（CanvCode の MAI-97 より前には無い）。--no-links なら、代わりに付箋に URL を書く。
 
 report.py と同じ照合を先に行い、1つでも合わなければ ops を作らずに止まる（言い換えが Canvas に紛れ込むのを防ぐ）。
 エージェントが書いた見出し・状態・注記・訳のほかは、原文から切り出した文だけを付箋に入れる。
 
 使い方:
-    canvas.py <topic_dir> --workspace <dir>   … <topic_dir>/canvas.json を書く
+    canvas.py <topic_dir> --workspace <dir> [--no-links]   … <topic_dir>/canvas.json を書く
       <dir> は CanvCode のワークスペースのフォルダ（MCP の list_documents が返す workspace）。
       <topic_dir> はその中に置く（原文のファイルを、ワークスペースの中のパスで指すため）
+      --no-links は、edit_canvas が type link を受け付けない古い CanvCode のとき
 
 canvas.json の形: {"label": "...", "ops": [...]}。ops はそのまま edit_canvas に渡す（canvas_id は並べる先の Canvas）。
 """
@@ -36,6 +40,8 @@ COL_STEP = COL_W + SIDE_GAP + SIDE_W + COL_GAP
 CARD_H = 420
 PORTAL_W, PORTAL_H = 240, 320
 GAP = 24
+# PDF の Portal と、その下の URL のリンクカードの間（同じ原文の組だと分かるように、ほかより狭く）
+URL_GAP = 8
 # edit_canvas が 1 回で受け付ける操作の数
 MAX_OPS = 500
 STATUS_COLORS = {"付いた": "#d3f9d8", "一部だけ": "#fff3bf", "付かなかった": "#ffe3e3"}
@@ -51,6 +57,26 @@ def load_report():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def source_urls(src: Path) -> dict[Path, str]:
+    """sources.json（fetch.py が書く）から、原文のファイル → 取ってきた URL。無いか読めなければ空。"""
+    path = src / "sources.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        print(f"{path} が読めないので、PDF の URL を置かない（{e}）", file=sys.stderr)
+        return {}
+    urls = {}
+    for entry in data.values() if isinstance(data, dict) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+            continue
+        for name in entry.get("files", []):
+            if isinstance(name, str):
+                urls[(src / name).resolve()] = entry["url"]
+    return urls
 
 
 def page_of(path: Path, line: int) -> int | None:
@@ -77,12 +103,13 @@ def quote_text(q: dict, page: int | None) -> str:
     return "\n".join(lines)
 
 
-def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
-    """ops と、照合に通らなかった抜き書きの一覧を返す。"""
+def build(topic: Path, workspace: Path, links: bool = True) -> tuple[list[dict], list[str]]:
+    """ops と、照合に通らなかった抜き書きの一覧を返す。links が False なら、リンクカードの代わりに付箋に URL を書く。"""
     report = load_report()
     data = json.loads((topic / "extracts.json").read_text(encoding="utf-8"))
     src = topic / "sources"
     root = workspace.resolve()
+    unreached = report.unreached_items(data)
 
     def rel(path: Path) -> str:
         try:
@@ -107,7 +134,20 @@ def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
     ]
     claims = data["claims"]
     disagreements = data.get("disagreements", [])
-    unreached = data.get("unreached", [])
+    urls = source_urls(src)
+
+    def link(url: str, title: str, reason: str, w: int, place: dict, name: str | None = None) -> dict:
+        """URL のリンクカード（Ctrl+クリックで開く）。links が False なら、URL を書いた付箋。"""
+        if links:
+            op = {"op": "create", "type": "link", "url": url, "w": w, "place": place}
+            if title:
+                op["text"] = title
+            if reason:
+                op["props"] = {"description": reason}
+        else:
+            text = "\n".join(t for t in (title, reason and f"理由: {reason}", url) if t)
+            op = {"op": "create", "type": "note", "text": text, "color": UNREACHED_COLOR, "w": w, "place": place}
+        return {**op, "as": name} if name else op
 
     # 原文に、抜き書きに出てきた順で s0, s1, … の名前を付ける
     sources: dict[Path, str] = {}
@@ -142,6 +182,11 @@ def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
             op = {"op": "create", "type": "note", "as": ref, "text": f"sources/{path.name}", "color": QUOTE_COLOR, "w": COL_W}
         ops.append({**op, "place": {"below": f"${prev}", "gap": GAP}})
         prev = ref
+        # PDF は Canvas の中で URL が見えないので、Portal のすぐ下に取ってきた URL を置く（Markdown は先頭の出典の行にある）
+        url = report.web_url(urls.get(path.with_suffix(".pdf"))) if kind(path) == "pdf" else None
+        if url:
+            ops.append(link(url, "", "", PORTAL_W, {"below": f"${ref}", "gap": URL_GAP}, f"{ref}_url"))
+            prev = f"{ref}_url"
 
     arrows: list[tuple[str, str]] = []
 
@@ -184,8 +229,18 @@ def build(topic: Path, workspace: Path) -> tuple[list[dict], list[str]]:
         column(x, f"食い違い: {d['topic']}\nどれが正しいかは書かない。並べるだけ。", DISAGREE_COLOR, d.get("quotes", []), f"d{i}")
         x += COL_STEP
     if unreached:
-        ops.append({"op": "create", "type": "note", "text": "届かなかったもの\n" + "\n".join(f"・{u}" for u in unreached),
-                    "color": UNREACHED_COLOR, "x": x, "y": TOP, "w": COL_W})
+        # 1件ずつ。URL のあるものはリンクカード（理由は説明の欄）、無いもの（見つからなかったもの）は付箋
+        head = "届かなかったもの" + ("\nカードを Ctrl（⌘）+クリックで開く" if links and any(u["url"] for u in unreached) else "")
+        ops.append({"op": "create", "type": "note", "as": "u", "text": head, "color": UNREACHED_COLOR, "x": x, "y": TOP, "w": COL_W})
+        prev = "u"
+        for j, u in enumerate(unreached):
+            place = {"below": f"${prev}", "gap": GAP}
+            if u["url"]:
+                ops.append(link(u["url"], u["title"], u["reason"], COL_W, place, f"u{j}"))
+            else:
+                text = u["title"] + (f"\n理由: {u['reason']}" if u["reason"] else "")
+                ops.append({"op": "create", "type": "note", "as": f"u{j}", "text": text, "color": UNREACHED_COLOR, "w": COL_W, "place": place})
+            prev = f"u{j}"
     for frm, to in arrows:
         ops.append({"op": "connect", "from": f"${frm}", "to": f"${to}", "color": ARROW_COLOR, "dash": "dashed"})
     return ops, []
@@ -195,10 +250,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="extracts.json を CanvCode の edit_canvas の ops（canvas.json）にする")
     parser.add_argument("topic_dir", type=Path)
     parser.add_argument("--workspace", type=Path, required=True, help="CanvCode のワークスペースのフォルダ（list_documents の workspace）")
+    parser.add_argument("--no-links", action="store_true",
+                        help="リンクカードの代わりに付箋に URL を書く（edit_canvas が type link を受け付けない古い CanvCode のとき）")
     args = parser.parse_args()
     topic = args.topic_dir.expanduser()
     data = json.loads((topic / "extracts.json").read_text(encoding="utf-8"))
-    ops, bad = build(topic, args.workspace.expanduser())
+    ops, bad = build(topic, args.workspace.expanduser(), links=not args.no_links)
     if bad:
         print("原文に見つからない抜き書きがある（言い換えか、行番号のずれ）:")
         print("\n".join("  " + b for b in bad))
