@@ -1,11 +1,15 @@
 """抜き書きを CanvCode の Canvas に並べる操作（canvas.py）を検査する。"""
 
+import contextlib
 import importlib.util
+import io
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +102,81 @@ class CanvasTests(unittest.TestCase):
         # 列の帯にも、同じ場所の付箋を置く
         c1_s1 = next(op for op in ops if op.get("as") == "c1_s1")
         self.assertEqual((c1_s1["type"], c1_s1["text"], c1_s1["w"]), ("note", "sources/sample-paper.txt", 240))
+
+    def write_sources_json(self, entries):
+        (self.topic / "sources" / "sources.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+
+    def test_pdf_portal_has_its_url_link_card_below(self):
+        (self.topic / "sources" / "sample-paper.pdf").write_bytes(b"%PDF-1.4\n")
+        self.write_sources_json({
+            "sample-paper": {"files": ["sample-paper.pdf", "sample-paper.txt"], "url": "https://example.com/paper.pdf", "fetched": "2026-11-11"},
+            "sample-blog": {"files": ["sample-blog.md"], "url": "https://example.com/blog", "fetched": "2026-11-11"},
+        })
+        ops = self.ops()
+        order = [op.get("as") for op in ops]
+        by_as = {op["as"]: op for op in ops if "as" in op}
+        # Portal（s1）のすぐ下にリンクカード。タイトルは渡さない（カードに URL が出る）
+        self.assertEqual(by_as["s1_url"], {"op": "create", "type": "link", "as": "s1_url", "url": "https://example.com/paper.pdf",
+                                           "w": canvas.PORTAL_W, "place": {"below": "$s1", "gap": canvas.URL_GAP}})
+        self.assertEqual(order.index("s1_url"), order.index("s1") + 1)
+        # Markdown の原文は先頭の出典の行に URL があるので、カードを足さない
+        self.assertNotIn("s0_url", by_as)
+        # 列の帯のショートカットには付けない
+        self.assertFalse([op for op in ops if op.get("type") == "link" and op["as"] != "s1_url" and not op["as"].startswith("u")])
+
+    def test_no_url_card_without_a_record(self):
+        (self.topic / "sources" / "sample-paper.pdf").write_bytes(b"%PDF-1.4\n")
+        self.assertNotIn("s1_url", {op.get("as") for op in self.ops()})
+        (self.topic / "sources" / "sources.json").write_text("{broken", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertNotIn("s1_url", {op.get("as") for op in self.ops()})
+        self.assertIn("読めない", err.getvalue())
+
+    def set_unreached(self, unreached):
+        data = json.loads((self.topic / "extracts.json").read_text(encoding="utf-8"))
+        data["unreached"] = unreached
+        (self.topic / "extracts.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def test_unreached_are_link_cards_one_by_one(self):
+        self.set_unreached([
+            {"title": "有料の論文", "url": "https://example.com/paid", "reason": "有料で読めない"},
+            {"title": "見つからなかった記録", "reason": "探した範囲に無い"},
+            "古い形の文字だけ",
+        ])
+        ops = self.ops()
+        by_as = {op["as"]: op for op in ops if "as" in op}
+        x = 3 * canvas.COL_STEP
+        self.assertEqual((by_as["u"]["type"], by_as["u"]["x"], by_as["u"]["y"]), ("note", x, canvas.TOP))
+        self.assertIn("Ctrl", by_as["u"]["text"])
+        self.assertEqual(by_as["u0"], {"op": "create", "type": "link", "as": "u0", "url": "https://example.com/paid", "text": "有料の論文",
+                                       "props": {"description": "有料で読めない"}, "w": canvas.COL_W, "place": {"below": "$u", "gap": 24}})
+        # URL の無いものは付箋
+        self.assertEqual((by_as["u1"]["type"], by_as["u1"]["text"], by_as["u1"]["place"]),
+                         ("note", "見つからなかった記録\n理由: 探した範囲に無い", {"below": "$u0", "gap": 24}))
+        self.assertEqual((by_as["u2"]["type"], by_as["u2"]["text"]), ("note", "古い形の文字だけ"))
+
+    def test_no_links_writes_urls_on_notes(self):
+        (self.topic / "sources" / "sample-paper.pdf").write_bytes(b"%PDF-1.4\n")
+        self.write_sources_json({"sample-paper": {"files": ["sample-paper.pdf", "sample-paper.txt"], "url": "https://example.com/paper.pdf", "fetched": "2026-11-11"}})
+        self.set_unreached([{"title": "有料の論文", "url": "https://example.com/paid", "reason": "有料"}])
+        ops, bad = canvas.build(self.topic, self.workspace, links=False)
+        self.assertEqual(bad, [])
+        self.assertFalse([op for op in ops if op.get("type") == "link"])
+        by_as = {op["as"]: op for op in ops if "as" in op}
+        self.assertEqual((by_as["s1_url"]["type"], by_as["s1_url"]["text"], by_as["s1_url"]["place"]),
+                         ("note", "https://example.com/paper.pdf", {"below": "$s1", "gap": canvas.URL_GAP}))
+        self.assertEqual((by_as["u0"]["type"], by_as["u0"]["text"]), ("note", "有料の論文\n理由: 有料\nhttps://example.com/paid"))
+        self.assertNotIn("Ctrl", by_as["u"]["text"])
+
+    def test_cli_no_links(self):
+        self.set_unreached([{"title": "有料の論文", "url": "https://example.com/paid"}])
+        for flag, expected in (([], "link"), (["--no-links"], "note")):
+            with self.subTest(flag=flag):
+                with patch.object(sys, "argv", ["canvas.py", str(self.topic), "--workspace", str(self.workspace), *flag]), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(canvas.main(), 0)
+                ops = json.loads((self.topic / "canvas.json").read_text(encoding="utf-8"))["ops"]
+                self.assertEqual(next(op for op in ops if op.get("as") == "u0")["type"], expected)
 
     def test_refuses_paraphrased_quotes(self):
         data = json.loads((self.topic / "extracts.json").read_text(encoding="utf-8"))

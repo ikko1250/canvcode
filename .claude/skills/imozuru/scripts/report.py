@@ -18,13 +18,16 @@ extracts.json の形（例はリポジトリの examples/demo/extracts.json）:
      "claims": [{"claim", "status": "付いた|一部だけ|付かなかった", "note"?,
                  "quotes": [{"file", "line", "end"?, "text", "ja"?, "mark"?, "context_note"?}]}],
      "disagreements"?: [{"topic", "quotes": [{..., "who"}]}],
-     "unreached"?: ["..."]}
+     "unreached"?: [{"title", "url"?, "reason"?}]}
+    unreached の1件は、届かなかったものの名前・URL（http か https）・届かなかった理由。
+    URL の無いもの（探しても見つからなかったもの）は url を省く。古い形の文字列だけのものも読める（title として扱う）
 """
 
 import html
 import json
 import re
 import sys
+import urllib.parse
 from pathlib import Path, PureWindowsPath
 
 # 前後に見せる行数。抜き書きがどんな流れの中にあったかを、ページの中で開いて確かめられるように。
@@ -71,6 +74,41 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     c0 = max(1, q["line"] - CONTEXT_LINES)
     c1 = min(len(lines), q.get("end", q["line"]) + CONTEXT_LINES)
     return ok, lines[c0 - 1:c1], c0, c1
+
+
+def web_url(url) -> str | None:
+    """http(s) の URL ならそのまま、それ以外（javascript: や空）は None。ページのリンクと Canvas のカードに使う。"""
+    if not isinstance(url, str) or not url.strip() or re.search(r"\s", url.strip()):
+        return None
+    url = url.strip()
+    parts = urllib.parse.urlsplit(url)
+    return url if parts.scheme.lower() in ("http", "https") and parts.netloc else None
+
+
+def unreached_items(data: dict) -> list[dict]:
+    """extracts.json の unreached を {title, url, reason} の並びにそろえる。
+
+    古い形（文字列だけ）は title にして url と reason を空にする。http(s) でない url は捨てる（リンクにしない）。
+    """
+    items = []
+    for u in data.get("unreached", []):
+        if isinstance(u, str):
+            items.append({"title": u, "url": None, "reason": ""})
+        elif isinstance(u, dict):
+            title = str(u.get("title") or "").strip()
+            url = web_url(u.get("url"))
+            items.append({"title": title or (url or ""), "url": url, "reason": str(u.get("reason") or "").strip()})
+        else:
+            raise SystemExit(f"unreached の中身は文字列か {{title, url, reason}}: {u!r}")
+    return items
+
+
+def unreached_html(u: dict) -> str:
+    title = esc(u["title"])
+    head = f'<a href="{esc(u["url"])}" rel="noreferrer">{title}</a>' if u["url"] else title
+    url = f' <code class="url">{esc(u["url"])}</code>' if u["url"] and u["url"] != u["title"] else ""
+    reason = f'<span class="reason"> — {esc(u["reason"])}</span>' if u["reason"] else ""
+    return f"<li>{head}{reason}{url}</li>"
 
 
 def esc(s: str) -> str:
@@ -129,6 +167,9 @@ pre span{display:block}
 pre span.hit{background:var(--hit)}
 pre b{display:inline-block;min-width:3em;color:var(--sub);font-weight:400}
 ul.unreached li{margin:.2rem 0}
+ul.unreached a{color:var(--accent)}
+ul.unreached .reason{color:var(--sub)}
+ul.unreached .url{display:block;color:var(--sub);overflow-wrap:anywhere}
 footer{margin-top:4rem;font-size:.8rem;color:var(--sub)}
 """
 
@@ -141,6 +182,7 @@ def main() -> int:
     check_only = "--check" in sys.argv
     data = json.loads((topic / "extracts.json").read_text(encoding="utf-8"))
     src = topic / "sources"
+    unreached = unreached_items(data)  # 形が違えば、照合の前に止まる
 
     bad, rendered = [], {}
     groups = [("claims", c) for c in data["claims"]] + [("dis", d) for d in data.get("disagreements", [])]
@@ -176,9 +218,10 @@ def main() -> int:
         for q in d.get("quotes", []):
             ctx, c0 = rendered[id(q)]
             body.append(quote_html(src, q, ctx, c0))
-    if data.get("unreached"):
+    if unreached:
+        # URL はリンクにし、文字でも出す（印刷したページや、リンクを開けない所でも読めるように）
         body.append("<h2>届かなかったもの</h2><ul class=\"unreached\">"
-                    + "".join(f"<li>{esc(u)}</li>" for u in data["unreached"]) + "</ul>")
+                    + "".join(unreached_html(u) for u in unreached) + "</ul>")
     # 絶対パスはページを人に渡すと手元のユーザー名を漏らすので、ページからの相対で書く
     body.append(f'<footer>imozuru の抜き書き・原文はこのページと同じ場所の {esc(src.name)}/</footer>')
 

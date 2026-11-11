@@ -167,7 +167,7 @@ claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp
 | `list_canvases` | Canvas の木（id・名前・ノードの数。名前で絞り込み。ユーザーが見ている Canvas に `viewing` を付ける） |
 | `read_canvas` | Canvas のノードを 1 行 1 ノードの短い一覧で返す（ワールド座標。範囲・文字・型・`since` の rev 以降の変更で絞り込み、ページ送り。`view` で画面に見えているものだけ） |
 | `read_nodes` | ノードの詳しい中身（位置・大きさ・プレーンテキスト・色・File・矢印の端など。JSON） |
-| `edit_canvas` | ノードの作成・変更・移動・削除・group・矢印でつなぐ・整列・拡大・縮小（scale：倍率か、箱に収める）・親の付け替えを、まとめて 1 回の編集として行う（どれかが失敗したら何も変えない。`if_rev` で、読んだあとの変更を検出）。作成では、新しい空の Canvas の Portal（`portal`）と、PDF の Portal（`pdf`：ワークスペースの中の PDF のパスか URL を、画面にドロップしたときと同じページの Canvas にする）も作れ、カードは File の id の代わりにワークスペースの中のパスでも指せる |
+| `edit_canvas` | ノードの作成・変更・移動・削除・group・矢印でつなぐ・整列・拡大・縮小（scale：倍率か、箱に収める）・親の付け替えを、まとめて 1 回の編集として行う（どれかが失敗したら何も変えない。`if_rev` で、読んだあとの変更を検出）。作成では、新しい空の Canvas の Portal（`portal`）と、PDF の Portal（`pdf`：ワークスペースの中の PDF のパスか URL を、画面にドロップしたときと同じページの Canvas にする）も作れ、カードは File の id の代わりにワークスペースの中のパスでも指せる。URL のリンクのカード（`link`：URL を貼り付けたときと同じカード。タイトルと説明は渡したものだけで、サーバーはリンク先を取りに行かない）も置ける |
 | `undo_canvas_edit` | `edit_canvas` の編集を取り消す（そのあと変わったノードがあれば断る） |
 | `list_plot_styles` | グラフのスタイル（ワークスペースの `style.py`）の名前・説明・色・大きさ・凡例の列の数の既定（`legend_ncol`）と、`style.py` の絶対パス |
 | `plot_csv` | 表（CSV）の列（名前か番号）からグラフを描き、画像のノードとして置く（`place` か `at`、なければ見ている範囲の近く）。凡例の列の数は `legend_ncol`（1〜20。null ならスタイルの既定）、画像の大きさは `width`・`height`（なければスタイルの大きさ。1:1 の高解像度なら 1440×1440）で選ぶ（MAI-95）。`node` に描いたグラフを渡すと、渡したものだけを変えてその場で描き直す。`edit_canvas` と同じく画面から元に戻せる |
@@ -187,7 +187,7 @@ AI が `edit_canvas` で PDF を取り込むと、サーバーが PDF を読み�
 
 ### 調べもの（imozuru）
 
-`.claude/skills/imozuru/` に、知らない分野を原文までたどって調べる Claude Code のスキル [imozuru](https://github.com/MaryCache/imozuru)（MIT）を取り込んである（このリポジトリで Claude Code を動かすと使える。取り込み元と変えた所は `UPSTREAM.md`）。CanvCode の MCP がつながっていれば、調べものをワークスペースの `research/<話題>/` に置き（map.md・log.md・原文の Markdown がそのまま文書になる）、止めたら抜き書きを Canvas に並べる：主張ごとの列に原文から切り出した文の付箋、右に map.md・log.md・原文のカードと PDF の Portal、付箋から原文への矢印。並べる操作は `scripts/canvas.py` が、report.html と同じ照合（言い換えがないか）を通ったものだけから作る。「AIに渡す」の `ref:` を添えて頼めば、その場所から調べ始める。詳しくは `.claude/skills/imozuru/references/canvcode.md`。
+`.claude/skills/imozuru/` に、知らない分野を原文までたどって調べる Claude Code のスキル [imozuru](https://github.com/MaryCache/imozuru)（MIT）を取り込んである（このリポジトリで Claude Code を動かすと使える。取り込み元と変えた所は `UPSTREAM.md`）。CanvCode の MCP がつながっていれば、調べものをワークスペースの `research/<話題>/` に置き（map.md・log.md・原文の Markdown がそのまま文書になる）、止めたら抜き書きを Canvas に並べる：主張ごとの列に原文から切り出した文の付箋、右に map.md・log.md・原文のカードと PDF の Portal（すぐ下に取ってきた URL のリンクカード）、届かなかったものの 1 件ずつのリンクカード、付箋から原文への矢印。原文の Markdown の 1 行目には出典（`出典: <URL>（取得: 日付）`）があり、取った原文の URL は `sources/sources.json` にも残る。並べる操作は `scripts/canvas.py` が、report.html と同じ照合（言い換えがないか）を通ったものだけから作る。「AIに渡す」の `ref:` を添えて頼めば、その場所から調べ始める。詳しくは `.claude/skills/imozuru/references/canvcode.md`。
 
 ### AI に見てほしい場所を渡す
 
