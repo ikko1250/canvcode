@@ -1,4 +1,4 @@
-import { expect, test, type CDPSession } from '@playwright/test'
+import { expect, test, type CDPSession, type Page } from '@playwright/test'
 
 // 日本語入力が ON のまま打ったときに、文字が二重に入らないこと。
 // Chromium の DevTools Protocol で、macOS の IME と同じ順にイベントを送る：
@@ -60,14 +60,15 @@ test('design panel: confirming the IME with Enter neither doubles the number nor
   await expect(textEditor).toHaveText('hello')
 })
 
-test('vim: with the IME on, I enters insert mode without typing い, and dd deletes a line', async ({ page }) => {
+// vim モードの全画面エディタで、body のファイルを開く
+async function openVimEditor(page: Page, body: string) {
   const file = { id: FILE_ID, kind: 'markdown', title: 'Input test', path: 'test.md', size: 100, mtime: 0, hash: 'test', missing: false }
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto')
   await page.waitForFunction(() => Boolean((window as any).canvasInputFixture))
   const records = await page.evaluate(() => [...(window as any).canvasInputFixture.editor.workspace.store.values()])
   await page.route('**/api/records?*', (route) => route.fulfill({ json: { rootCanvasId: 'canvas:input-test', rev: 0, records } }))
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
-  await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body: 'abcd\nefgh\nijkl', headers: { etag: '"test"' } }))
+  await page.route(`**/api/files/${encodeURIComponent(FILE_ID)}/content`, (route) => route.fulfill({ body, headers: { etag: '"test"' } }))
   await page.addInitScript(() => localStorage.setItem('canvcode.fileEditor.vim', '1'))
   await page.goto('/')
   await page.getByRole('button', { name: '☰' }).click()
@@ -76,6 +77,12 @@ test('vim: with the IME on, I enters insert mode without typing い, and dd dele
   await expect(editor.locator('.cm-content')).toBeFocused()
   await expect(editor.locator('.file-editor-status')).toHaveText('NORMAL')
   const doc = () => page.evaluate(() => (document.querySelector('.file-editor .cm-content') as any).cmTile.root.view.state.doc.toString())
+  const head = () => page.evaluate(() => (document.querySelector('.file-editor .cm-content') as any).cmTile.root.view.state.selection.main.head)
+  return { editor, doc, head }
+}
+
+test('vim: with the IME on, I enters insert mode without typing い, and dd deletes a line', async ({ page }) => {
+  const { editor, doc } = await openVimEditor(page, 'abcd\nefgh\nijkl')
 
   const cdp = await page.context().newCDPSession(page)
   await imeKey(cdp, 'd', 'KeyD')
@@ -93,6 +100,24 @@ test('vim: with the IME on, I enters insert mode without typing い, and dd dele
   await compose(cdp, 'あ')
   await cdp.send('Input.insertText', { text: 'あ' })
   await expect.poll(doc).toBe('あefgh\nijkl')
+})
+
+test('vim: with the IME on, Space f and romaji jump to kana, and f、 jumps to 、 (MAI-96)', async ({ page }) => {
+  const { doc, head } = await openVimEditor(page, 'あいうえおかきたち、つ')
+  const cdp = await page.context().newCDPSession(page)
+  for (const [key, code] of [[' ', 'Space'], ['f', 'KeyF'], ['t', 'KeyT'], ['a', 'KeyA']]) {
+    await imeKey(cdp, key, code)
+    await compose(cdp, key === ' ' ? '　' : key)
+  }
+  await expect.poll(head).toBe(7)
+  // 日本語入力が ON のとき、, のキーは「、」で届く
+  for (const [key, code] of [['f', 'KeyF'], ['、', 'Comma']]) {
+    await imeKey(cdp, key, code)
+    await compose(cdp, key)
+  }
+  await expect.poll(head).toBe(9)
+  await page.waitForTimeout(100)
+  expect(await doc()).toBe('あいうえおかきたち、つ')
 })
 
 test('canvas: C typed with the IME on does not open the Claude panel (MAI-91)', async ({ page }) => {
