@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join, resolve } from 'node:path'
 import { resolveLines, validateReference, type Box, type PdfRegion, type ReferenceRecord } from '@canvcode/core'
-import { ensurePdfTextFile } from './assets.ts'
+import { assetOriginalPath, ensurePdfTextFile } from './assets.ts'
 import { HttpError, type FileStore } from './files.ts'
 import { RefConflictError, type RecordStore, type StoredRecord } from './records.ts'
 import { MAX_REF_IMAGE_BYTES, RefImageExistsError, type RefImageInfo, type RefImageStore } from './refImages.ts'
@@ -155,6 +155,9 @@ export interface DescribedNode {
   layout?: string
   memo?: string
   quote?: string
+  // ファイルのカード（MAI-100）の種類と、原本の場所
+  mime?: string
+  absPath?: string
   // リンクのカード
   url?: string
   title?: string
@@ -423,6 +426,17 @@ async function describeNode(
       out.title = str('title')
       out.description = str('description')
       break
+    // ファイルのカード（MAI-100）。中身は渡さず、原本の場所を渡す（AI が読める種類なら、自分で読む）
+    case 'attachment': {
+      out.name = str('name')
+      out.mime = str('mime')
+      if (typeof props.size === 'number') out.size = props.size
+      if (typeof props.assetId === 'string') {
+        out.assetId = props.assetId
+        out.absPath = (await attachmentPath(props.assetId, deps.dataDir)) ?? undefined
+      }
+      break
+    }
     case 'pdf-page':
       out.file = await file()
       if (typeof props.pageIndex === 'number') out.page = props.pageIndex + 1
@@ -544,6 +558,12 @@ export async function addFileLocations(nodes: Record<string, unknown>[], deps: R
   }
   let pdfOf: Map<string, string> | undefined
   for (const node of nodes) {
+    // ファイルのカード（MAI-100）の原本
+    if (node.type === 'attachment' && typeof node.assetId === 'string') {
+      const absPath = await attachmentPath(node.assetId, deps.dataDir)
+      if (absPath) node.absPath = absPath
+      continue
+    }
     const file = node.file as { id?: unknown; missing?: unknown } | undefined
     if (file && typeof file.id === 'string' && file.missing !== true) {
       const info = await summary(file.id)
@@ -562,6 +582,11 @@ export async function addFileLocations(nodes: Record<string, unknown>[], deps: R
     const info = fileId ? await summary(fileId) : undefined
     if (fileId && info) node.file = { id: fileId, ...info }
   }
+}
+
+// ファイルのカード（MAI-100）の原本の絶対パス。ない（まだ届いていない・片付けられた）なら null
+async function attachmentPath(assetId: string, dataDir: string): Promise<string | null> {
+  return assetId.startsWith('asset:') ? assetOriginalPath(dataDir, assetId.slice('asset:'.length)).catch(() => null) : null
 }
 
 function trashed(id: string, deps: RefDeps): boolean {

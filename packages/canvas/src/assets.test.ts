@@ -251,3 +251,37 @@ describe('assetMarkdownImage', () => {
     expect(assetMarkdownImage(asset('application/pdf'))).toBeNull()
   })
 })
+
+// ファイルのカード（MAI-100）の原本：元の名前の拡張子を付けて送り、画像の塗りの一覧には出さない
+describe('AssetManager files of any kind', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('uploads a file with its extension, once, and does not list it as an image', async () => {
+    const posts: { headers: Record<string, string>; body: unknown }[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      posts.push({ headers: init.headers as Record<string, string>, body: init.body })
+      return new Response('{}', { status: 200 })
+    })
+    const assets = new AssetManager({ baseUrl: '/api/assets', pageStore: null })
+    const file = new File(['PK zip'], '資料.ZIP', { type: 'application/zip' })
+    const record = await assets.importFile(file)
+    expect(record).toMatchObject({ mime: 'application/zip', size: 6, width: 0, height: 0, variants: [] })
+    expect(record.id).toBe(`asset:${record.hash}`)
+    expect(assets.isUploading(record.id)).toBe(true)
+    await assets.whenUploaded(record.id)
+    expect(assets.isUploading(record.id)).toBe(false)
+    expect(await assets.importFile(file)).toBe(record)
+    expect(posts).toHaveLength(1)
+    expect(posts[0].headers).toMatchObject({ 'content-type': 'application/zip', 'x-canvcode-sha256': record.hash, 'x-canvcode-file-ext': 'ZIP' })
+    // 種類の分からないファイル・ヘッダーに入れられない拡張子
+    const odd = await assets.importFile(new File(['?'], 'メモ.テキスト'))
+    expect(odd.mime).toBe('application/octet-stream')
+    await assets.whenUploaded(odd.id)
+    expect(posts[1].headers).toMatchObject({ 'x-canvcode-file-ext': '' })
+    // SVG はファイルのカードには置けるが、画像の塗りには使えない
+    const svg = await assets.importFile(new File(['<svg/>'], 'a.svg', { type: 'image/svg+xml' }))
+    assets.register({ typeName: 'asset', id: 'asset:png', mime: 'image/png', size: 1, hash: 'png', width: 1, height: 1, variants: [] })
+    expect(assets.images().map((a) => a.id)).toEqual(['asset:png'])
+    expect(svg.mime).toBe('image/svg+xml')
+  })
+})

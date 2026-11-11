@@ -25,6 +25,8 @@ import {
 import {
   ARROW_COLORS,
   ARROW_SIZES,
+  attachmentExtension,
+  type AttachmentProps,
   builtinNodeTypes,
   createCodeCardType,
   createTableCardType,
@@ -1113,6 +1115,24 @@ export function App(props: { initial: InitialRecords }) {
       }
       // 固定を外した PDF のページを選んでいるとき（固定したページは、下の、ノードを選んでいないときの項目）
       if (single?.type === 'pdf-page' && pushCiteItem(single)) items.push('separator')
+      // ファイルのカード（MAI-100）：開く・ダウンロード。docx は Markdown に、xlsx は表（CSV）に変換できる（写しを右に置く）。
+      // pandoc がないサーバーでは、Markdown への変換を押すと理由を知らせる
+      if (single?.type === 'attachment') {
+        const props = single.props as AttachmentProps
+        items.push({ label: '開く', shortcut: 'Ctrl+クリック', onSelect: () => view.openAttachment(single.id) })
+        items.push({ label: 'ダウンロード', onSelect: () => view.openAttachment(single.id, { download: true }) })
+        const conversions = view.files?.conversions()
+        const ext = attachmentExtension(props.name)
+        if (view.files && (conversions?.markdown ?? ['docx']).includes(ext)) {
+          const pandoc = conversions?.pandoc
+          if (pandoc && !pandoc.available) items.push({ label: 'Markdown に変換（pandoc がありません）', onSelect: () => notify(pandoc.reason ?? 'pandoc がありません') })
+          else items.push({ label: 'Markdown に変換', onSelect: () => void view.convertAttachment(single.id, 'markdown') })
+        }
+        if (view.files && (conversions?.table ?? ['xlsx']).includes(ext)) {
+          items.push({ label: '表（CSV）に変換', onSelect: () => void view.convertAttachment(single.id, 'table') })
+        }
+        items.push('separator')
+      }
       // 画像：Markdown に貼る画像のリンク（#33）。CSV から描いたグラフなら、作り方を変える・描き直す
       if (single?.type === 'image') {
         const plot = normalizePlotSpec((single.props as ImageProps).plot)

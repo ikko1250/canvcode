@@ -24,6 +24,9 @@ import { writeViaTemp } from './writeAtomic.ts'
 // - PDF は、ページの縮小画像（長辺 256px のシート。CANVCODE_PDF_PREVIEW_MID=1 なら 1024px のページごとも）も裏で作る（pdfPreview.ts。Issue #26）。
 //   GET /api/assets/<ハッシュ>/preview でマニフェストを、…/preview/v1/sheet/<N>・…/preview/v1/page/<ページ> で画像を返す
 // - 原本と縮小版の配信は Range リクエスト（1 つの範囲）に答える。PDF.js が、大きい PDF の要る部分だけを読んで描き始められるように
+// - 画像・PDF のほかの種類のファイル（docx・xlsx・zip など。Canvas のファイルのカード（attachment）の実体。MAI-100）も受け取る。
+//   ブラウザが x-canvcode-file-ext で元のファイルの拡張子を送ってきたときだけ受け、<ハッシュ>.<拡張子> に置き、拡張子を <ハッシュ>.json に書く。
+//   配るときは ?name=<元の名前> でその名前を付け、?download=1 なら保存させる（Content-Disposition: attachment）
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -53,6 +56,8 @@ interface AssetMeta {
   height?: number
   // 長辺 → 縮小版の種類
   variants: Record<string, string>
+  // 画像・PDF のほかの種類のファイル（MAI-100）の、原本の拡張子。なければ mime から決める（ORIGINAL_TYPES）
+  ext?: string
 }
 
 export class AssetStore {
@@ -93,7 +98,7 @@ export class AssetStore {
       } else if (req.method === 'PUT' && parts.length === 4) {
         await this.receiveVariant(req, res, hash, Number(size))
       } else if ((req.method === 'GET' || req.method === 'HEAD') && (parts.length === 3 || parts.length === 4)) {
-        await this.send(req, res, hash, size === undefined ? null : Number(size))
+        await this.send(req, res, hash, size === undefined ? null : Number(size), params)
       } else {
         sendJson(res, 405, { error: 'method not allowed' })
       }
@@ -110,14 +115,35 @@ export class AssetStore {
 
   private async receiveOriginal(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const mime = contentType(req)
-    const ext = ORIGINAL_TYPES[mime]
-    if (!ext) throw new HttpError(415, `unsupported type: ${mime}`)
+    // ファイルのカードの原本（MAI-100）は、種類によらず受け取る。画像・PDF は、拡張子を送ってこなければ今までどおり種類で決める
+    const fileExt = req.headers['x-canvcode-file-ext']
+    const generic = typeof fileExt === 'string'
+    if (!generic && !ORIGINAL_TYPES[mime]) throw new HttpError(415, `unsupported type: ${mime}`)
     const body = await readBody(req, MAX_ORIGINAL_BYTES)
     // ブラウザが計算したハッシュと違えば、途中で壊れている
     const claimed = req.headers['x-canvcode-sha256']
     if (typeof claimed === 'string' && claimed !== createHash('sha256').update(body).digest('hex')) throw new HttpError(400, 'hash mismatch')
-    const hash = await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'))
+    const hash = generic
+      ? await this.storeFile(body, mime, fileExt)
+      : await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'))
     sendJson(res, 200, { hash, mime, size: body.length })
+  }
+
+  // 画像・PDF のほかの種類のファイル（MAI-100）を保存して、ハッシュを返す（すでにあれば何もしない）。
+  // 拡張子は英数字だけにし（なければ bin）、種類は形が正しくなければ application/octet-stream にする
+  async storeFile(body: Buffer, mime: string, ext: string): Promise<string> {
+    const hash = createHash('sha256').update(body).digest('hex')
+    if (await this.readMeta(hash)) return hash
+    const safeExt = safeExtension(ext)
+    const safeMime = MIME_PATTERN.test(mime) ? mime : 'application/octet-stream'
+    await writeAtomic(join(this.dir, `${hash}.${safeExt}`), body)
+    await this.writeMeta(hash, { mime: safeMime, size: body.length, width: 0, height: 0, variants: {}, ext: safeExt })
+    return hash
+  }
+
+  // 原本のファイルの絶対パス（ファイルの変換・AI に渡す場所。MAI-100）。ない・読めないなら null
+  originalPath(hash: string): Promise<string | null> {
+    return assetOriginalPath(this.dataDir, hash)
   }
 
   // 原本を保存して、ハッシュを返す（すでにあれば何もしない）。旧データの取り込みからも使う
@@ -191,14 +217,14 @@ export class AssetStore {
     sendJson(res, 200, { hash, size })
   }
 
-  private async send(req: IncomingMessage, res: ServerResponse, hash: string, size: number | null): Promise<void> {
+  private async send(req: IncomingMessage, res: ServerResponse, hash: string, size: number | null, params?: URLSearchParams): Promise<void> {
     if (!HASH_PATTERN.test(hash) || (size !== null && !VARIANT_SIZES.has(size))) throw new HttpError(404, 'not found')
     const meta = await this.readMeta(hash)
     if (!meta) throw new HttpError(404, 'not found')
     let file: string
     let mime: string
     if (size === null) {
-      file = `${hash}.${ORIGINAL_TYPES[meta.mime]}`
+      file = `${hash}.${meta.ext ?? ORIGINAL_TYPES[meta.mime]}`
       mime = meta.mime
     } else {
       const ext = meta.variants[size]
@@ -210,7 +236,7 @@ export class AssetStore {
     const info = await stat(path).catch(() => null)
     if (!info) throw new HttpError(404, 'not found')
     const etag = size === null ? `"${hash}"` : `"${hash}.${size}"`
-    const headers = {
+    const headers: Record<string, string> = {
       'content-type': mime,
       // 名前が中身のハッシュなので、中身は変わらない
       'cache-control': 'private, max-age=31536000, immutable',
@@ -219,6 +245,9 @@ export class AssetStore {
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; sandbox",
     }
+    // 元の名前を付ける（ファイルのカード。MAI-100）。download なら開かずに保存させる
+    const name = size === null ? params?.get('name') : null
+    if (name || params?.get('download') === '1') headers['content-disposition'] = contentDisposition(params?.get('download') === '1' ? 'attachment' : 'inline', name ?? file)
     // If-Range が違う版を指していれば（中身は変わらないので、ふつうは起きない）、全体を返す
     const ifRange = req.headers['if-range']
     const range = ifRange === undefined || ifRange === etag ? parseRange(req.headers.range, info.size) : null
@@ -336,6 +365,23 @@ export function parseRange(header: string | undefined, size: number): { start: n
   return { start, end: Math.min(end, size - 1) }
 }
 
+// 種類の形（type/subtype）。ヘッダーに入れても壊れないものだけ
+const MIME_PATTERN = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/
+
+// 拡張子（. は付けない）を、置く名前に使える形にする。英数字で 16 文字までの小文字。それ以外なら bin
+export function safeExtension(ext: string): string {
+  const lower = ext.trim().replace(/^\./, '').toLowerCase()
+  return /^[a-z0-9]{1,16}$/.test(lower) ? lower : 'bin'
+}
+
+// Content-Disposition。名前は RFC 6266 の filename*（UTF-8）で渡し、古いブラウザのための filename は ASCII だけにする
+export function contentDisposition(type: 'inline' | 'attachment', name: string): string {
+  const cleaned = [...name].filter((c) => c.charCodeAt(0) >= 0x20 && c !== '\x7f').join('').replace(/[\\/]/g, '_').slice(0, 200) || 'file'
+  const ascii = cleaned.replace(/[^\x20-\x7e]/g, '_').replace(/["%;]/g, '_')
+  const encoded = encodeURIComponent(cleaned).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encoded}`
+}
+
 function headerNumber(req: IncomingMessage, name: string): number {
   const value = Number(req.headers[name])
   return Number.isFinite(value) && value >= 0 ? value : 0
@@ -377,6 +423,23 @@ export async function ensurePdfTextFile(dataDir: string, hash: string): Promise<
   const exists = await stat(path).then(() => true, () => false)
   if (!exists) await writeAtomic(path, Buffer.from(pdfTextFile(pages)))
   return { path, textless: pages.every((page) => !page.trim()) }
+}
+
+// Asset の原本のファイルの絶対パス（<ワークスペース>/.canvcode/assets/<ハッシュ>.<拡張子>）。拡張子は <ハッシュ>.json に書いたもの
+// （ファイルのカード。MAI-100）か、種類から決める。ない・読めないなら null
+export async function assetOriginalPath(dataDir: string, hash: string): Promise<string | null> {
+  if (!HASH_PATTERN.test(hash)) return null
+  const dir = join(dataDir, 'assets')
+  let meta: AssetMeta
+  try {
+    meta = JSON.parse(await readFile(join(dir, `${hash}.json`), 'utf8')) as AssetMeta
+  } catch {
+    return null
+  }
+  const ext = meta.ext ?? ORIGINAL_TYPES[meta.mime]
+  if (!ext) return null
+  const path = resolve(dir, `${hash}.${ext}`)
+  return (await stat(path).then((s) => s.isFile(), () => false)) ? path : null
 }
 
 // 一時ファイルに書いてから名前を変える（書きかけのファイルが残らない。MAI-13）

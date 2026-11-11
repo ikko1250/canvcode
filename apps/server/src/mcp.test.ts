@@ -600,6 +600,31 @@ describe('MCP server', () => {
       expect(readFileSync(file.textPath, 'utf8')).toMatch(/^=== page 1 ===\none/)
     })
 
+    // ファイルのカード（MAI-100）：read_canvas に名前と大きさ、read_nodes と resolve_reference に原本の場所を出す
+    it('tells the name, size and the original file of an attachment card', async () => {
+      const { client, records, dataDir } = await setup()
+      const root = records.rootCanvasId
+      const hash = 'f'.repeat(64)
+      mkdirSync(join(dataDir, 'assets'), { recursive: true })
+      writeFileSync(join(dataDir, 'assets', `${hash}.xlsx`), 'PK')
+      writeFileSync(join(dataDir, 'assets', `${hash}.json`), JSON.stringify({ mime: 'application/vnd.ms-excel', size: 2, width: 0, height: 0, variants: {}, ext: 'xlsx' }))
+      const props = { assetId: `asset:${hash}`, name: '月次.xlsx', mime: 'application/vnd.ms-excel', size: 2048, w: 300 }
+      records.apply([{ typeName: 'node', id: 'node:file', type: 'attachment', parentId: root, x: 10, y: 20, rotation: 0, index: 'a1', props }], [])
+      const outline = ((await client.callTool({ name: 'read_canvas', arguments: { canvas_id: root } })).content as { text: string }[])[0]!.text
+      expect(outline).toContain('node:file attachment 10,20 300x72 size=2.0KB "月次.xlsx"')
+      const nodes = JSON.parse(((await client.callTool({ name: 'read_nodes', arguments: { ids: ['node:file'] } })).content as { text: string }[])[0]!.text).nodes
+      const absPath = join(dataDir, 'assets', `${hash}.xlsx`)
+      expect(nodes[0]).toMatchObject({ id: 'node:file', type: 'attachment', name: '月次.xlsx', size: 2048, assetId: `asset:${hash}`, absPath })
+      const bounds = { x: 10, y: 20, w: 300, h: 72 }
+      records.putRef(ref({ kind: 'canvas', canvasId: root, rect: bounds, nodes: [{ id: 'node:file', bounds }] }))
+      const result = await call(client, 'resolve_reference', { id: 'ref:Ab12Cd34Ef' })
+      expect(result.data.content.nodes).toEqual([
+        { id: 'node:file', type: 'attachment', bounds, name: '月次.xlsx', mime: 'application/vnd.ms-excel', size: 2048, assetId: `asset:${hash}`, absPath },
+      ])
+      const format = ((await client.callTool({ name: 'get_canvas_format', arguments: {} })).content as { text: string }[])[0]!.text
+      expect(format).toContain('- attachment:')
+    })
+
     // read_document に PDF の id を渡すと、これまでは「no such file. Use list_documents …」と返り、AI は PDF を探し回っていた
     it('tells read_document where the text of a PDF is, instead of saying there is no such file', async () => {
       const { client, records, dataDir } = await setup()
