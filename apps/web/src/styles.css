@@ -2744,6 +2744,33 @@ button.pdf-page-number:hover {
   line-height: 1.55;
 }
 
+/* APA の引用を作っている間の印（MAI-98）。引用を置くアイテムの右下に出す */
+.cite-pending {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cite-pending-cancel {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
 .word-lookup-head {
   display: flex;
   align-items: flex-start;

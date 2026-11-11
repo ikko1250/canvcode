@@ -47,6 +47,8 @@ export interface OnceRequest {
   signal?: AbortSignal
   // 失敗したときの知らせの頭（「調べられませんでした」など）。既定は「Claude が答えられませんでした」
   failure?: string
+  // Claude Code から届いたメッセージを 1 つずつ見る（ツールの結果から、実際に開いた URL を集めるなど。APA の引用 MAI-98）
+  onMessage?: (message: SDKMessage) => void
 }
 
 export interface OnceResult<T = unknown> {
@@ -116,14 +118,14 @@ export class ClaudeOnce {
     const failure = request.failure ?? 'Claude が答えられませんでした'
     const messages = await run({ prompt: request.prompt, options: onceOptions(request, tools, abortController) })
     for await (const message of messages) {
+      request.onMessage?.(message)
       if (message.type !== 'result') continue
       if (message.subtype === 'success' && !message.is_error) {
         if (request.schema && message.structured_output === undefined) throw new JobError(502, `${failure}：答えが決めた形になっていません`)
-        const models = Object.keys(message.modelUsage ?? {})
         return {
           text: message.result,
           output: request.schema ? (message.structured_output as T) : undefined,
-          model: models[0] ?? request.model,
+          model: answeredModel(message.modelUsage ?? {}, request.model),
           costUsd: message.total_cost_usd,
           durationMs: message.duration_ms,
           turns: message.num_turns,
@@ -165,6 +167,19 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
     abortController,
     env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
   }
+}
+
+// 実際に答えたモデル。WebFetch はページを別のモデル（Haiku）に読ませるので、modelUsage には 2 つ入ることがある。
+// 頼んだモデル（別名なら、その名前を含む id）を選び、なければ費用のいちばん大きいもの
+export function answeredModel(usage: Record<string, { costUSD?: number }>, requested: string): string {
+  const models = Object.keys(usage)
+  const alias = requested.toLowerCase()
+  return (
+    models.find((id) => id === requested) ??
+    models.find((id) => id.toLowerCase().includes(alias)) ??
+    models.sort((a, b) => (usage[b]?.costUSD ?? 0) - (usage[a]?.costUSD ?? 0))[0] ??
+    requested
+  )
 }
 
 function checkTools(tools: readonly string[]): OnceTool[] {

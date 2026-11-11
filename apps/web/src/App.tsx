@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type ReferenceRecord } from '@canvcode/core'
+import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRecord, type ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
   Editor,
@@ -70,6 +70,7 @@ import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
 import { memoParagraphs, requestMemo } from './claude/memo.ts'
 import { lookupMemo, requestLookup } from './claude/lookup.ts'
+import { citationParagraphs, citeSourceOf, requestCitation } from './claude/cite.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
 import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
@@ -246,6 +247,8 @@ type Dialog = { title: string; message: string; choices: DialogChoice<string>[];
 
 // グラフを作るダイアログの相手：表のカードから新しく作る（tableNodeId）か、グラフの画像の作り方を変える（imageNodeId と今の作り方）
 type PlotTarget = { fileId: string; title: string; header: boolean; tableNodeId?: string; imageNodeId?: string; initial: PlotSpec | null }
+// APA の引用を作っているところ（MAI-98）。canvasId・nodeId は引用を置くアイテム
+type CitingJob = { key: number; canvasId: string; nodeId: string; abort: AbortController }
 // 表のカードの右に置くときの間隔
 const PLOT_GAP = 40
 
@@ -983,6 +986,39 @@ export function App(props: { initial: InitialRecords }) {
     [notify],
   )
 
+  // APA の引用を置く（MAI-98）：アイテム（PDF の Portal・PDF のページ・リンクカード・Markdown のカード）の引用を、Claude（既定は Sonnet）に
+  // Web で確かめながら作ってもらい、アイテムの右下にテキストとして置く（Undo 1 回で消える）。待っている間は、置く所に「作っています」を出す
+  // （× でやめられる）。待っている間に別の Canvas に移っても、その Canvas の Editor が残っていれば、そこに置く。同じアイテムを重ねて頼まない
+  const [citing, setCiting] = useState<CitingJob[]>([])
+  const citingNodes = useRef(new Set<string>())
+  const citeNode = useCallback(
+    async (nodeId: string) => {
+      const editor = viewRef.current?.editor
+      const node = editor?.getNode(nodeId)
+      const source = node ? citeSourceOf(node, workspace) : null
+      if (!editor || !source) return
+      if (citingNodes.current.has(nodeId)) return notify('このアイテムの引用は、いま作っているところです')
+      const job: CitingJob = { key: Date.now() + Math.random(), canvasId: editor.canvasId, nodeId, abort: new AbortController() }
+      citingNodes.current.add(nodeId)
+      setCiting((list) => [...list, job])
+      try {
+        const result = await requestCitation(source, job.abort.signal)
+        const target = editors.get(job.canvasId)
+        if (!target?.getNode(nodeId) || !target.placeTextBelowRight(nodeId, citationParagraphs(result), { label: 'APA の引用を置く' })) {
+          return notify(`元のアイテムが見えなくなったので、引用を置けませんでした：${result.text}`)
+        }
+        if (viewRef.current?.editor !== target) notify(`「${workspace.getCanvas(job.canvasId)?.title || '無題'}」に APA の引用を置きました`)
+      } catch (error) {
+        if (job.abort.signal.aborted) return notify('引用を作るのをやめました')
+        notify(`引用を作れませんでした：${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        citingNodes.current.delete(nodeId)
+        setCiting((list) => list.filter((j) => j !== job))
+      }
+    },
+    [workspace, editors, notify],
+  )
+
   // 「Claude におまかせ」：表のカード（かグラフの画像）を選んで添え、頼み方の下書きを入れて Claude のパネルを開く
   const askClaudeForPlot = useCallback(
     (target: PlotTarget) => {
@@ -1063,11 +1099,20 @@ export function App(props: { initial: InitialRecords }) {
         if (lockedCount < pdfPageIds.length) items.push({ label: 'すべてのページを固定する', onSelect: () => editor.lockPdfPages() })
         return true
       }
-      // リンクのカード（PDF の URL）：PDF をダウンロードして Portal にする
-      if (single?.type === 'link-card' && isPdfUrl((single.props as LinkCardProps).url)) {
-        items.push({ label: 'PDF ポータルを作成', onSelect: () => void createPdfPortal(single.id) })
-        items.push('separator')
+      // APA の引用を置く（MAI-98）。Claude を使えて、引用を作れるアイテム（PDF の Portal・PDF のページ・リンクカード・Markdown のカード）のときだけ
+      const pushCiteItem = (node: NodeRecord) => {
+        if (claude.state.availability !== 'on' || !citeSourceOf(node, workspace)) return false
+        items.push({ label: 'APA の引用を置く', onSelect: () => void citeNode(node.id) })
+        return true
       }
+      // リンクのカード（PDF の URL）：PDF をダウンロードして Portal にする
+      if (single?.type === 'link-card') {
+        const pdf = isPdfUrl((single.props as LinkCardProps).url)
+        if (pdf) items.push({ label: 'PDF ポータルを作成', onSelect: () => void createPdfPortal(single.id) })
+        if (pushCiteItem(single) || pdf) items.push('separator')
+      }
+      // 固定を外した PDF のページを選んでいるとき（固定したページは、下の、ノードを選んでいないときの項目）
+      if (single?.type === 'pdf-page' && pushCiteItem(single)) items.push('separator')
       // 画像：Markdown に貼る画像のリンク（#33）。CSV から描いたグラフなら、作り方を変える・描き直す
       if (single?.type === 'image') {
         const plot = normalizePlotSpec((single.props as ImageProps).plot)
@@ -1083,6 +1128,8 @@ export function App(props: { initial: InitialRecords }) {
         items.push({ label: '開く', shortcut: 'Enter', onSelect: () => openPortal(single.id) })
         items.push({ label: '新しいタブで開く', shortcut: 'Ctrl+クリック', onSelect: () => openNodeInNewTab(single.id) })
         if ((single.props as PortalProps).role === 'shortcut') items.push({ label: '元の場所へ移動', onSelect: () => void goToOwner(single.id) })
+        // PDF の Portal なら
+        pushCiteItem(single)
         const target = workspace.getCanvas((single.props as PortalProps).targetId)
         if (target) {
           items.push({
@@ -1141,6 +1188,7 @@ export function App(props: { initial: InitialRecords }) {
           items.push({ label: '新しいタブで開く', onSelect: () => openNodeInNewTab(single.id) })
           if (props.role === 'shortcut') items.push({ label: '元の場所へ移動', onSelect: () => void goToOwner(single.id) })
           if (file.kind === 'markdown') items.push({ label: 'PDF で出力', onSelect: () => void exportPdf(file.id) })
+          if (single.type === 'markdown-card') pushCiteItem(single)
           if (table) {
             const header = (single.props as TableCardProps).header
             items.push({ label: 'グラフを作る…', onSelect: () => setPlotTarget({ fileId: file.id, title: file.title, header, tableNodeId: single.id, initial: null }) })
@@ -1315,6 +1363,7 @@ export function App(props: { initial: InitialRecords }) {
           if (cited.length > 0) {
             items.push({ label: `この範囲を引用しているノート（${cited.length}）`, onSelect: () => setMenu({ x: at.x, y: at.y, items: cited }) })
           }
+          pushCiteItem(locked)
         }
         if (locked?.locked) items.push({ label: '固定を外す', onSelect: () => editor.setLocked([locked.id], false) })
         pushPdfPageItems()
@@ -1362,7 +1411,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo, citeNode],
   )
 
 
@@ -2217,6 +2266,27 @@ export function App(props: { initial: InitialRecords }) {
         )}
 
         <AgentToasts sync={sync} />
+
+        {citing.map((job) => {
+          // 引用を作っている間の印（置く所＝アイテムの右下に出す。カメラに付いて動く）
+          const box = job.canvasId === canvasId ? editor.index.get(job.nodeId)?.worldBounds : undefined
+          if (!box) return null
+          const { camera } = session
+          return (
+            <div
+              key={job.key}
+              className="cite-pending"
+              role="status"
+              style={{ left: (box.x + box.w - camera.x) * camera.zoom + 8, top: (box.y + box.h - camera.y) * camera.zoom + 8 }}
+            >
+              <span className="claude-spinner" aria-hidden="true" />
+              <span>APA の引用を作っています（Web で確かめるので、数十秒ほど）</span>
+              <button className="cite-pending-cancel" title="やめる" aria-label="引用を作るのをやめる" onClick={() => job.abort.abort()}>
+                ×
+              </button>
+            </div>
+          )
+        })}
 
         {notices.length > 0 && (
           <div className="notices">
