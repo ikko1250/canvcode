@@ -1,6 +1,6 @@
 import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest'
-import { ClaudeOnce, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, type OnceQuery } from './once.ts'
+import { answeredModel, ClaudeOnce, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, type OnceQuery } from './once.ts'
 
 // Claude を 1 回だけ動かす共通の仕組み（単語を調べる MAI-99、APA の引用 MAI-98 などが使う）
 
@@ -143,5 +143,16 @@ describe('ClaudeOnce', () => {
     const again = once.ask({ prompt: 'p', model: 'haiku', signal: later.signal })
     later.abort()
     await expect(again).rejects.toMatchObject({ status: 499 })
+  })
+})
+
+describe('answeredModel', () => {
+  it('WebFetch がページを読ませたモデル（Haiku）ではなく、頼んだモデルを返す（MAI-98）', () => {
+    const usage = { 'claude-haiku-5-5': { costUSD: 0.001 }, 'claude-sonnet-5-5': { costUSD: 0.03 } }
+    expect(answeredModel(usage, 'sonnet')).toBe('claude-sonnet-5-5')
+    expect(answeredModel(usage, 'claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    // 別名が合わなければ、費用のいちばん大きいもの。何もなければ頼んだもの
+    expect(answeredModel(usage, 'claude-opus-x')).toBe('claude-sonnet-5-5')
+    expect(answeredModel({}, 'haiku')).toBe('haiku')
   })
 })

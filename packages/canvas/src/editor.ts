@@ -37,6 +37,7 @@ import {
   type SlideNumberResolver,
   type SlideProps,
   type SlideRatio,
+  type TextParagraph,
 } from '@canvcode/nodes'
 import {
   alignBoxes,
@@ -122,6 +123,10 @@ export interface PdfPagesOptions {
 
 // 引用ノートを出典の横に置くときの間隔（MAI-33）
 const QUOTE_GAP = 24
+
+// ノードの右下にテキストを置くとき（APA の引用。MAI-98）の、ノードとの間隔と、テキストの幅
+const BELOW_RIGHT_GAP = 24
+export const BELOW_RIGHT_TEXT_WIDTH = 480
 
 // 子キャンバスに移したノードを、移す先にすでにあるものの右に置くときの間隔（MAI-38）
 const MOVE_TO_CANVAS_GAP = 80
@@ -764,6 +769,39 @@ export class Editor {
       top = Math.max(...blocking.map((b) => b.y + b.h)) + 12
     }
     return this.createQuoteNote(draft, { x, y: top }, options)
+  }
+
+  // ノードの右下（右の辺と下の辺から少し離した所）に、テキストを置く（APA の引用。MAI-98）。1 回の Undo で消える。選択は変えない。
+  // そこにほかのノードがあれば、ずらす：前に置いたテキストだけなら、その下へ。ほかのもの（PDF の隣のページなど）があれば、その右へ。
+  // 置く所をまるごと含む大きなもの（フレームなど）と、元のノードを含むものは、よけない（テキストのほか）
+  placeTextBelowRight(sourceNodeId: string, paragraphs: TextParagraph[], options: { w?: number; label?: string } = {}): string | null {
+    const source = this.index.get(sourceNodeId)
+    if (!source) return null
+    const w = options.w ?? BELOW_RIGHT_TEXT_WIDTH
+    const draft = this.makeNode('text', { x: 0, y: 0, props: { paragraphs, autoWidth: false, w } })
+    const h = this.getType(draft).getBounds(draft).h
+    const box = { x: source.worldBounds.x + source.worldBounds.w + BELOW_RIGHT_GAP, y: source.worldBounds.y + source.worldBounds.h + BELOW_RIGHT_GAP, w, h }
+    for (let guard = 0; guard < 100; guard++) {
+      const blocking = this.index.search(box).flatMap((id) => {
+        const entry = this.index.get(id)
+        if (!entry || id === sourceNodeId) return []
+        // 前に置いたテキストは、同じ大きさでも（置く所をまるごと含んでいても）よける
+        if (entry.node.type !== 'text' && (containsBox(entry.worldBounds, box) || containsBox(entry.worldBounds, source.worldBounds))) return []
+        return [entry]
+      })
+      if (blocking.length === 0) break
+      const others = blocking.filter((entry) => entry.node.type !== 'text')
+      if (others.length > 0) box.x = Math.max(...others.map((entry) => entry.worldBounds.x + entry.worldBounds.w)) + BELOW_RIGHT_GAP
+      else box.y = Math.max(...blocking.map((entry) => entry.worldBounds.y + entry.worldBounds.h)) + BELOW_RIGHT_GAP
+    }
+    return this.transact(options.label ?? 'place text', (tx) => {
+      // 引用全体を見せるため、フレームの切り抜きを受けない Canvas 直下に置く。
+      const parentId = this.canvasId
+      const local = this.worldToParent(parentId, box)
+      const node = { ...draft, parentId, x: local.x, y: local.y, index: this.nextIndex(parentId) }
+      tx.put(node)
+      return node.id
+    })
   }
 
   // ワールド座標の点にある、PDF のページの上の引用した範囲（SourceAnchor）。固定したページにも当てる
