@@ -724,7 +724,7 @@ export class Editor {
   // ---- 引用（MAI-33） ----
 
   // 引用ノートを、左上が topLeft（ワールド座標）になるように置く。draft から新しい SourceAnchor も作る（1 回の Undo で戻る）
-  createQuoteNote(draft: QuoteDraft, topLeft: Vec, options: { width?: number; label?: string } = {}): string {
+  createQuoteNote(draft: QuoteDraft, topLeft: Vec, options: { width?: number; label?: string; memo?: string } = {}): string {
     return this.transact(options.label ?? 'create quote', (tx) => {
       const anchorId = createId('anchor')
       tx.put({ typeName: 'anchor', id: anchorId, fileId: draft.fileId, locator: draft.locator, quote: draft.quote, createdAt: Date.now() })
@@ -735,7 +735,7 @@ export class Editor {
         fileId: draft.fileId,
         quote: draft.quote,
         figure: draft.figure,
-        memo: '',
+        memo: options.memo ?? '',
         w: options.width ?? QUOTE_CARD_DEFAULT_WIDTH,
       }
       const node = this.makeNode('quote-card', { x: local.x, y: local.y, parentId, props })
@@ -746,8 +746,8 @@ export class Editor {
   }
 
   // 出典のノード（PDF のページ、Markdown カード）の右に、引用ノートを置く。高さは y（ワールド座標）から。
-  // すでにある引用ノートと重なるなら、その下にずらす
-  placeQuoteBeside(sourceNodeId: string, draft: QuoteDraft, y: number): string | null {
+  // すでにある引用ノートと重なるなら、その下にずらす。memo は、初めから書いておくメモ（調べた語の意味など。MAI-99）
+  placeQuoteBeside(sourceNodeId: string, draft: QuoteDraft, y: number, options: { memo?: string; label?: string } = {}): string | null {
     const source = this.index.get(sourceNodeId)
     if (!source) return null
     const x = source.worldBounds.x + source.worldBounds.w + QUOTE_GAP
@@ -763,7 +763,7 @@ export class Editor {
       if (blocking.length === 0) break
       top = Math.max(...blocking.map((b) => b.y + b.h)) + 12
     }
-    return this.createQuoteNote(draft, { x, y: top })
+    return this.createQuoteNote(draft, { x, y: top }, options)
   }
 
   // ワールド座標の点にある、PDF のページの上の引用した範囲（SourceAnchor）。固定したページにも当てる

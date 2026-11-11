@@ -5,7 +5,7 @@ import type { PieEntry, PieMenuDef } from './pieMenu.ts'
 // パイメニューの中身（MAI-39。以前は画面の下端のツールバーに並べていたもの）。
 // 項目を足すときは、ここに足す。1 つの輪は 8 項目くらいまでにして、多ければサブメニューにまとめる。
 // ツール（MAI-42）：選択 / 手のひら / フリーハンド / 消しゴム / 図形 ›（矩形・楕円・ブロック矢印 ›・円グラフ・フレーム・スライド 16:9・スライド 4:3・矢印・線）/ 文字 › テキスト・タイトル・付箋 / Portal › 空・PDF・Python・Markdown / Card › Python・Markdown
-// 操作（MAI-57、キー o）：今の選択とキャンバスに応じた項目（スライドがあれば「スライドを PDF に出力」も、スライドの表・箇条書きの中なら「行を足す」「行を消す」も、
+// 操作（MAI-57、キー o）：今の選択とキャンバスに応じた項目（PDF のページがあればページの項目と、Claude を使えれば「単語を調べる」も、スライドがあれば「スライドを PDF に出力」も、スライドの表・箇条書きの中なら「行を足す」「行を消す」も、
 // 手で高さを決めた行のセルを選んでいれば「行の高さを自動に戻す」も、
 // 子の無いスライドを 1 つだけ選んでいれば「テンプレート ›」も）。
 // 項目が 1 つもなければ、メニューそのものを出さない
@@ -82,6 +82,8 @@ export interface PieMenuContext {
   panToPage(direction: PageDirection): void
   unlockAndSelectPdfPages(): void
   lockPdfPages(): void
+  // 次のドラッグで、PDF のページの上の語をなぞって調べる（MAI-99）
+  lookUpWord(): void
   // 選んでいるテキスト・付箋の文字を 1 段階大きく（1）・小さく（-1）する
   stepFontSize(direction: 1 | -1): void
   setTextAlign(align: TextAlign): void
@@ -119,6 +121,8 @@ export interface PdfMenuContext {
   // すべてのページが固定されている（「固定する」は出さない）・どれも固定されていない（「固定を外して選ぶ」は出さない）
   allLocked: boolean
   noneLocked: boolean
+  // Claude を使えるか（「単語を調べる」を出す。MAI-99）
+  canLookUp: boolean
 }
 
 export interface TableMenuContext {
@@ -226,7 +230,7 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 ]
 
 // 操作のメニューの項目（MAI-57）。出す必要のないものは入れない。
-// ページの項目（最大 4 つ）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる。
+// ページの項目（最大 5 つ。「単語を調べる」を含む）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる。
 // スライドの項目（選んでいるスライドの 2 つと、子の無いスライドを 1 つだけ選んでいるときの「テンプレート ›」、
 // 行を持つスライドの中身を選んでいるときの「行を足す」「行を消す」「行の高さを自動に戻す」、キャンバスにスライドがあるときの「スライドを PDF に出力」）を足して
 // 8 つを超えるときは、まず文字の項目（3 つ）を「文字 ›」にまとめ、まだ超えるならスライドの項目を「スライド ›」にまとめる
@@ -247,6 +251,7 @@ function buildActionItemsWith(ctx: PieMenuContext): PieEntry[] {
     if (pdf.canPrev) pages.push({ label: '前のページ', onSelect: () => ctx.panToPage('prev') })
     if (!pdf.noneLocked) pages.push({ label: 'ページをすべて選ぶ（固定を外す）', onSelect: ctx.unlockAndSelectPdfPages })
     if (!pdf.allLocked) pages.push({ label: 'ページを固定する', onSelect: ctx.lockPdfPages })
+    if (pdf.canLookUp) pages.push({ label: '単語を調べる', onSelect: ctx.lookUpWord })
   }
   const text: PieEntry[] = []
   if (selection.hasText) {

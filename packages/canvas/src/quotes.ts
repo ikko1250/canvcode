@@ -98,8 +98,8 @@ export function textInRegion(items: PdfTextItem[], region: Box): RegionText {
   return { text, coverage: area > 0 ? Math.min(1, covered / area) : 0 }
 }
 
-// 英数字（とその記号）どうしの間には空白を入れる。日本語の文字の間には入れない
-function needsSpace(before: string, after: string): boolean {
+// 英数字（とその記号）どうしの間には空白を入れる。日本語の文字の間には入れない（wordSelection.ts も使う）
+export function needsSpace(before: string, after: string): boolean {
   const last = [...before].at(-1) ?? ''
   const first = [...after][0] ?? ''
   return isLatin(last) && isLatin(first)

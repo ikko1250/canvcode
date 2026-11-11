@@ -47,6 +47,7 @@ import { CornerRadiusDrag, hitCornerHandle, updateCornerHandles } from './corner
 import { GradientHandleDrag, hitGradientHandle, paintEditingTarget } from './gradientHandles.ts'
 import { CropDrag, cropEditingTarget, cropHandleCursor, cropKindOf, hitCropHandle } from './cropHandles.ts'
 import { nodeIn, type Editor, type TransformSelection } from './editor.ts'
+import type { IndexEntry } from './nodeIndex.ts'
 import type { ToolId } from './session.ts'
 import {
   SNAP_CANDIDATE_LIMIT,
@@ -112,6 +113,9 @@ export interface ToolContext {
   createDocumentAt(kind: 'markdown' | 'code', center: Vec, width?: number): void
   // 引用する範囲を決めた（PDF のページの上。rect はページ全体を 0〜1 とした割合。MAI-33）
   quoteRegion(pageId: string, rect: Box, screen: Vec): void
+  // 調べる語をなぞっている（PDF のページの上。from・to はなぞり始めと今の位置で、ページ全体を 0〜1 とした割合。MAI-99）。
+  // move はなぞっている間、end は離したとき、cancel は Esc などでやめたとき
+  wordSelection?(event: WordSelectionEvent): void
   // PDF のページの上の、引用した範囲をクリックした（逆リンク）
   openCitations(anchorIds: string[], screen: Vec): void
   // ノードを Portal の上に落とした：確かめてから、参照先の Canvas に移す（MAI-38）
@@ -119,6 +123,8 @@ export interface ToolContext {
   // 画面に見えている範囲（ワールド座標）。吸い付きの候補を絞る（MAI-53）。ないときはすべてのノードが候補
   viewportBox?(): Box
 }
+
+export type WordSelectionEvent = { phase: 'move' | 'end'; pageId: string; from: Vec; to: Vec; screen: Vec } | { phase: 'cancel' }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
 export function selectionHandles(editor: Editor): { selection: TransformSelection; handles: ScreenHandles } | null {
@@ -226,6 +232,14 @@ export interface Tool {
   onExit?(): void
 }
 
+// ワールド座標の点を、ページ（ノード）の中の割合（0〜1。外なら 0〜1 に収める）にする
+function pageFraction(entry: IndexEntry, world: Vec): Vec {
+  const { w, h } = entry.localBounds
+  const local = applyMat(invert(entry.worldMatrix), world)
+  const clamp = (v: number) => Math.min(Math.max(v, 0), 1)
+  return { x: w > 0 ? clamp(local.x / w) : 0, y: h > 0 ? clamp(local.y / h) : 0 }
+}
+
 // ワールド座標の点に新しいノードを置くときの親（フレームの中ならそのフレーム）と、親のローカル座標での位置
 function placeAt(editor: Editor, point: Vec): { parentId: string; local: Vec } {
   const parentId = editor.frameAt(point) ?? editor.canvasId
@@ -242,6 +256,8 @@ type SelectState =
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string; excludeId?: string }
   // 引用する範囲を選んでいる（Alt+ドラッグ、または「範囲を選んで引用」のあとのドラッグ。MAI-33）。start はページのローカル座標
   | { name: 'selectingQuote'; pageId: string; start: Vec; rect: Box | null }
+  // 調べる語をなぞっている（MAI-99）。start・current はページの中の割合
+  | { name: 'selectingWords'; pageId: string; start: Vec; current: Vec }
   // excludeId は、Ctrl（⌘）を押してドラッグを始めたノード。範囲に入っても選ばない
   | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean; excludeId?: string }
   | {
@@ -313,6 +329,19 @@ export class SelectTool implements Tool {
     const editor = this.ctx.editor
     if (editor.session.get().quoteRegion) editor.session.set({ quoteRegion: null })
     if (editor.session.get().lastBrush) editor.session.set({ lastBrush: null })
+    // 「単語を調べる」のあとは、PDF のページの上を押してなぞると、調べる語を選ぶ（MAI-99）。ページの外を押したらやめる
+    if (editor.session.get().wordLookupArmed) {
+      const entry = this.pdfPageAt(pointer.world)
+      editor.session.set({ wordLookupArmed: false, hoveredId: null })
+      if (entry) {
+        const start = pageFraction(entry, pointer.world)
+        this.state = { name: 'selectingWords', pageId: entry.node.id, start, current: start }
+        this.ctx.wordSelection?.({ phase: 'move', pageId: entry.node.id, from: start, to: start, screen: pointer.screen })
+        return
+      }
+      this.ctx.setCursor(null)
+      this.ctx.wordSelection?.({ phase: 'cancel' })
+    }
     // PDF のページの上の Alt+ドラッグ（または「範囲を選んで引用」のあと）は、引用する範囲の選択（MAI-33）
     const armed = editor.session.get().quoteArmed
     if (armed || pointer.altKey) {
@@ -463,12 +492,15 @@ export class SelectTool implements Tool {
         this.setHoveredSpacing(null)
         const zoom = editor.session.get().camera.zoom
         const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
-        // 引用の範囲を選ぶ前は十字、PDF のページの上の引用した範囲の上では指のカーソル（MAI-33）
+        // 引用の範囲を選ぶ前は十字、調べる語をなぞる前は文字を選ぶカーソル（MAI-99）、
+        // PDF のページの上の引用した範囲の上では指のカーソル（MAI-33）
         const cursor = editor.session.get().quoteArmed
           ? 'crosshair'
-          : !hit && editor.citationsAt(pointer.world).length > 0
-            ? 'pointer'
-            : null
+          : editor.session.get().wordLookupArmed
+            ? 'text'
+            : !hit && editor.citationsAt(pointer.world).length > 0
+              ? 'pointer'
+              : null
         this.ctx.setCursor(cursor)
         // ホバーの表示も、クリックしたら選ばれるもの（group 全体など）に合わせる
         const hoveredId = hit ? this.selectableWithoutSideEffects(hit.id) : null
@@ -493,6 +525,13 @@ export class SelectTool implements Tool {
       }
       case 'draggingBlockArrow': {
         state.drag.move(pointer.world)
+        return
+      }
+      case 'selectingWords': {
+        const entry = editor.index.get(state.pageId)
+        if (!entry) return
+        state.current = pageFraction(entry, pointer.world)
+        this.ctx.wordSelection?.({ phase: 'move', pageId: state.pageId, from: state.start, to: state.current, screen: pointer.screen })
         return
       }
       case 'selectingQuote': {
@@ -652,6 +691,11 @@ export class SelectTool implements Tool {
       // PDF のページの上の、引用した範囲をクリックした（MAI-33）
       const anchors = editor.citationsAt(pointer.world)
       if (anchors.length > 0) this.ctx.openCitations(anchors, pointer.screen)
+    } else if (state.name === 'selectingWords') {
+      const entry = editor.index.get(state.pageId)
+      const to = entry ? pageFraction(entry, pointer.world) : state.current
+      this.ctx.setCursor(null)
+      this.ctx.wordSelection?.({ phase: 'end', pageId: state.pageId, from: state.start, to, screen: pointer.screen })
     } else if (state.name === 'selectingQuote') {
       const entry = editor.index.get(state.pageId)
       const rect = state.rect
@@ -701,6 +745,12 @@ export class SelectTool implements Tool {
     if (state.name === 'selectingQuote' || session.get().quoteArmed) {
       session.set({ quoteRegion: null, quoteArmed: false })
       this.ctx.setCursor(null)
+      return true
+    }
+    if (state.name === 'selectingWords' || session.get().wordLookupArmed) {
+      session.set({ wordLookupArmed: false })
+      this.ctx.setCursor(null)
+      this.ctx.wordSelection?.({ phase: 'cancel' })
       return true
     }
     if (state.name === 'draggingArrowEnd') state.drag.end()
@@ -809,6 +859,13 @@ export class SelectTool implements Tool {
       initial,
       boxes,
     }
+  }
+
+  // 点の下の PDF のページ（固定したページも当てる）
+  private pdfPageAt(point: Vec): IndexEntry | undefined {
+    const editor = this.ctx.editor
+    const page = editor.hitTest(point, 0, { includeLocked: true })
+    return page?.type === 'pdf-page' ? editor.index.get(page.id) : undefined
   }
 
   // selectableFor と同じ選び方で、中に入っている group から出る処理はしないもの（ホバーの表示用）
