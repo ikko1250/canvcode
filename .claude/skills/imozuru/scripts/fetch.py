@@ -9,6 +9,10 @@
 .md にする（場所を時刻で指せるように）。X はログインの壁で本文が取れないので、
 取りに行かずに FAIL を返す。
 
+取れた原文は、名前・URL・取った日を <sources_dir>/sources.json に書き足す（同じ名前は上書き）。
+.md の原文（HTML・字幕・テキストから作ったもの）には、先頭に
+`出典: <URL>（取得: YYYY-MM-DD）` の行を書く。行番号は保存したあとに数えるので、ずれない。
+
 使い方:
     fetch.py <sources_dir> <name> <url>
 出力（標準出力に1行・タブ区切り）:
@@ -17,6 +21,10 @@
 """
 
 import codecs
+import contextlib
+import datetime
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -379,6 +387,74 @@ def first_line(text: str) -> str:
     return ""
 
 
+# 取れた原文の一覧（sources/ の中）。CanvCode の Canvas（canvas.py）と、引用を作る道具が読む
+SOURCES_JSON = "sources.json"
+# .md の原文の先頭の出典の行。URL は <> で囲む（Markdown の自動リンク）。
+# 囲まないと「（取得:」までリンクになる（全角の括弧は URL の区切りにならない）
+SOURCE_LINE = re.compile(r"^出典: <(?P<url>[^<>\s]+)>（取得: (?P<fetched>\d{4}-\d{2}-\d{2})）$")
+
+
+def source_line(url: str, fetched: str) -> str:
+    """md の先頭に書く出典の行。<> の中に入らない字（空白・<>）がある URL は % で符号化する。"""
+    if re.search(r"[<>\s]", url):
+        url = re.sub(r"[<>\s]", lambda m: urllib.parse.quote(m.group()), ascii_url(url))
+    return f"出典: <{url}>（取得: {fetched}）"
+
+
+def stamp_md(path: Path, url: str, fetched: str) -> None:
+    """検査を通った .md の先頭に出典の行と空行を足す。本文の長さの検査には入れない。"""
+    text = path.read_text(encoding="utf-8")
+    path.write_text(f"{source_line(url, fetched)}\n\n{text}", encoding="utf-8")
+
+
+@contextlib.contextmanager
+def _locked(lock: Path):
+    """sources.json の読み書きを、同時に走る fetch.py どうしで1つずつにする（書き足しが消えないように）。"""
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # 10 回待って取れなければ OSError
+                    break
+                except OSError:
+                    continue
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        if os.name == "nt":
+            with contextlib.suppress(OSError):
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)  # flock は閉じれば外れる
+
+
+def record_source(destination: Path, name: str, files: list[str], url: str, fetched: str) -> bool:
+    """sources.json に {name: {"files", "url", "fetched"}} を書き足す（同じ名前は上書き）。書けたら True。
+
+    壊れた sources.json は上書きしない（ほかの原文の URL が消えるので）。そのときは標準エラーに書いて False。
+    """
+    path = destination / SOURCES_JSON
+    with _locked(destination / f".{SOURCES_JSON}.lock"):
+        data: dict = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("an object is expected")
+            except ValueError as e:
+                print(f"{path} が読めないので、{name} の URL を書き足さなかった（{e}）", file=sys.stderr)
+                return False
+        data[name] = {"files": files, "url": url, "fetched": fetched}
+        tmp = path.with_name(f".{SOURCES_JSON}.tmp")
+        tmp.write_text(json.dumps(dict(sorted(data.items())), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    return True
+
+
 def save_verified(saved: Path, kept: Path, destination: Path) -> Path:
     """検査を通ったファイルだけを、同じファイルシステム内で保存先に移す。"""
     if saved != kept:
@@ -421,7 +497,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
             kept.unlink(missing_ok=True)
             print(f"FAIL\t{name}\t字幕が無いか短すぎる（{len(body)}文字）")
             return 1
-        kept = save_verified(kept, kept, destination)
+        kept = keep(kept, kept, destination, name, url)
         print(f"OK\t{name}\t{kept}\t{len(body)}\t{first_line(body)}")
         return 0
 
@@ -497,9 +573,20 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         print(f"FAIL\t{name}\t{reason}")
         return 1
 
-    kept = save_verified(saved, kept, destination)
+    kept = keep(saved, kept, destination, name, url)
     print(f"OK\t{name}\t{kept}\t{len(text)}\t{first_line(text)}")
     return 0
+
+
+def keep(saved: Path, kept: Path, destination: Path, name: str, url: str) -> Path:
+    """検査を通った原文に出典を付けて保存先に移し、sources.json に書き足す。"""
+    fetched = datetime.date.today().isoformat()
+    if kept.suffix == ".md":
+        stamp_md(kept, url, fetched)
+    target = save_verified(saved, kept, destination)
+    files = sorted({saved.name, kept.name})
+    record_source(destination, name, files, url, fetched)
+    return target
 
 
 def main() -> int:

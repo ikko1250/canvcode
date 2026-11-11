@@ -27,6 +27,9 @@ pre span{display:block}
 pre span.hit{background:var(--hit)}
 pre b{display:inline-block;min-width:3em;color:var(--sub);font-weight:400}
 ul.unreached li{margin:.2rem 0}
+ul.unreached a{color:var(--accent)}
+ul.unreached .reason{color:var(--sub)}
+ul.unreached .url{display:block;color:var(--sub);overflow-wrap:anywhere}
 footer{margin-top:4rem;font-size:.8rem;color:var(--sub)}
 </style></head>
 <body><main>
@@ -62,6 +65,6 @@ footer{margin-top:4rem;font-size:.8rem;color:var(--sub)}
 <figcaption><code>sample-blog.md:10-11</code></figcaption>
 <details><summary>前後を読む（4〜12行）</summary><pre><span class=""><b>5</b> わたしは影を塗るとき、まず一番暗い色を先に置く。</span><span class=""><b>6</b> 明るい影から置くと、あとで暗い影を重ねたときに境目が濁るからだ。</span><span class=""><b>7</b> 試しに同じ絵を2通りの順番で塗り、30分後に並べて比べた。</span><span class=""><b>8</b> 暗い色から置いたほうが、境目のにじみが少なかった。</span><span class="hit"><b>10</b> ただし水彩の場合は逆で、明るい色から重ねるのが定石だと聞く。</span><span class="hit"><b>11</b> 自分は水彩を描かないので、ここは確かめていない。</span></pre></details>
 </figure>
-<h2>届かなかったもの</h2><ul class="unreached"><li>水彩の塗り順を書き手自身が試した記録（見つからなかった・手本の想定）</li></ul>
+<h2>届かなかったもの</h2><ul class="unreached"><li>水彩の塗り順を書き手自身が試した記録<span class="reason"> — 見つからなかった・手本の想定</span></li><li><a href="https://example.com/paywalled-paper" rel="noreferrer">影の塗り順を比べた実験の論文</a><span class="reason"> — 有料で本文が読めない・手本の想定</span> <code class="url">https://example.com/paywalled-paper</code></li></ul>
 <footer>imozuru の抜き書き・原文はこのページと同じ場所の sources/</footer>
 </main></body></html>
