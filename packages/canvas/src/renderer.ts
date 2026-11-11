@@ -287,6 +287,8 @@ export interface OverlayState {
   focusedGroupId: string | null
   // 引用する範囲（MAI-33）
   quoteRegion?: Box | null
+  // 調べる語のハイライト（行ごとの箱。ワールド座標。MAI-99）
+  wordHighlight?: readonly Box[] | null
   // 移動中に吸い付いた線（MAI-53）
   snapGuides?: readonly SnapGuide[]
   // 移動中の、隣・フレームの辺までの距離の線
@@ -386,6 +388,15 @@ export function drawOverlay(
     ctx.setLineDash([5 * view.dpr, 3 * view.dpr])
     ctx.strokeRect(r.x, r.y, r.w, r.h)
     ctx.setLineDash([])
+  }
+  // 調べる語（PDF のページの上）。文字を選んだときと同じ、薄い青で塗る
+  if (state.wordHighlight && state.wordHighlight.length > 0) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.fillStyle = 'rgba(47, 111, 237, 0.3)'
+    for (const box of state.wordHighlight) {
+      const r = deviceRect(box, view)
+      ctx.fillRect(r.x, r.y, r.w, r.h)
+    }
   }
   // 吸い付いた線（MAI-53）。倍率によらず 1 CSS ピクセルの線
   if (state.snapGuides && state.snapGuides.length > 0) {

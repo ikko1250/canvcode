@@ -14,6 +14,8 @@ import { handleClaude } from './claude/http.ts'
 import { ClaudeJobs, claudeLimitsFromEnv } from './claude/jobs.ts'
 import { ClaudeStore } from './claude/store.ts'
 import { handleMemo, MemoWriter } from './claude/memo.ts'
+import { handleLookup, WordLookup } from './claude/lookup.ts'
+import { ClaudeOnce } from './claude/once.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
@@ -43,6 +45,8 @@ import { ThumbnailStore } from './thumbnails.ts'
 //   CANVCODE_CLAUDE_MAX_BUDGET_USD で 1 回の依頼の費用の上限（ドル。既定はなし）を変える
 // - 付箋の文字を箇条書きのメモにする（/api/claude/memo。claude/memo.ts）。Claude Code を 1 回だけ、ツールなしで動かす。
 //   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
+// - PDF の上で選んだ語を調べる（/api/claude/lookup。claude/lookup.ts。MAI-99）。Claude を 1 回だけ動かす共通の仕組み（claude/once.ts）を使う。
+//   モデルは既定で Haiku（CANVCODE_LOOKUP_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
 // - 起動したときに、消した v1 のスライドの保存済みのデータを片付ける（slidesV1Cleanup.ts。片付けるものがなければ何もしない）
 
@@ -124,6 +128,9 @@ const claude =
       })
 // 付箋の文字を箇条書きのメモにする（claude/memo.ts）。既定は Sonnet。CANVCODE_MEMO_MODEL でモデルを変える
 const memo = process.env.CANVCODE_CLAUDE === '0' ? null : new MemoWriter(process.env.CANVCODE_MEMO_MODEL ? { model: process.env.CANVCODE_MEMO_MODEL } : {})
+// Claude を 1 回だけ動かす共通の仕組み（claude/once.ts）と、その上の、PDF の語を調べる API（claude/lookup.ts）。既定は Haiku
+const once = process.env.CANVCODE_CLAUDE === '0' ? null : new ClaudeOnce()
+const lookup = once ? new WordLookup({ once, ...(process.env.CANVCODE_LOOKUP_MODEL ? { model: process.env.CANVCODE_LOOKUP_MODEL } : {}) }) : null
 
 // 127.0.0.1 でだけ待ち受けていても、ブラウザで開いた別のサイトから localhost に要求を送られることがある。
 // DNS の付け替え（DNS rebinding）と、別のサイトからの書き込みを防ぐため、Host と Origin がこのサーバーのものか確かめる
@@ -219,6 +226,7 @@ const server = createServer(async (req, res) => {
   if (await handleBackupStatus(req, res, url.pathname, DATA_DIR)) return
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (handleMemo(req, res, url.pathname, memo)) return
+  if (handleLookup(req, res, url.pathname, lookup)) return
   if (handleClaude(req, res, url.pathname, claude)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
