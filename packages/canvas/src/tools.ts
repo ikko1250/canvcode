@@ -318,6 +318,8 @@ export class SelectTool implements Tool {
   readonly id = 'select' as const
   readonly cursor = 'default'
   private state: SelectState = { name: 'idle' }
+  // 離したあとも PDF の文字の読み込みが続く。次の操作まで、中止できるようにしておく。
+  private hasWordSelection = false
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
@@ -326,6 +328,10 @@ export class SelectTool implements Tool {
 
   onPointerDown(pointer: ToolPointer): void {
     if (pointer.button !== 0) return
+    if (this.hasWordSelection) {
+      this.hasWordSelection = false
+      this.ctx.wordSelection?.({ phase: 'cancel' })
+    }
     const editor = this.ctx.editor
     if (editor.session.get().quoteRegion) editor.session.set({ quoteRegion: null })
     if (editor.session.get().lastBrush) editor.session.set({ lastBrush: null })
@@ -335,6 +341,7 @@ export class SelectTool implements Tool {
       editor.session.set({ wordLookupArmed: false, hoveredId: null })
       if (entry) {
         const start = pageFraction(entry, pointer.world)
+        this.hasWordSelection = true
         this.state = { name: 'selectingWords', pageId: entry.node.id, start, current: start }
         this.ctx.wordSelection?.({ phase: 'move', pageId: entry.node.id, from: start, to: start, screen: pointer.screen })
         return
@@ -747,7 +754,8 @@ export class SelectTool implements Tool {
       this.ctx.setCursor(null)
       return true
     }
-    if (state.name === 'selectingWords' || session.get().wordLookupArmed) {
+    if (state.name === 'selectingWords' || session.get().wordLookupArmed || this.hasWordSelection) {
+      this.hasWordSelection = false
       session.set({ wordLookupArmed: false })
       this.ctx.setCursor(null)
       this.ctx.wordSelection?.({ phase: 'cancel' })
