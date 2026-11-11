@@ -156,3 +156,25 @@ test('vim mode: o continues a markdown list, and u undoes it like the default o'
   await page.keyboard.press('u')
   expect(await doc(page)).toBe('- a\nplain')
 })
+
+test('vim mode: Japanese words, f to full-width symbols and Space f with romaji (MAI-96)', async ({ page }) => {
+  const { editor } = await openEditor(page, { vim: true, body: '日本語の単語、ここでタイプ' })
+  await expect(editor.locator('.file-editor-status')).toHaveText('NORMAL')
+  // w（この配列では b）は「日本語｜の｜単語」のように進む（ブラウザの Intl.Segmenter）
+  await page.keyboard.press('b')
+  expect(await head(page)).toBe(3)
+  await page.keyboard.press('b')
+  expect(await head(page)).toBe(4)
+  // f, は「、」にも跳ぶ
+  await page.keyboard.press('f')
+  await page.keyboard.press(',')
+  expect(await head(page)).toBe(6)
+  // Space f t a は「た」か「タ」へ
+  for (const key of ['Space', 'f', 't', 'a']) await page.keyboard.press(key)
+  expect(await head(page)).toBe(10)
+  await expect(editor.locator('.file-editor-status')).toHaveText('NORMAL')
+  // iw も同じ区切り
+  await page.keyboard.press('0')
+  for (const key of ['h', 'h', 'h', 'h', 'd', 'i', 'w']) await page.keyboard.press(key)
+  expect(await doc(page)).toBe('日本語の、ここでタイプ')
+})

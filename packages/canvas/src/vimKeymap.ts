@@ -2,6 +2,7 @@ import type { EditorView } from '@codemirror/view'
 import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown'
 import { Vim, getCM } from '@replit/codemirror-vim'
 import type { ActionArgs, ActionFn } from '@replit/codemirror-vim'
+import { registerJapaneseMotions } from './vimJapanese.ts'
 
 // 全画面エディタの vim モードのキーの割り当て（MAI-60 の段階 1）。
 // 元の ~/.config/nvim/init.lua の表と対応が分かるように、表と同じ順に並べる。
@@ -120,6 +121,9 @@ export function registerVimKeymap(): void {
   // 選択範囲のインデントを増やす・減らす（選択は保つ）
   Vim.noremap('<Tab>', '>gv', 'visual')
   Vim.noremap('<S-Tab>', '<gv', 'visual')
+
+  // 日本語の文の移動（MAI-96）。f の全角の記号、Space f とローマ字でかなへ、日本語の語の区切り（vimJapanese.ts）
+  registerJapaneseMotions()
 
   // ex コマンド。:w はすぐ保存、:q は閉じる、:wq は保存して閉じる
   Vim.defineEx('write', 'w', (cm) => handlersOf(cm)?.save())
