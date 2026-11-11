@@ -4,7 +4,7 @@ import { isSubmenu, type PieEntry, type PieMenuDef } from './pieMenu.ts'
 
 // パイメニュー「操作」（MAI-57、キー o）。今の選択とキャンバスに応じて項目が変わる
 
-const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true }
+const NO_PDF: PdfMenuContext = { hasPages: false, canNext: false, canPrev: false, allLocked: true, noneLocked: true, canLookUp: false }
 const NO_SELECTION: SelectionMenuContext = { count: 0, arrangeCount: 0, reorderCount: 0, hasText: false, slideCount: 0, slidesHidden: false, slideRows: null, slideTemplate: false, pdfLink: false, image: false, exportImage: false }
 
 function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<SelectionMenuContext> = {}, hasSlides = false, table: TableMenuContext | null = null): PieMenuContext {
@@ -34,6 +34,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     panToPage: vi.fn(),
     unlockAndSelectPdfPages: vi.fn(),
     lockPdfPages: vi.fn(),
+    lookUpWord: vi.fn(),
     stepFontSize: vi.fn(),
     setTextAlign: vi.fn(),
     alignSelection: vi.fn(),
@@ -101,6 +102,21 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
 
     // ページのない Canvas では、canNext などに関わらず出ない
     expect(actionsOf(context({ hasPages: false, canNext: true, canPrev: true, allLocked: false, noneLocked: false }))).toBeUndefined()
+  })
+
+  it('offers 単語を調べる with the page items when Claude is available (MAI-99)', () => {
+    const ctx = context({ hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false, canLookUp: true })
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', '単語を調べる'])
+    run(menu?.items, '単語を調べる')
+    expect(ctx.lookUpWord).toHaveBeenCalledTimes(1)
+    // Claude が使えなければ出さない。PDF のページがなければ、Claude が使えても出さない
+    expect(labels(actionsOf(context({ hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false }))?.items)).not.toContain('単語を調べる')
+    expect(actionsOf(context({ canLookUp: true }))).toBeUndefined()
+    // ページの項目と同じく、8 つを超えるときは「ページ ›」にまとめる
+    const folded = actionsOf(context({ hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false, canLookUp: true }, { count: 3, arrangeCount: 3 }))
+    expect(labels(folded?.items)[0]).toBe('ページ')
+    expect(labels(sub(folded, 'ページ'))).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する', '単語を調べる'])
   })
 
   it('shows text items only when text or note nodes are selected', () => {

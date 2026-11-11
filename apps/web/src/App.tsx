@@ -20,6 +20,7 @@ import {
   type ReorderDirection,
   type StatsSummary,
   type SyncStatus,
+  type WordLookupRequest,
 } from '@canvcode/canvas'
 import {
   ARROW_COLORS,
@@ -68,6 +69,7 @@ import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
 import { memoParagraphs, requestMemo } from './claude/memo.ts'
+import { lookupMemo, requestLookup } from './claude/lookup.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
 import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
@@ -81,6 +83,7 @@ import { createSlidePdfExporter } from './slidePdfExport.ts'
 import { createRenderResponder } from './canvasRender.ts'
 import { PortalRename, type PortalRenameTarget } from './workspace/PortalRename.tsx'
 import { TableFilterInput, type TableFilterRequest } from './workspace/TableFilterInput.tsx'
+import { WordLookupBubble, type WordLookupState } from './workspace/WordLookupBubble.tsx'
 import { canvasUrl, fileUrl, newTabUrl, openInNewTab } from './workspace/newTab.ts'
 import { isClaudePanelKey, isParentCanvasKey, isPdfPageJumpKey } from './workspace/shortcuts.ts'
 import { PdfSearchBar } from './workspace/PdfSearchBar.tsx'
@@ -368,6 +371,33 @@ export function App(props: { initial: InitialRecords }) {
   const [claudeOpen, setClaudeOpen] = useState(false)
   const [claudeAttachment, setClaudeAttachment] = useState<ClaudeAttachment | null>(null)
   const [claudeFocus, setClaudeFocus] = useState(0)
+  // PDF の上で選んだ語を調べる（o メニューの「単語を調べる」。MAI-99）。答えは選んだ所のそばの吹き出しに出す。
+  // 選んだ Canvas（request.canvasId）から移ったら閉じる。閉じるときは、待っている頼みもやめ、ハイライトも消す
+  const [wordLookup, setWordLookup] = useState<{ request: WordLookupRequest; state: WordLookupState } | null>(null)
+  const wordLookupAbort = useRef<AbortController | null>(null)
+  const startWordLookup = useCallback((request: WordLookupRequest) => {
+    wordLookupAbort.current?.abort()
+    const controller = new AbortController()
+    wordLookupAbort.current = controller
+    const phrase = request.phrase
+    setWordLookup({ request, state: { status: 'loading', phrase } })
+    const settle = (state: WordLookupState) => {
+      if (controller.signal.aborted) return
+      setWordLookup((current) => (current?.request === request ? { ...current, state } : current))
+    }
+    requestLookup(phrase, request.context, controller.signal).then(
+      (result) => settle({ status: 'done', phrase, result }),
+      (error: unknown) => settle({ status: 'error', phrase, error: `調べられませんでした：${error instanceof Error ? error.message : String(error)}` }),
+    )
+  }, [])
+  // キャンバスの画面（下の useEffect で一度だけ作る）から呼ぶ
+  const startWordLookupRef = useRef(startWordLookup)
+  const closeWordLookup = useCallback(() => {
+    wordLookupAbort.current?.abort()
+    wordLookupAbort.current = null
+    setWordLookup(null)
+    viewRef.current?.clearWordHighlight()
+  }, [])
   // パネルを開く。save があれば、その場所（ref）を保存して添える（保存できなければ添付を外す）
   const askClaude = useCallback((label: string, save?: () => Promise<string | null>) => {
     setClaudeOpen(true)
@@ -612,6 +642,8 @@ export function App(props: { initial: InitialRecords }) {
         view.setEditor(next)
         // 画面の状態も、ここで切り替える（このあとのアニメーションの間の操作も、移った先の Canvas に入るように）
         setCanvasId(targetId)
+        // 調べた語の吹き出しは、その Canvas の PDF のもの
+        closeWordLookup()
         if (options.push !== false) history.pushState({ canvasId: targetId }, '', canvasUrl(targetId))
         from.session.set({ camera: fromCamera })
         trimEditors(next)
@@ -634,7 +666,7 @@ export function App(props: { initial: InitialRecords }) {
         if (pending) void go(pending.targetId, pending.options)
       }
     },
-    [workspace, sync, visited, getEditor, trimEditors, notify],
+    [workspace, sync, visited, getEditor, trimEditors, notify, closeWordLookup],
   )
   // 移す・戻すときに、その Canvas を読む。サーバーにつながっていなければ断る（つながるまで待たせない）
   const loadCanvasNow = useCallback(
@@ -1352,6 +1384,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       onOpenSource: (anchorId) => void openSource(anchorId),
       onImportBackup: (file) => importBackupRef.current(file),
+      onWordLookup: (request) => startWordLookupRef.current(request),
       onContextMenu: ({ clientX, clientY }) => {
         const at = { x: clientX, y: clientY }
         setMenu({ ...at, items: buildMenu(at) })
@@ -1835,6 +1868,7 @@ export function App(props: { initial: InitialRecords }) {
         canPrev: pageNavigation.canPrev,
         allLocked: lockedPageCount === pdfPageIds.length,
         noneLocked: lockedPageCount === 0,
+        canLookUp: claudeState.availability === 'on',
       },
       selection: {
         count: session.selectedIds.size,
@@ -1852,6 +1886,10 @@ export function App(props: { initial: InitialRecords }) {
       panToPage: (direction) => view?.panToPage(direction),
       unlockAndSelectPdfPages: () => editor.unlockAndSelectPdfPages(),
       lockPdfPages: () => editor.lockPdfPages(),
+      lookUpWord: () => {
+        closeWordLookup()
+        view?.armWordLookup()
+      },
       stepFontSize: (direction) => stepTextFontSize(editor, view, textNodesOf(editor), direction),
       setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
       alignSelection: (edge) => editor.alignSelection(edge),
@@ -1915,6 +1953,23 @@ export function App(props: { initial: InitialRecords }) {
           menusAt={pieMenusAt}
           buttons={PIE_BUTTONS}
         />
+
+        {wordLookup && wordLookup.request.canvasId === canvasId && (
+          <WordLookupBubble
+            state={wordLookup.state}
+            anchor={wordLookup.request.anchor}
+            onClose={closeWordLookup}
+            onRetry={() => startWordLookup(wordLookup.request)}
+            onPlaceNote={() => {
+              const { request, state } = wordLookup
+              if (state.status !== 'done') return
+              closeWordLookup()
+              if (!view || view.editor.canvasId !== request.canvasId || !view.placeWordNote(request, lookupMemo(state.result))) {
+                notify('ノートを置けませんでした（PDF のページが見つかりません）')
+              }
+            }}
+          />
+        )}
 
         {tableFilter && (
           <TableFilterInput
