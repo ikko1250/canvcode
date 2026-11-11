@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Editor } from './editor.ts'
+import { CanvasView } from './view.ts'
 import type { PdfTextItem } from './quotes.ts'
 import { SelectTool, type ToolContext, type ToolPointer, type WordSelectionEvent } from './tools.ts'
 import { Workspace } from './workspace.ts'
@@ -153,7 +154,7 @@ describe('SelectTool: 単語を調べる（なぞって選ぶ）', () => {
       const world = { x: page.x + page.w * u, y: page.y + page.h * v }
       return { screen: world, world, button: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }
     }
-    return { editor, pageId, events, cursors, tool: new SelectTool(ctx), pointer }
+    return { editor, pageId, events, cursors, ctx, tool: new SelectTool(ctx), pointer }
   }
 
   it('押した所から離した所までを、ページの中の割合で知らせ、一度だけで終わる（ノードは動かさない）', () => {
@@ -178,7 +179,7 @@ describe('SelectTool: 単語を調べる（なぞって選ぶ）', () => {
     events.length = 0
     tool.onPointerDown(pointer(0.1, 0.2))
     tool.onPointerUp(pointer(0.1, 0.2))
-    expect(events).toEqual([])
+    expect(events).toEqual([{ phase: 'cancel' }])
   })
 
   it('Esc（cancel）でやめる。なぞる前でも、なぞっている途中でも', () => {
@@ -192,6 +193,38 @@ describe('SelectTool: 単語を調べる（なぞって選ぶ）', () => {
     expect(tool.cancel()).toBe(true)
     tool.onPointerUp(pointer(0.5, 0.3))
     expect(events.map((e) => e.phase)).toEqual(['cancel', 'move', 'cancel'])
+  })
+
+  it.each(['escape', 'click', 'quote', 'none'] as const)('文字の読込待ちを離したあとも中止できる（%s）', async (action) => {
+    const { editor, ctx, tool, pointer } = setup()
+    let finish!: () => void
+    const loaded = new Promise<void>((resolve) => { finish = resolve })
+    const lookup = vi.fn()
+    const view = Object.create(CanvasView.prototype) as CanvasView
+    Object.assign(view, {
+      editorRef: editor,
+      tool,
+      root: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
+      options: { onWordLookup: lookup, notify: vi.fn() },
+      updateCursor: vi.fn(),
+      selectedWords: async () => {
+        await loaded
+        return { words: { text: 'model', context: 'The model' }, world: [{ x: 100, y: 100, w: 20, h: 20 }], rect: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 } }
+      },
+    })
+    const handler = view as unknown as { onWordSelection(event: WordSelectionEvent): Promise<void> }
+    const pending: Promise<void>[] = []
+    ctx.wordSelection = (event) => { pending.push(handler.onWordSelection(event)) }
+    editor.session.set({ wordLookupArmed: true })
+    tool.onPointerDown(pointer(0.1, 0.2))
+    tool.onPointerUp(pointer(0.5, 0.3))
+    if (action === 'escape') tool.cancel()
+    if (action === 'click') tool.onPointerDown(pointer(-1, -1))
+    if (action === 'quote') view.armQuoteRegion()
+    finish()
+    await Promise.all(pending)
+    expect(lookup).toHaveBeenCalledTimes(action === 'none' ? 1 : 0)
+    if (action !== 'none') expect(editor.session.get().wordHighlight).toBeNull()
   })
 
   it('ページの外を押したら、やめて、いつもの操作に進む', () => {

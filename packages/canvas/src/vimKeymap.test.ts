@@ -4,6 +4,7 @@ import { Vim, getCM } from '@replit/codemirror-vim'
 import { createCodeEditor, type CodeEditorHandle, type CodeEditorOptions } from './codeEditor.ts'
 import { vimModeOf, type VimMode } from './vimKeymap.ts'
 import { vimKeyOfImeEvent } from './vimIme.ts'
+import { characterCandidates, KANA_OF_ROMAJI } from './vimJapanese.ts'
 import { EditorView } from '@codemirror/view'
 
 // vim モードのキーの割り当て（MAI-60 の段階 1）。jsdom の上で CodeMirror を動かし、キーを vim に渡して確かめる。
@@ -369,6 +370,33 @@ describe('日本語入力が ON のままの通常モード', () => {
     expect(editor.text()).toBe('  あabc')
   })
 
+  it('Space と、記号のキーで入る全角の文字も vim のキーにする（MAI-96）', () => {
+    const base = { code: '', keyCode: 229, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false }
+    expect(vimKeyOfImeEvent({ ...base, key: ' ' })).toBe(' ')
+    expect(vimKeyOfImeEvent({ ...base, key: '　' })).toBe(' ')
+    expect(vimKeyOfImeEvent({ ...base, key: 'Process', code: 'Space' })).toBe(' ')
+    expect(vimKeyOfImeEvent({ ...base, key: '、' })).toBe(',')
+    expect(vimKeyOfImeEvent({ ...base, key: '。' })).toBe('.')
+    expect(vimKeyOfImeEvent({ ...base, key: '「' })).toBe('[')
+  })
+
+  it('IME が ON のままでも、Space f とローマ字でかなに跳ぶ。f のあとの「、」は , と同じ（MAI-96）', () => {
+    const { editor } = open('あいうえおかきたち、つ')
+    const keys: [string, string][] = [[' ', 'Space'], ['f', 'KeyF'], ['t', 'KeyT'], ['a', 'KeyA']]
+    for (const [key, code] of keys) {
+      keydown(editor, { key, code, keyCode: 229 })
+      imeInput(editor, key === ' ' ? '　' : key)
+    }
+    expect(head(editor)).toBe(7)
+    expect(vimModeOf(editor.view)).toBe('normal')
+    for (const [key, code] of [['f', 'KeyF'], ['、', 'Comma']]) {
+      keydown(editor, { key, code, keyCode: 229 })
+      imeInput(editor, key)
+    }
+    expect(head(editor)).toBe(9)
+    expect(editor.text()).toBe('あいうえおかきたち、つ')
+  })
+
   it('IME が ON のままでも、dd などのコマンドが効く', () => {
     const { editor } = open('one\ntwo')
     for (const key of ['d', 'd']) {
@@ -377,5 +405,225 @@ describe('日本語入力が ON のままの通常モード', () => {
     }
     expect(editor.text()).toBe('two')
     expect(vimModeOf(editor.view)).toBe('normal')
+  })
+})
+
+describe('f で全角の記号にも跳ぶ（MAI-96）', () => {
+  it('記号の候補に全角の記号を入れる。英数字・かなはそのまま', () => {
+    expect(characterCandidates(',')).toEqual([',', '，', '、'])
+    expect(characterCandidates('.')).toEqual(['.', '．', '。'])
+    expect(characterCandidates('[')).toEqual(['[', '［', '「', '『', '【', '〔'])
+    expect(characterCandidates(']')).toEqual([']', '］', '」', '』', '】', '〕'])
+    for (const [half, wide] of ['(（', ')）', '!！', '?？', ':：', ';；', '-ー', '/・', '~〜']) {
+      expect(characterCandidates(half)).toContain(wide)
+    }
+    expect(characterCandidates(' ')).toEqual([' ', '　'])
+    expect(characterCandidates('t')).toEqual(['t'])
+    expect(characterCandidates('1')).toEqual(['1'])
+  })
+
+  it('f, は , 、 ， のうち一番近いものへ跳び、; と , でも同じ候補を使う', () => {
+    const { editor } = open('ab、c,d，e、f')
+    press(editor, 'f,')
+    expect(head(editor)).toBe(2)
+    press(editor, ';')
+    expect(head(editor)).toBe(4)
+    press(editor, ';')
+    expect(head(editor)).toBe(6)
+    press(editor, ';')
+    expect(head(editor)).toBe(8)
+    press(editor, ',')
+    expect(head(editor)).toBe(6)
+    press(editor, '$F,')
+    expect(head(editor)).toBe(8)
+  })
+
+  it('f. は 。．、f[ は 「『［、f( は （ にも跳ぶ', () => {
+    const { editor } = open('あ。い．う「え『お［か（き')
+    press(editor, 'f.')
+    expect(head(editor)).toBe(1)
+    press(editor, 'f.')
+    expect(head(editor)).toBe(3)
+    press(editor, 'f[')
+    expect(head(editor)).toBe(5)
+    press(editor, '2f[')
+    expect(head(editor)).toBe(9)
+    press(editor, 'f(')
+    expect(head(editor)).toBe(11)
+  })
+
+  it('英字は今までどおり 1 キーで跳ぶ（ft で t へ、fta で t に跳んで追記）', () => {
+    const { editor } = open('xxtxx')
+    press(editor, 'ft')
+    expect(head(editor)).toBe(2)
+    press(editor, '0fta')
+    expect(vimModeOf(editor.view)).toBe('insert')
+    expect(head(editor)).toBe(3)
+  })
+
+  it('操作待ちと till（Space t）でも全角の記号を探す', () => {
+    const { editor } = open('はい、そう')
+    press(editor, 'df,')
+    expect(editor.text()).toBe('そう')
+    // 見つからなければ、操作もしない（カーソルの文字を消さない）
+    press(editor, 'df,')
+    expect(editor.text()).toBe('そう')
+    const till = open('はい、そう').editor
+    press(till, '<Space>t,')
+    expect(head(till)).toBe(1)
+  })
+})
+
+describe('Space f とローマ字でかなに跳ぶ（MAI-96）', () => {
+  it('ローマ字の表：母音は 2 回、si・ti・tu・hu、ん は nn、濁音・半濁音もある', () => {
+    expect(KANA_OF_ROMAJI.aa).toBe('あ')
+    expect(KANA_OF_ROMAJI.oo).toBe('お')
+    expect(KANA_OF_ROMAJI.si).toBe('し')
+    expect(KANA_OF_ROMAJI.ti).toBe('ち')
+    expect(KANA_OF_ROMAJI.tu).toBe('つ')
+    expect(KANA_OF_ROMAJI.hu).toBe('ふ')
+    expect(KANA_OF_ROMAJI.nn).toBe('ん')
+    expect(KANA_OF_ROMAJI.wo).toBe('を')
+    expect(KANA_OF_ROMAJI.ga).toBe('が')
+    expect(KANA_OF_ROMAJI.zi).toBe('じ')
+    expect(KANA_OF_ROMAJI.pa).toBe('ぱ')
+    expect(KANA_OF_ROMAJI.po).toBe('ぽ')
+    // 2 キーで決まらない綴りは入れない
+    expect(KANA_OF_ROMAJI.a).toBeUndefined()
+    expect(KANA_OF_ROMAJI.n).toBeUndefined()
+    expect(Object.keys(KANA_OF_ROMAJI).every((romaji) => romaji.length === 2)).toBe(true)
+  })
+
+  it('Space f t a で「た」へ、Space f a a で「あ」へ。カタカナも候補にする', () => {
+    const { editor } = open('ここでタイプした。あア')
+    press(editor, '<Space>fta')
+    expect(head(editor)).toBe(3)
+    press(editor, ';')
+    expect(head(editor)).toBe(7)
+    press(editor, ',')
+    expect(head(editor)).toBe(3)
+    press(editor, '<Space>faa')
+    expect(head(editor)).toBe(9)
+    press(editor, '<Space>faa')
+    expect(head(editor)).toBe(10)
+    expect(vimModeOf(editor.view)).toBe('normal')
+    expect(editor.text()).toBe('ここでタイプした。あア')
+  })
+
+  it('Space F は前へ。濁音・半濁音・ん にも跳ぶ', () => {
+    const { editor } = open('がっこうでパンをかう')
+    press(editor, '$<Space>Fga')
+    expect(head(editor)).toBe(0)
+    press(editor, '<Space>fpa')
+    expect(head(editor)).toBe(5)
+    press(editor, '<Space>fnn')
+    expect(head(editor)).toBe(6)
+    press(editor, '<Space>Fde')
+    expect(head(editor)).toBe(4)
+  })
+
+  it('操作待ち（d Space f）と visual でも使える', () => {
+    const { editor } = open('あいうえお')
+    press(editor, 'd<Space>fuu')
+    expect(editor.text()).toBe('えお')
+    const visual = open('かきくけこ').editor
+    press(visual, 'v<Space>fkud')
+    expect(visual.text()).toBe('けこ')
+  })
+
+  it('表にないローマ字は何もしない（2 キー目も受けて捨てる）', () => {
+    const { editor } = open('あいう')
+    press(editor, '<Space>fta')
+    expect(head(editor)).toBe(0)
+    press(editor, '<Space>fyi')
+    expect(head(editor)).toBe(0)
+    press(editor, 'd<Space>fka')
+    expect(editor.text()).toBe('あいう')
+    expect(vimModeOf(editor.view)).toBe('normal')
+    press(editor, 'h')
+    expect(head(editor)).toBe(1)
+  })
+})
+
+describe('日本語の語の区切り（MAI-96）', () => {
+  // w（この配列では b）を n 回押したときのカーソルの位置
+  function wordStarts(editor: CodeEditorHandle, key: string, count: number) {
+    const heads: number[] = []
+    for (let i = 0; i < count; i++) {
+      press(editor, key)
+      heads.push(head(editor))
+    }
+    return heads
+  }
+
+  it('w（b のキー）は「日本語｜の｜単語」のように進む', () => {
+    const { editor } = open('日本語の単語を移動する。次')
+    expect(wordStarts(editor, 'b', 7)).toEqual([3, 4, 6, 7, 9, 11, 12])
+  })
+
+  it('b（w のキー）と e も同じ区切りで動く', () => {
+    const { editor } = open('日本語の単語を移動する')
+    press(editor, '$')
+    expect(wordStarts(editor, 'w', 4)).toEqual([9, 7, 6, 4])
+    press(editor, '0')
+    expect(wordStarts(editor, 'e', 3)).toEqual([2, 3, 5])
+    press(editor, '$ge')
+    expect(head(editor)).toBe(8)
+  })
+
+  it('英字と日本語が続くところは区切る。英語・コードの区切りは今までと同じ', () => {
+    const { editor } = open('CanvCodeの単語')
+    expect(wordStarts(editor, 'b', 2)).toEqual([8, 9])
+    const code = open('foo_bar.baz(qux1, 2) x').editor
+    expect(wordStarts(code, 'b', 7)).toEqual([7, 8, 11, 12, 16, 18, 19])
+  })
+
+  it('W / B は今のまま（空白まで）', () => {
+    const { editor } = open('日本語の単語、次の文 二つ目')
+    press(editor, 'B')
+    expect(head(editor)).toBe(11)
+    press(editor, 'W')
+    expect(head(editor)).toBe(0)
+  })
+
+  it('行をまたいでも区切る', () => {
+    const { editor } = open('日本語\nの単語。')
+    expect(wordStarts(editor, 'b', 3)).toEqual([4, 5, 7])
+  })
+
+  it('操作（dw・cw）も同じ区切り。cw は語の後ろの空白を残す', () => {
+    const { editor } = open('日本語の単語')
+    press(editor, 'db')
+    expect(editor.text()).toBe('の単語')
+    press(editor, 'cb')
+    expect(vimModeOf(editor.view)).toBe('insert')
+    expect(editor.text()).toBe('単語')
+    const english = open('foo bar').editor
+    press(english, 'cb')
+    expect(english.text()).toBe(' bar')
+  })
+
+  it('visual でも同じ区切りで選ぶ', () => {
+    const { editor } = open('日本語の単語')
+    press(editor, 'vbd')
+    expect(editor.text()).toBe('単語')
+  })
+
+  it('iw / aw も同じ区切り。英語の iw / aw は今までと同じ', () => {
+    const { editor } = open('日本語の単語を移動')
+    press(editor, 'hhhhdiw')
+    expect(editor.text()).toBe('日本語のを移動')
+    press(editor, 'daw')
+    expect(editor.text()).toBe('日本語の移動')
+    press(editor, '0viwd')
+    expect(editor.text()).toBe('の移動')
+    press(editor, 'h2diw')
+    expect(editor.text()).toBe('の')
+    const english = open('foo bar baz').editor
+    press(english, 'bdaw')
+    expect(english.text()).toBe('foo baz')
+    press(english, 'ciw')
+    expect(english.text()).toBe('foo ')
+    expect(vimModeOf(english.view)).toBe('insert')
   })
 })
