@@ -38,7 +38,8 @@ function workspace(): { dir: string; store: RecordStore } {
   return { dir, store }
 }
 
-// gdrive:<path> を root/<path> に置き換えて、rclone の about / lsf / copy / deletefile をまねる
+// gdrive:<path> を root/<path> に置き換えて、rclone の about / lsf / copy / deletefile をまねる。
+// copy は本物と同じく、--ignore-existing がなければ、送り先にあるファイルを上書きする
 function fakeDrive() {
   const root = tempDir()
   const calls: string[][] = []
@@ -61,6 +62,7 @@ function fakeDrive() {
       mkdirSync(local(dst), { recursive: true })
       for (const name of names) {
         if (rest.includes('--exclude') && (name.endsWith('.tmp') || name.endsWith('.partial') || name.startsWith('.'))) continue
+        if (rest.includes('--ignore-existing') && existsSync(join(local(dst), name))) continue
         copyFileSync(join(src, name), join(local(dst), name))
       }
       return ''
@@ -197,6 +199,9 @@ describe('runBackupSync', () => {
 describe('runBackupSync with files kept outside the archive', () => {
   const sha256 = (data: string) => createHash('sha256').update(data).digest('hex')
   const ARCHIVE = 'canvcode-backup-2026-10-12T03-05-00-000Z.tar.gz'
+  const archiveAt = (time: string) => `canvcode-backup-2026-10-12T${time.replace(':', '-')}-00-000Z.tar.gz`
+  // rclone の呼び出しを、コマンドと相手のフォルダにする
+  const steps = (calls: string[][]) => calls.map((call) => (call[0] === 'copy' ? `copy ${call[2]}` : call[0] === 'lsf' ? `lsf ${call[1]}` : call[0]))
 
   // PDF を 1 つ足したワークスペース（前に書いたことにして、ハッシュを覚えさせる）
   function workspaceWithPdf(): { dir: string; store: RecordStore; pdf: string } {
@@ -213,8 +218,10 @@ describe('runBackupSync with files kept outside the archive', () => {
     const result = await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:05:00.000Z') })
     store.close()
     expect(result.ok).toBe(true)
-    // 中身（blobs）→ アーカイブ → Asset の順に送る
-    expect(drive.calls.map((call) => (call[0] === 'copy' ? `copy ${call[2]}` : call[0]))).toEqual(['about', 'copy gdrive:CanvCode-backup/blobs', 'lsf', 'copy gdrive:CanvCode-backup/archives', 'copy gdrive:CanvCode-backup/assets'])
+    // 中身（blobs）→ アーカイブ → Asset の順に送る。アーカイブを送る前に、Drive の中身の一覧を確かめる
+    expect(steps(drive.calls)).toEqual(['about', 'copy gdrive:CanvCode-backup/blobs', 'lsf gdrive:CanvCode-backup/archives', 'lsf gdrive:CanvCode-backup/blobs', 'copy gdrive:CanvCode-backup/archives', 'copy gdrive:CanvCode-backup/assets'])
+    // 中身は、Drive にある名前を上書きしない
+    expect(drive.calls.find((call) => call[0] === 'copy' && call[2].endsWith('/blobs'))).toContain('--ignore-existing')
     // ハッシュの控え（.index.json）は送らない
     expect(drive.list('CanvCode-backup/blobs')).toEqual([sha256('pdf-1')])
     expect(readdirSync(join(dir, '.canvcode', 'backup-blobs')).sort()).toEqual(['.index.json', sha256('pdf-1')].sort())
@@ -277,9 +284,109 @@ describe('runBackupSync with files kept outside the archive', () => {
     store.close()
     expect(retried.ok).toBe(true)
     expect(retried.status.lastRun).toMatchObject({ archived: false, uploaded: [ARCHIVE], deletedRemote: [old] })
-    expect(drive.calls.map((call) => (call[0] === 'copy' ? `copy ${call[2]}` : call[0])).slice(0, 4)).toEqual(['about', 'copy gdrive:CanvCode-backup/blobs', 'lsf', 'copy gdrive:CanvCode-backup/archives'])
+    expect(steps(drive.calls).slice(0, 5)).toEqual(['about', 'copy gdrive:CanvCode-backup/blobs', 'lsf gdrive:CanvCode-backup/archives', 'lsf gdrive:CanvCode-backup/blobs', 'copy gdrive:CanvCode-backup/archives'])
     expect(drive.list('CanvCode-backup/blobs')).toEqual([sha256('pdf-1')])
     expect(drive.list('CanvCode-backup/archives')).toEqual([ARCHIVE])
+  })
+
+  it('sends the contents again when the remote changes', async () => {
+    const { dir, store } = workspaceWithPdf()
+    const drive = fakeDrive()
+    await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:05:00.000Z') })
+    // 送り先を変える。手元の中身は増えていないが、新しい送り先には 1 つもない
+    write(join(dir, 'メモ.md'), '# メモ 2\n')
+    const moved = await runBackupSync({ workspace: dir, rclone: drive.runner, remote: 'gdrive:Other', now: at('2026-10-12T03:10:00.000Z') })
+    store.close()
+    expect(moved.ok).toBe(true)
+    expect(drive.list('Other/blobs')).toEqual([sha256('pdf-1')])
+    expect(drive.list('Other/assets')).toEqual([`${HASH}.png`])
+    // 同じ時間のうちは、いちばん新しいものだけを送る
+    expect(drive.list('Other/archives')).toEqual([archiveAt('03:10')])
+    const target = join(tempDir(), 'restored')
+    await restoreBackup({ archive: join(drive.root, 'Other', 'archives', archiveAt('03:10')), workspace: target, assetsFrom: join(drive.root, 'Other', 'assets'), blobsFrom: join(drive.root, 'Other', 'blobs') })
+    expect(readFileSync(join(target, 'research', 'sources', '論文.pdf'), 'utf8')).toBe('pdf-1')
+  })
+
+  it('sends the contents again when they have disappeared from Drive, before sending the archive', async () => {
+    const { dir, store } = workspaceWithPdf()
+    const drive = fakeDrive()
+    await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:05:00.000Z') })
+    rmSync(join(drive.root, 'CanvCode-backup', 'blobs', sha256('pdf-1')))
+    write(join(dir, 'メモ.md'), '# メモ 2\n')
+    drive.calls.length = 0
+    const second = await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:10:00.000Z') })
+    store.close()
+    expect(second.ok).toBe(true)
+    // 手元の中身は増えていないので最初は送らず、アーカイブを送る前の確かめで足りないと分かって送り直す
+    expect(steps(drive.calls)).toEqual(['about', 'lsf gdrive:CanvCode-backup/archives', 'lsf gdrive:CanvCode-backup/blobs', 'copy gdrive:CanvCode-backup/blobs', 'lsf gdrive:CanvCode-backup/blobs', 'copy gdrive:CanvCode-backup/archives', 'deletefile'])
+    expect(drive.list('CanvCode-backup/blobs')).toEqual([sha256('pdf-1')])
+    expect(drive.list('CanvCode-backup/archives')).toEqual([archiveAt('03:10')])
+  })
+
+  it('never overwrites a content on Drive, even when the local copy went bad', async () => {
+    const { dir, store } = workspaceWithPdf()
+    const drive = fakeDrive()
+    await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:05:00.000Z') })
+    // 手元の中身が、同じ大きさのまま壊れた。そのあと、別の PDF が増えて中身を送る回が来る
+    writeFileSync(join(dir, '.canvcode', 'backup-blobs', sha256('pdf-1')), 'pdf-X')
+    const added = join(dir, 'research', 'sources', '追加.pdf')
+    write(added, 'pdf-2')
+    utimesSync(added, 1_700_000_000, 1_700_000_000)
+    const second = await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:10:00.000Z') })
+    store.close()
+    expect(second.ok).toBe(true)
+    expect(drive.list('CanvCode-backup/blobs')).toEqual([sha256('pdf-1'), sha256('pdf-2')].sort())
+    expect(readFileSync(join(drive.root, 'CanvCode-backup', 'blobs', sha256('pdf-1')), 'utf8')).toBe('pdf-1')
+  })
+
+  it('does not send an archive whose contents are gone locally, and still sends the others', async () => {
+    const { dir, store, pdf } = workspaceWithPdf()
+    const drive = fakeDrive()
+    // Drive につながらない間に、アーカイブ A（pdf-1 を指す）ができる
+    drive.state.down = 'dial tcp: no such host'
+    await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:05:00.000Z') })
+    // PDF が変わり、前の中身が手元からなくなった
+    writeFileSync(pdf, 'pdf-2')
+    utimesSync(pdf, 1_700_000_100, 1_700_000_100)
+    rmSync(join(dir, '.canvcode', 'backup-blobs', sha256('pdf-1')))
+    drive.state.down = false
+    const second = await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T04:05:00.000Z') })
+    store.close()
+    // A は戻せないので送らない。今の状態のアーカイブ B は送れているので、失敗にはしない
+    expect(second.ok).toBe(true)
+    expect(second.status.lastRun.uploaded).toEqual([archiveAt('04:05')])
+    expect(drive.list('CanvCode-backup/archives')).toEqual([archiveAt('04:05')])
+    expect(drive.list('CanvCode-backup/blobs')).toEqual([sha256('pdf-2')])
+  })
+
+  it('fails when the newest archive cannot be sent, and makes a new one on the next run', async () => {
+    const { dir, store } = workspaceWithPdf()
+    const drive = fakeDrive()
+    drive.state.down = 'dial tcp: no such host'
+    await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:05:00.000Z') })
+    // まだ送っていないアーカイブが指す中身が、手元からなくなった（ワークスペースは変わっていない）
+    rmSync(join(dir, '.canvcode', 'backup-blobs', sha256('pdf-1')))
+    drive.state.down = false
+    const second = await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:10:00.000Z') })
+    expect(second.ok).toBe(false)
+    expect(second.status.lastRun).toMatchObject({ archived: false, uploaded: [] })
+    expect(second.status.lastError).toMatchObject({ step: 'upload' })
+    expect(second.status.lastError?.message).toContain('足りません')
+    expect(second.status.drive.ok).toBe(true)
+    expect(second.status.archive).toBeNull()
+    expect(drive.list('CanvCode-backup/archives')).toEqual([])
+    expect(describeBackupStatus(second.status, Date.parse('2026-10-12T03:11:00.000Z')).state).toBe('failed')
+
+    // 次の回は、変わっていなくてもアーカイブを作り直し、今のファイルから中身を置き直して送る
+    const third = await runBackupSync({ workspace: dir, rclone: drive.runner, now: at('2026-10-12T03:15:00.000Z') })
+    store.close()
+    expect(third.ok).toBe(true)
+    expect(third.status.lastRun).toMatchObject({ archived: true, uploaded: [archiveAt('03:15')] })
+    expect(drive.list('CanvCode-backup/blobs')).toEqual([sha256('pdf-1')])
+    expect(drive.list('CanvCode-backup/archives')).toEqual([archiveAt('03:15')])
+    const target = join(tempDir(), 'restored')
+    await restoreBackup({ archive: join(drive.root, 'CanvCode-backup', 'archives', archiveAt('03:15')), workspace: target, assetsFrom: join(drive.root, 'CanvCode-backup', 'assets'), blobsFrom: join(drive.root, 'CanvCode-backup', 'blobs') })
+    expect(readFileSync(join(target, 'research', 'sources', '論文.pdf'), 'utf8')).toBe('pdf-1')
   })
 })
 

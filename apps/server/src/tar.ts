@@ -103,6 +103,46 @@ export async function extractTar(source: AsyncIterable<Buffer>, dest: string): P
   return written
 }
 
+// tar の最初のファイルの名前と中身を読む（残りは読まない）。ファイルがなければ null。maxSize を超えていれば投げる
+export async function readFirstTarFile(source: AsyncIterable<Buffer>, maxSize: number): Promise<{ path: string; data: Buffer } | null> {
+  const reader = new ByteReader(source)
+  let nextPath: string | null = null
+  let nextSize: number | null = null
+  for (;;) {
+    const block = await reader.read(BLOCK)
+    if (!block) throw new Error('tar: 終わりの印がありません（途中で切れています）')
+    if (block.every((b) => b === 0)) return null
+    verifyChecksum(block)
+    const type = String.fromCharCode(block[156] || 0x30)
+    let size = readOctal(block, 124, 12)
+    if (nextSize !== null && (type === '0' || type === '5')) size = nextSize
+    if (type === 'x' || type === 'g' || type === 'L') {
+      const body = await reader.read(size)
+      if (!body) throw new Error('tar: 途中で切れています')
+      await reader.skip(padSize(size))
+      if (type === 'x') {
+        const records = parsePax(body)
+        if (records.path !== undefined) nextPath = records.path
+        if (records.size !== undefined) nextSize = Number(records.size)
+      } else if (type === 'L') {
+        nextPath = body.toString('utf8').replace(/\0+$/, '')
+      }
+      continue
+    }
+    const name = nextPath ?? ustarName(block)
+    nextPath = null
+    nextSize = null
+    if (type !== '0') {
+      await reader.skip(size + padSize(size))
+      continue
+    }
+    if (size > maxSize) throw new Error(`tar: 大きすぎます: ${name}`)
+    const data = size > 0 ? await reader.read(size) : Buffer.alloc(0)
+    if (!data) throw new Error('tar: 途中で切れています')
+    return { path: safePath(name), data: Buffer.from(data) }
+  }
+}
+
 // 展開してよい相対パスか確かめ、正規化したものを返す
 export function safePath(path: string): string {
   const normalized = posix.normalize(path.replace(/\\/g, '/'))

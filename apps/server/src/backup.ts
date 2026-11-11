@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import { BlobStore, isBlobFile, restoreBlobs, type BlobFile } from './backupBlobs.ts'
 import { isPdfPreviewFile } from './pdfPreview.ts'
-import { extractTar, tarChunks, type TarEntry } from './tar.ts'
+import { extractTar, readFirstTarFile, tarChunks, type TarEntry } from './tar.ts'
 
 // ワークスペースのバックアップと復元（MAI-13 の「8. バックアップと書き出し」）。
 // 1 つの .tar.gz に、ワークスペースを元に戻すのに要るものをまとめる。サーバーを動かしたままでよい。
@@ -30,7 +30,8 @@ import { extractTar, tarChunks, type TarEntry } from './tar.ts'
 // - 書き終えるまでは .partial の名前で置き、書き終えてから名前を変える（アップロードの道具が書きかけを拾わないように）
 
 export const BACKUP_MANIFEST = 'canvcode-backup.json'
-// 1：最初の形。2：blobFiles を足した（MAI-101。古い CanvCode が、中身のないファイルに気づかずに戻さないよう上げる）
+// 1：最初の形。2：blobFiles に、中身を別に置いたファイルがある（MAI-101。古い CanvCode が、中身のないファイルに気づかずに
+// 戻さないよう上げる）。中身を別に置いていないバックアップは、古い CanvCode でも戻せるよう 1 のままにする
 const FORMAT = 2
 export const BACKUP_NAME_PATTERN = /^canvcode-backup-.+\.tar\.gz$/
 const NAME_PATTERN = BACKUP_NAME_PATTERN
@@ -105,7 +106,7 @@ export interface BackupManifest {
   includesImports: boolean
   // .canvcode/assets にあったファイルの名前（includesAssets が false のとき、復元でこの名前を探す）
   assetFiles: string[]
-  // アーカイブに入れず、中身を別に置いたファイル（format 2 から。分けていなければ空）
+  // アーカイブに入れず、中身を別に置いたファイル（1 つでもあれば format は 2。分けていなければ空で、format 1 の古いものにはない）
   blobFiles: BlobFile[]
 }
 
@@ -156,7 +157,7 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     // 3. アーカイブの外に出すファイルの中身を置く（manifest に書くので、アーカイブを書く前に）
     const files: string[] = []
     const blobFiles: BlobFile[] = []
-    const store = blobsDir ? await BlobStore.open(blobsDir) : null
+    const store = blobsDir ? await BlobStore.open(blobsDir, (options.now ?? new Date()).getTime()) : null
     if (store) {
       for (const file of listed) {
         const abs = join(workspace, ...file.split('/'))
@@ -178,7 +179,7 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     if (includeAssets) for (const file of listed) if (file.startsWith('.canvcode/assets/')) assetFiles.push(file.slice('.canvcode/assets/'.length))
     const manifest: BackupManifest = {
       app: 'canvcode',
-      format: FORMAT,
+      format: blobFiles.length > 0 ? FORMAT : 1,
       createdAt: (options.now ?? new Date()).toISOString(),
       ...db,
       includesAssets: includeAssets,
@@ -278,6 +279,24 @@ export async function restoreBackup(options: RestoreOptions): Promise<RestoreRes
   } catch (error) {
     await rm(staging, { recursive: true, force: true })
     throw error
+  }
+}
+
+// アーカイブの manifest だけを読む（アーカイブの最初のファイル。全体は展開しない）
+export async function readBackupManifest(archive: string): Promise<BackupManifest> {
+  const file = createReadStream(resolve(archive))
+  const gunzip = createGunzip()
+  // pipe は読む側の失敗を伝えないので、ここで伝える（伝えないと、ファイルがないときに待ち続ける）
+  file.on('error', (error) => gunzip.destroy(error))
+  file.pipe(gunzip)
+  try {
+    const first = await readFirstTarFile(gunzip, 256 * 1024 * 1024)
+    const manifest = first?.path === BACKUP_MANIFEST ? (JSON.parse(first.data.toString('utf8')) as Partial<BackupManifest>) : null
+    if (manifest?.app !== 'canvcode' || typeof manifest.format !== 'number') throw new Error(`CanvCode のバックアップではありません（canvcode-backup.json がありません）: ${archive}`)
+    return manifest as BackupManifest
+  } finally {
+    file.destroy()
+    gunzip.destroy()
   }
 }
 

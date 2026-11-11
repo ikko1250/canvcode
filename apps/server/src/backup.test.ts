@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createGunzip, gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BACKUP_MANIFEST, createBackup, pruneBackups, restoreBackup } from './backup.ts'
-import { BLOB_MIN_SIZE, isBlobFile } from './backupBlobs.ts'
+import { BACKUP_MANIFEST, createBackup, pruneBackups, readBackupManifest, restoreBackup } from './backup.ts'
+import { BLOB_MIN_SIZE, isBlobFile, TEXT_MAX_SIZE } from './backupBlobs.ts'
 import { RecordStore } from './records.ts'
 import { extractTar, tarChunks } from './tar.ts'
 
@@ -136,38 +136,43 @@ async function unpack(archive: string): Promise<string> {
   return dest
 }
 
-// 書いたばかりのファイルのハッシュは覚えないので、前に書いたことにする
-function age(...paths: string[]): void {
-  for (const path of paths) utimesSync(path, 1_700_000_000, 1_700_000_000)
-}
-
 describe('isBlobFile', () => {
   it('takes PDFs, images and the like by extension, and anything of 1 MiB or more', () => {
     expect(isBlobFile('research/x/sources/論文.PDF', 10)).toBe(true)
     expect(isBlobFile('assets/figure.png', 0)).toBe(true)
     expect(isBlobFile('.canvcode/thumbnails/canvas_x.png', 10)).toBe(true)
     expect(isBlobFile('data/book.xlsx', 10)).toBe(true)
-    expect(isBlobFile('メモ.md', BLOB_MIN_SIZE - 1)).toBe(false)
-    expect(isBlobFile('メモ.md', BLOB_MIN_SIZE)).toBe(true)
+    expect(isBlobFile('data/model.bin', BLOB_MIN_SIZE - 1)).toBe(false)
+    expect(isBlobFile('data/model.bin', BLOB_MIN_SIZE)).toBe(true)
+    expect(isBlobFile('名前だけ', BLOB_MIN_SIZE)).toBe(true)
     expect(isBlobFile('sub/pdf', 10)).toBe(false)
     expect(isBlobFile('.png', 10)).toBe(false)
+  })
+
+  it('keeps text files in the archive until they are very large', () => {
+    for (const path of ['メモ.md', 'sub/code.py', 'data/表.CSV', 'data/表.tsv', 'research/x/sources/原文.txt', 'a.json', 'page.html']) {
+      expect(isBlobFile(path, BLOB_MIN_SIZE), path).toBe(false)
+      expect(isBlobFile(path, TEXT_MAX_SIZE - 1), path).toBe(false)
+      expect(isBlobFile(path, TEXT_MAX_SIZE), path).toBe(true)
+    }
   })
 
   it('keeps the files directly under .canvcode in the archive', () => {
     expect(isBlobFile('.canvcode/files.json', 5 * BLOB_MIN_SIZE)).toBe(false)
     expect(isBlobFile('.canvcode/workspace.db', 5 * BLOB_MIN_SIZE)).toBe(false)
-    expect(isBlobFile('.canvcode/deleted/古い.md', 5 * BLOB_MIN_SIZE)).toBe(true)
+    expect(isBlobFile('.canvcode/deleted/古い.bin', 5 * BLOB_MIN_SIZE)).toBe(true)
   })
 })
 
 describe('createBackup with blobsDir', () => {
-  // PDF を 2 つ（中身は同じ）と、1 MiB 以上のテキストを足したワークスペース
+  // PDF を 2 つ（中身は同じ）と、1 MiB 以上のファイル（テキストでないものと、テキスト）を足したワークスペース
   function workspaceWithBlobs(): { dir: string; store: RecordStore; big: string } {
     const { dir, store } = workspace()
     const big = 'あ'.repeat(BLOB_MIN_SIZE / 2)
     write(join(dir, 'research', 'sources', '論文.pdf'), 'pdf-1')
     write(join(dir, 'research', 'sources', '同じ論文.pdf'), 'pdf-1')
-    write(join(dir, 'research', 'sources', '大きい.txt'), big)
+    write(join(dir, 'research', 'sources', '大きい.dat'), big)
+    write(join(dir, 'research', 'sources', '大きい表.csv'), big)
     return { dir, store, big }
   }
 
@@ -182,18 +187,21 @@ describe('createBackup with blobsDir', () => {
       ['.canvcode/thumbnails/canvas_x.png', sha256('thumb'), 5],
       ['assets/figure.png', sha256('png'), 3],
       ['research/sources/同じ論文.pdf', sha256('pdf-1'), 5],
-      ['research/sources/大きい.txt', sha256(big), Buffer.byteLength(big)],
+      ['research/sources/大きい.dat', sha256(big), Buffer.byteLength(big)],
       ['research/sources/論文.pdf', sha256('pdf-1'), 5],
     ])
     expect(result.blobs).toMatchObject({ files: 6, hashed: 6, added: 5 })
     // 中身は、ハッシュの名前で 1 つずつ（同じ中身の PDF は 1 つ）
     expect(readdirSync(blobsDir).filter((name) => !name.startsWith('.')).sort()).toEqual([sha256('ref'), sha256('thumb'), sha256('png'), sha256('pdf-1'), sha256(big)].sort())
     expect(readFileSync(join(blobsDir, sha256('pdf-1')), 'utf8')).toBe('pdf-1')
-    // アーカイブには、外に出したファイルが入らず、db の写しとテキストは入る
+    // アーカイブには、外に出したファイルが入らず、db の写しとテキスト（1 MiB 以上のものも）は入る
     const unpacked = await unpack(result.path)
-    for (const path of ['research', 'assets', '.canvcode/thumbnails', '.canvcode/ref-images', '.canvcode/backup-blobs', '.canvcode/backups']) expect(existsSync(join(unpacked, path)), path).toBe(false)
-    for (const path of ['メモ.md', 'sub/code.py', '.canvcode/workspace.db', '.canvcode/files.json', BACKUP_MANIFEST]) expect(existsSync(join(unpacked, path)), path).toBe(true)
-    expect(result.files).toBe(4)
+    for (const path of ['research/sources/論文.pdf', 'research/sources/同じ論文.pdf', 'research/sources/大きい.dat', 'assets', '.canvcode/thumbnails', '.canvcode/ref-images', '.canvcode/backup-blobs', '.canvcode/backups']) expect(existsSync(join(unpacked, path)), path).toBe(false)
+    for (const path of ['メモ.md', 'sub/code.py', 'research/sources/大きい表.csv', '.canvcode/workspace.db', '.canvcode/files.json', BACKUP_MANIFEST]) expect(existsSync(join(unpacked, path)), path).toBe(true)
+    expect(result.files).toBe(5)
+    // manifest だけを読める
+    expect((await readBackupManifest(result.path)).blobFiles).toEqual(result.manifest.blobFiles)
+    await expect(readBackupManifest(join(blobsDir, 'ない.tar.gz'))).rejects.toThrow()
   })
 
   it('reads only the files that changed since the last backup', async () => {
@@ -202,26 +210,50 @@ describe('createBackup with blobsDir', () => {
     const out = join(tempDir(), 'out')
     const blobsDir = join(tempDir(), 'blobs')
     const pdf = join(dir, 'research', 'sources', '論文.pdf')
-    age(pdf, join(dir, 'research', 'sources', '同じ論文.pdf'), join(dir, 'research', 'sources', '大きい.txt'), join(dir, 'assets', 'figure.png'), join(dir, '.canvcode', 'thumbnails', 'canvas_x.png'))
+    // now を、ファイルを書いた時刻から離す（書かれたばかりのファイルのハッシュは覚えないので）
     const backup = (day: number) => createBackup({ workspace: dir, outDir: out, assets: false, blobsDir, now: new Date(Date.UTC(2026, 0, day)) })
     expect((await backup(1)).blobs).toMatchObject({ files: 6, hashed: 6, added: 5 })
-    // 書いたばかりの ref-images の PNG だけは、ハッシュを覚えていないので読み直す（中身は同じなので置かない）
-    expect((await backup(2)).blobs).toMatchObject({ files: 6, hashed: 1, added: 0 })
+    expect((await backup(2)).blobs).toMatchObject({ files: 6, hashed: 0, added: 0 })
     // 中身が変わったファイル（大きさは同じ・更新時刻が違う）は読み直して、新しい中身を置く。前の中身は消さない
     writeFileSync(pdf, 'pdf-2')
     utimesSync(pdf, 1_700_000_100, 1_700_000_100)
     const third = await backup(3)
-    expect(third.blobs).toMatchObject({ files: 6, hashed: 2, added: 1, addedBytes: 5 })
+    expect(third.blobs).toMatchObject({ files: 6, hashed: 1, added: 1, addedBytes: 5 })
     expect(third.manifest.blobFiles.find((file) => file.path === 'research/sources/論文.pdf')).toEqual({ path: 'research/sources/論文.pdf', sha256: sha256('pdf-2'), size: 5, mtime: 1_700_000_100_000 })
     expect(readFileSync(join(blobsDir, sha256('pdf-1')), 'utf8')).toBe('pdf-1')
+    // 更新時刻を保ったまま、同じ大きさの別の中身に置き換えられたファイル（cp -p・rsync -t・展開したもの）も読み直す
+    const replacement = join(dir, 'research', 'sources', '.論文.pdf.new')
+    writeFileSync(replacement, 'pdf-3')
+    utimesSync(replacement, 1_700_000_100, 1_700_000_100)
+    renameSync(replacement, pdf)
+    expect(statSync(pdf).mtimeMs).toBe(1_700_000_100_000)
+    const fourth = await backup(4)
+    expect(fourth.blobs).toMatchObject({ files: 6, hashed: 1, added: 1 })
+    expect(fourth.manifest.blobFiles.find((file) => file.path === 'research/sources/論文.pdf')?.sha256).toBe(sha256('pdf-3'))
+    // その場で書き換えて更新時刻を戻したファイルも読み直す（ctime が変わる）
+    writeFileSync(pdf, 'pdf-4')
+    utimesSync(pdf, 1_700_000_100, 1_700_000_100)
+    const fifth = await backup(5)
+    expect(fifth.blobs).toMatchObject({ hashed: 1, added: 1 })
+    expect(fifth.manifest.blobFiles.find((file) => file.path === 'research/sources/論文.pdf')?.sha256).toBe(sha256('pdf-4'))
     // 置いた中身がなくなっていたら、ハッシュを覚えていても読み直して置く
-    rmSync(join(blobsDir, sha256('pdf-2')))
-    expect((await backup(4)).blobs).toMatchObject({ hashed: 2, added: 1 })
-    expect(readFileSync(join(blobsDir, sha256('pdf-2')), 'utf8')).toBe('pdf-2')
+    rmSync(join(blobsDir, sha256('pdf-4')))
+    expect((await backup(6)).blobs).toMatchObject({ hashed: 1, added: 1 })
+    expect(readFileSync(join(blobsDir, sha256('pdf-4')), 'utf8')).toBe('pdf-4')
     // ハッシュの控えが壊れていたら、全部を読み直す（置いてある中身は書かない）
     writeFileSync(join(blobsDir, '.index.json'), '{')
-    expect((await backup(5)).blobs).toMatchObject({ hashed: 6, added: 0 })
+    expect((await backup(7)).blobs).toMatchObject({ hashed: 6, added: 0 })
     expect(readdirSync(blobsDir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('does not remember the hash of a file that was written just now', async () => {
+    const { dir, store } = workspaceWithBlobs()
+    store.close()
+    const out = join(tempDir(), 'out')
+    const blobsDir = join(tempDir(), 'blobs')
+    expect((await createBackup({ workspace: dir, outDir: out, assets: false, blobsDir })).blobs).toMatchObject({ files: 6, hashed: 6, added: 5 })
+    await new Promise((done) => setTimeout(done, 5))
+    expect((await createBackup({ workspace: dir, outDir: out, assets: false, blobsDir })).blobs).toMatchObject({ files: 6, hashed: 6, added: 0 })
   })
 
   it('restores the blob files from the folder, with the same content and time', async () => {
@@ -235,11 +267,12 @@ describe('createBackup with blobsDir', () => {
     await expect(restoreBackup({ archive: result.path, workspace: join(tempDir(), 'a'), assetsFrom })).rejects.toThrow('--blobs')
     const target = join(tempDir(), 'restored')
     const restored = await restoreBackup({ archive: result.path, workspace: target, assetsFrom, blobsFrom: blobsDir })
-    expect(restored.files).toBe(4 + 6)
+    expect(restored.files).toBe(5 + 6)
     expect(readFileSync(join(target, 'research', 'sources', '論文.pdf'), 'utf8')).toBe('pdf-1')
     expect(statSync(join(target, 'research', 'sources', '論文.pdf')).mtimeMs).toBe(1_700_000_000_000)
     expect(readFileSync(join(target, 'research', 'sources', '同じ論文.pdf'), 'utf8')).toBe('pdf-1')
-    expect(readFileSync(join(target, 'research', 'sources', '大きい.txt'), 'utf8')).toBe(big)
+    expect(readFileSync(join(target, 'research', 'sources', '大きい.dat'), 'utf8')).toBe(big)
+    expect(readFileSync(join(target, 'research', 'sources', '大きい表.csv'), 'utf8')).toBe(big)
     expect(readFileSync(join(target, '.canvcode', 'thumbnails', 'canvas_x.png'), 'utf8')).toBe('thumb')
     expect(readFileSync(join(target, '.canvcode', 'assets', `${HASH}.pdf`), 'utf8')).toBe('pdf')
     expect(readFileSync(join(target, 'メモ.md'), 'utf8')).toBe('# メモ\n')
@@ -276,6 +309,8 @@ describe('createBackup with blobsDir', () => {
     const { dir, store } = workspaceWithBlobs()
     store.close()
     const result = await createBackup({ workspace: dir, outDir: join(tempDir(), 'out') })
+    // 中身を別に置いていないので、古い CanvCode でも戻せる形（format 1）のまま
+    expect(result.manifest.format).toBe(1)
     expect(result.manifest.blobFiles).toEqual([])
     expect(result.blobs).toEqual({ files: 0, bytes: 0, hashed: 0, added: 0, addedBytes: 0 })
     expect(existsSync(join(dir, '.canvcode', 'backup-blobs'))).toBe(false)
@@ -312,6 +347,17 @@ describe('restoreBackup and the archive format', () => {
     expect(restored.manifest.format).toBe(1)
     expect(readFileSync(join(target, 'research', '論文.pdf'), 'utf8')).toBe('pdf-1')
     expect(readFileSync(join(target, 'メモ.md'), 'utf8')).toBe('# メモ\n')
+  })
+
+  it('still restores an old archive of the scheduled backup with only the assets folder', async () => {
+    // MAI-101 より前の backup:sync のアーカイブ（Asset を入れず、PDF はアーカイブの中）。Drive に最長 30 日残る
+    const assetsFrom = tempDir()
+    writeFileSync(join(assetsFrom, `${HASH}.pdf`), 'asset')
+    const archive = await archiveWith({ format: 1, blobFiles: undefined, includesAssets: false, assetFiles: [`${HASH}.pdf`] }, [{ path: 'research/論文.pdf', data: Buffer.from('pdf-1') }])
+    const target = join(tempDir(), 'restored')
+    await restoreBackup({ archive, workspace: target, assetsFrom })
+    expect(readFileSync(join(target, 'research', '論文.pdf'), 'utf8')).toBe('pdf-1')
+    expect(readFileSync(join(target, '.canvcode', 'assets', `${HASH}.pdf`), 'utf8')).toBe('asset')
   })
 
   it('refuses a newer format', async () => {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, createWriteStream } from 'node:fs'
+import { createReadStream, createWriteStream, type Stats } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, stat, utimes } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -13,18 +13,21 @@ import { writeViaTemp } from './writeAtomic.ts'
 // - 元のファイルを 1 回読みながら、ハッシュの計算と一時ファイルへの写しを同時に行い、終わってからハッシュの名前に変える。
 //   読んでいる途中で元のファイルが置き換わっても、置いた中身と名前は必ず合う。ハードリンクにはしない（元のファイルを
 //   その場で書き換えられると、置いた中身も変わるため）
-// - パス・大きさ・更新時刻が前と同じなら、前に計算したハッシュを使う（<置き場所>/.index.json）。5 分ごとに全部を読み直さない。
-//   ただし、その中身が置き場所にある（大きさも合う）ことは毎回確かめ、なければ読み直して置く
+// - パス・大きさ・更新時刻・inode・ctime が前と同じなら、前に計算したハッシュを使う（<置き場所>/.index.json）。5 分ごとに
+//   全部を読み直さない。更新時刻を保ったまま置き換えられたファイル（cp -p・rsync -t・展開したもの）も、inode か ctime が変わるので
+//   読み直す。ただし、その中身が置き場所にある（大きさも合う）ことは毎回確かめ、なければ読み直して置く
 // - 置き場所の中の . で始まる名前（.index.json・書きかけの .put-….tmp）は中身ではない。Drive にも送らない（backupSync.ts）
 
 export const BLOB_MIN_SIZE = 1024 * 1024
+// テキストの種類のファイルは、これ未満ならアーカイブに残す（サーバーが編集するのは 10 MiB まで。files.ts の MAX_FILE_BYTES）
+export const TEXT_MAX_SIZE = 16 * 1024 * 1024
 export const BLOB_NAME_PATTERN = /^[0-9a-f]{64}$/
 const INDEX_FILE = '.index.json'
 const PUT_TEMP_PATTERN = /^\.put-.+\.tmp$/
 // 残った書きかけ（前の回が途中で落ちた）は、これより古ければ消す
 const TEMP_GRACE_MS = 60 * 60 * 1000
-// 更新時刻がこれより新しいファイルのハッシュは覚えない。読んだ直後に、同じ大きさ・同じ更新時刻のまま書き換えられると
-// 見分けられないため（次の回に読み直す）
+// 更新時刻か ctime が、今からこれ以内のファイルのハッシュは覚えない。読んだ直後に、時刻の刻みの中で同じ大きさのまま
+// 書き換えられると見分けられないため（次の回に読み直す）
 const RACY_MS = 2000
 
 // 種類でアーカイブの外に出すファイルの拡張子（圧縮しても縮まず、ふつうは置いたら変わらないもの）
@@ -38,8 +41,16 @@ const BLOB_EXTENSIONS = new Set([
   'woff', 'woff2', 'ttf', 'otf',
 ])
 
+// テキストの種類のファイルの拡張子。書き換わることが多く、圧縮がよく効くので、TEXT_MAX_SIZE 未満ならアーカイブに残す。
+// 外に出すと、編集のたびに、圧縮しない中身が 1 つずつ増えて消えない（アーカイブの中なら、古いものと一緒に消える）
+const TEXT_EXTENSIONS = new Set([
+  'md', 'markdown', 'txt', 'py', 'csv', 'tsv', 'json', 'jsonl', 'ndjson',
+  'html', 'htm', 'xml', 'svg', 'css', 'js', 'mjs', 'ts', 'tsx', 'jsx',
+  'yaml', 'yml', 'toml', 'ini', 'tex', 'bib', 'log', 'sql', 'sh', 'ipynb',
+])
+
 // アーカイブの外に出すファイルか（path はワークスペースからの相対パス。区切りは /）。
-// 上の種類のファイル（大きさによらず）と、BLOB_MIN_SIZE 以上のファイル。
+// 上の種類のファイル（大きさによらず）と、BLOB_MIN_SIZE 以上のファイル（テキストの種類は TEXT_MAX_SIZE 以上）。
 // .canvcode の直下のファイル（files.json・asset-gc.json など。サーバーが書き換え続ける）は、大きくてもアーカイブに残す。
 // 外に出すと、書き換わるたびに中身が 1 つずつ増えるため（workspace.db の写しも同じ理由でアーカイブに入れる。backup.ts）
 export function isBlobFile(path: string, size: number): boolean {
@@ -47,7 +58,8 @@ export function isBlobFile(path: string, size: number): boolean {
   const name = path.slice(path.lastIndexOf('/') + 1)
   const dot = name.lastIndexOf('.')
   const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
-  return BLOB_EXTENSIONS.has(extension) || size >= BLOB_MIN_SIZE
+  if (BLOB_EXTENSIONS.has(extension)) return true
+  return size >= (TEXT_EXTENSIONS.has(extension) ? TEXT_MAX_SIZE : BLOB_MIN_SIZE)
 }
 
 // アーカイブの manifest に書く、外に置いたファイル
@@ -63,7 +75,14 @@ export interface BlobFile {
 interface IndexEntry {
   size: number
   mtimeMs: number
+  // 更新時刻を保ったまま置き換えられたファイルを見分ける（inode は名前の変更で、ctime は中身や属性の変更で変わり、utimes では戻せない）
+  ino: number
+  ctimeMs: number
   sha256: string
+}
+
+function sameFile(entry: IndexEntry, info: Stats): boolean {
+  return entry.size === info.size && entry.mtimeMs === info.mtimeMs && entry.ino === info.ino && entry.ctimeMs === info.ctimeMs
 }
 
 export class BlobStore {
@@ -76,13 +95,16 @@ export class BlobStore {
   // この回に見たファイル（save で、これだけを覚え直す。なくなったファイルの分は忘れる）
   private readonly seen = new Map<string, IndexEntry>()
   private counter = 0
+  private readonly now: number
 
-  private constructor(dir: string, index: Map<string, IndexEntry>) {
+  private constructor(dir: string, index: Map<string, IndexEntry>, now: number) {
     this.dir = dir
     this.index = index
+    this.now = now
   }
 
-  static async open(dir: string): Promise<BlobStore> {
+  // now は、バックアップを作っている時刻（ミリ秒）。書かれたばかりのファイルかどうかを、これと比べる
+  static async open(dir: string, now: number = Date.now()): Promise<BlobStore> {
     const root = resolve(dir)
     await mkdir(root, { recursive: true })
     for (const name of await readdir(root)) {
@@ -90,7 +112,7 @@ export class BlobStore {
       const info = await stat(join(root, name)).catch(() => null)
       if (info && Date.now() - info.mtimeMs > TEMP_GRACE_MS) await rm(join(root, name), { force: true })
     }
-    return new BlobStore(root, await readIndex(join(root, INDEX_FILE)))
+    return new BlobStore(root, await readIndex(join(root, INDEX_FILE)), now)
   }
 
   // abs のファイルの中身を置き（まだなければ）、manifest に書く内容を返す。ファイルがなくなっていれば null
@@ -99,7 +121,7 @@ export class BlobStore {
     if (!info?.isFile()) return null
     const mtime = Math.floor(info.mtimeMs)
     const cached = this.index.get(path)
-    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs && (await this.has(cached.sha256, cached.size))) {
+    if (cached && sameFile(cached, info) && (await this.has(cached.sha256, cached.size))) {
       this.seen.set(path, cached)
       return { path, sha256: cached.sha256, size: cached.size, mtime }
     }
@@ -144,8 +166,9 @@ export class BlobStore {
     }
     // 読んでいる間に変わっておらず、書かれたばかりでもないときだけ、ハッシュを覚える
     const after = await stat(abs).catch(() => null)
-    if (after && after.size === info.size && after.mtimeMs === info.mtimeMs && size === info.size && Math.abs(Date.now() - info.mtimeMs) >= RACY_MS) {
-      this.seen.set(path, { size, mtimeMs: info.mtimeMs, sha256 })
+    const entry: IndexEntry = { size, mtimeMs: info.mtimeMs, ino: info.ino, ctimeMs: info.ctimeMs, sha256 }
+    if (after && size === info.size && sameFile(entry, after) && Math.abs(this.now - info.mtimeMs) >= RACY_MS && Math.abs(this.now - info.ctimeMs) >= RACY_MS) {
+      this.seen.set(path, entry)
     }
     return { path, sha256, size, mtime }
   }
@@ -169,8 +192,8 @@ async function readIndex(path: string): Promise<Map<string, IndexEntry>> {
     const parsed = JSON.parse(await readFile(path, 'utf8')) as { version?: number; files?: Record<string, Partial<IndexEntry>> }
     if (parsed.version !== 1 || !parsed.files) return index
     for (const [file, entry] of Object.entries(parsed.files)) {
-      if (typeof entry?.size === 'number' && typeof entry.mtimeMs === 'number' && typeof entry.sha256 === 'string' && BLOB_NAME_PATTERN.test(entry.sha256)) {
-        index.set(file, { size: entry.size, mtimeMs: entry.mtimeMs, sha256: entry.sha256 })
+      if (typeof entry?.size === 'number' && typeof entry.mtimeMs === 'number' && typeof entry.ino === 'number' && typeof entry.ctimeMs === 'number' && typeof entry.sha256 === 'string' && BLOB_NAME_PATTERN.test(entry.sha256)) {
+        index.set(file, { size: entry.size, mtimeMs: entry.mtimeMs, ino: entry.ino, ctimeMs: entry.ctimeMs, sha256: entry.sha256 })
       }
     }
   } catch {

@@ -42,8 +42,10 @@ npm start       # http://127.0.0.1:8787
 `npm run backup:sync` が、バックアップを作って Google Drive へ送るまでを 1 回で行う。systemd のユーザータイマーで 5 分ごとに動かす。
 
 - 前回から変わっていれば（`workspace.db` の中身とファイルの名前・大きさ・更新時刻で判定）、Asset を入れないバックアップ（`--no-assets` と同じ）を `<ワークスペース>/.canvcode/backups/` に作る。手元には 96 個まで残す（`--keep`）。変わっていなければ作らない
-- PDF・画像・音声・動画・Office・圧縮ファイルなどの種類のファイル（大きさによらず。Canvas のサムネイルも）と 1 MiB 以上のファイルは、アーカイブに入れない。アーカイブにはパスと中身の SHA-256 だけを書き、中身は `<ワークスペース>/.canvcode/backup-blobs/` に、ハッシュを名前にして 1 回だけ置く（変わらない PDF が、5 分ごとのアーカイブに毎回入らないように）。置いた中身は消さない。パス・大きさ・更新時刻が前と同じファイルは読み直さない。`workspace.db` の写しと `.md` などのテキストは、今までどおりアーカイブに入る
-- `rclone about gdrive:` で Drive につながるか確かめてから、まず `backup-blobs` の中身を `gdrive:CanvCode-backup/blobs` に追加だけで写し（Drive からは消さない。増えていなければ写さない）、それから `rclone copy` でアーカイブを `gdrive:CanvCode-backup/archives` に送る。中身を送れなかった回は、アーカイブを送らず、Drive の古いアーカイブも消さない。送り損ねた分は、変わっていない回にも送り直す
+- PDF・画像・音声・動画・Office・圧縮ファイルなどの種類のファイル（大きさによらず。Canvas のサムネイルも）と 1 MiB 以上のファイルは、アーカイブに入れない。アーカイブにはパスと中身の SHA-256 だけを書き、中身は `<ワークスペース>/.canvcode/backup-blobs/` に、ハッシュを名前にして 1 回だけ置く（変わらない PDF が、5 分ごとのアーカイブに毎回入らないように）。パス・大きさ・更新時刻・inode・ctime が前と同じファイルは読み直さない。`workspace.db` の写しと、`.md`・`.py`・`.csv`・`.txt`・`.json`・`.html` などのテキスト（16 MiB 未満）は、今までどおりアーカイブに入る（書き換わることが多く、圧縮がよく効くため）
+- 置いた中身は、手元からも Drive からも消さない。外に出したファイルが書き換わると（Canvas のサムネイルなど）、前の中身も残るので、少しずつ増える（どのアーカイブからも指されなくなった中身を消す仕組みは、まだない）
+- `rclone about gdrive:` で Drive につながるか確かめてから、まず `backup-blobs` の中身を `gdrive:CanvCode-backup/blobs` に追加だけで写し（Drive からは消さず、Drive にある名前は上書きしない。前に同じ送り先へ写したときから増えていなければ写さない）、それから `rclone copy` でアーカイブを `gdrive:CanvCode-backup/archives` に送る。中身を送れなかった回は、アーカイブを送らず、Drive の古いアーカイブも消さない。送り損ねた分は、変わっていない回にも送り直す
+- アーカイブを送る前に、そのアーカイブが指す中身が Drive の blobs に全部あることを一覧で確かめる。足りなければ（Drive から消えた、など）手元の中身を送り直す。手元にもなければ、そのアーカイブは送らない。いちばん新しいアーカイブを送れないときは失敗にし、次の回に、今のファイルからアーカイブを作り直す
 - Drive の archives は、2 日以内は 1 時間に 1 個、30 日以内は 1 日に 1 個（それぞれその間でいちばん新しいもの）に間引き、それより古いものは消す（ゴミ箱に入れない）。いちばん新しいものは古くても残す
 - Asset（`.canvcode/assets`）は `gdrive:CanvCode-backup/assets` に追加だけで写す（`*.tmp` などは除く。Drive からは消さない）。変わっていなければ写さない
 - 結果は `.canvcode/backup-status.json` に書く。Drive につながらない（rclone の失敗・認証切れ・ネットワーク）、バックアップに失敗した、15 分以上動いていない、のどれかなら、画面右上の「保存済み」「未接続」の左にアイコンが出る（ホバーで理由、クリックで詳しく）。うまくいっているときと、定期バックアップを入れていないときは出ない
@@ -63,6 +65,8 @@ journalctl --user -u canvcode-backup.service -n 50
 リモートや rclone の場所を変えるときは `~/.config/canvcode/backup.env` に `CANVCODE_BACKUP_REMOTE=...` などを書く。Drive の認証が切れたら `rclone config reconnect gdrive:` で認証し直す。ユーザーのタイマーをログアウト中も動かすには `loginctl enable-linger` が要る。
 
 復元するときは、Drive の archives からアーカイブを 1 つ、assets と blobs をそれぞれ 1 つのフォルダに取ってきて（`rclone copy gdrive:CanvCode-backup/assets <Asset のフォルダ>`、`rclone copy gdrive:CanvCode-backup/blobs <中身のフォルダ>`）、`npm run restore -- <アーカイブ> --workspace <新しいフォルダ> --assets <Asset のフォルダ> --blobs <中身のフォルダ>`。手元のアーカイブから戻すなら、`--assets <ワークスペース>/.canvcode/assets --blobs <ワークスペース>/.canvcode/backup-blobs`。中身はハッシュと大きさを確かめながら戻し、足りない・合わないものがあれば、どのファイルかを挙げて止まる。PDF・画像などを外に出す前のアーカイブ（Drive に最長 30 日残る）は、`--blobs` なしで戻せる。
+
+PDF・画像などを外に出す前の版の CanvCode に戻すときは、`<ワークスペース>/.canvcode/backup-blobs` を別の場所に移す（前の版はこのフォルダを知らないので、そのままだと毎回アーカイブに入る）。外に出したあとの定期バックアップのアーカイブは、前の版では戻せない（`npm run backup` で作ったものは戻せる）。
 
 VPS 上で動かし、手元の PC からは SSH のポートフォワードで開く。
 
