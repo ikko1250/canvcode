@@ -6,7 +6,7 @@ import { DEFAULT_KEEP, DEFAULT_REMOTE, execRclone, runBackupSync } from './backu
 // npm run backup:sync -- [--workspace <フォルダ>] [--out <手元の置き場所>] [--remote <rclone のリモート>] [--keep <手元に残す数>] [--rclone <rclone の場所>]
 //   --workspace：既定は CANVCODE_WORKSPACE、なければ ./workspace
 //   --out：既定は <ワークスペース>/.canvcode/backups
-//   --remote：既定は CANVCODE_BACKUP_REMOTE、なければ gdrive:CanvCode-backup（その下の archives と assets に置く）
+//   --remote：既定は CANVCODE_BACKUP_REMOTE、なければ gdrive:CanvCode-backup（その下の archives・blobs・assets に置く）
 //   --keep：既定は 96
 // どこかで失敗したら（Drive につながらないときも）終了コード 1 で終える。結果は <ワークスペース>/.canvcode/backup-status.json に書く
 const { values: args } = parseArgs({
