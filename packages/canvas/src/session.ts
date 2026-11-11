@@ -45,6 +45,10 @@ export interface SessionState {
   quoteRegion: Box | null
   // 次のドラッグを、引用する範囲の選択にする（右クリックの「範囲を選んで引用」。一度だけ）
   quoteArmed: boolean
+  // 次のドラッグを、PDF のページの上で調べる語を選ぶものにする（o メニューの「単語を調べる」。一度だけ。MAI-99）
+  wordLookupArmed: boolean
+  // 調べる語のハイライト（行ごとの箱。ワールド座標）。なぞっている間と、調べた結果の吹き出しを閉じるまで出しておく
+  wordHighlight: readonly Box[] | null
   // フリーハンドで描く線の色・太さ（MAI-27）と透過率（0〜1 の不透明度。MAI-49）
   drawStyle: DrawStyle
   // 矢印の色・太さ・矢じり（MAI-28）
@@ -97,6 +101,8 @@ export class Session {
       lastBrush: null,
       quoteRegion: null,
       quoteArmed: false,
+      wordLookupArmed: false,
+      wordHighlight: null,
       // フリーハンドの既定は赤・透過率 50%（MAI-49）
       drawStyle: { color: '#e03131', size: 4, opacity: 0.5 },
       arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },

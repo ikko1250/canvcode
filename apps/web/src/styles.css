@@ -2728,6 +2728,103 @@ button.pdf-page-number:hover {
   color: #cf222e;
 }
 
+/* 調べた語の吹き出し（workspace/WordLookupBubble.tsx。MAI-99）。PDF のページの上で選んだ所のそばに出す */
+.word-lookup {
+  position: fixed;
+  z-index: 40;
+  box-sizing: border-box;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* APA の引用を作っている間の印（MAI-98）。引用を置くアイテムの右下に出す */
+.cite-pending {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cite-pending-cancel {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.word-lookup-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.word-lookup-phrase {
+  flex: 1;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.word-lookup-close {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.word-lookup p {
+  margin: 6px 0 0;
+}
+
+.word-lookup-status,
+.word-lookup-heading {
+  color: var(--muted);
+}
+
+.word-lookup-error {
+  color: #cf222e;
+}
+
+.word-lookup-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.word-lookup-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #f6f8fa;
+  font: inherit;
+  cursor: pointer;
+}
+
+.word-lookup-actions button:hover {
+  background: #eef1f4;
+}
+
 /* Claude に頼むパネル（claude/ClaudePanel.tsx）。キャンバスの右に並べる（右上のデザインパネルと重ならない）。
    狭い画面（スマホ）では、画面いっぱいに重ねる */
 .claude-panel {

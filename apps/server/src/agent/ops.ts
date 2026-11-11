@@ -15,7 +15,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp } from '@canvcode/nodes'
+import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -57,10 +57,14 @@ const MAX_LISTED_IDS = 10
 // 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る。
 // portal は新しい空の Canvas の、pdf は PDF のページの Canvas（path か url の PDF を取り込む）の持ち主の Portal。
 // portal に target を渡したら、その Canvas のショートカットの Portal（#28）。
+// link は url のリンクのカード（link-card。画面で URL を貼り付けたときと同じカード。MAI-97）。
 // image は MCP の plot_csv が描いた画像だけ（EditRequest の images。edit_canvas から直には作れない）
-const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf', 'image'] as const
+const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf', 'link', 'image'] as const
 // portal / pdf で使えるもの（Canvas の名前は name か text）
 const PORTAL_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h', 'name', 'text', 'path', 'url', 'target'])
+// link で使えるもの（タイトルは text か name。props は description・siteName だけ）。高さは中身から決まる
+const LINK_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'name', 'text', 'url', 'props'])
+const LINK_PROPS = new Set(['description', 'siteName'])
 const SLIDE_TEMPLATES = ['title', 'bullets', 'table', 'table-image', 'table-images'] as const satisfies readonly SlideLayoutKind[]
 const CARD_TYPES: Record<string, string> = { markdown: 'markdown-card', code: 'code-card', table: 'table-card' }
 // 矢じり（arrow）。bars は両端に直交する短い線（寸法線 |―|）
@@ -160,7 +164,7 @@ const opSchemas = {
     file: id.optional(),
     // カードの File のワークスペースの中のパス（file の代わり）。pdf では取り込む PDF のファイル
     path: z.string().min(1).optional(),
-    // pdf：取り込む PDF の URL（path の代わり）
+    // pdf：取り込む PDF の URL（path の代わり）。link：カードの URL
     url: z.string().min(1).optional(),
     // portal：ショートカットにする Canvas（"$ref" の Portal、Portal のノードの id、Canvas の id）
     target: id.optional(),
@@ -518,7 +522,8 @@ class EditRun {
     let type: string = op.type
     if (type === 'portal' || type === 'pdf') return this.createPortal(op, i)
     if (type === 'image') return this.createImage(op, i)
-    if (op.url !== undefined) throw new EditError('url is only for pdf')
+    if (type === 'link') return this.createLink(op, i)
+    if (op.url !== undefined) throw new EditError('url is only for pdf and link')
     if (op.target !== undefined) throw new EditError('target is only for portal')
     let file: FileRecord | undefined
     if (type === 'card' || type.endsWith('-card')) {
@@ -566,6 +571,28 @@ class EditRun {
     const h = op.h ?? (w * image.height) / image.width
     const props = { assetId: assetIdFromHash(image.hash), w, h, crop: null, ...(image.plot ? { plot: image.plot } : {}) }
     const node = this.editor.makeNode('image', { x: 0, y: 0, parentId, props })
+    this.tx.put(node)
+    this.tx.flush()
+    const target = this.targetTopLeft(node.id, op, parentId)
+    this.translateTo(node.id, target.point, target.aabb)
+    this.remember(node.id, op.as, i)
+  }
+
+  // url のリンクのカードを置く（画面で URL を貼り付けたときと同じ link-card。Ctrl（⌘）+クリックで開ける）。
+  // タイトルは text か name（なければ URL を出す）。サーバーはリンク先のページを取りに行かない
+  // （サムネイルは Asset が要り、届かないページで編集を待たせたくない）ので、読み込み中にはせず、渡されたものだけで描く
+  private createLink(op: Extract<Op, { op: 'create' }>, i: number): void {
+    const rejected = Object.entries(op).flatMap(([key, value]) => (value === undefined || LINK_FIELDS.has(key) ? [] : [key]))
+    if (rejected.length) throw new EditError(`${rejected.join(', ')} ${rejected.length > 1 ? 'are' : 'is'} not supported for link`)
+    if (op.url === undefined) throw new EditError('link needs url (http or https)')
+    const extra = Object.keys(op.props ?? {}).filter((key) => !LINK_PROPS.has(key))
+    if (extra.length) throw new EditError(`props.${extra.join(', props.')} ${extra.length > 1 ? 'are' : 'is'} not supported for link (only description and siteName)`)
+    if (op.as !== undefined && this.refs.has(op.as)) throw new EditError(`"as": "${op.as}" is already used`)
+    const parentId = op.parent ? this.container(op.parent) : this.canvasId
+    const def = this.editor.types.get('link-card')!
+    const base = { ...(def.defaultProps() as Record<string, unknown>), url: op.url, status: 'done', w: LINK_CARD_DEFAULT_WIDTH }
+    const props = applyStyle('link-card', base, op, true)
+    const node = this.editor.makeNode('link-card', { x: 0, y: 0, parentId, props })
     this.tx.put(node)
     this.tx.flush()
     const target = this.targetTopLeft(node.id, op, parentId)
@@ -1247,6 +1274,14 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
         set('arrowheadEnd', ends.arrowheadEnd, 'heads')
       }
       break
+    // リンクのカード：text（か name）がタイトル。空ならタイトルなし（URL を出す）。高さは中身から決まる
+    case 'link-card': {
+      if (text !== undefined && name !== undefined) throw new EditError('give either text or name')
+      const title = text ?? name
+      set('title', title === undefined ? undefined : title.trim() || null, text !== undefined ? 'text' : 'name')
+      set('w', w, 'w')
+      break
+    }
     case 'markdown-card':
     case 'code-card':
     case 'table-card':
@@ -1261,7 +1296,22 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
   if (rejected.length) throw new EditError(`${rejected.join(', ')} ${rejected.length > 1 ? 'are' : 'is'} not supported for ${type}`)
   if (raw) Object.assign(props, raw)
   if (raw && type === 'table-card' && 'filters' in raw) props.filters = checkTableFilters(raw.filters)
+  // Ctrl（⌘）+クリックで開くので、http(s) のほか（javascript: など）は置かない（画面の貼り付けと同じ）
+  if (type === 'link-card' && !isWebUrl(props.url)) throw new EditError('url must be an http or https URL')
+  for (const key of type === 'link-card' ? ['title', 'description', 'siteName'] : []) {
+    if (props[key] !== null && typeof props[key] !== 'string') throw new EditError(`${key} must be a string`)
+  }
   return props
+}
+
+function isWebUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || /\s/.test(value)) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 // POST /api/agent-ops/<id>/undo：画面の「元に戻す」から AI の編集を取り消す

@@ -10,17 +10,21 @@ import { getCM } from '@replit/codemirror-vim'
 
 type ImeKeyEvent = Pick<KeyboardEvent, 'key' | 'code' | 'keyCode' | 'shiftKey' | 'ctrlKey' | 'metaKey' | 'altKey'>
 
+// 日本語入力が ON のとき、記号のキーで入る文字と、そのキーの記号（f, で「、」にも跳べるように、f のあとの記号を半角で渡す）
+const IME_SYMBOL_KEYS: Record<string, string> = { '、': ',', '。': '.', '「': '[', '」': ']', '・': '/', 'ー': '-', '〜': '~' }
+
 // IME を通ったキーを、vim に渡すキー（1 文字）にする。IME のキーでない・決められないなら null
 export function vimKeyOfImeEvent(event: ImeKeyEvent): string | null {
   if (event.keyCode !== 229 && event.key !== 'Process') return null
   // 修飾キー付き（Ctrl+[ など）は、codemirror-vim にそのまま任せる
   if (event.ctrlKey || event.metaKey || event.altKey) return null
   if ([...event.key].length === 1) {
-    // 全角の英数字・記号（「ｉ」「：」）は半角にする
-    const key = event.key.normalize('NFKC')
+    // 全角の英数字・記号（「ｉ」「：」）は半角にする。日本語入力で記号のキーから入る文字（「、」「。」など）は、そのキーの記号にする
+    const key = IME_SYMBOL_KEYS[event.key] ?? event.key.normalize('NFKC')
     return /^[\x20-\x7e]$/.test(key) ? key : null
   }
-  // key が 'Process' のとき（Windows・Linux など）は、キーの位置から決める。決まるのは英字と数字だけ
+  // key が 'Process' のとき（Windows・Linux など）は、キーの位置から決める。決まるのは英字と数字と Space（Space f のため）だけ
+  if (event.code === 'Space' && !event.shiftKey) return ' '
   const letter = /^Key([A-Z])$/.exec(event.code)
   if (letter) return event.shiftKey ? letter[1] : letter[1].toLowerCase()
   const digit = /^Digit([0-9])$/.exec(event.code)

@@ -8,6 +8,7 @@ import {
   screenToWorld,
   unionBoxes,
   viewportBounds,
+  worldToScreen,
   zoomAt,
   createRefId,
   isFileRecord,
@@ -57,6 +58,7 @@ import { LinkPreviewer } from './linkPreview.ts'
 import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
 import { matchRects, PdfSearchResults, type PdfSearchHit } from './pdfSearch.ts'
+import { pdfPageText, selectWords, wordIndexAt, type CharWidths, type PdfPageText, type WordSelection } from './wordSelection.ts'
 import {
   canvasRefTarget,
   pdfRegionRequests,
@@ -102,6 +104,7 @@ import {
   type Tool,
   type ToolContext,
   type ToolPointer,
+  type WordSelectionEvent,
 } from './tools.ts'
 
 // キャンバスの表示と入力（MAI-5、MAI-6、MAI-12）。
@@ -144,6 +147,23 @@ export interface CanvasViewOptions {
   onOpenSource?: (anchorId: string) => void
   // 旧データ（.ricbackup）がドロップされた（MAI-36）
   onImportBackup?: (file: File) => void
+  // 「単語を調べる」で、PDF のページの上の語をなぞって離した（MAI-99）。呼び出し側が調べて、吹き出しで見せる。
+  // 閉じるときに clearWordHighlight を呼ぶ
+  onWordLookup?: (request: WordLookupRequest) => void
+}
+
+// 調べる語（MAI-99）。rect は選んだ所を囲む箱（ページ全体を 0〜1 とした割合。引用ノートの出典の範囲にする）。
+// anchor は選んだ所の画面の位置（ブラウザのウィンドウ基準。吹き出しを出す）
+export interface WordLookupRequest {
+  // 選んだ Canvas（PDF のページの Canvas）
+  canvasId: string
+  pageId: string
+  fileId: string
+  pageIndex: number
+  phrase: string
+  context: string
+  rect: Box
+  anchor: { left: number; top: number; right: number; bottom: number }
 }
 
 // 引用の頼み（MAI-33）。source は出典のノード（PDF のページ、Markdown カード）で、引用ノートをその横に置く
@@ -209,6 +229,10 @@ export class CanvasView {
   private searchCurrent: PdfSearchHit | null = null
   // 位置を出している途中のページ（同じページを 2 回読まないように）
   private readonly searchPagesLoading = new Map<string, Promise<void>>()
+  // 単語を調べる（MAI-99）：ページの文字をつないだもの（PDF の Asset とページごと。最近のものだけ）と、いまなぞっている所
+  private readonly pageTexts = new Map<string, Promise<{ size: { width: number; height: number }; page: PdfPageText }>>()
+  private wordDrag: { pageId: string; from: Vec; to: Vec } | null = null
+  private charWidths: CharWidths | null = null
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
   readonly files: FileManager | null
@@ -305,6 +329,7 @@ export class CanvasView {
       onOpenCitations: options.onOpenCitations ?? (() => {}),
       onOpenSource: options.onOpenSource ?? (() => {}),
       onImportBackup: options.onImportBackup ?? (() => {}),
+      onWordLookup: options.onWordLookup ?? (() => {}),
     }
     this.files = options.files ?? null
     this.documents = {
@@ -528,7 +553,8 @@ export class CanvasView {
     this.setLinkHover(null)
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
     this.clearSearch()
-    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
+    this.wordDrag = null
+    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, wordLookupArmed: false, wordHighlight: null, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
     this.editorRef = editor
     // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
     this.images.trim(IMAGE_CACHE_KEEP_ON_SWITCH_BYTES)
@@ -542,6 +568,8 @@ export class CanvasView {
       lastBrush: null,
       quoteRegion: null,
       quoteArmed: false,
+      wordLookupArmed: false,
+      wordHighlight: null,
       hoveredSpacing: null,
       spacingDrag: null,
     })
@@ -581,6 +609,7 @@ export class CanvasView {
         const bounds = this.root.getBoundingClientRect()
         this.options.onQuote({ kind: 'pdf', pageId, rect, clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
       },
+      wordSelection: (event) => void this.onWordSelection(event),
       openCitations: (anchorIds, screen) => {
         const bounds = this.root.getBoundingClientRect()
         this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
@@ -1075,6 +1104,151 @@ export class CanvasView {
     return { text: region.text, figure: looksLikeFigure(region) }
   }
 
+
+  // ---- 単語を調べる（MAI-99） ----
+
+  // 次のドラッグを、PDF のページの上で調べる語を選ぶものにする（o メニューの「単語を調べる」）。カーソルは文字を選ぶときのもの
+  armWordLookup(): void {
+    this.tool.cancel()
+    this.wordDrag = null
+    this.editor.session.set({ toolId: 'select', wordLookupArmed: true, wordHighlight: null, quoteArmed: false, quoteRegion: null })
+    this.cursorOverride = 'text'
+    this.updateCursor()
+  }
+
+  clearWordHighlight(): void {
+    this.wordDrag = null
+    if (this.editor.session.get().wordHighlight) this.editor.session.set({ wordHighlight: null })
+  }
+
+  // 調べた語と意味を、ページの横に引用ノートとして置く（出典は選んだ所。メモは意味）。編集は始めない
+  placeWordNote(request: WordLookupRequest, memo: string): string | null {
+    const page = this.editor.index.get(request.pageId)
+    if (!page) return null
+    this.tool.cancel()
+    this.documentEditor?.finish()
+    const draft: QuoteDraft = { fileId: request.fileId, locator: { kind: 'pdf', pageIndex: request.pageIndex, rect: request.rect }, quote: request.phrase, figure: null }
+    const id = this.editor.placeQuoteBeside(request.pageId, draft, page.worldBounds.y + request.rect.y * page.worldBounds.h, { memo, label: 'place word note' })
+    this.clearWordHighlight()
+    if (!id) return null
+    const box = this.editor.index.get(id)?.worldBounds
+    const camera = this.editor.session.get().camera
+    if (box && (box.x + box.w > camera.x + this.width / camera.zoom || box.y + box.h > camera.y + this.height / camera.zoom)) {
+      void this.animateCamera({ ...camera, x: box.x + box.w + 40 / camera.zoom - this.width / camera.zoom })
+    }
+    return id
+  }
+
+  private async onWordSelection(event: WordSelectionEvent): Promise<void> {
+    if (event.phase === 'cancel') {
+      this.clearWordHighlight()
+      return
+    }
+    const editor = this.editor
+    const drag = { pageId: event.pageId, from: event.from, to: event.to }
+    this.wordDrag = drag
+    const selected = await this.selectedWords(drag)
+    // 待っている間に、次の動き・別の Canvas・やめたこと（Esc）があれば、それに任せる
+    if (this.editor !== editor || this.wordDrag !== drag) return
+    if (event.phase === 'move') {
+      editor.session.set({ wordHighlight: selected?.world ?? null })
+      return
+    }
+    // 離した
+    if (!selected || !selected.words.text) {
+      this.clearWordHighlight()
+      if (selected === null) this.options.notify('この PDF のページから文字を読み取れませんでした（スキャンした PDF など）')
+      return
+    }
+    editor.session.set({ wordHighlight: selected.world })
+    const page = editor.getNode(drag.pageId)
+    if (page?.type !== 'pdf-page') return this.clearWordHighlight()
+    const props = page.props as PdfPageProps
+    const camera = editor.session.get().camera
+    const bounds = this.root.getBoundingClientRect()
+    const union = unionBoxes(selected.world)
+    if (!union) return this.clearWordHighlight()
+    const topLeft = worldToScreen(camera, { x: union.x, y: union.y })
+    const bottomRight = worldToScreen(camera, { x: union.x + union.w, y: union.y + union.h })
+    this.options.onWordLookup({
+      canvasId: editor.canvasId,
+      pageId: drag.pageId,
+      fileId: props.fileId,
+      pageIndex: props.pageIndex,
+      phrase: selected.words.text,
+      context: selected.words.context,
+      rect: selected.rect,
+      anchor: { left: topLeft.x + bounds.left, top: topLeft.y + bounds.top, right: bottomRight.x + bounds.left, bottom: bottomRight.y + bounds.top },
+    })
+  }
+
+  // なぞった 2 点の間の語と、そのハイライトの箱（ワールド座標）・囲む箱（ページの中の割合）。文字を読めなければ null、語がなければ text が空
+  private async selectedWords(drag: { pageId: string; from: Vec; to: Vec }): Promise<{ words: WordSelection; world: Box[]; rect: Box } | null> {
+    const entry = this.editor.index.get(drag.pageId)
+    if (entry?.node.type !== 'pdf-page') return null
+    const props = entry.node.props as PdfPageProps
+    let loaded: { size: { width: number; height: number }; page: PdfPageText }
+    try {
+      loaded = await this.pageText(props.assetId, props.pageIndex)
+    } catch (error) {
+      console.error('Failed to read the text of a PDF page', error)
+      return null
+    }
+    const { size, page } = loaded
+    if (page.words.length === 0) return null
+    const point = (p: Vec) => ({ x: p.x * size.width, y: p.y * size.height })
+    const words = selectWords(page, wordIndexAt(page, point(drag.from)), wordIndexAt(page, point(drag.to)))
+    if (!words) return null
+    // ページの中の割合 → ノードのローカル座標 → ワールド座標（ページはふつう回転させないので、角を写した箱で足りる）
+    const current = this.editor.index.get(drag.pageId) ?? entry
+    const { w, h } = current.localBounds
+    const world = words.boxes.map((box) => {
+      const a = applyMat(current.worldMatrix, { x: (box.x / size.width) * w, y: (box.y / size.height) * h })
+      const b = applyMat(current.worldMatrix, { x: ((box.x + box.w) / size.width) * w, y: ((box.y + box.h) / size.height) * h })
+      return boxFromPoints(a, b)
+    })
+    const union = unionBoxes(words.boxes)
+    if (!union) return null
+    const rect = { x: union.x / size.width, y: union.y / size.height, w: union.w / size.width, h: union.h / size.height }
+    return { words, world, rect }
+  }
+
+  // ページの文字をつないだもの（ページごとに 1 回だけ作る。最近の 8 ページだけ覚えておく）
+  private pageText(assetId: string, pageIndex: number): Promise<{ size: { width: number; height: number }; page: PdfPageText }> {
+    const key = `${assetId}#${pageIndex}`
+    let pending = this.pageTexts.get(key)
+    if (pending) {
+      this.pageTexts.delete(key)
+    } else {
+      pending = this.assets
+        .withPdfDocument(assetId, (doc) => Promise.all([doc.pageSize(pageIndex), doc.textItems(pageIndex)]))
+        .then(([size, items]) => ({ size, page: pdfPageText(items, this.measureChars()) }))
+      pending.catch(() => this.pageTexts.delete(key))
+    }
+    this.pageTexts.set(key, pending)
+    while (this.pageTexts.size > 8) this.pageTexts.delete(this.pageTexts.keys().next().value!)
+    return pending
+  }
+
+  // 文字の幅の比（Arial で測る。PDF のフォントとは違うが、等しい幅とみなすよりずっと近い）。測れなければ undefined
+  private measureChars(): CharWidths | undefined {
+    if (!this.charWidths) {
+      const ctx = document.createElement('canvas').getContext('2d')
+      if (!ctx) return undefined
+      ctx.font = '100px Arial, Helvetica, sans-serif'
+      const cache = new Map<string, number>()
+      this.charWidths = (chars) =>
+        chars.map((ch) => {
+          let width = cache.get(ch)
+          if (width === undefined) {
+            width = ctx.measureText(ch).width
+            cache.set(ch, width)
+          }
+          return width
+        })
+    }
+    return this.charWidths
+  }
 
   // 出典のノード（PDF のページ、Markdown カード）の横に引用ノートを置き、メモを書き始める。y はワールド座標
   placeQuote(draft: QuoteDraft, sourceNodeId: string, y: number): string | null {
@@ -1771,7 +1945,7 @@ export class CanvasView {
     }
     if (this.dirty.has('scene')) drawn += this.drawSceneLayer(view)
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, snapGuides, gapGuides, hoveredSpacing, spacingDrag } =
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, wordHighlight, snapGuides, gapGuides, hoveredSpacing, spacingDrag } =
         this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
@@ -1780,6 +1954,7 @@ export class CanvasView {
         brush,
         focusedGroupId,
         quoteRegion,
+        wordHighlight,
         snapGuides,
         gapGuides,
         hoveredSpacing,
@@ -1915,6 +2090,7 @@ export class CanvasView {
       state.hoveredId !== prev.hoveredId ||
       state.brush !== prev.brush ||
       state.quoteRegion !== prev.quoteRegion ||
+      state.wordHighlight !== prev.wordHighlight ||
       state.focusedGroupId !== prev.focusedGroupId ||
       state.snapGuides !== prev.snapGuides ||
       state.gapGuides !== prev.gapGuides ||

@@ -222,6 +222,42 @@ describe('edit_canvas', () => {
     expect(() => edit([{ op: 'update', id: made.a, heads: 'bars' }])).toThrow(/heads is not supported for geo/)
   })
 
+  it('places a link card for a URL like a pasted one, with a title, a description and a width (MAI-97)', () => {
+    const { records, edit } = setup()
+    const result = edit([
+      { op: 'create', type: 'note', as: 'n', x: 0, y: 0, text: '届かなかったもの' },
+      { op: 'create', type: 'link', as: 'a', url: 'https://example.com/paper', text: '有料の論文', props: { description: '有料（ログインが要る）' }, w: 360, place: { below: '$n', gap: 24 } },
+      { op: 'create', type: 'link', as: 'b', url: 'https://example.com/b.pdf', place: { below: '$a', gap: 24 } },
+    ])
+    const a = records.get(result.created.a!)!
+    expect(a).toMatchObject({ type: 'link-card', props: { url: 'https://example.com/paper', title: '有料の論文', description: '有料（ログインが要る）', siteName: null, image: null, status: 'done', w: 360 } })
+    // タイトルを渡さなければ、URL だけのカード（読み込み中にはしない。サーバーの編集はタブが取りに行かないため）
+    expect(records.get(result.created.b!)!.props).toMatchObject({ url: 'https://example.com/b.pdf', title: null, description: null, status: 'done', w: 400 })
+    const note = world(records, result.created.n!)
+    const placedA = world(records, result.created.a!)
+    expect(placedA).toMatchObject({ x: 0, y: note.y + note.h + 24, w: 360 })
+    // read_nodes の高さは見積もり（~）なので、下に並んだことだけを見る
+    const placedB = world(records, result.created.b!)
+    expect(placedB.x).toBe(0)
+    expect(placedB.y).toBeGreaterThan(placedA.y + 24)
+    // タイトルは update の text で変えられる
+    edit([{ op: 'update', id: result.created.b!, text: 'PDF' }])
+    expect(records.get(result.created.b!)!.props).toMatchObject({ title: 'PDF' })
+  })
+
+  it('refuses a link without an http(s) url, with fields it does not have, or with other props', () => {
+    const { edit } = setup()
+    expect(() => edit([{ op: 'create', type: 'link' }])).toThrow(/link needs url/)
+    for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'not a url', 'https://example.com/a b']) {
+      expect(() => edit([{ op: 'create', type: 'link', url }])).toThrow(/http or https/)
+    }
+    expect(() => edit([{ op: 'create', type: 'link', url: 'https://example.com', h: 100 }])).toThrow(/h is not supported for link/)
+    expect(() => edit([{ op: 'create', type: 'link', url: 'https://example.com', fill: '#ffffff' }])).toThrow(/fill is not supported for link/)
+    expect(() => edit([{ op: 'create', type: 'link', url: 'https://example.com', props: { url: 'javascript:alert(1)' } }])).toThrow(/props.url is not supported for link/)
+    expect(() => edit([{ op: 'create', type: 'link', url: 'https://example.com', text: 'a', name: 'b' }])).toThrow(/either text or name/)
+    expect(() => edit([{ op: 'create', type: 'note', url: 'https://example.com' }])).toThrow(/url is only for pdf and link/)
+  })
+
   it('refuses style fields the type does not have, and locked nodes', () => {
     const { records, edit, root } = setup()
     records.apply([node('node:t', 'text', root, 'a1', {}, { locked: true })], [])
