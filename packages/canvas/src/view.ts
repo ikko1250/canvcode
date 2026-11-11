@@ -2575,14 +2575,23 @@ export class CanvasView {
     try {
       await this.assets.whenUploaded(props.assetId)
       const { files, warnings } = await this.files.convert(props.assetId, props.name, to)
-      if (this.editor !== editor) return []
+      const done = `${files.map((file) => file.path).join('、')} を作りました（元のファイルはそのままです）`
+      const notifyDone = (placement?: string) => this.options.notify([done, ...(placement ? [placement] : []), ...warnings].join('\n'))
+      const moved = 'Canvas を移ったため、残りのカードは配置していません。作った文書はファイル一覧から置けます'
+      if (this.editor !== editor) {
+        notifyDone(moved)
+        return []
+      }
       const source = editor.index.get(nodeId)?.worldBounds
       let x = source ? source.x + source.w + CONVERTED_GAP : this.viewportCenter().x
       const y = source?.y ?? this.viewportCenter().y
       const ids: string[] = []
       for (const file of files) {
         const content = file.kind === 'table' ? await this.files.text(file.id) : null
-        if (this.editor !== editor) return ids
+        if (this.editor !== editor) {
+          notifyDone(moved)
+          return ids
+        }
         const sizeProps = content !== null ? tableCardImportSize(content, file.path) : undefined
         const type = editor.types.get(file.kind === 'table' ? 'table-card' : 'markdown-card')
         const w = (sizeProps?.w as number | undefined) ?? (type?.defaultProps() as { w?: number } | undefined)?.w ?? 400
@@ -2592,8 +2601,7 @@ export class CanvasView {
         x += (editor.index.get(id)?.worldBounds.w ?? w) + CONVERTED_GAP
       }
       if (ids.length > 0) editor.setSelection(ids)
-      const done = `${files.map((file) => file.path).join('、')} を作りました（元のファイルはそのままです）`
-      this.options.notify(warnings.length > 0 ? `${done}\n${warnings.join('\n')}` : done)
+      notifyDone()
       return ids
     } catch (error) {
       console.warn('Failed to convert a file', props.name, error)

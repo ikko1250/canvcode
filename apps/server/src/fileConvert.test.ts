@@ -59,7 +59,7 @@ function png(w: number, h: number): Buffer {
 }
 
 // 手で組んだ xlsx。シート「売上」（文字・数・日付・日時・真偽・, と " を含む文字）、シート「空」（何もない）、シート「メモ」
-function sampleXlsx(): Buffer {
+function sampleXlsx(rowCount?: number): Buffer {
   const sheets = [
     {
       name: '売上',
@@ -71,6 +71,10 @@ function sampleXlsx(): Buffer {
     { name: '空', rows: '' },
     { name: 'メモ', rows: '<row r="1"><c r="A1" t="s"><v>5</v></c></row>' },
   ]
+  if (rowCount !== undefined) {
+    sheets.splice(0, sheets.length, { name: 'Data', rows: Array.from({ length: rowCount }, (_, i) =>
+      `<row r="${i + 1}"><c r="A${i + 1}" t="inlineStr"><is><t>x</t></is></c></row>`).join('') })
+  }
   const strings = ['日付', '金額', '済み', '備考', '大口, "特別"', 'メモです']
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(
@@ -164,6 +168,16 @@ describe('AssetStore for any kind of file', () => {
 })
 
 describe('FileConverter', () => {
+  it('converts a sheet with 150000 rows when its CSV fits the size limit', async () => {
+    const { converter, assets, workspace } = await setup()
+    const data = sampleXlsx(150000)
+    const hash = await assets.storeFile(data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx')
+    const result = await converter.convert(`asset:${hash}`, 'big.xlsx', 'table')
+    expect(result.files).toHaveLength(1)
+    expect(result.warnings).toEqual([])
+    expect(readFileSync(join(workspace, result.files[0]!.path), 'utf8')).toBe('x\n'.repeat(150000))
+  }, 15000)
+
   it('turns each sheet of an xlsx into a table document, and keeps the original', async () => {
     const { converter, assets, files, workspace, events } = await setup()
     const data = sampleXlsx()

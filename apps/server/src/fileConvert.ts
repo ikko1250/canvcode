@@ -215,7 +215,7 @@ export class FileConverter {
 export function sheetToCsv(rows: unknown[][]): string {
   const cells = rows.map((row) => row.map(cellText))
   while (cells.length > 0 && cells[cells.length - 1].every((cell) => cell === '')) cells.pop()
-  const width = Math.max(0, ...cells.map((row) => row.findLastIndex((cell) => cell !== '') + 1))
+  const width = cells.reduce((max, row) => Math.max(max, row.findLastIndex((cell) => cell !== '') + 1), 0)
   if (width === 0) return ''
   return cells.map((row) => Array.from({ length: width }, (_, i) => csvField(row[i] ?? '')).join(',')).join('\n') + '\n'
 }
