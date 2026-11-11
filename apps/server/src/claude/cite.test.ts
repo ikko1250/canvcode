@@ -136,13 +136,18 @@ describe('材料', () => {
     await expect(gatherMaterial({ kind: 'pdf', fileId: 'file:none' }, deps)).rejects.toMatchObject({ status: 404 })
   })
 
-  it('PDF：中身が合わなくても、名前が同じものが 1 つだけならそれを使う。. で始まるフォルダは見ない', async () => {
+  it('PDF：同名でも内容が異なる・原文がないものは出典にしない。. で始まるフォルダは見ない', async () => {
     const root = await tempDir()
     await mkdir(join(root, 'a'), { recursive: true })
     await mkdir(join(root, '.hidden'), { recursive: true })
     await writeFile(join(root, 'a/sources.json'), JSON.stringify({ x: { files: ['論文.pdf'], url: 'https://example.com/x.pdf' } }))
     await writeFile(join(root, '.hidden/sources.json'), JSON.stringify({ y: { files: ['論文.pdf'], url: 'https://example.com/y.pdf' } }))
-    expect(await findPdfSource(root, { hash: sha('x'), size: 1, title: '論文' })).toEqual({ url: 'https://example.com/x.pdf' })
+    expect(await findPdfSource(root, { hash: sha('x'), size: 1, title: '論文' })).toBeNull()
+    await writeFile(join(root, 'a/論文.pdf'), 'y')
+    await writeFile(join(root, '.hidden/論文.pdf'), 'x')
+    expect(await findPdfSource(root, { hash: sha('x'), size: 1, title: '論文' })).toBeNull()
+    await writeFile(join(root, 'a/論文.pdf'), 'different size')
+    expect(await findPdfSource(root, { hash: sha('x'), size: 1, title: '論文' })).toBeNull()
     expect(await findPdfSource(root, { hash: sha('x'), size: 1, title: '別の名前' })).toBeNull()
   })
 
@@ -184,7 +189,22 @@ describe('答えを確かめる', () => {
     expect(fields.container).toEqual(field('unverified', 'Journal of Tests'))
     // DOI は https://doi.org/ の形にする
     expect(fields.link).toEqual(field('verified', 'https://doi.org/10.1000/abc', ['https://dx.doi.org/10.1000/abc']))
-    expect(fields.pages).toEqual(field('none'))
+    expect(fields.pages).toEqual(field('unverified'))
+  })
+
+  it('該当なしにも見た根拠を求め、必須の題は省略しない', () => {
+    const url = 'https://example.com/paper'
+    const answer: CiteAnswer = { type: 'webpage', fields: fieldsOf({
+      title: field('none', '', [url]),
+      date: field('none', '', [url]),
+      authors: field('none', '', ['https://made-up.example/']),
+      pages: field('none', '', [url]),
+    }) }
+    const checked = checkAnswer(answer, new Set([normalizeUrl(url)]))
+    expect(checked.title.status).toBe('unverified')
+    expect(checked.authors.status).toBe('unverified')
+    expect(checked.date).toEqual(field('none', '', [url]))
+    expect(checked.pages).toEqual(field('none', '', [url]))
   })
 
   it('DOI の形を https://doi.org/ の URL にする', () => {
@@ -290,13 +310,23 @@ const sampleAnswer: CiteAnswer = {
     title: field('verified', 'A title', ['https://example.com/paper']),
     container: field('verified', 'Journal', ['https://example.com/paper']),
     volumeIssue: field('unverified', '3(1)', []),
-    pages: field('none'),
+    pages: field('none', '', ['https://example.com/paper']),
     link: field('verified', '10.1000/abc', ['https://example.com/paper']),
   }),
   note: ' 版が 2 つある ',
 }
 
 describe('CitationWriter', () => {
+  it('Web の根拠がない全項目 none の回答を、確認済みの引用として返さない', async () => {
+    const { deps } = await workspaceWith()
+    const answer: CiteAnswer = { type: 'webpage', fields: fieldsOf({}) }
+    const writer = new CitationWriter({ once: new ClaudeOnce({ run: answering(answer, [], []) }), deps })
+    const result = await writer.cite({ kind: 'link', url: 'https://example.com/paper' })
+    expect(result.text).toContain('[未確認：題]')
+    expect(result.unverified).toHaveLength(7)
+    expect(result.evidence).toEqual([])
+  })
+
   it('Sonnet に、WebSearch・WebFetch つき・決めた JSON の形で頼み、引用の文と未確認の項目・根拠を返す', async () => {
     const { deps } = await workspaceWith()
     const calls: Call[] = []
@@ -306,7 +336,7 @@ describe('CitationWriter', () => {
       text: 'Smith, J. (2020). A title. Journal, [未確認：巻号]. https://doi.org/10.1000/abc',
       type: 'journal-article',
       unverified: [{ field: 'volumeIssue', label: '巻号', candidate: '3(1)' }],
-      evidence: [{ url: 'https://example.com/paper', labels: ['著者', '年', '題', '誌名', 'DOI/URL'] }],
+      evidence: [{ url: 'https://example.com/paper', labels: ['著者', '年', '題', '誌名', 'ページ', 'DOI/URL'] }],
       note: '版が 2 つある',
       // WebFetch が使う Haiku ではなく、頼んだ Sonnet
       model: 'claude-sonnet-5-5',

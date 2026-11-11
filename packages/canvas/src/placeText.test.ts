@@ -23,6 +23,17 @@ describe('placeTextBelowRight', () => {
     expect(editor.placeTextBelowRight('node:none', paragraphs)).toBeNull()
   })
 
+  it('フレーム内の資料から作る引用を、枠で切れない Canvas 直下に置く', () => {
+    const editor = new Editor()
+    const frame = editor.makeNode('frame', { x: 0, y: 0, props: { w: 700, h: 500 } })
+    const card = editor.makeNode('geo', { parentId: frame.id, x: 100, y: 50, props: { w: 200, h: 100 } })
+    editor.createNodes([frame, card])
+    const id = editor.placeTextBelowRight(card.id, paragraphs)!
+    expect(editor.getNode(id)).toMatchObject({ parentId: editor.canvasId, x: 324, y: 174 })
+    expect(editor.index.get(id)!.worldBounds.w).toBe(480)
+    expect(editor.index.ancestorsOf(id)).not.toContain(frame.id)
+  })
+
   it('前に置いたテキストがあれば、その下に置く', () => {
     const editor = new Editor()
     const card = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100 } })

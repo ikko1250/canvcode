@@ -795,7 +795,8 @@ export class Editor {
       else box.y = Math.max(...blocking.map((entry) => entry.worldBounds.y + entry.worldBounds.h)) + BELOW_RIGHT_GAP
     }
     return this.transact(options.label ?? 'place text', (tx) => {
-      const parentId = this.frameAt(box) ?? this.canvasId
+      // 引用全体を見せるため、フレームの切り抜きを受けない Canvas 直下に置く。
+      const parentId = this.canvasId
       const local = this.worldToParent(parentId, box)
       const node = { ...draft, parentId, x: local.x, y: local.y, index: this.nextIndex(parentId) }
       tx.put(node)
