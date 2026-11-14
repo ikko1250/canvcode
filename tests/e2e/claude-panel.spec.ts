@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 // Claude のパネルの回答を選んでコピーしても、キャンバスで選んでいるノードのコピーに横取りされない。
 // パネルの中のキー（Delete・矢印・Ctrl+A・Esc）は、キャンバスのショートカットに渡らない。
@@ -473,22 +473,56 @@ test('chooses the model and effort next to the send button, per thread (MAI-106)
   await openApp(page)
   const button = page.locator('.claude-model-button')
   const popover = page.locator('.claude-model-popover')
+  const modelSlider = popover.getByRole('slider', { name: 'Model' })
+  const effortSlider = popover.getByRole('slider', { name: 'Effort' })
   // 会話 t1 は既定で頼んだもの。既定で動くモデルの名前を添える
   await expect(button).toHaveText('既定（Opus 5.5）')
 
-  // 押すと上に開き、モデルと effort を選べる（選べない effort は出さない）
+  // 押すと上に開く。Model の段は系統ごとの最新版（この一覧では Haiku 4.5・Opus 5.5 の 2 段）で、既定なら既定で動くモデルの段。
+  // Effort が既定ならつまみを出さない
   await button.click()
   await expect(popover).toBeVisible()
-  await popover.getByRole('combobox').first().selectOption('claude-opus-4-6')
-  await expect(popover.getByRole('combobox').nth(1).locator('option')).toHaveText(['既定', 'Low', 'Medium', 'High', 'Max'])
-  await popover.getByRole('combobox').nth(1).selectOption('high')
+  await expect(modelSlider).toHaveAttribute('aria-valuemax', '1')
+  await expect(modelSlider).toHaveAttribute('aria-valuenow', '1')
+  await expect(modelSlider).toHaveAttribute('aria-valuetext', '既定（Opus 5.5）')
+  await expect(effortSlider).toHaveAttribute('aria-valuetext', '既定')
+  await expect(effortSlider.locator('.claude-stops-knob')).toHaveCount(0)
+
+  // 古いバージョンは「Model ›」で開く一覧から選ぶ（系統ごとにまとめ、新しいものが先）。選ぶとスライダーに戻り、その系統の段に置く
+  await popover.getByRole('button', { name: /^Model/ }).click()
+  await expect(popover.getByRole('radio')).toHaveText([/^既定（Opus 5\.5）/, 'Haiku 4.5', 'Opus 5.5', 'Opus 4.6'])
+  await expect(popover.getByRole('radio', { checked: true })).toBeFocused()
+  await popover.getByRole('radio', { name: 'Opus 4.6' }).click()
+  await expect(modelSlider).toHaveAttribute('aria-valuetext', 'Opus 4.6')
+  await expect(modelSlider).toHaveAttribute('aria-valuenow', '1')
+  await expect(popover.getByRole('button', { name: /^Model/ })).toBeFocused()
+  // Effort の段は、そのモデルで選べるものだけ。段を押して選ぶ
+  await expect(effortSlider).toHaveAttribute('aria-valuemax', '3')
+  await clickStop(effortSlider, 2, 4)
+  await expect(effortSlider).toHaveAttribute('aria-valuetext', 'High')
   await expect(button).toHaveText('Opus 4.6 · High')
   // 効かないモデルでは effort を選べない（選んでいた effort は既定に戻る）
-  await popover.getByRole('combobox').first().selectOption('claude-haiku-4-5-20251001')
-  await expect(popover.getByRole('combobox').nth(1)).toBeDisabled()
+  await clickStop(modelSlider, 0, 2)
+  await expect(effortSlider).toHaveAttribute('aria-disabled', 'true')
+  await expect(effortSlider).toHaveAttribute('aria-valuetext', 'なし')
   await expect(button).toHaveText('Haiku 4.5')
-  await popover.getByRole('combobox').first().selectOption('opus')
-  await popover.getByRole('combobox').nth(1).selectOption('xhigh')
+  // キーでも選べる（→ で右の段：Opus の最新版）
+  await modelSlider.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(button).toHaveText('Opus 5.5')
+  // つまみを引いて選ぶ（左端から右端へ引くと Max。← で 1 つ戻して XHigh）
+  const box = (await effortSlider.boundingBox())!
+  await page.mouse.move(box.x + 17, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width - 17, box.y + box.height / 2, { steps: 8 })
+  await page.mouse.up()
+  await expect(effortSlider).toHaveAttribute('aria-valuetext', 'Max')
+  await page.keyboard.press('ArrowLeft')
+  await expect(button).toHaveText('Opus 5.5 · XHigh')
+  // 一覧で Esc を押すと、まずスライダーに戻る
+  await popover.getByRole('button', { name: /^Model/ }).click()
+  await page.keyboard.press('Escape')
+  await expect(modelSlider).toBeVisible()
   // Esc は欄だけを閉じる（パネルは閉じない）
   await page.keyboard.press('Escape')
   await expect(popover).toHaveCount(0)
@@ -506,9 +540,10 @@ test('chooses the model and effort next to the send button, per thread (MAI-106)
   await page.getByRole('button', { name: '新規' }).click()
   await expect(button).toHaveText('Opus 5.5 · XHigh')
   await button.click()
-  await popover.getByRole('combobox').first().selectOption('')
-  await popover.getByRole('combobox').nth(1).selectOption('')
+  // 「既定に戻す」で、モデルも effort も既定に（既定なら出さない）
+  await popover.getByRole('button', { name: '既定に戻す' }).click()
   await expect(button).toHaveText('既定（Opus 5.5）')
+  await expect(popover.getByRole('button', { name: '既定に戻す' })).toHaveCount(0)
   // 欄の外を押すと閉じる
   await page.locator('.claude-log').click({ position: { x: 10, y: 10 } })
   await expect(popover).toHaveCount(0)
@@ -539,10 +574,20 @@ test('restores the model and effort of a thread when it is opened again (MAI-106
   await page.locator('.claude-thread-select').selectOption('t1')
   // 既定で動くモデルがわからなければ「既定」だけ
   await expect(page.locator('.claude-model-button')).toHaveText('既定')
-  // 一覧を Claude Code に聞けなかったときは、そう書く
+  // 一覧を Claude Code に聞けなかったときは、そう書く。既定で動くモデルの段がわからなければ、つまみを出さない
   await page.locator('.claude-model-button').click()
   await expect(page.locator('.claude-model-note')).toContainText('聞けなかった')
+  const modelSlider = page.getByRole('slider', { name: 'Model' })
+  await expect(modelSlider).toHaveAttribute('aria-valuetext', '既定')
+  await expect(modelSlider.locator('.claude-stops-knob')).toHaveCount(0)
 })
+
+// 選ぶ欄のスライダーの段を押す（段の中心は、両端からつまみの半分の 17px 内側に等しく並ぶ）
+async function clickStop(slider: Locator, index: number, count: number) {
+  const box = (await slider.boundingBox())!
+  const x = 17 + (box.width - 34) * (count <= 1 ? 0 : index / (count - 1))
+  await slider.click({ position: { x, y: box.height / 2 } })
+}
 
 // 全画面のエディタを開く（サイドバーから）
 async function openFileEditor(page: Page) {
