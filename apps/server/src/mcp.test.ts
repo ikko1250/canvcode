@@ -37,6 +37,7 @@ async function setup(options: { renders?: RenderBroker } = {}): Promise<{
   view: { current: Presence | null }
   // URL → 外のサーバーの応答（edit_canvas の create type pdf の url）
   remote: Map<string, RemoteResponse>
+  assets: AssetStore
 }> {
   const workspace = mkdtempSync(join(tmpdir(), 'canvcode-mcp-'))
   cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
@@ -72,7 +73,7 @@ async function setup(options: { renders?: RenderBroker } = {}): Promise<{
   const client = new Client({ name: 'test', version: '0.0.0' })
   await client.connect(new StreamableHTTPClientTransport(url))
   cleanups.push(() => client.close())
-  return { client, files, records, refImages, dataDir, events, url, workspace, view, remote }
+  return { client, files, records, refImages, dataDir, events, url, workspace, view, remote, assets }
 }
 
 // 595×842 のページが 2 つの PDF。1 ページ目にだけ text を書く
@@ -274,6 +275,51 @@ describe('MCP server', () => {
     expect(records.get(file)).toBeUndefined()
     expect(records.get(canvas)).toBeUndefined()
   })
+
+  // スクリプトが書いた ops を、ワークスペースの JSON ファイルで渡す（MAI-105）
+  it('takes the ops from a JSON file in the workspace (ops_file)', async () => {
+    const { client, records, workspace } = await setup()
+    mkdirSync(join(workspace, 'out'))
+    writeFileSync(join(workspace, 'out', 'ops.json'), JSON.stringify([{ op: 'create', type: 'note', as: 'f', text: 'from file', x: 0, y: 0 }]))
+    const edited = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops_file: 'out/ops.json' })
+    expect(edited.isError).toBe(false)
+    expect(records.get(edited.data.created.f)).toMatchObject({ type: 'note' })
+    expect(edited.data.boxes[edited.data.created.f]).toMatch(/^0,0 /)
+    // {"ops", "label"} の形も。label はファイルのもの（呼び出しの label が先）
+    writeFileSync(join(workspace, 'out', 'labelled.json'), JSON.stringify({ label: 'ファイルから', ops: [{ op: 'create', type: 'note', text: 'x', place: { rightOf: '$f' } }] }))
+    const labelled = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops_file: 'out/labelled.json' })
+    expect(labelled.isError).toBe(false)
+    expect(records.getAgentOp(labelled.data.batch)?.label).toBe('ファイルから')
+    writeFileSync(join(workspace, 'out', 'bad.json'), '{"ops": [')
+    writeFileSync(join(workspace, 'out', 'empty.json'), '[]')
+    const before = records.rev
+    for (const [args, message] of [
+      [{ ops_file: 'out/ops.json', ops: [{ op: 'create', type: 'note', text: 'x' }] }, /exactly one of ops, ops_file/],
+      [{}, /exactly one of ops, ops_file/],
+      [{ ops_file: '../outside.json' }, /outside the workspace/],
+      [{ ops_file: 'out/none.json' }, /no file at out\/none\.json/],
+      [{ ops_file: 'out/bad.json' }, /is not JSON/],
+      [{ ops_file: 'out/empty.json' }, /non-empty array of ops/],
+    ] as const) {
+      const failed = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ...args })
+      expect(failed.isError, JSON.stringify(args)).toBe(true)
+      expect(failed.text).toMatch(message)
+    }
+    expect(records.rev).toBe(before)
+  })
+
+  // PDF の文字を取り出し終えるのを、少しだけ待って先に返す（MAI-105。たくさん取り込むと時間切れになっていた）
+  it('answers without waiting long for the text of an imported PDF', async () => {
+    const { client, records, workspace, assets } = await setup()
+    writeFileSync(join(workspace, 'slow.pdf'), samplePdf('Slow'))
+    assets.pdfTextFile = () => new Promise(() => {})
+    const started = Date.now()
+    const edited = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'create', type: 'pdf', as: 'p', path: 'slow.pdf' }] })
+    expect(edited.isError).toBe(false)
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(edited.data.canvases.p).toMatchObject({ pages: 2, textPending: true })
+    expect(edited.data.canvases.p.textPath).toBeUndefined()
+  }, 20_000)
 
   it('imports a PDF from a URL, names it after the file and refuses what is not a PDF', async () => {
     const { client, records, workspace, remote } = await setup()

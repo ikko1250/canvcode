@@ -25,7 +25,8 @@ import { presentRows, slideLayoutMaxRows } from '@canvcode/canvas/slideLayoutArr
 import { hasSlideLayoutRows, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
 import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspace'
 import { z } from 'zod'
-import type { AgentOpEntry, StoredRecord } from '../records.ts'
+import type { AgentOpEntry, RecordStore, StoredRecord } from '../records.ts'
+import { nodeBoxes } from './outline.ts'
 import type { AgentHost } from './host.ts'
 import type { PreparedPdf } from './pdfSource.ts'
 
@@ -43,6 +44,10 @@ import type { PreparedPdf } from './pdfSource.ts'
 //   commit の直前に Editor のコミットフックで slide-layout の子を並べ直す（arrangeSlideLayoutsOnCommit）。文字の高さは見積もり
 
 export const MAX_OPS = 500
+// ワークスペースの JSON ファイルで渡すとき（ops_file。MAI-105）の上限。モデルが書き写さないので、多くてもよい
+export const MAX_FILE_OPS = 5000
+// 結果に位置と大きさを返すノードの数（MAI-105。超えた分は数だけ返す）
+const MAX_BOXES = 100
 // 位置を決めずに作ったノードを、Canvas の中身の右に置くときの間隔
 const AUTO_GAP = 80
 // 見ている範囲の中心の近くで空いた所を探すとき：ほかのノードとの間隔と、探す輪の数（ノードの大きさの半分ずつ外へ）
@@ -233,7 +238,8 @@ type StyleInput = Partial<Record<keyof typeof style, unknown>> & { text?: string
 // ツールの入力のスキーマ（小さく保つ。操作ごとの形は parseOp で確かめる）
 export const editCanvasInput = {
   canvas_id: z.string().optional().describe("Canvas id (default: the one the user is viewing)"),
-  ops: z.array(z.looseObject({ op: z.string() })).min(1).max(MAX_OPS).describe('Operations (see get_canvas_format)'),
+  ops: z.array(z.looseObject({ op: z.string() })).min(1).max(MAX_OPS).optional().describe('Operations (see get_canvas_format)'),
+  ops_file: z.string().optional().describe('Instead of ops: a JSON file in the workspace with the ops'),
   if_rev: z.number().int().min(0).optional().describe('Fail if a node to change was modified after this rev'),
   label: z.string().max(MAX_LABEL).optional().describe('Short description shown to the user'),
 }
@@ -259,6 +265,8 @@ export interface EditRequest {
   ops: unknown[]
   ifRev?: number
   label?: string
+  // ops の数の上限（既定 MAX_OPS。ops_file なら MAX_FILE_OPS）
+  maxOps?: number
   // create type pdf の PDF（ops の何番目か → 保存した Asset とページの大きさ。preparePdfs で用意する）
   pdfs?: ReadonlyMap<number, PreparedPdf>
   // create type image の画像（ops の何番目か → 保存した Asset）。plot_csv が描いて用意する（update で画像を差し替えるときも、Asset を知らせるために入れる）
@@ -288,12 +296,18 @@ export interface EditResult {
   created: Record<string, string>
   canvases?: Record<string, CreatedCanvas>
   counts: { created: number; updated: number; deleted: number }
+  // 作った・変えたノードの、編集のあとの位置と大きさ（MAI-105。read_canvas の行と同じ "x,y wxh"、~ は見積もり。矢印は "x,y→x,y"）。
+  // MAX_BOXES を超えた分は moreBoxes に数だけ。bounds は Canvas の中身全体の外接の箱
+  boxes?: Record<string, string>
+  moreBoxes?: number
+  bounds?: string
   warnings?: string[]
 }
 
 // 操作をすべて行い、保存して知らせる。失敗したら EditError を投げる（何も変えない）
 export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
-  if (request.ops.length > MAX_OPS) throw new EditError(`Too many ops (${request.ops.length}). Send at most ${MAX_OPS} per call.`)
+  const maxOps = request.maxOps ?? MAX_OPS
+  if (request.ops.length > maxOps) throw new EditError(`Too many ops (${request.ops.length}). Send at most ${maxOps} per call${maxOps < MAX_FILE_OPS ? ` (up to ${MAX_FILE_OPS} in an ops_file)` : ''}.`)
   const workspace = host.workspace()
   const canvas = workspace.getCanvas(request.canvasId)
   if (!canvas) throw new EditError(`Unknown canvas id ${request.canvasId}. Use list_canvases to find one.`)
@@ -304,7 +318,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const tx = workspace.store.begin(label, { scope: canvas.id, history: 'ignore', source: 'user', meta })
   // 画面の操作と同じく、commit の直前に slide-layout の子を並べ直す
   editor.arrangeSlideLayoutsOnCommit(tx)
-  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs, request.images)
+  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs, request.images, host.namesOf(canvas.id))
   let patch: Patch<WorkspaceRecord>
   try {
     for (const [i, raw] of request.ops.entries()) {
@@ -371,7 +385,9 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
     { origin: { kind: 'ai', batchId: batch, label, canvasId: canvas.id, count: counts.created + counts.updated + counts.deleted }, ...(assets.length ? { assets } : {}) },
     { deleted, except: host.listener },
   )
-  return { batch, rev, created: run.created, ...run.canvasResult(), counts, ...(run.warnings.length ? { warnings: run.warnings } : {}) }
+  // "as" の名前は、あとの呼び出しでも使えるように覚える（MAI-105）
+  host.rememberNames(canvas.id, run.names())
+  return { batch, rev, created: run.created, ...run.canvasResult(), counts, ...boxesOf(records, canvas.id, entries), ...(run.warnings.length ? { warnings: run.warnings } : {}) }
 }
 
 // AI の編集を取り消す。そのあとに変わったレコードがあれば、何もせずに EditError を投げる
@@ -418,6 +434,19 @@ function overflowWarnings(editor: Editor, patch: Patch<WorkspaceRecord>): string
   })
 }
 
+// 作った・変えたノードの位置と大きさ（作ったものから。MAI-105）と、Canvas の中身全体の外接の箱
+function boxesOf(records: RecordStore, canvasId: string, entries: AgentOpEntry[]): Pick<EditResult, 'boxes' | 'moreBoxes' | 'bounds'> {
+  const nodes = entries.filter((e) => e.after?.typeName === 'node')
+  const ids = [...nodes.filter((e) => !e.before), ...nodes.filter((e) => e.before)].map((e) => e.id)
+  const { boxes, bounds } = nodeBoxes(records, canvasId, ids)
+  const listed = Object.entries(boxes)
+  return {
+    ...(listed.length ? { boxes: Object.fromEntries(listed.slice(0, MAX_BOXES)) } : {}),
+    ...(listed.length > MAX_BOXES ? { moreBoxes: listed.length - MAX_BOXES } : {}),
+    ...(bounds ? { bounds } : {}),
+  }
+}
+
 function countNodes(entries: AgentOpEntry[]): EditResult['counts'] {
   const counts = { created: 0, updated: 0, deleted: 0 }
   for (const e of entries) {
@@ -458,6 +487,8 @@ class EditRun {
   private readonly viewport: Box | undefined
   private readonly pdfs: ReadonlyMap<number, PreparedPdf> | undefined
   private readonly images: ReadonlyMap<number, PreparedImage> | undefined
+  // 前の呼び出しで "as" を付けたノード（MAI-105。この呼び出しの名前が先）
+  private readonly remembered: ReadonlyMap<string, string>
 
   constructor(
     host: AgentHost,
@@ -467,7 +498,9 @@ class EditRun {
     viewport?: Box,
     pdfs?: ReadonlyMap<number, PreparedPdf>,
     images?: ReadonlyMap<number, PreparedImage>,
+    remembered: ReadonlyMap<string, string> = new Map(),
   ) {
+    this.remembered = remembered
     this.host = host
     this.editor = editor
     this.tx = tx
@@ -1079,6 +1112,11 @@ class EditRun {
 
   // ---- id ----
 
+  // この呼び出しで "as" を付けた名前とノード（MAI-105。保存したあと、AgentHost が覚える）
+  names(): [string, string][] {
+    return [...this.refs]
+  }
+
   private remember(nodeId: string, as: string | undefined, i: number): void {
     if (as !== undefined) {
       if (this.refs.has(as)) throw new EditError(`"as": "${as}" is already used`)
@@ -1091,8 +1129,8 @@ class EditRun {
   private node(ref: string): string {
     let nodeId = ref
     if (ref.startsWith('$')) {
-      const found = this.refs.get(ref.slice(1))
-      if (!found) throw new EditError(`unknown reference ${ref} (name a node with "as" in an earlier op)`)
+      const found = this.refs.get(ref.slice(1)) ?? this.remembered.get(ref.slice(1))
+      if (!found) throw new EditError(`unknown reference ${ref} (name a node with "as" in an earlier op or an earlier edit of this canvas)`)
       nodeId = found
     }
     const node = nodeIn(this.tx, nodeId)

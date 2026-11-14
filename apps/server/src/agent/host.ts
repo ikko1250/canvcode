@@ -42,11 +42,17 @@ export function serverNodeTypes(): AnyNodeTypeDef[] {
   ]
 }
 
+// edit_canvas の "as" で付けた名前を、Canvas ごとにいくつまで覚えるか（MAI-105。超えたら古いものから忘れる）
+export const MAX_REMEMBERED_NAMES = 5000
+
 export class AgentHost {
   readonly records: RecordStore
   readonly sync: SyncHub | undefined
   readonly files: FileStore | undefined
   private readonly idleMs: number
+  // edit_canvas の "as" で付けた名前 → ノードの id（Canvas ごと。MAI-105）。あとの呼び出しの "$名前" で使える。
+  // サーバーを再起動するまで覚える（ワークスペースを捨てても残す）
+  private readonly names = new Map<string, Map<string, string>>()
   private state: HostState | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   // SyncHub から届く変更（自分で保存した変更は、broadcast の except で除く）
@@ -61,6 +67,22 @@ export class AgentHost {
 
   get alive(): boolean {
     return this.state !== null
+  }
+
+  // Canvas で覚えている名前（MAI-105）
+  namesOf(canvasId: string): ReadonlyMap<string, string> {
+    return this.names.get(canvasId) ?? new Map()
+  }
+
+  // 保存した編集で付けた名前を覚える。同じ名前は新しいノードを指す
+  rememberNames(canvasId: string, entries: Iterable<[string, string]>): void {
+    let names = this.names.get(canvasId)
+    if (!names) this.names.set(canvasId, (names = new Map()))
+    for (const [name, id] of entries) {
+      names.delete(name)
+      names.set(name, id)
+    }
+    while (names.size > MAX_REMEMBERED_NAMES) names.delete(names.keys().next().value!)
   }
 
   // ワークスペース（なければ RecordStore から作る）。呼ぶたびに、捨てるまでの時間を延ばす

@@ -26,7 +26,7 @@ SKILL.md の「抜き書きのページ」で `report.py` の照合が通り rep
 2. ユーザーが見ている Canvas（`list_canvases` の viewing）に、この調べもの用の Canvas の Portal を作る:
    `edit_canvas({ ops: [{ "op": "create", "type": "portal", "as": "r", "name": "imozuru: <話題>" }], label: "imozuru: <話題>" })`
    結果の `canvases.r.canvas` が新しい Canvas の id
-3. その Canvas に canvas.json を流す: `edit_canvas({ canvas_id: <新しい Canvas>, label: <canvas.json の label>, ops: <canvas.json の ops> })`。ops は書き換えずにそのまま渡す（付箋の文は照合済みの原文なので、手で直すと言い換えになる）
+3. その Canvas に canvas.json を流す: `edit_canvas({ canvas_id: <新しい Canvas>, ops_file: "<canvas.json のパス（ワークスペースからの相対か絶対）>" })`。canvas.json を読んで ops に書き写さない（何万字もあり、読むのと書くのとでトークンを二度使う。分けて流すと、名前の付け替えも要る）。label は canvas.json のものが使われる。ops は書き換えない（付箋の文は照合済みの原文なので、手で直すと言い換えになる）。`ops_file` を受け付けない古い CanvCode（`get_canvas_format` に ops_file が無い）なら、`edit_canvas({ canvas_id, label: <canvas.json の label>, ops: <canvas.json の ops> })` と書き写して渡す（500 個まで）
 4. 返事の「抜き書きのページ」の行に、report.html のパスと並べて「CanvCode の Canvas『imozuru: <話題>』」と書く
 
 並ぶもの:

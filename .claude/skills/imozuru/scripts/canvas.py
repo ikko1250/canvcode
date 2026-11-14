@@ -42,8 +42,8 @@ PORTAL_W, PORTAL_H = 240, 320
 GAP = 24
 # PDF の Portal と、その下の URL のリンクカードの間（同じ原文の組だと分かるように、ほかより狭く）
 URL_GAP = 8
-# edit_canvas が 1 回で受け付ける操作の数
-MAX_OPS = 500
+# edit_canvas が 1 回で受け付ける操作の数（canvas.json を ops_file で渡すとき。ops に書き写すときは 500 まで）
+MAX_OPS = 5000
 STATUS_COLORS = {"付いた": "#d3f9d8", "一部だけ": "#fff3bf", "付かなかった": "#ffe3e3"}
 QUOTE_COLOR = "#f8f9fa"
 DISAGREE_COLOR = "#e5dbff"

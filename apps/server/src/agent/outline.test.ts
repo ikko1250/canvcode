@@ -93,7 +93,7 @@ describe('canvas outline', () => {
     const root = sample(records)
     const lines = readCanvas(records, {}).split('\n')
     expect(lines).toEqual([
-      `${root} "ホーム" rev=${records.rev} nodes=6 shown=5`,
+      `${root} "ホーム" rev=${records.rev} nodes=6 bounds=-600,0,1740x1200 shown=5`,
       'node:note note 0,0 200x120 "課題：同期が遅い"',
       'node:rect geo/rect 280,0 120x80 fill=#e8eefc "対策"',
       'node:arrow arrow node:note→node:rect "原因"',

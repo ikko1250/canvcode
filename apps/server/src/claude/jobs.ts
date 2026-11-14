@@ -906,6 +906,7 @@ export function systemPromptAppend(canvasId: string | undefined): string {
       : '',
     'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
     'After making or rearranging slides or a diagram, look at it with render_canvas and fix what looks wrong (not after every small edit).',
+    'To place many nodes, follow "Placing many nodes" in get_canvas_format: read bounds once, place nodes relative to each other, continue from the boxes in the edit_canvas result, and pass ops a script generated as ops_file.',
     'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
     'Skills in the workspace .claude/skills/ are available through the Skill tool.',
     'Subagents and long commands can run in the background. When one finishes you are woken and continue on your own; that reply is shown in the panel too.',
