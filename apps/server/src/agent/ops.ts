@@ -52,6 +52,11 @@ const MAX_BOXES = 100
 const MAX_CREATED = 500
 // 1 回の呼び出しで作れるノードの数（MAI-105。ops_file と grid で、とても大きな編集が同期で走らないように）
 export const MAX_CREATED_NODES = 5000
+// grid（MAI-105）：1 回で並べる数の上限と、セルの間の既定の間隔
+const MAX_GRID_ITEMS = 2000
+const GRID_GAP = 20
+// place の empty（MAI-105）：Canvas の中身から離す既定の間隔
+const EMPTY_GAP = 200
 // 位置を決めずに作ったノードを、Canvas の中身の右に置くときの間隔
 const AUTO_GAP = 80
 // 見ている範囲の中心の近くで空いた所を探すとき：ほかのノードとの間隔と、探す輪の数（ノードの大きさの半分ずつ外へ）
@@ -69,6 +74,9 @@ const MAX_LISTED_IDS = 10
 // link は url のリンクのカード（link-card。画面で URL を貼り付けたときと同じカード。MAI-97）。
 // image は MCP の plot_csv が描いた画像だけ（EditRequest の images。edit_canvas から直には作れない）
 const CREATABLE = ['text', 'note', 'geo', 'frame', 'slide', 'card', 'markdown-card', 'code-card', 'table-card', 'portal', 'pdf', 'link', 'image'] as const
+// defaults で書式の既定を決められる型と、grid で並べられる型（MAI-105）
+const DEFAULTABLE = ['text', 'note', 'geo', 'frame', 'card', 'markdown-card', 'code-card', 'table-card'] as const
+const GRID_TYPES = ['text', 'note', 'geo', 'card', 'markdown-card', 'code-card', 'table-card'] as const
 // portal / pdf で使えるもの（Canvas の名前は name か text）
 const PORTAL_FIELDS = new Set(['op', 'type', 'as', 'parent', 'x', 'y', 'place', 'w', 'h', 'name', 'text', 'path', 'url', 'target'])
 // link で使えるもの（タイトルは text か name。props は description・siteName だけ）。高さは中身から決まる
@@ -120,9 +128,20 @@ const ids = z.array(id).min(1)
 const hex = z.string().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, 'expected a hex colour like #3b5bdb')
 const paint = z.union([hex, z.literal('none')])
 const finite = z.number().finite()
+// align は、相手と揃える所（rightOf / leftOf なら上下、below / above なら左右。既定は start）。
+// empty は、Canvas の中身の右か下の空いた所（MAI-105）
 const place = z
-  .strictObject({ rightOf: id.optional(), leftOf: id.optional(), below: id.optional(), above: id.optional(), gap: finite.optional() })
-  .refine((p) => [p.rightOf, p.leftOf, p.below, p.above].filter(Boolean).length === 1, 'place needs exactly one of rightOf, leftOf, below, above')
+  .strictObject({
+    rightOf: id.optional(),
+    leftOf: id.optional(),
+    below: id.optional(),
+    above: id.optional(),
+    empty: z.enum(['right', 'below']).optional(),
+    gap: finite.optional(),
+    align: z.enum(['start', 'center', 'end']).optional(),
+  })
+  .refine((p) => [p.rightOf, p.leftOf, p.below, p.above, p.empty].filter(Boolean).length === 1, 'place needs exactly one of rightOf, leftOf, below, above, empty')
+  .refine((p) => p.empty === undefined || p.align === undefined, 'align is not for empty')
 
 // AI に分かりやすい形の props（型ごとに、使えるものだけを本物の props に直す）
 const style = {
@@ -233,6 +252,24 @@ const opSchemas = {
   add_row: z
     .strictObject({ op: z.literal('add_row'), slide: id.optional(), after: id.optional(), text: z.string().optional(), label: z.string().optional(), as: z.string().optional() })
     .refine((o) => (o.slide === undefined) !== (o.after === undefined), 'add_row needs exactly one of slide, after'),
+  // 型ごとの書式の既定と親（MAI-105）。この呼び出しで、あとに続く create と grid に当たる（op に書いたものが先）。type がなければ parent だけ
+  defaults: z
+    .strictObject({ op: z.literal('defaults'), type: z.enum(DEFAULTABLE).optional(), parent: id.optional(), ...style })
+    .refine((o) => o.type !== undefined || Object.keys(o).every((key) => key === 'op' || key === 'parent'), 'defaults without type takes only parent'),
+  // 格子に並べる（MAI-105）。items は文字（text）か、create の項目（as・書式・file / path）。列の幅は列の中で一番広いもの、行の高さは行の中で一番高いもの
+  grid: z.strictObject({
+    op: z.literal('grid'),
+    type: z.enum(GRID_TYPES),
+    as: z.string().optional(),
+    parent: id.optional(),
+    cols: z.number().int().min(1).max(100),
+    gap: finite.min(0).optional(),
+    gapX: finite.min(0).optional(),
+    gapY: finite.min(0).optional(),
+    items: z.array(z.union([z.string(), z.looseObject({})])).min(1).max(MAX_GRID_ITEMS),
+    ...position,
+    ...style,
+  }),
   // スライドの slide-layout の行を動かす（MAI-104）。cell（行の見出しか本文）の行を、to（動かしたあとの 0 から数えた位置）か by（上へは負）だけ動かす
   move_row: z
     .strictObject({ op: z.literal('move_row'), cell: id, to: z.number().int().min(0).optional(), by: z.number().int().optional() })
@@ -452,7 +489,16 @@ function overflowWarnings(editor: Editor, patch: Patch<WorkspaceRecord>): string
 function namedIn(ops: unknown[]): Set<string> {
   const names = new Set<string>()
   for (const op of ops) {
-    const as = (op as { as?: unknown } | null)?.as
+    const { op: name, as, items } = (op ?? {}) as { op?: unknown; as?: unknown; items?: unknown }
+    if (name === 'grid' && Array.isArray(items)) {
+      // grid の as は項目の名前の頭（"<as>.<番号>"）。項目の as はそのまま
+      items.forEach((item, k) => {
+        const own = (item as { as?: unknown } | null)?.as
+        if (typeof own === 'string') names.add(own)
+        else if (typeof as === 'string') names.add(`${as}.${k}`)
+      })
+      continue
+    }
     if (typeof as === 'string') names.add(as)
   }
   return names
@@ -517,6 +563,8 @@ class EditRun {
   private readonly meta: HistoryMeta
   // 位置を決めずに作るノードを置く所（最初は見ている範囲の中心の近くの空いた所か、Canvas の中身の右）
   private auto: Vec | null = null
+  // 位置を決めずに frame / group の中に作るノードを置く所（親ごと）
+  private readonly autoIn = new Map<string, Vec>()
   private readonly viewport: Box | undefined
   private readonly pdfs: ReadonlyMap<number, PreparedPdf> | undefined
   private readonly images: ReadonlyMap<number, PreparedImage> | undefined
@@ -525,6 +573,8 @@ class EditRun {
   private readonly declared: ReadonlySet<string>
   // 作ったノードの数（MAX_CREATED_NODES まで）
   private createdNodes = 0
+  // defaults で決めた既定（型 → 項目。'*' は型によらない parent。MAI-105）
+  private readonly defaults = new Map<string, Record<string, unknown>>()
 
   constructor(
     host: AgentHost,
@@ -561,6 +611,10 @@ class EditRun {
     switch (op.op) {
       case 'create':
         return this.create(op, i)
+      case 'defaults':
+        return this.setDefaults(op)
+      case 'grid':
+        return this.grid(op, i)
       case 'update':
         return this.update(op)
       case 'move':
@@ -591,7 +645,8 @@ class EditRun {
 
   // ---- 操作 ----
 
-  private create(op: Extract<Op, { op: 'create' }>, i: number): void {
+  private create(given: Extract<Op, { op: 'create' }>, i: number): void {
+    const op = this.withDefaults(given)
     let type: string = op.type
     if (type === 'portal' || type === 'pdf') return this.createPortal(op, i)
     if (type === 'image') return this.createImage(op, i)
@@ -814,7 +869,7 @@ class EditRun {
     const single = list.length === 1
     const from = single && !op.place ? this.topLeft(list[0]!) : this.aabbOf(list)
     let target: Vec = { x: from.x, y: from.y }
-    if (op.place) target = this.placeBeside(op.place, this.aabbOf(list))
+    if (op.place) target = this.placeBeside(op.place, this.aabbOf(list), new Set(list))
     target = { x: op.x ?? target.x, y: op.y ?? target.y }
     this.translate(list, target.x - from.x, target.y - from.y)
   }
@@ -1072,22 +1127,27 @@ class EditRun {
 
   // 作ったノードを置く左上（ワールド座標）。aabb は外接の箱の左上か（false なら箱の左上の点）
   private targetTopLeft(nodeId: string, op: { x?: number; y?: number; place?: z.infer<typeof place> }, parentId: string): { point: Vec; aabb: boolean } {
-    const box = this.editor.index.get(nodeId)!.worldBounds
+    return this.placeFor(this.editor.index.get(nodeId)!.worldBounds, new Set([nodeId]), op, parentId)
+  }
+
+  // box（ワールド座標）を置く左上。exclude は、空いた所を探すときに数えないノード（置こうとしているもの）
+  private placeFor(box: Box, exclude: ReadonlySet<string>, op: { x?: number; y?: number; place?: z.infer<typeof place> }, parentId: string): { point: Vec; aabb: boolean } {
     if (op.place) {
-      const point = this.placeBeside(op.place, box)
+      const point = this.placeBeside(op.place, box, exclude, parentId)
       return { point: { x: op.x ?? point.x, y: op.y ?? point.y }, aabb: true }
     }
     if (op.x !== undefined && op.y !== undefined) return { point: { x: op.x, y: op.y }, aabb: false }
     let fallback: Vec
     if (parentId !== this.canvasId) {
-      // 親（frame / group）の左上から少し内側
+      // 親（frame / group）の左上から少し内側。同じ呼び出しで続けて作ったものは、その下に並べる（重ならないように）
       const parent = this.editor.index.get(parentId)!.worldBounds
-      fallback = { x: parent.x + 24, y: parent.y + 24 }
+      fallback = this.autoIn.get(parentId) ?? { x: parent.x + 24, y: parent.y + 24 }
+      this.autoIn.set(parentId, { x: fallback.x, y: fallback.y + box.h + PLACE_GAP })
     } else {
       // 見ている範囲の中心の近くの空いた所（なければ Canvas の中身の右）から、上から順に並べる
-      if (!this.auto && this.viewport) this.auto = this.freeSpot(nodeId, box, this.viewport)
+      if (!this.auto && this.viewport) this.auto = this.freeSpot(exclude, box, this.viewport)
       if (!this.auto) {
-        const content = unionBoxes(this.editor.index.childrenOf(this.canvasId).flatMap((rootId) => (rootId === nodeId ? [] : [this.editor.index.get(rootId)!.worldBounds])))
+        const content = this.contentBounds(exclude)
         this.auto = content ? { x: content.x + content.w + AUTO_GAP, y: content.y } : { x: 0, y: 0 }
       }
       fallback = { ...this.auto }
@@ -1098,7 +1158,7 @@ class EditRun {
 
   // view の中心の近くで、box の大きさが空いている所の左上（ワールド座標）。中心から輪を広げて探し、なければ null。
   // この呼び出しで先に作ったノードも、空間の索引に入っているので避ける
-  private freeSpot(nodeId: string, box: Box, view: Box): Vec | null {
+  private freeSpot(exclude: ReadonlySet<string>, box: Box, view: Box): Vec | null {
     const stepX = Math.max(20, (box.w + FREE_MARGIN) / 2)
     const stepY = Math.max(20, (box.h + FREE_MARGIN) / 2)
     const origin = { x: view.x + view.w / 2 - box.w / 2, y: view.y + view.h / 2 - box.h / 2 }
@@ -1110,21 +1170,39 @@ class EditRun {
         const x = Math.round(origin.x + i * stepX)
         const y = Math.round(origin.y + j * stepY)
         const area = { x: x - FREE_MARGIN, y: y - FREE_MARGIN, w: box.w + FREE_MARGIN * 2, h: box.h + FREE_MARGIN * 2 }
-        if (this.editor.index.search(area).every((hit) => hit === nodeId)) return { x, y }
+        if (this.editor.index.search(area).every((hit) => exclude.has(hit))) return { x, y }
       }
     }
     return null
   }
 
-  // ref の隣に、box（ワールド座標）を置くときの左上
-  private placeBeside(spec: z.infer<typeof place>, box: Box): Vec {
+  // Canvas（または parentId の frame / group）の直下のノード（exclude を除く）を囲む箱
+  private contentBounds(exclude: ReadonlySet<string>, parentId = this.canvasId): Box | null {
+    return unionBoxes(this.editor.index.childrenOf(parentId).flatMap((childId) => (exclude.has(childId) ? [] : [this.editor.index.get(childId)!.worldBounds])))
+  }
+
+  // ref の隣（または Canvas の中身の右か下の空いた所）に、box（ワールド座標）を置くときの左上。align で相手と揃える所を選ぶ
+  private placeBeside(spec: z.infer<typeof place>, box: Box, exclude: ReadonlySet<string> = new Set(), parentId = this.canvasId): Vec {
+    if (spec.empty) {
+      // frame / group の中なら、その中身の右か下（中身がなければ親の左上から少し内側）
+      const gap = spec.gap ?? (parentId === this.canvasId ? EMPTY_GAP : PLACE_GAP)
+      const content = this.contentBounds(exclude, parentId)
+      if (!content) {
+        if (parentId === this.canvasId) return { x: 0, y: 0 }
+        const parent = this.editor.index.get(parentId)!.worldBounds
+        return { x: parent.x + 24, y: parent.y + 24 }
+      }
+      return spec.empty === 'right' ? { x: content.x + content.w + gap, y: content.y } : { x: content.x, y: content.y + content.h + gap }
+    }
     const gap = spec.gap ?? PLACE_GAP
     const refId = this.node((spec.rightOf ?? spec.leftOf ?? spec.below ?? spec.above)!)
     const r = this.editor.index.get(refId)!.worldBounds
-    if (spec.rightOf) return { x: r.x + r.w + gap, y: r.y }
-    if (spec.leftOf) return { x: r.x - gap - box.w, y: r.y }
-    if (spec.below) return { x: r.x, y: r.y + r.h + gap }
-    return { x: r.x, y: r.y - gap - box.h }
+    const along = (start: number, size: number, own: number) =>
+      spec.align === 'center' ? start + size / 2 - own / 2 : spec.align === 'end' ? start + size - own : start
+    if (spec.rightOf) return { x: r.x + r.w + gap, y: along(r.y, r.h, box.h) }
+    if (spec.leftOf) return { x: r.x - gap - box.w, y: along(r.y, r.h, box.h) }
+    if (spec.below) return { x: along(r.x, r.w, box.w), y: r.y + r.h + gap }
+    return { x: along(r.x, r.w, box.w), y: r.y - gap - box.h }
   }
 
   // ノードの箱の左上（ワールド座標。read_canvas の x,y と同じ点）
@@ -1174,7 +1252,86 @@ class EditRun {
 
   // この呼び出しで "as" を付けた名前とノード（MAI-105。保存したあと、AgentHost が覚える）
   names(): [string, string][] {
-    return [...this.refs]
+    // grid の名前のない項目（#<i>.<k>）は覚えない（呼び出しごとに同じ名前になる）
+    return [...this.refs].filter(([name]) => !name.startsWith('#'))
+  }
+
+  // ---- 既定と格子（MAI-105） ----
+
+  private setDefaults(op: Extract<Op, { op: 'defaults' }>): void {
+    const { op: _op, type, ...fields } = op
+    const key = type ?? '*'
+    this.defaults.set(key, { ...this.defaults.get(key), ...fields })
+  }
+
+  // create に既定を当てる（型によらない parent、card の既定（カードの型すべて）、型の既定、op の順に上書き）。
+  // 同じものの別名（text と label・name、付箋の color と fill、file と path）は、op にどちらかがあれば既定の両方を使わない
+  private withDefaults<T extends { type: string }>(op: T): T {
+    const card = op.type === 'card' || op.type.endsWith('-card') ? this.defaults.get('card') : undefined
+    const typed = op.type === 'card' ? undefined : this.defaults.get(op.type)
+    const all = this.defaults.get('*')
+    if (!all && !card && !typed) return op
+    const merged: Record<string, unknown> = { ...all, ...card, ...typed }
+    const aliases: [string, string][] = [['text', 'label'], ['text', 'name'], ['file', 'path'], ...(op.type === 'note' ? [['color', 'fill'] as [string, string]] : [])]
+    const given = op as Record<string, unknown>
+    for (const [a, b] of aliases) {
+      if (given[a] !== undefined || given[b] !== undefined) {
+        delete merged[a]
+        delete merged[b]
+      }
+    }
+    return { ...merged, ...op }
+  }
+
+  // items を cols 列の格子に並べる。セルはいったん作ってから大きさを読み、列の幅と行の高さを決めて並べ直す。
+  // 格子全体の置き場所は create と同じ（x,y・place・なければ見ている範囲の空いた所）。名前は items の as か、"<as>.<番号>"
+  private grid(op: Extract<Op, { op: 'grid' }>, i: number): void {
+    const { op: _op, cols, gap, gapX, gapY, items, as, x, y, place: where, ...cell } = op
+    const ids: string[] = []
+    items.forEach((raw, k) => {
+      const item: Record<string, unknown> = typeof raw === 'string' ? { text: raw } : raw
+      for (const key of ['op', 'type', 'parent', 'x', 'y', 'place']) {
+        if (key in item) throw new EditError(`items[${k}]: ${key} is set by the grid`)
+      }
+      const name = typeof item.as === 'string' ? item.as : as !== undefined ? `${as}.${k}` : `#${i}.${k}`
+      const parsed = opSchemas.create.safeParse({ op: 'create', ...cell, ...item, as: name, x: 0, y: 0 })
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0]!
+        throw new EditError(`items[${k}]: ${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`)
+      }
+      try {
+        this.create(parsed.data, i)
+      } catch (error) {
+        throw new EditError(`items[${k}]: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      ids.push(this.refs.get(name)!)
+    })
+    this.tx.flush()
+    const boxes = ids.map((nodeId) => this.editor.index.get(nodeId)!.worldBounds)
+    const used = Math.min(cols, ids.length)
+    const rows = Math.ceil(ids.length / used)
+    const colW = Array.from({ length: used }, () => 0)
+    const rowH = Array.from({ length: rows }, () => 0)
+    boxes.forEach((box, k) => {
+      colW[k % used] = Math.max(colW[k % used]!, box.w)
+      rowH[Math.floor(k / used)] = Math.max(rowH[Math.floor(k / used)]!, box.h)
+    })
+    const gx = gapX ?? gap ?? GRID_GAP
+    const gy = gapY ?? gap ?? GRID_GAP
+    const sum = (list: number[], n: number) => list.slice(0, n).reduce((a, b) => a + b, 0)
+    const total = { x: 0, y: 0, w: sum(colW, used) + gx * (used - 1), h: sum(rowH, rows) + gy * (rows - 1) }
+    const parentId = this.withDefaults(op).parent ? this.container(this.withDefaults(op).parent!) : this.canvasId
+    // 格子はワールドの左右・上下に並べるので、回した frame / group の中では崩れる
+    if (parentId !== this.canvasId) {
+      const m = this.editor.index.get(parentId)!.worldMatrix
+      if (Math.abs(Math.atan2(m.b, m.a)) > 1e-6) throw new EditError('grid cannot lay out inside a rotated frame or group')
+    }
+    const origin = this.placeFor(total, new Set(ids), { x, y, place: where }, parentId).point
+    ids.forEach((nodeId, k) => {
+      const col = k % used
+      const row = Math.floor(k / used)
+      this.translateTo(nodeId, { x: origin.x + sum(colW, col) + gx * col, y: origin.y + sum(rowH, row) + gy * row }, true)
+    })
   }
 
   private remember(nodeId: string, as: string | undefined, i: number): void {

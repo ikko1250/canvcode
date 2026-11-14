@@ -9,7 +9,7 @@ import { RecordStore, type StoredRecord } from '../records.ts'
 import { SyncHub } from '../sync.ts'
 import { AgentHost } from './host.ts'
 import { EditError, editCanvas, undoCanvasEdit, type EditRequest } from './ops.ts'
-import { readCanvas, readNodes } from './outline.ts'
+import { canvasFormatGuide, readCanvas, readNodes } from './outline.ts'
 
 // AI の編集（edit_canvas・undo_canvas_edit）と、サーバーの中のワークスペース（host.ts）
 
@@ -193,6 +193,157 @@ describe('edit_canvas', () => {
     expect(Object.keys(big.created)).toHaveLength(500)
     expect(big.moreCreated).toBe(100)
     expect(records.childrenOf(root).length).toBeGreaterThan(600)
+  })
+
+  it('aligns a placed node with the other one, and places in the empty space right of or below the content (MAI-105)', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 100, h: 100 },
+      { op: 'create', type: 'geo', as: 'b', place: { rightOf: '$a', gap: 10, align: 'center' }, w: 50, h: 40 },
+      { op: 'create', type: 'geo', as: 'c', place: { below: '$a', gap: 10, align: 'end' }, w: 40, h: 20 },
+      { op: 'create', type: 'geo', as: 'd', place: { leftOf: '$a', gap: 10, align: 'end' }, w: 30, h: 20 },
+      { op: 'create', type: 'geo', as: 'e', place: { above: '$a', gap: 10 }, w: 30, h: 20 },
+    ]).created
+    expect(world(records, made.b!)).toMatchObject({ x: 110, y: 30 })
+    expect(world(records, made.c!)).toMatchObject({ x: 60, y: 110 })
+    expect(world(records, made.d!)).toMatchObject({ x: -40, y: 80 })
+    expect(world(records, made.e!)).toMatchObject({ x: 0, y: -30 })
+    // 中身（-40,-30 〜 160,130）の右か下の空いた所
+    const empty = edit([
+      { op: 'create', type: 'frame', as: 'r', name: '右', place: { empty: 'right' }, w: 300, h: 200 },
+      { op: 'create', type: 'frame', as: 'u', name: '下', place: { empty: 'below', gap: 50 }, w: 300, h: 200 },
+    ]).created
+    expect(world(records, empty.r!)).toMatchObject({ x: 360, y: -30 })
+    // 下は、先に置いた右の frame も中身に数える
+    expect(world(records, empty.u!)).toMatchObject({ x: -40, y: 220 })
+    expect(() => edit([{ op: 'create', type: 'geo', place: { empty: 'right', align: 'center' } }])).toThrow(/align is not for empty/)
+    expect(() => edit([{ op: 'create', type: 'geo', place: { empty: 'right', below: made.a } }])).toThrow(/exactly one of rightOf, leftOf, below, above, empty/)
+  })
+
+  it('applies defaults of a type and a parent to the later creates of the call (MAI-105)', () => {
+    const { records, edit, root } = setup()
+    const made = edit([
+      { op: 'create', type: 'frame', as: 'f', name: '表', x: 0, y: 0, w: 600, h: 400 },
+      { op: 'defaults', parent: '$f' },
+      { op: 'defaults', type: 'geo', fill: '#ffffff', stroke: '#b8ad93', strokeWidth: 2, fontSize: 26, align: 'center', w: 120, h: 40 },
+      { op: 'create', type: 'geo', as: 'a', text: '8.50%', x: 10, y: 10 },
+      // op に書いたものが先
+      { op: 'create', type: 'geo', as: 'b', text: '強調', fill: '#ffe3e3', x: 140, y: 10 },
+      // 既定を足し直すと、あとのものに当たる
+      { op: 'defaults', type: 'geo', fontSize: 18 },
+      { op: 'create', type: 'geo', as: 'c', text: '小さく', x: 270, y: 10 },
+    ]).created
+    const props = (id: string) => records.get(id)!.props as Record<string, unknown>
+    expect(records.get(made.a!)).toMatchObject({ parentId: made.f })
+    expect(props(made.a!)).toMatchObject({ w: 120, h: 40, labelFontSize: 26, fill: { type: 'solid', color: '#ffffff' }, stroke: { color: '#b8ad93' } })
+    expect(props(made.b!)).toMatchObject({ fill: { type: 'solid', color: '#ffe3e3' }, labelFontSize: 26 })
+    expect(props(made.c!)).toMatchObject({ labelFontSize: 18, fill: { type: 'solid', color: '#ffffff' } })
+    // 既定はその呼び出しの中だけ
+    const next = edit([{ op: 'create', type: 'geo', as: 'd', x: 0, y: 500 }]).created
+    expect(records.get(next.d!)).toMatchObject({ parentId: root })
+    expect(props(next.d!).labelFontSize).not.toBe(18)
+    expect(() => edit([{ op: 'defaults', fill: '#ffffff' }])).toThrow(/defaults without type takes only parent/)
+    expect(() => edit([{ op: 'defaults', type: 'note', shape: 'ellipse' }, { op: 'create', type: 'note', text: 'x' }])).toThrow(/ops\[1\] \(create\)/)
+  })
+
+  it('lays out a grid from the contents only, with names and the size of the largest cell in each column and row (MAI-105)', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'grid', type: 'geo', as: 't', cols: 3, gap: 10, x: 0, y: 0, w: 100, h: 40, fill: '#ffffff', items: ['a', 'b', { text: 'c', as: 'third', fill: '#ffe3e3', w: 150 }, 'd', 'e'] },
+      // 同じ呼び出しで、名前で指せる
+      { op: 'connect', from: '$t.0', to: '$t.4' },
+    ])
+    expect(Object.keys(made.created)).toEqual(['t.0', 't.1', 'third', 't.3', 't.4', '#1'])
+    const at = (name: string) => world(records, made.created[name]!)
+    // 3 列目は一番広いセル（150）の幅。2 行目は、間隔 10 の下
+    expect([at('t.0'), at('t.1'), at('third'), at('t.3'), at('t.4')].map((b) => [b.x, b.y, b.w])).toEqual([
+      [0, 0, 100],
+      [110, 0, 100],
+      [220, 0, 150],
+      [0, 50, 100],
+      [110, 50, 100],
+    ])
+    expect((records.get(made.created.third!)!.props as { fill: { color: string } }).fill.color).toBe('#ffe3e3')
+    // 行の高さは、その行で一番高いもの。格子全体を place で置き、あとの呼び出しでも名前で指せる
+    const notes = edit([
+      { op: 'grid', type: 'note', as: 'n', cols: 2, place: { rightOf: '$third', gap: 40 }, w: 200, items: ['短い', 'ずっと長い文で、付箋の高さが伸びる。'.repeat(4), '三つ目'] },
+    ]).created
+    const n0 = world(records, notes['n.0']!)
+    const n1 = world(records, notes['n.1']!)
+    const n2 = world(records, notes['n.2']!)
+    expect(n0).toMatchObject({ x: 410, y: 0 })
+    expect(n1).toMatchObject({ x: 630, y: 0 })
+    expect(n1.h).toBeGreaterThan(n0.h)
+    expect(n2).toMatchObject({ x: 410, y: n1.h + 20 })
+    // 名前のない格子の項目は "#<i>.<k>" で返し、次の呼び出しには残さない
+    const plain = edit([{ op: 'grid', type: 'text', cols: 2, x: 0, y: 800, items: ['x', 'y'] }]).created
+    expect(Object.keys(plain)).toEqual(['#0.0', '#0.1'])
+    expect(() => edit([{ op: 'move', ids: ['$#0.0'], dx: 1 }])).toThrow(/unknown reference/)
+    // 位置は格子が決める。項目の書き誤りは、何番目かを添えて断る
+    expect(() => edit([{ op: 'grid', type: 'geo', cols: 2, items: ['a', { text: 'b', x: 5 }] }])).toThrow(/items\[1\]: x is set by the grid/)
+    expect(() => edit([{ op: 'grid', type: 'geo', cols: 2, items: ['a', { text: 'b', colour: '#fff' }] }])).toThrow(/items\[1\]: .*colour/)
+    expect(() => edit([{ op: 'grid', type: 'note', cols: 2, items: [{ text: 'a', shape: 'ellipse' }] }])).toThrow(/items\[0\]/)
+  })
+
+  it('lets an op give another name of a default, applies card defaults to every card type, and stacks unpositioned nodes in a parent (MAI-105)', () => {
+    const { records, edit } = setup()
+    const now = Date.now()
+    records.apply([{ typeName: 'file', id: 'file:md', kind: 'markdown', title: 'メモ', path: 'メモ.md', size: 1, mtime: now, hash: 'h', missing: false, parentCanvasId: null, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null } as StoredRecord], [])
+    const made = edit([
+      { op: 'create', type: 'frame', as: 'f', name: '枠', x: 0, y: 0, w: 800, h: 800 },
+      { op: 'defaults', parent: '$f' },
+      { op: 'defaults', type: 'note', fill: '#ffe3e3' },
+      { op: 'defaults', type: 'geo', text: '既定の文字' },
+      { op: 'defaults', type: 'card', w: 333 },
+      // 付箋の color は fill の別名。geo の label は text の別名。op に書いた方を使う
+      { op: 'create', type: 'note', as: 'n', text: 'x', color: '#d3f9d8' },
+      { op: 'create', type: 'geo', as: 'g', label: '自分の文字', w: 100, h: 40 },
+      // card の既定は、実際の型（markdown-card）でも当たる
+      { op: 'create', type: 'card', as: 'c', file: 'file:md', h: 100 },
+    ]).created
+    const props = (id: string) => records.get(id)!.props as Record<string, unknown>
+    expect(props(made.n!).color).toBe('#d3f9d8')
+    expect(props(made.g!).label).toBe('自分の文字')
+    expect(props(made.c!).w).toBe(333)
+    // 位置を決めずに frame の中に作ったものは、左上から下へ並べる（同じ所に重ねない）
+    const ys = [made.n!, made.g!, made.c!].map((id) => world(records, id))
+    expect(ys.map((b) => b.x)).toEqual([24, 24, 24])
+    expect(ys[0]!.y).toBe(24)
+    expect(ys[1]!.y).toBeCloseTo(ys[0]!.y + ys[0]!.h + 40)
+    expect(ys[2]!.y).toBeCloseTo(ys[1]!.y + ys[1]!.h + 40)
+    // frame の子の place empty は、frame の中身の右（frame の外ではない）
+    const inside = edit([{ op: 'create', type: 'geo', as: 'e', parent: made.f, place: { empty: 'right' }, w: 50, h: 50 }]).created
+    expect(world(records, inside.e!)).toMatchObject({ x: 24 + 333 + 40, y: 24 })
+  })
+
+  it('refuses a grid inside a rotated frame, and a grid name referred to before the grid (MAI-105)', () => {
+    const { edit } = setup()
+    const f = edit([{ op: 'create', type: 'frame', as: 'f', name: '回した枠', x: 0, y: 0, w: 400, h: 400, rotation: 30 }]).created.f!
+    expect(() => edit([{ op: 'grid', type: 'geo', parent: f, cols: 2, items: ['a', 'b'] }])).toThrow(/grid cannot lay out inside a rotated frame or group/)
+    edit([{ op: 'grid', type: 'geo', as: 't', cols: 2, x: 0, y: 600, items: ['a', 'b'] }])
+    expect(() =>
+      edit([
+        { op: 'move', ids: ['$t.0'], dx: 1 },
+        { op: 'grid', type: 'geo', as: 't', cols: 2, x: 0, y: 900, items: ['c', 'd'] },
+      ]),
+    ).toThrow(/\$t\.0 is named by a later op of this call/)
+  })
+
+  it('runs the table example of get_canvas_format: a grid inside a frame placed right of everything (MAI-105)', () => {
+    const { records, edit } = setup()
+    edit([{ op: 'create', type: 'note', text: '前からあるもの', x: 0, y: 0 }])
+    const guide = canvasFormatGuide({ editable: true })
+    const example = JSON.parse(guide.slice(guide.indexOf('{"label":"Rates"'), guide.indexOf('\n(Without x,y')).trim()) as { label: string; ops: unknown[] }
+    const made = edit(example.ops, { label: example.label }).created
+    const frame = world(records, made.f!)
+    expect(frame.x).toBe(420)
+    const cells = Array.from({ length: 9 }, (_, k) => world(records, made[`t.${k}`]!))
+    expect(records.get(made['t.4']!)).toMatchObject({ parentId: made.f })
+    // frame の左上から 24 内側に始まり、frame からはみ出さない
+    expect(cells[0]).toMatchObject({ x: frame.x + 24, y: frame.y + 24, w: 140, h: 56 })
+    expect(cells[8]).toMatchObject({ x: frame.x + 24 + 288, y: frame.y + 24 + 120 })
+    expect(cells[8]!.x + cells[8]!.w).toBeLessThanOrEqual(frame.x + frame.w)
+    expect(cells[8]!.y + cells[8]!.h).toBeLessThanOrEqual(frame.y + frame.h)
   })
 
   it('creates notes that fit their text unless h is given', () => {

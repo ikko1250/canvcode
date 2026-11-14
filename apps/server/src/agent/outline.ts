@@ -859,13 +859,13 @@ Result: {"batch","rev","created":{"<as or #i>":"<new id>"},"counts":{created,upd
 
 Ids: an op may name what it creates with "as":"a"; later ops refer to it as "$a". Names stay usable as "$a" in later edit_canvas calls on the same canvas (until the server restarts; using a name again points it to the newer node), so a large job can be split into several calls without looking up ids. They are shared by everyone editing the canvas: when other agents may edit it too, use names unlikely to clash (e.g. "rates_title", not "title"). Within one call, "$a" before the op that names a refers to nothing (an error), not to an older a.
 Coordinates: world. x,y = top-left of the node's box, as in read_canvas (also inside rotated frames/groups; the server converts).
-Position (create/move): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40} (aligns top or left edges). Omitted on create: in free space near the centre of the user's view (else right of the existing content); later unpositioned creates in the same call stack below it.
+Position (create/move/grid): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40, align?:start|center|end} (start aligns the top or left edges), or place:{empty:"right"|"below", gap?:200} (right of or below all the content; inside a parent, right of or below its children). Omitted on create: in free space near the centre of the user's view (else right of the existing content), or 24 px inside a parent's top-left; later unpositioned creates in the same call stack below it.
 Colours are hex (#rrggbb); fill/stroke also accept "none".
 
 Placing many nodes:
 1. read_canvas once for bounds= and the user's viewing= (with rect= on a large canvas).
-2. Pick an empty area: right of bounds (x = right edge + 200), below it, or a free part of the user's view. For a group of nodes, create a frame there and put them inside (parent = the frame).
-3. Place nodes relative to each other instead of computing every coordinate: place:{below:"$prev"} chains a column, place:{rightOf:"$top of the previous column"} starts the next one.
+2. Pick an empty area: place:{empty:"right"} (or "below"), or a free part of the user's view. For a group of nodes, create a frame there and put them inside (defaults parent = the frame).
+3. Do not compute coordinates: use grid for rows and columns (tables, card walls), place:{below:"$prev"} to chain a column, and defaults for the style every node shares.
 4. Continue from the boxes in the result (and names) in the next call.
 5. Check once at the end with render_canvas; fix with move, align or distribute.
 
@@ -885,6 +885,8 @@ Ops:
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
   arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).
+- defaults: type?, parent?, and style fields of that type (no type: parent only; type card applies to every card type). Later create and grid ops of the call use them for what they omit (fill, stroke, fontSize, w, h, parent…); an op's own field wins, also over a default under another name of it (text / label / name, a note's color / fill). Write them once instead of repeating them on every node.
+- grid: type (text | note | geo | card | markdown-card | code-card | table-card), cols, items, gap?:20 (or gapX / gapY), as?, parent? (not a rotated one), position, style. items are texts ("8.50%") or create fields ({"text","as","fill","file",…}; no position). Lays them out row by row; each column is as wide as its widest cell and each row as tall as its tallest. Names: an item's as, else "<as>.<k>" (k from 0), e.g. "$t.4"; without as, created lists them as "#<op index>.<k>" (not kept for later calls).
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
 - group: ids (2+, same parent), as?   ungroup: ids
@@ -909,6 +911,13 @@ Slides (presentations):
 - adjust (update on the slide, its slide-layout or a child; not for the title template) moves the table panel with its rows and, for table-image, the figure frame, and sets the table-image table width and the table panel height: {"table":{"dx":0,"dy":-60,"w":800,"h":500},"figure":{"dx":0,"dy":0},"title":{"dx":0,"dy":0}} in px of a 1920-wide slide (4:3 shrinks x). w is ${TABLE_IMAGE_WIDTH_RANGE.min}–${TABLE_IMAGE_WIDTH_RANGE.max} (default ${TABLE_IMAGE_SPEC.tableWidth}); the figure keeps its right edge and gets narrower. null resets a value. The title follows the table's dy (not dx); title dx/dy move it further on its own.
 - table.h (any template with rows) fixes the height of the grey table panel; the rows share that height (rows with their own height keep it, the others split the rest), so a smaller h stops rows from stretching to fill a tall panel. Without h the height follows the row count and text. h is kept between room for every row at one line and the slide bottom (table-images: the figures below keep at least ${TABLE_IMAGES_SPEC.minFiguresHeightPx}px and shrink as the table grows). Without dy, the panel keeps its top edge; with a fixed h the panel top is the full-panel top (y ${TABLE_IMAGE_SPEC.top}; table-images ${TABLE_IMAGES_SPEC.top}; the tighter layout ${TABLE_SPEC.tight.panelTop}) plus dy.
 - Other nodes may be put inside a slide (parent = the slide id) and keep their positions.
+
+A 3×3 table in a frame right of everything:
+{"label":"Rates","ops":[
+ {"op":"create","type":"frame","as":"f","name":"Rates","place":{"empty":"right"},"w":480,"h":240},
+ {"op":"defaults","parent":"$f"},
+ {"op":"grid","type":"geo","as":"t","cols":3,"gap":4,"w":140,"h":56,"fill":"#ffffff","stroke":"#b8ad93","align":"center","items":["Year","Rate","Note","2025","8.50%","","2026","8.75%","estimate"]}]}
+(Without x,y a node or grid inside a frame starts 24 px inside its top-left.)
 
 Example:
 {"canvas_id":"canvas:…","label":"Login flow","ops":[
