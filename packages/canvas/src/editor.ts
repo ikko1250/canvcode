@@ -66,6 +66,7 @@ import {
   type SlideLayoutRowKind,
   insertSlideLayoutRow,
   slideLayoutRowOf,
+  movedPresentRow,
   slotsWithAutoRowHeight,
   slotsWithResizedRows,
 } from './slideLayoutRows.ts'
@@ -154,6 +155,11 @@ export interface SlideLayoutRowState {
   canRemove: boolean
   // 選んでいるセルの行が、手で決めた高さ（h）を持つか（「行の高さを自動に戻す」を出す）
   manualHeight: boolean
+  // 選んでいるセルの行（rows の中の番号。セルを選んでいなければ null）と、その行を上・下へ動かせるか（MAI-104）。
+  // 動かせるのは並べている行（上限までの行）の中だけ（上限を超えた行は位置を変えないので、入れ替えるとセルが重なる）
+  row: number | null
+  canMoveUp: boolean
+  canMoveDown: boolean
   // 今の行の数と、そのレイアウトの行数の上限（slideLayoutMaxRows。セルの文字の大きさで決まる）
   rowCount: number
   maxRows: number
@@ -1453,9 +1459,29 @@ export class Editor {
       canAdd: target.rows.length > 0 && target.rows.length < maxRows,
       canRemove: target.row !== null && target.rows.length > 1,
       manualHeight: target.row !== null && target.rows[target.row].h !== undefined,
+      row: target.row,
+      canMoveUp: target.row !== null && target.row > 0 && target.row < Math.min(target.rows.length, maxRows),
+      canMoveDown: target.row !== null && target.row < Math.min(target.rows.length, maxRows) - 1,
       rowCount: target.rows.length,
       maxRows,
     }
+  }
+
+  // 選んでいるセルの行を、1 つ上（-1）か下（1）の行と入れ替える（MAI-104。表の行も箇条書きの項目も同じ）。
+  // 行の見出し・本文・手で決めた高さは行と一緒に動き、位置と地の色はコミットフックが付け直す。選択はそのまま。
+  // セルを選んでいない・端の行で動かせないときは何もせず false
+  moveSlideLayoutRow(delta: -1 | 1): boolean {
+    const target = this.slideLayoutRowTarget()
+    if (!target || target.row === null) return false
+    const { layout, rows, row } = target
+    const placed = Math.min(rows.length, this.slideLayoutMaxRowsOf(layout, rows))
+    if (row >= placed || row + delta < 0 || row + delta >= placed) return false
+    const next = movedPresentRow(slotsOf((layout.props as Record<string, unknown>).slots), rows, row, row + delta)
+    if (!next) return false
+    this.transact(delta < 0 ? 'move slide row up' : 'move slide row down', (tx) => {
+      tx.put({ ...layout, props: { ...layout.props, slots: next } })
+    })
+    return true
   }
 
   // slide-layout に行を 1 つ足す。セルを選んでいればその行の下に、そうでなければ最後に足す。

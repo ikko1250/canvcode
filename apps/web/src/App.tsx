@@ -1981,7 +1981,12 @@ export function App(props: { initial: InitialRecords }) {
         hasText: selectedTextNodes.length > 0,
         slideCount: selectedSlides.length,
         slidesHidden: selectedSlides.every((s) => s.props.hidden),
-        slideRows: slideRows && { canRemove: slideRows.canRemove, manualHeight: slideRows.manualHeight },
+        slideRows: slideRows && {
+          canRemove: slideRows.canRemove,
+          manualHeight: slideRows.manualHeight,
+          canMoveUp: slideRows.canMoveUp,
+          canMoveDown: slideRows.canMoveDown,
+        },
         slideTemplate: templateSlideId !== null,
         pdfLink: pdfLinkId !== null,
         image: imageId !== null,
@@ -2013,6 +2018,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       removeSlideRow: () => editor.removeSlideLayoutRow(),
       resetSlideRowHeight: () => editor.resetSlideLayoutRowHeight(),
+      moveSlideRow: (delta) => editor.moveSlideLayoutRow(delta),
       applySlideTemplate: (kind) => {
         if (!templateSlideId || !editor.applySlideTemplate(templateSlideId, kind)) return notify('中身のあるスライドには、テンプレートを使えません')
         // 選択は変わらないので、描き直して操作の項目（行を足す など）を決め直す
