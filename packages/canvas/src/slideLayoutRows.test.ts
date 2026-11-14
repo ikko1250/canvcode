@@ -4,7 +4,7 @@ import { richTextFromPlain, solidPaint, type SlideLayoutKind, type SlideLayoutPr
 import { canvasSlideBodyFill, canvasSlideLayout } from '@canvcode/slides'
 import { Editor } from './editor.ts'
 import { slideLayoutMaxRows } from './slideLayoutArrange.ts'
-import { emptiedCellProps, insertSlideLayoutRow, slideLayoutRowOf } from './slideLayoutRows.ts'
+import { emptiedCellProps, insertSlideLayoutRow, movedSlideLayoutRow, slideLayoutRowOf } from './slideLayoutRows.ts'
 
 // slide-layout（スライド v2）の行を足す・消す。並べ直しと地の色の付け直しは、コミットフックが同じ 1 歩で行う
 
@@ -73,6 +73,18 @@ describe('slide-layout rows: pure helpers', () => {
     expect(insertSlideLayoutRow({ rows }, 9, { body: 'n' }).rows.at(-1)).toEqual({ body: 'n' })
   })
 
+  it('moves a row to another position, with its label and manual height (MAI-104)', () => {
+    const rows = [{ label: 'l0', body: 'b0' }, { body: 'b1', h: 120 }, { body: 'b2' }]
+    expect(movedSlideLayoutRow({ title: 't', rows }, 1, 0)).toEqual({ title: 't', rows: [{ body: 'b1', h: 120 }, { label: 'l0', body: 'b0' }, { body: 'b2' }] })
+    expect(movedSlideLayoutRow({ rows }, 0, 2)?.rows).toEqual([{ body: 'b1', h: 120 }, { body: 'b2' }, { label: 'l0', body: 'b0' }])
+    // 範囲の外の行き先は端に寄せる。位置が変わらない・元の行が無いときは null
+    expect(movedSlideLayoutRow({ rows }, 2, -5)?.rows.map((r) => r.body)).toEqual(['b2', 'b0', 'b1'])
+    expect(movedSlideLayoutRow({ rows }, 2, 9)).toBeNull()
+    expect(movedSlideLayoutRow({ rows }, 3, 0)).toBeNull()
+    expect(movedSlideLayoutRow({ rows }, -1, 0)).toBeNull()
+    expect(rows.map((r) => r.body)).toEqual(['b0', 'b1', 'b2'])
+  })
+
   it('empties the text of a cell and keeps its format', () => {
     const props = { w: 10, fill: solidPaint('#fff'), label: 'abc', labelParagraphs: richTextFromPlain('a\nb', { color: '#123456' }), labelFontSize: 30 }
     expect(emptiedCellProps(props)).toEqual({ ...props, label: '', labelParagraphs: [{ runs: [{ text: '', format: { color: '#123456' } }] }] })
@@ -88,7 +100,7 @@ describe('addSlideLayoutRow', () => {
     expect(box(title)).toEqual({ x: three.title.x, y: three.title.y, w: three.title.w })
     const before = slots().rows
     editor.setSelection([before[0].label!])
-    expect(editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: true, manualHeight: false, rowCount: 3, maxRows: maxRows() })
+    expect(editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: true, manualHeight: false, row: 0, canMoveUp: false, canMoveDown: true, rowCount: 3, maxRows: maxRows() })
     expect(editor.addSlideLayoutRow()).toBe(true)
 
     const rows = slots().rows
@@ -144,7 +156,7 @@ describe('addSlideLayoutRow', () => {
     const max = maxRows()
     const full = setup(max)
     full.editor.setSelection([full.slots().rows[0].body])
-    expect(full.editor.slideLayoutRowState()).toEqual({ canAdd: false, canRemove: true, manualHeight: false, rowCount: max, maxRows: max })
+    expect(full.editor.slideLayoutRowState()).toEqual({ canAdd: false, canRemove: true, manualHeight: false, row: 0, canMoveUp: false, canMoveDown: true, rowCount: max, maxRows: max })
     let events = 0
     const unlisten = full.editor.store.listen(() => (events += 1))
     expect(full.editor.addSlideLayoutRow()).toBe(false)
@@ -211,7 +223,7 @@ describe('removeSlideLayoutRow', () => {
   it('does not remove the last row, nor without a selected cell', () => {
     const one = setup(1)
     one.editor.setSelection([one.slots().rows[0].body])
-    expect(one.editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: false, manualHeight: false, rowCount: 1, maxRows: maxRows() })
+    expect(one.editor.slideLayoutRowState()).toEqual({ canAdd: true, canRemove: false, manualHeight: false, row: 0, canMoveUp: false, canMoveDown: false, rowCount: 1, maxRows: maxRows() })
     expect(one.editor.removeSlideLayoutRow()).toBe(false)
     expect(one.slots().rows).toHaveLength(1)
 
@@ -235,5 +247,99 @@ describe('removeSlideLayoutRow', () => {
     expect(box(title)).toEqual(titleBefore)
     expect(rows.map((row) => fillColor(get(row.body)))).toEqual(fills)
     expect(selected(editor)).toEqual([rows[0].body])
+  })
+})
+
+describe('moveSlideLayoutRow (MAI-104)', () => {
+  for (const layout of ['table', 'bullets'] as const) {
+    it(`swaps the row of the selected cell with the next one and rearranges them (${layout})`, () => {
+      const { editor, slots, get, box } = setup(3, layout)
+      const before = slots().rows
+      const geometry = canvasSlideLayout(layout, 3)
+      editor.setSelection([before[0].body])
+      expect(editor.slideLayoutRowState()).toMatchObject({ row: 0, canMoveUp: false, canMoveDown: true })
+      expect(editor.moveSlideLayoutRow(-1)).toBe(false)
+      expect(editor.moveSlideLayoutRow(1)).toBe(true)
+
+      expect(slots().rows).toEqual([before[1], before[0], before[2]])
+      // 選択はそのまま（動かした行のセル）。続けて動かせる
+      expect(selected(editor)).toEqual([before[0].body])
+      expect(editor.slideLayoutRowState()).toMatchObject({ row: 1, canMoveUp: true, canMoveDown: true })
+      // 位置は新しい順に、地の色も行の順に付け直す
+      expect(box(before[0].body)).toEqual({ x: geometry.rows[1].body.x, y: geometry.rows[1].body.y, w: geometry.rows[1].body.w })
+      expect(box(before[1].body)).toEqual({ x: geometry.rows[0].body.x, y: geometry.rows[0].body.y, w: geometry.rows[0].body.w })
+      if (layout === 'table') expect(box(before[0].label!)).toEqual({ x: geometry.rows[1].label!.x, y: geometry.rows[1].label!.y, w: geometry.rows[1].label!.w })
+      expect(slots().rows.map((row) => fillColor(get(row.body)))).toEqual([0, 1, 2].map(canvasSlideBodyFill))
+      // 文字は動かした行についていく
+      expect(get(before[0].body).props).toMatchObject({ label: '本文0' })
+
+      // 見出しのセルを選んでも、その行を動かせる（表）
+      if (layout === 'table') {
+        editor.setSelection([before[2].label!])
+        expect(editor.moveSlideLayoutRow(-1)).toBe(true)
+        expect(slots().rows).toEqual([before[1], before[2], before[0]])
+        expect(editor.moveSlideLayoutRow(1)).toBe(true)
+        expect(editor.moveSlideLayoutRow(1)).toBe(false)
+        expect(slots().rows).toEqual([before[1], before[0], before[2]])
+      }
+    })
+  }
+
+  it('moves the manual height with the row, and redoes', () => {
+    const { editor, slots } = setup(3)
+    const rows = slots().rows
+    const layoutId = editor.getNode(rows[0].body)!.parentId
+    editor.transact('manual', (tx) => {
+      const layout = editor.getNode(layoutId)!
+      const current = (layout.props as SlideLayoutProps).slots
+      tx.put({ ...layout, props: { ...layout.props, slots: { ...current, rows: current.rows.map((row, i) => (i === 0 ? { ...row, h: 200 } : row)) } } })
+    })
+    editor.setSelection([rows[0].body])
+    expect(editor.moveSlideLayoutRow(1)).toBe(true)
+    expect(slots().rows.map((row) => row.h)).toEqual([undefined, 200, undefined])
+    expect(editor.undo()).toBe(true)
+    expect(slots().rows.map((row) => row.h)).toEqual([200, undefined, undefined])
+    expect(editor.redo()).toBe(true)
+    expect(slots().rows.map((row) => row.body)).toEqual([rows[1].body, rows[0].body, rows[2].body])
+  })
+
+  it('moves only among the placed rows (rows over the limit keep their place), and not in a locked layout', () => {
+    const max = maxRows()
+    const { editor, slots, layout } = setup(max + 1)
+    const rows = slots().rows
+    // 並べている最後の行は、上限を超えた行と入れ替えない
+    editor.setSelection([rows[max - 1].body])
+    expect(editor.slideLayoutRowState()).toMatchObject({ canMoveUp: true, canMoveDown: false })
+    expect(editor.moveSlideLayoutRow(1)).toBe(false)
+    // 上限を超えた行は動かせない
+    editor.setSelection([rows[max].body])
+    expect(editor.slideLayoutRowState()).toMatchObject({ canMoveUp: false, canMoveDown: false })
+    expect(editor.moveSlideLayoutRow(-1)).toBe(false)
+    expect(slots().rows).toEqual(rows)
+    // ロックした layout では、行の状態を出さない（Alt+↑/↓ はふつうの矢印キーと同じになる）
+    editor.transact('lock', (tx) => tx.put({ ...editor.getNode(layout.id)!, locked: true }))
+    editor.setSelection([rows[0].body])
+    expect(editor.slideLayoutRowState()).toBeNull()
+    expect(editor.moveSlideLayoutRow(1)).toBe(false)
+  })
+
+  it('undoes in one step, and does nothing without a selected cell', () => {
+    const { editor, slots, get, box, slide, title } = setup(3)
+    const rows = slots().rows
+    const boxes = rows.map((row) => box(row.body))
+    const fills = rows.map((row) => fillColor(get(row.body)))
+    editor.setSelection([rows[2].body])
+    expect(editor.moveSlideLayoutRow(-1)).toBe(true)
+    expect(editor.undo()).toBe(true)
+    expect(slots().rows).toEqual(rows)
+    expect(rows.map((row) => box(row.body))).toEqual(boxes)
+    expect(rows.map((row) => fillColor(get(row.body)))).toEqual(fills)
+
+    for (const id of [slide.id, title]) {
+      editor.setSelection([id])
+      expect(editor.slideLayoutRowState()).toMatchObject({ row: null, canMoveUp: false, canMoveDown: false })
+      expect(editor.moveSlideLayoutRow(1)).toBe(false)
+    }
+    expect(slots().rows).toEqual(rows)
   })
 })

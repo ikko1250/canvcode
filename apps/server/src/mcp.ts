@@ -313,7 +313,7 @@ function registerCanvasTools(
     {
       title: 'Edit a canvas',
       description:
-        'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, scale, reparent, add_row) atomically. World coordinates. ' +
+        'Apply ops (create, update, move, delete, group, ungroup, connect, align, distribute, scale, reparent, add_row, move_row) atomically. World coordinates. ' +
         'create can also make a portal to a new canvas, a shortcut portal to an existing one, import a PDF (workspace file or URL) as a portal, or place a link card for a URL.',
       inputSchema: editCanvasInput,
       annotations: { destructiveHint: true },
