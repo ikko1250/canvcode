@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { relative } from 'node:path'
 import type { CanUseTool, EffortLevel, ModelInfo, Options, PermissionResult, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { catalogOf, defaultModelValue, probeModels, type ModelCatalog } from './models.ts'
+import { catalogOf, defaultModelValue, probeModels, workspaceSettings, type ModelCatalog } from './models.ts'
 import {
   askedByRule,
   askTool,
@@ -183,6 +183,8 @@ export interface ClaudeJobsDeps {
   permissionTimeoutMs?: number
   // モデルの一覧を Claude Code に聞くときに待つ時間（ミリ秒。既定は probeModels の 30 秒）
   modelProbeTimeoutMs?: number
+  // 動いているプロセスのモデルを変えるときに、答えを待つ時間（ミリ秒。既定は session.ts の CONFIGURE_TIMEOUT_MS）
+  configureTimeoutMs?: number
 }
 
 // CANVCODE_CLAUDE_MAX_TURNS（正の整数）・CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）・CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS（正の整数）。
@@ -321,9 +323,15 @@ export class ClaudeJobs {
     }
     if (!live) this.makeRoom()
     const settings: ModelSettings = { ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}) }
-    // 動いているプロセスのモデルか effort が違えば、送る前に変える（既定に戻すときは、サーバーの CANVCODE_CLAUDE_MODEL を渡す）
+    // 動いているプロセスのモデルか effort が違えば、送る前に変える。既定に戻すときは、新しいプロセスと同じく
+    // CANVCODE_CLAUDE_MODEL かワークスペースの設定の値を明示して渡す（渡さないと Claude Code の組み込みの既定になる）
+    let previous: ModelSettings | undefined
     if (live && (live.settings.model !== settings.model || live.settings.effort !== settings.effort)) {
-      live.session.configure({ ...(settings.model ?? this.deps.model ? { model: settings.model ?? this.deps.model } : {}), ...(settings.effort ? { effort: settings.effort } : {}) })
+      const fallback = workspaceSettings(this.deps.workspace)
+      const model = settings.model ?? defaultModelValue(this.deps.workspace, this.deps.model)
+      const effort = settings.effort ?? fallback.effortLevel
+      live.session.configure({ ...(model ? { model } : {}), ...(effort ? { effort } : {}) })
+      previous = live.settings
       live.settings = settings
     }
     const id = randomUUID()
@@ -347,7 +355,7 @@ export class ClaudeJobs {
     thread.finished = []
     thread.waiting = job
     this.begin(thread, job)
-    thread.session.send(messageText(job, thread.canvasId), job.id)
+    thread.session.send(messageText(job, thread.canvasId), job.id, (error) => this.configureFailed(thread, job, settings, previous, error))
     return publicJob(job)
   }
 
@@ -366,6 +374,11 @@ export class ClaudeJobs {
     if (thread?.waiting === job && !thread.session.started) {
       // まだプロセスを立てていない（前のプロセスを待っている）
       void this.closeThread(thread.threadId, 0)
+    } else if (thread?.waiting === job && thread.session.withdraw(job.id)) {
+      // モデルを変え終わるのを待っていて、まだ流していない（MAI-106）。流さずに止める
+      thread.waiting = undefined
+      this.finish(job, 'cancelled')
+      this.scheduleIdle(thread)
     } else if (thread?.waiting === job) {
       // 答えるターンがまだ来ていない。待っているメッセージを取り消す（取り消せずにターンが来たら、そこで止める）
       thread.waiting = undefined
@@ -480,6 +493,7 @@ export class ClaudeJobs {
         onExit: (error) => this.exited(thread, error),
       },
       this.closing.get(threadId),
+      this.deps.configureTimeoutMs,
     )
     this.live.set(threadId, thread)
     return thread
@@ -872,6 +886,16 @@ export class ClaudeJobs {
     last.eventCount = last.events.length
     this.store.appendEvent(last.id, from, event)
     this.notify(last, from)
+  }
+
+  // モデルを変えられず、依頼を送らなかった（MAI-106）。依頼は失敗にし、プロセスの値は前のものに戻す（次に送るときに、もう一度変える）
+  private configureFailed(thread: LiveThread, job: StoredJob, settings: ModelSettings, previous: ModelSettings | undefined, error: Error): void {
+    if (previous && thread.settings === settings) thread.settings = previous
+    if (thread.waiting !== job) return
+    thread.waiting = undefined
+    this.push(job, { kind: 'error', message: `モデルを変えられなかったので、依頼を送りませんでした（${error.message}）` })
+    this.finish(job, 'failed')
+    this.scheduleIdle(thread)
   }
 
   private push(job: StoredJob, event: JobEvent): void {

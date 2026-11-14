@@ -198,6 +198,8 @@ async function post(url: string): Promise<void> {
 
 // サーバーにつながらなかったときに、使えるか確かめ直すまでの時間
 const RECHECK_MS = 10_000
+// モデルの一覧を Claude Code に聞けなかった（固定の一覧だった）とき、読み直すまでの時間（サーバーが聞き直すのと同じ）
+const MODELS_RETRY_MS = 60_000
 
 export class ClaudeClient {
   // useSyncExternalStore に渡すので、変わったときだけ作り直す
@@ -206,6 +208,8 @@ export class ClaudeClient {
   private recheck: number | null = null
   private readonly loading = new Set<string>()
   private loadingModels = false
+  // 最後にモデルの一覧を読んだ時刻（Claude Code に聞けなかった固定の一覧なら、MODELS_RETRY_MS たってから読み直す）
+  private modelsAt = 0
   private readonly listeners = new Set<() => void>()
 
   constructor() {
@@ -263,13 +267,16 @@ export class ClaudeClient {
 
   // 選べるモデルと effort を読む（読んであれば何もしない。MAI-106）
   async loadModels(): Promise<void> {
-    if (this.snapshot.models || this.loadingModels || this.snapshot.availability !== 'on') return
+    const models = this.snapshot.models
+    if (this.loadingModels || this.snapshot.availability !== 'on') return
+    if (models && (models.fromClaude || Date.now() - this.modelsAt < MODELS_RETRY_MS)) return
     this.loadingModels = true
     try {
       const res = await fetch(`${BASE}/models`)
       if (!res.ok) return
-      const models = (await res.json()) as ModelCatalog
-      this.set({ ...this.snapshot, models })
+      const loaded = (await res.json()) as ModelCatalog
+      this.modelsAt = Date.now()
+      this.set({ ...this.snapshot, models: loaded })
     } catch (error) {
       console.warn('Failed to load the Claude models', error)
     } finally {

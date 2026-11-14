@@ -104,7 +104,9 @@ interface FakeQuery {
   fail: (error: Error) => void
 }
 
-function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger?: boolean; onInterrupt?: (q: FakeQuery) => void } = {}) {
+function fakeSdk(
+  options: { reply?: (q: FakeQuery, text: string) => void; linger?: boolean; onInterrupt?: (q: FakeQuery) => void; setModel?: (model?: string) => Promise<void> } = {},
+) {
   const queries: FakeQuery[] = []
   const run: RunQuery = (params) => {
     const out: SDKMessage[] = []
@@ -183,7 +185,7 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
       },
       // CLI が答えるまで少し待つ（送る文が変え終わるのを待つことを確かめる）
       setModel: async (model?: string) => {
-        await new Promise((resolve) => setTimeout(resolve, 5))
+        await (options.setModel?.(model) ?? new Promise((resolve) => setTimeout(resolve, 5)))
         q.log.push(`model:${model ?? '-'}`)
       },
       applyFlagSettings: async (settings: { effortLevel?: string | null }) => {
@@ -367,6 +369,72 @@ describe('ClaudeJobs', () => {
     expect(sdk.queries).toHaveLength(2)
     expect(sdk.queries[1].options).toMatchObject({ resume: 's1', model: 'haiku', effort: 'low' })
     expect(sdk.queries[1].log).toEqual(['send:b'])
+  })
+
+  it('returns a running thread to the model and effort of the workspace settings for the default (MAI-106)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'canvcode-claude-default-'))
+    cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
+    mkdirSync(join(workspace, '.claude'))
+    writeFileSync(join(workspace, '.claude', 'settings.json'), JSON.stringify({ model: 'opus', effortLevel: 'high' }))
+    const sdk = replying()
+    const jobs = makeJobs({ run: sdk.run, workspace })
+    const a = await finished(jobs, jobs.start({ prompt: 'a', model: 'haiku', effort: 'low' }).id)
+    // 渡さないと Claude Code の組み込みの既定になるので、設定の値を明示する（新しいプロセスと同じモデル・effort になる）
+    await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId }).id)
+    expect(sdk.queries[0].log).toEqual(['send:a', 'model:opus', 'effort:high', 'send:b'])
+  })
+
+  it('does not send a request stopped while the model is changing (MAI-106)', async () => {
+    let release!: () => void
+    const sdk = fakeSdk({
+      reply: (q) => q.emit(init('s1'), success('s1')),
+      setModel: (model) => (model === 'sonnet' ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve()),
+    })
+    const jobs = makeJobs({ run: sdk.run })
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId, model: 'sonnet' })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(jobs.cancel(b.id).status).toBe('cancelled')
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const [q] = sdk.queries
+    expect(q.sent).toEqual(['a'])
+    expect(q.interrupts).toEqual([])
+    // 次の依頼はふつうに送れる（モデルはもう sonnet）
+    const c = await finished(jobs, jobs.start({ prompt: 'c', threadId: a.threadId, model: 'sonnet' }).id)
+    expect(c.status).toBe('done')
+    expect(q.sent).toEqual(['a', 'c'])
+  })
+
+  it('fails a request when the model cannot be changed (refused or no answer), without sending it, and tries again next time (MAI-106)', async () => {
+    const attempts: (string | undefined)[] = []
+    const sdk = fakeSdk({
+      reply: (q) => q.emit(init('s1'), success('s1')),
+      setModel: (model) => {
+        attempts.push(model)
+        if (model === 'bad') return Promise.reject(new Error('model not allowed'))
+        if (model === 'stuck') return new Promise<void>(() => {})
+        return Promise.resolve()
+      },
+    })
+    const jobs = makeJobs({ run: sdk.run, configureTimeoutMs: 30 })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    const b = await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId, model: 'bad' }).id)
+    expect(b.status).toBe('failed')
+    expect(b.events).toEqual([{ kind: 'error', message: 'モデルを変えられなかったので、依頼を送りませんでした（model not allowed）' }])
+    // 前のモデルのままなので、同じものを選んで送れば、もう一度変えようとする
+    await finished(jobs, jobs.start({ prompt: 'c', threadId: a.threadId, model: 'bad' }).id)
+    expect(attempts).toEqual(['bad', 'bad'])
+    // 答えが来なければ、時間切れで失敗にする
+    const d = await finished(jobs, jobs.start({ prompt: 'd', threadId: a.threadId, model: 'stuck' }).id)
+    expect(d.status).toBe('failed')
+    expect(d.events[0]).toMatchObject({ kind: 'error', message: expect.stringContaining('did not answer in time') })
+    expect(sdk.queries[0].sent).toEqual(['a'])
+    // 選び直せば送れる
+    const e = await finished(jobs, jobs.start({ prompt: 'e', threadId: a.threadId, model: 'sonnet' }).id)
+    expect(e.status).toBe('done')
+    spy.mockRestore()
   })
 
   it('lists the models Claude Code offers, without its own default row, and names the model the default runs (MAI-106)', async () => {

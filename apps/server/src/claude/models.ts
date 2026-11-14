@@ -60,12 +60,21 @@ export function choicesOf(models: readonly ModelInfo[]): ModelChoice[] {
 
 // モデルを渡さないときに使われるモデルの名前：サーバーの CANVCODE_CLAUDE_MODEL、なければワークスペースの .claude/settings.json の model
 export function defaultModelValue(workspace: string, serverModel: string | undefined): string | undefined {
-  if (serverModel) return serverModel
+  return serverModel || workspaceSettings(workspace).model
+}
+
+// ワークスペースの .claude/settings.json の model と effortLevel（読めなければ、ないもの）。
+// 動いているプロセスを「既定」に戻すときは、これを明示して渡す（setModel(undefined) や effortLevel: null は、設定ファイルではなく
+// Claude Code の組み込みの既定に戻すため）
+export function workspaceSettings(workspace: string): { model?: string; effortLevel?: EffortLevel } {
   try {
-    const settings = JSON.parse(readFileSync(join(workspace, '.claude', 'settings.json'), 'utf8')) as { model?: unknown }
-    return typeof settings.model === 'string' && settings.model ? settings.model : undefined
+    const settings = JSON.parse(readFileSync(join(workspace, '.claude', 'settings.json'), 'utf8')) as { model?: unknown; effortLevel?: unknown }
+    return {
+      ...(typeof settings.model === 'string' && settings.model ? { model: settings.model } : {}),
+      ...(isEffortLevel(settings.effortLevel) ? { effortLevel: settings.effortLevel } : {}),
+    }
   } catch {
-    return undefined
+    return {}
   }
 }
 
