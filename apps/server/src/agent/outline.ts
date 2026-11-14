@@ -235,6 +235,10 @@ function localBox(item: Item): { box: Box; estimated: boolean } {
     }
     case 'link-card':
       return { box: { x: 0, y: 0, w: num(p.w, 400), h: typeof p.description === 'string' && p.description ? 110 : 70 }, estimated: true }
+    // 中身に合わせる（sizing が auto の）Markdown・Python のカードは、画面が測った高さを記録に書き戻さないので、h は見積もり（MAI-105）
+    case 'markdown-card':
+    case 'code-card':
+      return { box: { x: 0, y: 0, w: num(p.w), h: num(p.h) }, estimated: p.sizing !== 'fixed' }
     // ファイルのカード（MAI-100）の高さは決まっている
     case 'attachment':
       return { box: { x: 0, y: 0, w: num(p.w, 300), h: ATTACHMENT_HEIGHT }, estimated: false }
@@ -306,6 +310,8 @@ export function readCanvas(records: RecordStore, options: ReadCanvasOptions): st
     options.viewing ? `viewing=${point(options.viewing)},${round(options.viewing.w)}x${round(options.viewing.h)}` : '',
     `rev=${records.rev}`,
     `nodes=${tree.length}`,
+    // 中身全体の外接の箱（MAI-105。空いた所を探すときに、この外に置けば重ならない）
+    tree.length ? `bounds=${boundsText(tree, ',')}` : '',
     filtered ? `matched=${shown.length}` : '',
     `shown=${page.length}`,
     next === undefined ? '' : `next=${next}`,
@@ -340,6 +346,34 @@ interface LineContext {
   slides: Map<string, SlideInfo>
   expanded: boolean
   parentShown: boolean
+}
+
+// edit_canvas の結果に返す、ノードの位置と大きさ（MAI-105）。boxes は id → "x,y wxh [rot=度]"（read_canvas の行と同じ書き方。
+// w・h に ~ が付くのは見積もり）、矢印は "x,y→x,y"。bounds は Canvas の中身全体の外接の箱 "x,y wxh"。
+// ids のうち Canvas にないもの（消したもの・別の Canvas へ移したもの）は出さない
+export function nodeBoxes(records: RecordStore, canvasId: string, ids: readonly string[]): { boxes: Record<string, string>; bounds?: string } {
+  const tree = loadTree(records, canvasId)
+  const byId = new Map(tree.map((item) => [item.record.id, item]))
+  const bindings = bindingsByArrow(records, tree)
+  const boxes: Record<string, string> = {}
+  for (const id of ids) {
+    const item = byId.get(id)
+    if (!item) continue
+    if (item.type === 'arrow') {
+      const ends = endpoints(item, bindings.get(id) ?? [])
+      boxes[id] = `${point(ends.start.world)}→${point(ends.end.world)}`
+    } else {
+      const rotation = worldRotation(item)
+      boxes[id] = `${point(applyMat(item.world, { x: item.box.x, y: item.box.y }))} ${item.estimated ? '~' : ''}${round(item.box.w)}x${round(item.box.h)}${rotation ? ` rot=${rotation}` : ''}`
+    }
+  }
+  return { boxes, ...(tree.length ? { bounds: boundsText(tree, ' ') } : {}) }
+}
+
+// 一番上のノード（Canvas の直下）の外接の箱を合わせたもの。sep は位置と大きさの間（read_canvas の 1 行目は空白を使えない）
+function boundsText(tree: Tree, sep: string): string {
+  const box = union(tree.filter((item) => item.depth === 0).map((item) => item.aabb)) ?? { x: 0, y: 0, w: 0, h: 0 }
+  return `${round(box.x)},${round(box.y)}${sep}${round(box.w)}x${round(box.h)}`
 }
 
 // 1 行：<id> <型> <x>,<y> <w>x<h> [rot=度] [型ごとのもの] "文字" [locked] [in=親] [N children]
@@ -766,10 +800,10 @@ export function canvasFormatGuide(options: { editable?: boolean } = {}): string 
 - World coordinates: x grows right, y grows down, 1 unit = 1 CSS px at 100% zoom. Rotation is in degrees, clockwise.
 - Nodes inside a group or frame store positions relative to the parent; the tools always report world coordinates.
 - x,y is the world position of the top-left corner of the node's own (unrotated) box; WxH is its size. rot= is the node's rotation in world space.
-- Sizes marked ~ (text, quote-card, link-card) are estimates: the server cannot measure text.
+- Sizes marked ~ are estimates: the server cannot measure text (text, notes whose height follows the text, quote-card, link-card), and the height of a markdown-card or code-card that fits its content is only measured in the browser. To stack such cards, give them a fixed h, or leave room.
 
 ## read_canvas outline
-First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revision> nodes=<total> [matched=<after filters>] shown=<lines> [next=<cursor>]
+First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revision> nodes=<total> [bounds=<x>,<y>,<W>x<H> (around all top-level nodes)] [matched=<after filters>] shown=<lines> [next=<cursor>]
 Then one line per node, back-to-front (z-order); children of a group/frame follow their parent, indented by depth:
   <id> <type> <x>,<y> <W>x<H> [rot=<deg>] [extra] ["text"] [locked] [in=<parent id>] [[N children]]
 Arrows: <id> arrow <start>→<end> ["label"], where each end is a node id (bound) or x,y (free).
@@ -818,14 +852,22 @@ ${options.editable ? EDIT_GUIDE : '\nEditing canvas nodes is not available; thes
 // edit_canvas の説明（agent/ops.ts の操作の形と合わせる）
 const EDIT_GUIDE = `
 ## Editing (edit_canvas)
-edit_canvas(canvas_id?, ops, if_rev?, label?) runs all ops in order as one atomic edit (max 500): if any op fails, nothing changes and the error names ops[i].
+edit_canvas(canvas_id?, ops | ops_file, if_rev?, label?) runs all ops in order as one atomic edit (max 500 ops; 5000 in an ops_file): if any op fails, nothing changes and the error names ops[i].
 Batch a whole change into one call. label is a short description the user sees with an undo button. Pass if_rev=<rev you read> to refuse if those nodes changed since.
-Result: {"batch","rev","created":{"<as or #i>":"<new id>"},"counts":{created,updated,deleted},"warnings"?}. undo_canvas_edit(batch_id) undoes it.
+ops_file: a path in the workspace (not in .canvcode) to a JSON file with the ops array (or {"ops":[…],"label":"…"}; canvas_id and if_rev go to edit_canvas itself). When a script generates the ops, have it write that file and pass ops_file; do not print the JSON and copy it into ops (that costs its tokens twice).
+Result: {"batch","rev","created":{"<as or #i>":"<new id>"},"counts":{created,updated,deleted},"boxes":{"<id>":"<x>,<y> <W>x<H>"},"bounds":"<x>,<y> <W>x<H>","warnings"?}. boxes = where each created or changed node ended up, as in read_canvas (~ = estimated; rot= when rotated; arrows "x,y→x,y"; created first, at most 100, "moreBoxes":<n> for the rest); bounds = around all top-level nodes. created lists at most 500 (named ones first, "moreCreated":<n> for the rest). Use them instead of reading the canvas again. undo_canvas_edit(batch_id) undoes it.
 
-Ids: an op may name what it creates with "as":"a"; later ops refer to it as "$a".
+Ids: an op may name what it creates with "as":"a"; later ops refer to it as "$a". Names stay usable as "$a" in later edit_canvas calls on the same canvas (until the server restarts; using a name again points it to the newer node), so a large job can be split into several calls without looking up ids. They are shared by everyone editing the canvas: when other agents may edit it too, use names unlikely to clash (e.g. "rates_title", not "title"). Within one call, "$a" before the op that names a refers to nothing (an error), not to an older a.
 Coordinates: world. x,y = top-left of the node's box, as in read_canvas (also inside rotated frames/groups; the server converts).
 Position (create/move): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40} (aligns top or left edges). Omitted on create: in free space near the centre of the user's view (else right of the existing content); later unpositioned creates in the same call stack below it.
 Colours are hex (#rrggbb); fill/stroke also accept "none".
+
+Placing many nodes:
+1. read_canvas once for bounds= and the user's viewing= (with rect= on a large canvas).
+2. Pick an empty area: right of bounds (x = right edge + 200), below it, or a free part of the user's view. For a group of nodes, create a frame there and put them inside (parent = the frame).
+3. Place nodes relative to each other instead of computing every coordinate: place:{below:"$prev"} chains a column, place:{rightOf:"$top of the previous column"} starts the next one.
+4. Continue from the boxes in the result (and names) in the next call.
+5. Check once at the end with render_canvas; fix with move, align or distribute.
 
 Ops:
 - create: type (text | note | geo | frame | slide | card | portal | pdf | link), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
@@ -839,7 +881,7 @@ Ops:
     With target ("$a" of a portal or pdf made earlier in the call, a portal node id, or a canvas id) and no name/text: makes no canvas; puts a shortcut portal (dashed, "↗") to that canvas here, e.g. to show the same PDF next to several groups of notes instead of drawing long arrows to one place.
   pdf: path (a PDF file in the workspace folder that list_documents returns: relative to it, or absolute inside it) or url (http/https), name (default: the file name), w, h. Imports the PDF as a canvas of its pages (like dropping it in the UI) and puts its portal here.
   link: url (http/https), text (or name; the title, default: the url), w (default 400; the height follows the text), props? {description, siteName}. A link card like one made by pasting a URL; Ctrl/⌘+click opens it. The server does not fetch the page, so it shows only what you give.
-  portal (without target) and pdf add "canvases":{"<as or #i>":{"canvas":"canvas:…"}} to the result; pdf also gives "file", "pages" and "textPath" (the text of the PDF, a "=== page N ===" line before each page; absent when the PDF has no text).
+  portal (without target) and pdf add "canvases":{"<as or #i>":{"canvas":"canvas:…"}} to the result; pdf also gives "file", "pages" and "textPath" (the text of the PDF, a "=== page N ===" line before each page; absent when the PDF has no text), or "textPending":true while the text is still being extracted (read_nodes the portal later for its textPath).
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
   arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).

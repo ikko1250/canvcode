@@ -119,6 +119,82 @@ describe('edit_canvas', () => {
     expect((tab.sent[0]!.records as unknown[]).length).toBe(6)
   })
 
+  it('returns where the created and changed nodes ended up, and the bounds of the canvas (MAI-105)', () => {
+    const { records, edit, root } = setup()
+    const made = edit([
+      { op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 160, h: 60 },
+      { op: 'create', type: 'note', as: 'n', text: 'メモ', place: { below: '$a', gap: 20 } },
+      { op: 'connect', as: 'e', from: '$a', to: '$n' },
+    ])
+    const { a, n, e } = made.created as Record<string, string>
+    // 作ったものを、read_canvas の行と同じ書き方で（付箋の高さは文字から決めた見積もり）
+    expect(Object.keys(made.boxes!)).toEqual([a, n, e])
+    expect(made.boxes![a!]).toBe('0,0 160x60')
+    expect(made.boxes![n!]).toMatch(/^0,80 ~?220x\d+$/)
+    expect(made.boxes![e!]).toMatch(/^\d+,\d+→\d+,\d+$/)
+    expect(made.bounds).toMatch(/^0,0 220x\d+$/)
+    expect(made.moreBoxes).toBeUndefined()
+    // 動かしたものだけ。全体の範囲も広がる
+    const moved = edit([{ op: 'move', ids: [a!], x: 400, y: 300 }])
+    expect(moved.boxes).toMatchObject({ [a!]: '400,300 160x60' })
+    expect(moved.boxes).not.toHaveProperty(n!)
+    expect(moved.bounds).toBe('0,80 560x280')
+    // 中身に合わせる Markdown・Python のカードの高さは、画面でしか測れないので見積もり（read_canvas にも ~ を付ける）
+    const card = (id: string, type: string, index: string, props: Record<string, unknown>) =>
+      ({ typeName: 'node', id, type, parentId: root, x: 0, y: 80, rotation: 0, index, opacity: 1, locked: false, props: { fileId: '', role: 'owner', ...props }, meta: {} }) as StoredRecord
+    records.apply([card('node:md', 'markdown-card', 'a9', { w: 300, h: 320, sizing: 'auto' }), card('node:fixed', 'code-card', 'b0', { w: 300, h: 200, sizing: 'fixed' })], [])
+    const lines = readCanvas(records, { canvasId: root }).split('\n')
+    expect(lines.find((line) => line.startsWith('node:md '))).toContain(' ~300x320')
+    expect(lines.find((line) => line.startsWith('node:fixed '))).toContain(' 300x200')
+    expect(lines[0]).toMatch(/ bounds=0,80,560x\d+ /)
+    // 回したノードには rot= を付ける（read_canvas の行と同じ）
+    const turned = edit([{ op: 'create', type: 'geo', as: 'turned', x: 0, y: 400, w: 200, h: 20, rotation: 90 }])
+    expect(turned.boxes![turned.created.turned!]).toMatch(/ 200x20 rot=90$/)
+    // 多ければ、先頭の 100 だけを返し、残りは数だけ
+    const many = edit(Array.from({ length: 120 }, (_, i) => ({ op: 'create', type: 'geo', x: i * 10, y: 1000, w: 5, h: 5 })))
+    expect(Object.keys(many.boxes!)).toHaveLength(100)
+    expect(many.moreBoxes).toBe(20)
+  })
+
+  it('keeps the "as" names for later edits of the same canvas, and accepts more ops from a file (MAI-105)', () => {
+    const { host, records, edit, root } = setup()
+    const first = edit([{ op: 'create', type: 'geo', as: 'head', x: 0, y: 0, w: 100, h: 40 }])
+    // 次の呼び出しでも "$head" で指せる
+    const second = edit([
+      { op: 'create', type: 'geo', as: 'next', place: { below: '$head', gap: 10 }, w: 100, h: 40 },
+      { op: 'connect', from: '$head', to: '$next' },
+    ])
+    expect(world(records, second.created.next!)).toMatchObject({ x: 0, y: 50 })
+    // 同じ名前を付け直すと、新しいノードを指す
+    const third = edit([{ op: 'create', type: 'geo', as: 'head', x: 500, y: 0, w: 100, h: 40 }])
+    const fourth = edit([{ op: 'move', ids: ['$head'], dx: 10 }])
+    expect(fourth.boxes).toEqual({ [third.created.head!]: '510,0 100x40' })
+    expect(world(records, first.created.head!)).toMatchObject({ x: 0, y: 0 })
+    // 同じ呼び出しのあとで付け直す名前を、付ける前に指したら、前の呼び出しのノードではなく断る
+    expect(() =>
+      edit([
+        { op: 'connect', from: '$head', to: '$next' },
+        { op: 'create', type: 'geo', as: 'head', x: 900, y: 0, w: 10, h: 10 },
+      ]),
+    ).toThrow(/\$head is named by a later op of this call/)
+    // ほかの Canvas では使えない
+    const other = edit([{ op: 'create', type: 'portal', as: 'room', name: '別室', x: 0, y: 500 }]).canvases!.room!.canvas
+    expect(() => edit([{ op: 'move', ids: ['$next'], dx: 1 }], { canvasId: other })).toThrow(/unknown reference \$next/)
+    // 取り消して消えたノードを指せば、断る
+    undoCanvasEdit(host, fourth.batch)
+    undoCanvasEdit(host, third.batch)
+    expect(() => edit([{ op: 'move', ids: ['$head'], dx: 1 }])).toThrow(/unknown node/)
+    // 500 を超える ops は断り、ファイルで渡せることを教える。ファイルなら 5000 まで
+    const ops = Array.from({ length: 600 }, (_, i) => ({ op: 'create', type: 'geo', x: i, y: 2000, w: 5, h: 5 }))
+    expect(() => edit(ops)).toThrow(/Send at most 500 per call \(up to 5000 in an ops_file\)/)
+    const big = edit(ops, { maxOps: 5000 })
+    expect(big.counts.created).toBe(600)
+    // created は 500 まで（残りは数だけ）
+    expect(Object.keys(big.created)).toHaveLength(500)
+    expect(big.moreCreated).toBe(100)
+    expect(records.childrenOf(root).length).toBeGreaterThan(600)
+  })
+
   it('creates notes that fit their text unless h is given', () => {
     const { records, edit } = setup()
     const result = edit([

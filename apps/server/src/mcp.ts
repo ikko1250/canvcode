@@ -1,3 +1,5 @@
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { isAbsolute, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -7,7 +9,7 @@ import { normalizeRefId } from '@canvcode/core'
 import { findPlotColumn, normalizePlotSpec, PLOT_KINDS, PLOT_MAX_LEGEND_NCOL, plotTable, plotUsesX, type ImageProps, type PlotKind, type PlotSpec } from '@canvcode/nodes'
 import { HttpError, type FileInfo } from './files.ts'
 import type { AgentHost } from './agent/host.ts'
-import { EditError, editCanvas, editCanvasInput, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
+import { checkOpCount, EditError, editCanvas, editCanvasInput, MAX_FILE_OPS, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
 import { preparePdfs, type PdfSources } from './agent/pdfSource.ts'
 import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes, slideIdOf } from './agent/outline.ts'
 import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
@@ -318,22 +320,36 @@ function registerCanvasTools(
       inputSchema: editCanvasInput,
       annotations: { destructiveHint: true },
     },
-    ({ canvas_id, ops, if_rev, label }) =>
+    ({ canvas_id, ops: inline, ops_file, if_rev, label: inlineLabel }) =>
       editGuard(async () => {
         const user = viewing()
         const canvasId = canvas_id ?? user?.canvasId
         if (!canvasId) throw new EditError('No canvas_id, and no open CanvCode tab reports which canvas the user is viewing. Pass canvas_id (see list_canvases).')
+        if ((inline === undefined) === (ops_file === undefined)) throw new EditError('Pass exactly one of ops, ops_file.')
+        // ops_file（MAI-105）：スクリプトが書いた ops を、モデルが書き写さずに渡す
+        const fromFile = ops_file === undefined ? undefined : await readOpsFile(refDeps.files, ops_file)
+        const ops = fromFile?.ops ?? inline!
+        const label = inlineLabel ?? fromFile?.label
         const viewport = user?.canvasId === canvasId ? user.viewport : undefined
+        // PDF を読んで保存する前に、数を確かめる
+        checkOpCount(ops.length, fromFile ? MAX_FILE_OPS : undefined)
         const pdfs = await preparePdfs(ops, pdf)
-        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport, pdfs })
-        // 取り込んだ PDF の文字（ページごとに「=== page N ===」）のファイル。AI が grep して、どのページかを探せる
+        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport, pdfs, ...(fromFile ? { maxOps: MAX_FILE_OPS } : {}) })
+        // 取り込んだ PDF の文字（ページごとに「=== page N ===」）のファイル。AI が grep して、どのページかを探せる。
+        // 文字を取り出し終えるのは、少しだけ（PDF_TEXT_WAIT_MS）待つ。間に合わなければ textPending にして先に返す
+        // （取り出しは続く。あとで read_nodes や resolve_reference が textPath を返す。PDF をたくさん取り込むと、返事が時間切れになっていた。MAI-105）
         if (result.batch && result.canvases && pdf) {
-          for (const [key, created] of Object.entries(result.canvases) as [string, CreatedCanvas & { textPath?: string }][]) {
-            const index = key.startsWith('#') ? Number(key.slice(1)) : ops.findIndex((op) => (op as { as?: unknown }).as === key)
-            const prepared = pdfs.get(index)
-            const textFile = prepared && (await pdf.assets.pdfTextFile(prepared.asset.hash))
-            if (textFile && !textFile.textless) created.textPath = textFile.path
-          }
+          const late = new Promise<'late'>((resolve) => setTimeout(resolve, PDF_TEXT_WAIT_MS, 'late').unref())
+          await Promise.all(
+            (Object.entries(result.canvases) as [string, CreatedCanvas & { textPath?: string; textPending?: boolean }][]).map(async ([key, created]) => {
+              const index = key.startsWith('#') ? Number(key.slice(1)) : ops.findIndex((op) => (op as { as?: unknown }).as === key)
+              const prepared = pdfs.get(index)
+              if (!prepared) return
+              const textFile = await Promise.race([pdf.assets.pdfTextFile(prepared.asset.hash).catch(() => null), late])
+              if (textFile === 'late') created.textPending = true
+              else if (textFile && !textFile.textless) created.textPath = textFile.path
+            }),
+          )
         }
         // 既定の Canvas を使ったときは、どこを変えたかを返す
         return text(JSON.stringify(canvas_id ? result : { canvas: canvasId, ...result }))
@@ -715,4 +731,41 @@ async function guard(run: () => Promise<CallToolResult>): Promise<CallToolResult
     if (err.status === 404) return error(`${err.message}. Use list_documents to find a valid id.`)
     return error(err.message)
   }
+}
+
+// edit_canvas の ops_file（MAI-105）：ワークスペースの中の JSON ファイル。ops の配列か、{ "ops": [...], "label"?: "..." }
+const MAX_OPS_FILE_BYTES = 20 * 1024 * 1024
+// edit_canvas で取り込んだ PDF の文字を取り出し終えるのを待つ時間（ミリ秒。全部の PDF で合わせて）
+const PDF_TEXT_WAIT_MS = 3000
+
+// パスはワークスペースの中だけ（シンボリックリンクは、たどった先で確かめる）。.canvcode（CanvCode の管理用）の中は読まない。
+// 読めない JSON の理由に中身は出さない
+async function readOpsFile(files: RefDeps['files'], path: string): Promise<{ ops: unknown[]; label?: string }> {
+  let abs: string
+  try {
+    abs = files.resolveWorkspacePath(path)
+  } catch {
+    throw new EditError(`ops_file ${path} is outside the workspace`)
+  }
+  const info = await stat(abs).catch(() => null)
+  if (!info?.isFile()) throw new EditError(`ops_file: no file at ${path}`)
+  const [real, root] = await Promise.all([realpath(abs), realpath(files.root)])
+  const rel = relative(root, real)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new EditError(`ops_file ${path} is outside the workspace`)
+  if (rel.split(sep)[0] === '.canvcode') throw new EditError(`ops_file ${path} is in .canvcode (CanvCode's own data); write it elsewhere in the workspace`)
+  if (info.size > MAX_OPS_FILE_BYTES) throw new EditError(`ops_file ${path} is too large (over ${MAX_OPS_FILE_BYTES / 1024 / 1024} MB)`)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(real, 'utf8'))
+  } catch {
+    throw new EditError(`ops_file ${path} is not valid JSON`)
+  }
+  const body = Array.isArray(parsed) ? { ops: parsed } : (parsed as { ops?: unknown; label?: unknown } | null)
+  const extra = body && !Array.isArray(parsed) && typeof parsed === 'object' ? Object.keys(body).filter((key) => key !== 'ops' && key !== 'label') : []
+  if (extra.length) throw new EditError(`ops_file ${path}: only "ops" and "label" are read (${extra.join(', ')}); pass canvas_id and if_rev to edit_canvas`)
+  if (!body || !Array.isArray(body.ops) || body.ops.length === 0) throw new EditError(`ops_file ${path} must hold a non-empty array of ops, or {"ops": [...]}`)
+  if (body.ops.some((op) => typeof op !== 'object' || op === null || typeof (op as { op?: unknown }).op !== 'string')) {
+    throw new EditError(`ops_file ${path}: every op must be an object with "op"`)
+  }
+  return { ops: body.ops, ...(typeof body.label === 'string' && body.label.trim() ? { label: body.label.trim().slice(0, 80) } : {}) }
 }
