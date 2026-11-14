@@ -229,6 +229,7 @@ describe('buildPieMenus', () => {
     addSlideRow: vi.fn(),
     removeSlideRow: vi.fn(),
     resetSlideRowHeight: vi.fn(),
+    moveSlideRow: vi.fn(),
     applySlideTemplate: vi.fn(),
     hasSlides: false,
     exportSlidesPdf: vi.fn(),

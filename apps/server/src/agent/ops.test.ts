@@ -577,6 +577,39 @@ describe('edit_canvas slides', () => {
     expect(shape(serverChildren)).toEqual(shape(clientAfter))
   })
 
+  it('reorders the rows with move_row, keeping each label with its body, and undoes it (MAI-104)', () => {
+    const { records, host, edit } = setup()
+    const slideId = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table' }]).created.s!
+    const rows = slotsOf(records, slideId).rows
+    const text = (id: string) => (records.get(id)!.props as { label?: string }).label
+    const texts = rows.map((row) => text(row.body))
+
+    // 見出しのセルで指して、先頭へ
+    const moved = edit([{ op: 'move_row', cell: rows[2]!.label!, to: 0 }])
+    expect(slotsOf(records, slideId).rows).toEqual([rows[2], rows[0], rows[1]])
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    expect(text(rows[2]!.body)).toBe(texts[2])
+    // Undo で元の順と位置に戻る
+    undoCanvasEdit(host, moved.batch)
+    expect(slotsOf(records, slideId).rows).toEqual(rows)
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    edit([{ op: 'move_row', cell: rows[2]!.label!, to: 0 }])
+    // by は相対。範囲の外は端に寄せ、位置が変わらなければ何もしない
+    edit([{ op: 'move_row', cell: rows[2]!.body, by: 1 }])
+    expect(slotsOf(records, slideId).rows).toEqual([rows[0], rows[2], rows[1]])
+    edit([{ op: 'move_row', cell: rows[0]!.body, to: 99 }])
+    expect(slotsOf(records, slideId).rows).toEqual([rows[2], rows[1], rows[0]])
+    const rev = records.rev
+    edit([{ op: 'move_row', cell: rows[2]!.body, by: -1 }])
+    expect(slotsOf(records, slideId).rows).toEqual([rows[2], rows[1], rows[0]])
+    expect(records.rev).toBe(rev)
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+
+    expect(() => edit([{ op: 'move_row', cell: slideId, to: 0 }])).toThrow(/is not a cell of a slide layout/)
+    expect(() => edit([{ op: 'move_row', cell: slotsOf(records, slideId).title!, to: 0 }])).toThrow(/is not a cell of a row/)
+    expect(() => edit([{ op: 'move_row', cell: rows[0]!.body, to: 1, by: 1 }])).toThrow(/exactly one of to, by/)
+  })
+
   it('closes the rows up when a row body is deleted, and undoes the edits', () => {
     const { records, host, edit } = setup()
     const created = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table' }])

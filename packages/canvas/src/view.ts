@@ -2479,6 +2479,13 @@ export class CanvasView {
       void this.deleteSelection()
       return
     }
+    // スライドの表の行・箇条書きの項目のセルを選んでいれば、Alt+↑/↓ でその行を上下に動かす（MAI-104）。
+    // 端の行でも、セルを少し動かして表から外さないよう、ここで止める
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && editor.slideLayoutRowState()?.row != null) {
+      e.preventDefault()
+      editor.moveSlideLayoutRow(e.key === 'ArrowUp' ? -1 : 1)
+      return
+    }
     if (e.key.startsWith('Arrow')) {
       e.preventDefault()
       const step = e.shiftKey ? NUDGE_LARGE : NUDGE

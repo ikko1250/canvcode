@@ -54,6 +54,18 @@ export function insertSlideLayoutRow(slots: SlideLayoutSlots, at: number, row: S
   return { ...slots, rows }
 }
 
+// rows の from 番目の行を to 番目に動かした slots（MAI-104。行の見出し・本文・手で決めた高さ h は行と一緒に動く）。
+// to は動かしたあとの位置で、範囲の外なら端に寄せる。from が範囲の外か、位置が変わらなければ null
+export function movedSlideLayoutRow(slots: SlideLayoutSlots, from: number, to: number): SlideLayoutSlots | null {
+  const rows = [...slots.rows]
+  if (!Number.isInteger(from) || from < 0 || from >= rows.length) return null
+  const at = Math.min(Math.max(Math.trunc(to), 0), rows.length - 1)
+  if (at === from) return null
+  const [row] = rows.splice(from, 1)
+  rows.splice(at, 0, row)
+  return { ...slots, rows }
+}
+
 // セルの書式（props）を写し、文字だけを空にする。図形の中の文字（label / labelParagraphs）とテキストの段落（paragraphs）を空にする。
 // 段落は 1 つにして、最初の段落のリストと最初の run の書式を残す（空のセルに打った文字が、隣の行と同じ見た目になる）
 export function emptiedCellProps(props: Record<string, unknown>): Record<string, unknown> {
