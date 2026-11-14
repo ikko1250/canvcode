@@ -485,7 +485,16 @@ function overflowWarnings(editor: Editor, patch: Patch<WorkspaceRecord>): string
 function namedIn(ops: unknown[]): Set<string> {
   const names = new Set<string>()
   for (const op of ops) {
-    const as = (op as { as?: unknown } | null)?.as
+    const { op: name, as, items } = (op ?? {}) as { op?: unknown; as?: unknown; items?: unknown }
+    if (name === 'grid' && Array.isArray(items)) {
+      // grid の as は項目の名前の頭（"<as>.<番号>"）。項目の as はそのまま
+      items.forEach((item, k) => {
+        const own = (item as { as?: unknown } | null)?.as
+        if (typeof own === 'string') names.add(own)
+        else if (typeof as === 'string') names.add(`${as}.${k}`)
+      })
+      continue
+    }
     if (typeof as === 'string') names.add(as)
   }
   return names
@@ -550,6 +559,8 @@ class EditRun {
   private readonly meta: HistoryMeta
   // 位置を決めずに作るノードを置く所（最初は見ている範囲の中心の近くの空いた所か、Canvas の中身の右）
   private auto: Vec | null = null
+  // 位置を決めずに frame / group の中に作るノードを置く所（親ごと）
+  private readonly autoIn = new Map<string, Vec>()
   private readonly viewport: Box | undefined
   private readonly pdfs: ReadonlyMap<number, PreparedPdf> | undefined
   private readonly images: ReadonlyMap<number, PreparedImage> | undefined
@@ -1096,15 +1107,16 @@ class EditRun {
   // box（ワールド座標）を置く左上。exclude は、空いた所を探すときに数えないノード（置こうとしているもの）
   private placeFor(box: Box, exclude: ReadonlySet<string>, op: { x?: number; y?: number; place?: z.infer<typeof place> }, parentId: string): { point: Vec; aabb: boolean } {
     if (op.place) {
-      const point = this.placeBeside(op.place, box, exclude)
+      const point = this.placeBeside(op.place, box, exclude, parentId)
       return { point: { x: op.x ?? point.x, y: op.y ?? point.y }, aabb: true }
     }
     if (op.x !== undefined && op.y !== undefined) return { point: { x: op.x, y: op.y }, aabb: false }
     let fallback: Vec
     if (parentId !== this.canvasId) {
-      // 親（frame / group）の左上から少し内側
+      // 親（frame / group）の左上から少し内側。同じ呼び出しで続けて作ったものは、その下に並べる（重ならないように）
       const parent = this.editor.index.get(parentId)!.worldBounds
-      fallback = { x: parent.x + 24, y: parent.y + 24 }
+      fallback = this.autoIn.get(parentId) ?? { x: parent.x + 24, y: parent.y + 24 }
+      this.autoIn.set(parentId, { x: fallback.x, y: fallback.y + box.h + PLACE_GAP })
     } else {
       // 見ている範囲の中心の近くの空いた所（なければ Canvas の中身の右）から、上から順に並べる
       if (!this.auto && this.viewport) this.auto = this.freeSpot(exclude, box, this.viewport)
@@ -1138,17 +1150,22 @@ class EditRun {
     return null
   }
 
-  // Canvas の一番上のノード（exclude を除く）を囲む箱
-  private contentBounds(exclude: ReadonlySet<string>): Box | null {
-    return unionBoxes(this.editor.index.childrenOf(this.canvasId).flatMap((rootId) => (exclude.has(rootId) ? [] : [this.editor.index.get(rootId)!.worldBounds])))
+  // Canvas（または parentId の frame / group）の直下のノード（exclude を除く）を囲む箱
+  private contentBounds(exclude: ReadonlySet<string>, parentId = this.canvasId): Box | null {
+    return unionBoxes(this.editor.index.childrenOf(parentId).flatMap((childId) => (exclude.has(childId) ? [] : [this.editor.index.get(childId)!.worldBounds])))
   }
 
   // ref の隣（または Canvas の中身の右か下の空いた所）に、box（ワールド座標）を置くときの左上。align で相手と揃える所を選ぶ
-  private placeBeside(spec: z.infer<typeof place>, box: Box, exclude: ReadonlySet<string> = new Set()): Vec {
+  private placeBeside(spec: z.infer<typeof place>, box: Box, exclude: ReadonlySet<string> = new Set(), parentId = this.canvasId): Vec {
     if (spec.empty) {
-      const gap = spec.gap ?? EMPTY_GAP
-      const content = this.contentBounds(exclude)
-      if (!content) return { x: 0, y: 0 }
+      // frame / group の中なら、その中身の右か下（中身がなければ親の左上から少し内側）
+      const gap = spec.gap ?? (parentId === this.canvasId ? EMPTY_GAP : PLACE_GAP)
+      const content = this.contentBounds(exclude, parentId)
+      if (!content) {
+        if (parentId === this.canvasId) return { x: 0, y: 0 }
+        const parent = this.editor.index.get(parentId)!.worldBounds
+        return { x: parent.x + 24, y: parent.y + 24 }
+      }
       return spec.empty === 'right' ? { x: content.x + content.w + gap, y: content.y } : { x: content.x, y: content.y + content.h + gap }
     }
     const gap = spec.gap ?? PLACE_GAP
@@ -1221,12 +1238,23 @@ class EditRun {
     this.defaults.set(key, { ...this.defaults.get(key), ...fields })
   }
 
-  // create に既定を当てる（型によらない parent、型の既定、op の順に上書き）
+  // create に既定を当てる（型によらない parent、card の既定（カードの型すべて）、型の既定、op の順に上書き）。
+  // 同じものの別名（text と label・name、付箋の color と fill、file と path）は、op にどちらかがあれば既定の両方を使わない
   private withDefaults<T extends { type: string }>(op: T): T {
+    const card = op.type === 'card' || op.type.endsWith('-card') ? this.defaults.get('card') : undefined
+    const typed = op.type === 'card' ? undefined : this.defaults.get(op.type)
     const all = this.defaults.get('*')
-    const typed = this.defaults.get(op.type)
-    if (!all && !typed) return op
-    return { ...all, ...typed, ...op }
+    if (!all && !card && !typed) return op
+    const merged: Record<string, unknown> = { ...all, ...card, ...typed }
+    const aliases: [string, string][] = [['text', 'label'], ['text', 'name'], ['file', 'path'], ...(op.type === 'note' ? [['color', 'fill'] as [string, string]] : [])]
+    const given = op as Record<string, unknown>
+    for (const [a, b] of aliases) {
+      if (given[a] !== undefined || given[b] !== undefined) {
+        delete merged[a]
+        delete merged[b]
+      }
+    }
+    return { ...merged, ...op }
   }
 
   // items を cols 列の格子に並べる。セルはいったん作ってから大きさを読み、列の幅と行の高さを決めて並べ直す。
@@ -1267,6 +1295,11 @@ class EditRun {
     const sum = (list: number[], n: number) => list.slice(0, n).reduce((a, b) => a + b, 0)
     const total = { x: 0, y: 0, w: sum(colW, used) + gx * (used - 1), h: sum(rowH, rows) + gy * (rows - 1) }
     const parentId = this.withDefaults(op).parent ? this.container(this.withDefaults(op).parent!) : this.canvasId
+    // 格子はワールドの左右・上下に並べるので、回した frame / group の中では崩れる
+    if (parentId !== this.canvasId) {
+      const m = this.editor.index.get(parentId)!.worldMatrix
+      if (Math.abs(Math.atan2(m.b, m.a)) > 1e-6) throw new EditError('grid cannot lay out inside a rotated frame or group')
+    }
     const origin = this.placeFor(total, new Set(ids), { x, y, place: where }, parentId).point
     ids.forEach((nodeId, k) => {
       const col = k % used

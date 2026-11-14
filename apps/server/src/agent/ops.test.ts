@@ -285,6 +285,50 @@ describe('edit_canvas', () => {
     expect(() => edit([{ op: 'grid', type: 'note', cols: 2, items: [{ text: 'a', shape: 'ellipse' }] }])).toThrow(/items\[0\]/)
   })
 
+  it('lets an op give another name of a default, applies card defaults to every card type, and stacks unpositioned nodes in a parent (MAI-105)', () => {
+    const { records, edit } = setup()
+    const now = Date.now()
+    records.apply([{ typeName: 'file', id: 'file:md', kind: 'markdown', title: 'メモ', path: 'メモ.md', size: 1, mtime: now, hash: 'h', missing: false, parentCanvasId: null, ownerNodeId: null, createdAt: now, updatedAt: now, deletedAt: null, trash: null } as StoredRecord], [])
+    const made = edit([
+      { op: 'create', type: 'frame', as: 'f', name: '枠', x: 0, y: 0, w: 800, h: 800 },
+      { op: 'defaults', parent: '$f' },
+      { op: 'defaults', type: 'note', fill: '#ffe3e3' },
+      { op: 'defaults', type: 'geo', text: '既定の文字' },
+      { op: 'defaults', type: 'card', w: 333 },
+      // 付箋の color は fill の別名。geo の label は text の別名。op に書いた方を使う
+      { op: 'create', type: 'note', as: 'n', text: 'x', color: '#d3f9d8' },
+      { op: 'create', type: 'geo', as: 'g', label: '自分の文字', w: 100, h: 40 },
+      // card の既定は、実際の型（markdown-card）でも当たる
+      { op: 'create', type: 'card', as: 'c', file: 'file:md', h: 100 },
+    ]).created
+    const props = (id: string) => records.get(id)!.props as Record<string, unknown>
+    expect(props(made.n!).color).toBe('#d3f9d8')
+    expect(props(made.g!).label).toBe('自分の文字')
+    expect(props(made.c!).w).toBe(333)
+    // 位置を決めずに frame の中に作ったものは、左上から下へ並べる（同じ所に重ねない）
+    const ys = [made.n!, made.g!, made.c!].map((id) => world(records, id))
+    expect(ys.map((b) => b.x)).toEqual([24, 24, 24])
+    expect(ys[0]!.y).toBe(24)
+    expect(ys[1]!.y).toBeCloseTo(ys[0]!.y + ys[0]!.h + 40)
+    expect(ys[2]!.y).toBeCloseTo(ys[1]!.y + ys[1]!.h + 40)
+    // frame の子の place empty は、frame の中身の右（frame の外ではない）
+    const inside = edit([{ op: 'create', type: 'geo', as: 'e', parent: made.f, place: { empty: 'right' }, w: 50, h: 50 }]).created
+    expect(world(records, inside.e!)).toMatchObject({ x: 24 + 333 + 40, y: 24 })
+  })
+
+  it('refuses a grid inside a rotated frame, and a grid name referred to before the grid (MAI-105)', () => {
+    const { edit } = setup()
+    const f = edit([{ op: 'create', type: 'frame', as: 'f', name: '回した枠', x: 0, y: 0, w: 400, h: 400, rotation: 30 }]).created.f!
+    expect(() => edit([{ op: 'grid', type: 'geo', parent: f, cols: 2, items: ['a', 'b'] }])).toThrow(/grid cannot lay out inside a rotated frame or group/)
+    edit([{ op: 'grid', type: 'geo', as: 't', cols: 2, x: 0, y: 600, items: ['a', 'b'] }])
+    expect(() =>
+      edit([
+        { op: 'move', ids: ['$t.0'], dx: 1 },
+        { op: 'grid', type: 'geo', as: 't', cols: 2, x: 0, y: 900, items: ['c', 'd'] },
+      ]),
+    ).toThrow(/\$t\.0 is named by a later op of this call/)
+  })
+
   it('runs the table example of get_canvas_format: a grid inside a frame placed right of everything (MAI-105)', () => {
     const { records, edit } = setup()
     edit([{ op: 'create', type: 'note', text: '前からあるもの', x: 0, y: 0 }])
