@@ -439,3 +439,241 @@ test('C does nothing in the fullscreen file editor (MAI-91)', async ({ page }) =
   await expect(panel(page)).toHaveCount(0)
   await expect(page.locator('.file-editor')).toBeVisible()
 })
+
+test('chooses the model and effort next to the send button, per thread (MAI-106)', async ({ page }) => {
+  const catalog = {
+    models: [
+      { value: 'opus', label: 'Opus 5.5', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      { value: 'claude-opus-4-6', label: 'Opus 4.6', efforts: ['low', 'medium', 'high', 'max'] },
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', efforts: [] },
+    ],
+    default: { value: 'opus', label: 'Opus 5.5' },
+    fromClaude: true,
+  }
+  await page.route('**/api/claude/models', (route) => route.fulfill({ json: catalog }))
+  const sent: Record<string, unknown>[] = []
+  await page.route('**/api/claude/jobs', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    sent.push(body)
+    const job = {
+      id: `j${sent.length + 1}`,
+      threadId: (body.threadId as string | undefined) ?? `00000000-0000-4000-8000-00000000000${sent.length}`,
+      prompt: body.prompt,
+      status: 'done',
+      createdAt: Date.now(),
+      durationMs: 1200,
+      costUsd: 0.45,
+      ...(body.model ? { model: body.model } : {}),
+      ...(body.effort ? { effort: body.effort } : {}),
+      eventCount: 1,
+      events: [{ kind: 'text', text: 'ok' }],
+    }
+    await route.fulfill({ status: 201, json: { job } })
+  })
+  await openApp(page)
+  const button = page.locator('.claude-model-button')
+  const popover = page.locator('.claude-model-popover')
+  // 会話 t1 は既定で頼んだもの。既定で動くモデルの名前を添える
+  await expect(button).toHaveText('既定（Opus 5.5）')
+
+  // 押すと上に開き、モデルと effort を選べる（選べない effort は出さない）
+  await button.click()
+  await expect(popover).toBeVisible()
+  await popover.getByRole('combobox').first().selectOption('claude-opus-4-6')
+  await expect(popover.getByRole('combobox').nth(1).locator('option')).toHaveText(['既定', 'Low', 'Medium', 'High', 'Max'])
+  await popover.getByRole('combobox').nth(1).selectOption('high')
+  await expect(button).toHaveText('Opus 4.6 · High')
+  // 効かないモデルでは effort を選べない（選んでいた effort は既定に戻る）
+  await popover.getByRole('combobox').first().selectOption('claude-haiku-4-5-20251001')
+  await expect(popover.getByRole('combobox').nth(1)).toBeDisabled()
+  await expect(button).toHaveText('Haiku 4.5')
+  await popover.getByRole('combobox').first().selectOption('opus')
+  await popover.getByRole('combobox').nth(1).selectOption('xhigh')
+  // Esc は欄だけを閉じる（パネルは閉じない）
+  await page.keyboard.press('Escape')
+  await expect(popover).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
+  await expect(button).toBeFocused()
+
+  // 送ると、選んだモデルと effort で頼み、終わった行に添える
+  await promptBox(page).fill('続き')
+  await page.getByRole('button', { name: '送る' }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  expect(sent[0]).toMatchObject({ prompt: '続き', threadId: 't1', model: 'opus', effort: 'xhigh' })
+  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45・Opus 5.5 · XHigh）')
+
+  // 新しい会話は、最後に選んだ値から始める（ブラウザに覚える）
+  await page.getByRole('button', { name: '新規' }).click()
+  await expect(button).toHaveText('Opus 5.5 · XHigh')
+  await button.click()
+  await popover.getByRole('combobox').first().selectOption('')
+  await popover.getByRole('combobox').nth(1).selectOption('')
+  await expect(button).toHaveText('既定（Opus 5.5）')
+  // 欄の外を押すと閉じる
+  await page.locator('.claude-log').click({ position: { x: 10, y: 10 } })
+  await expect(popover).toHaveCount(0)
+  await promptBox(page).fill('新しく')
+  await page.getByRole('button', { name: '送る' }).click()
+  await expect.poll(() => sent.length).toBe(2)
+  expect(sent[1]).not.toHaveProperty('model')
+  expect(sent[1]).not.toHaveProperty('effort')
+  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45）')
+})
+
+test('restores the model and effort of a thread when it is opened again (MAI-106)', async ({ page }) => {
+  await page.route('**/api/claude/models', (route) =>
+    route.fulfill({ json: { models: [{ value: 'claude-opus-4-6', label: 'Opus 4.6', efforts: ['low', 'high'] }], default: {}, fromClaude: false } }),
+  )
+  await openApp(page)
+  // 前の会話 t2 は Opus 4.6・Low で頼んだもの（あとから足した差し替えが先に当たるので、読み直すと一覧に出る）
+  const now = Date.now()
+  const t1 = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false, tasks: [], permissions: [] }
+  const t2 = { threadId: 't2', title: 'older', createdAt: now - 60_000, updatedAt: now - 60_000, jobCount: 1, running: false, model: 'claude-opus-4-6', effort: 'low' }
+  await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [t1, t2] } }))
+  await page.route('**/api/claude/threads/t2', (route) => route.fulfill({ json: { jobs: [] } }))
+  await page.reload()
+  await page.locator('.claude-toggle').click()
+  await expect(page.locator('.claude-thread-select option', { hasText: 'older' })).toHaveCount(1)
+  await page.locator('.claude-thread-select').selectOption('t2')
+  await expect(page.locator('.claude-model-button')).toHaveText('Opus 4.6 · Low')
+  await page.locator('.claude-thread-select').selectOption('t1')
+  // 既定で動くモデルがわからなければ「既定」だけ
+  await expect(page.locator('.claude-model-button')).toHaveText('既定')
+  // 一覧を Claude Code に聞けなかったときは、そう書く
+  await page.locator('.claude-model-button').click()
+  await expect(page.locator('.claude-model-note')).toContainText('聞けなかった')
+})
+
+// 全画面のエディタを開く（サイドバーから）
+async function openFileEditor(page: Page) {
+  // サイドバーが閉じていれば開く
+  if (await page.getByRole('button', { name: '☰' }).isVisible()) await page.getByRole('button', { name: '☰' }).click()
+  await page.locator('.sidebar-title', { hasText: 'Input test' }).click()
+  await expect(page.locator('.file-editor .cm-content')).toBeFocused()
+}
+
+// 点の上にあるのが Claude のパネルか（ほかのものの裏に隠れていないか）
+async function panelOnTop(page: Page) {
+  const box = (await panel(page).boundingBox())!
+  return page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('.claude-panel')), {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+  })
+}
+
+const editorView = (page: Page, label: string) => page.locator('.file-editor-modes button', { hasText: new RegExp(`^${label}$`) })
+
+test('shows the panel in place of the preview in the fullscreen file editor (MAI-102)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  await openFileEditor(page)
+  await expect(panel(page)).toHaveCount(0)
+  await expect(page.locator('.file-editor-preview')).toBeVisible()
+
+  // 「Claude に頼む」で、選んでいる行を添えて右半分に出す（エディタの裏に隠れない）
+  await page.getByRole('button', { name: 'Claude に頼む', exact: true }).click()
+  await expect(panel(page)).toBeVisible()
+  expect(await panelOnTop(page)).toBe(true)
+  await expect(editorView(page, 'Claude')).toHaveClass('active')
+  await expect(page.locator('.file-editor-preview')).toBeHidden()
+  await expect(page.locator('.claude-attachment')).toContainText('Input test の 1〜1 行')
+  await expect(promptBox(page)).toBeFocused()
+  const editorBox = (await page.locator('.file-editor-body').boundingBox())!
+  const panelBox = (await panel(page).boundingBox())!
+  expect(Math.abs(panelBox.x - (editorBox.x + editorBox.width / 2))).toBeLessThan(2)
+  expect(Math.abs(panelBox.x + panelBox.width - (editorBox.x + editorBox.width))).toBeLessThan(2)
+  expect(Math.abs(panelBox.y - editorBox.y)).toBeLessThan(2)
+
+  // プレビューに切り替えるとパネルを隠し（閉じない）、Claude に戻すと書きかけの文が残っている
+  await promptBox(page).fill('draft text')
+  await editorView(page, 'プレビュー').click()
+  await expect(panel(page)).toBeHidden()
+  await expect(page.locator('.file-editor-preview')).toBeVisible()
+  await editorView(page, 'Claude').click()
+  await expect(panel(page)).toBeVisible()
+  await expect(promptBox(page)).toHaveValue('draft text')
+  await expect(promptBox(page)).toBeFocused()
+
+  // Esc はパネルを閉じ、エディタは閉じない。前の表示（プレビュー）に戻る
+  await page.keyboard.press('Escape')
+  await expect(panel(page)).toHaveCount(0)
+  await expect(page.locator('.file-editor')).toBeVisible()
+  await expect(editorView(page, 'プレビュー')).toHaveClass('active')
+
+  // 表示の「Claude」で開ける。Ctrl+Enter は送るキーなので、エディタを閉じない
+  await editorView(page, 'Claude').click()
+  await expect(panel(page)).toBeVisible()
+  await expect(promptBox(page)).toBeFocused()
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect(page.locator('.file-editor')).toBeVisible()
+})
+
+test('moves the panel between the canvas and the file editor without closing it (MAI-102)', async ({ page }) => {
+  await openApp(page)
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  await promptBox(page).fill('kept')
+  // パネルを開いたままエディタを開くと、右半分に出る
+  await openFileEditor(page)
+  await expect(panel(page)).toBeVisible()
+  expect(await panelOnTop(page)).toBe(true)
+  await expect(editorView(page, 'Claude')).toHaveClass('active')
+  await expect(promptBox(page)).toHaveValue('kept')
+
+  // 「選んでいる所を添える」と Ctrl+Alt+Enter は、エディタで選んでいる行を添える（エディタは閉じない）
+  await page.getByRole('button', { name: '＋ 選んでいる所を添える' }).click()
+  await expect(page.locator('.claude-attachment')).toContainText('Input test の 1〜1 行')
+  await page.locator('.claude-attachment button').click()
+  await page.locator('.file-editor .cm-content').click()
+  await page.keyboard.press('ControlOrMeta+Alt+Enter')
+  await expect(page.locator('.claude-attachment')).toContainText('Input test の 1〜1 行')
+  await expect(page.locator('.file-editor')).toBeVisible()
+
+  // エディタを閉じると、キャンバスの右に戻る
+  await page.locator('.file-editor-close').click()
+  await expect(page.locator('.file-editor')).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
+  expect(await panelOnTop(page)).toBe(true)
+  const viewport = page.viewportSize()!
+  const box = (await panel(page).boundingBox())!
+  expect(Math.abs(box.x + box.width - viewport.width)).toBeLessThan(2)
+  expect(Math.round(box.width)).toBe(381)
+  await expect(promptBox(page)).toHaveValue('kept')
+})
+
+test('keeps the scroll of the conversation, and the keys of the panel, when the panel moves into the file editor (MAI-102)', async ({ page }) => {
+  const now = Date.now()
+  // 会話の欄がスクロールするほどの長さ
+  const jobs = Array.from({ length: 30 }, (_, i) => ({
+    id: `k${i}`, threadId: 't1', prompt: `質問 ${i}`, status: 'done', createdAt: now + 60_000 + i, eventCount: 1, events: [{ kind: 'text', text: `答え ${i}\n\n${'長い答え。'.repeat(20)}` }],
+  }))
+  await openApp(page, { jobs })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  const log = page.locator('.claude-log')
+  // 途中まで読み返した位置
+  await log.evaluate((el) => {
+    el.scrollTop = 300
+    el.dispatchEvent(new Event('scroll'))
+  })
+  await openFileEditor(page)
+  await expect(panel(page)).toBeVisible()
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(300)
+  // プレビューに切り替えて戻しても、閉じても同じ所
+  await editorView(page, 'プレビュー').click()
+  await editorView(page, 'Claude').click()
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(300)
+
+  // パネルの中のボタンの上の Ctrl+Enter では、エディタを閉じない
+  await page.getByRole('button', { name: '新規' }).focus()
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect(page.locator('.file-editor')).toBeVisible()
+
+  // プレビューで隠したまま、ブラウザの「戻る」で閉じても、次に開くときは右半分に出る
+  await editorView(page, 'プレビュー').click()
+  await expect(panel(page)).toBeHidden()
+  await page.goBack()
+  await expect(page.locator('.file-editor')).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
+  await openFileEditor(page)
+  await expect(panel(page)).toBeVisible()
+  expect(await panelOnTop(page)).toBe(true)
+})

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { createCodeEditor, quoteRange, type FileManager, type QuoteDraft, type VimMode, type Workspace } from '@canvcode/canvas'
 import { MARKDOWN_CARD_CSS, SOURCE_LINE_ATTR, renderMarkdown } from '@canvcode/nodes/markdown'
 import 'katex/dist/katex.min.css'
@@ -7,15 +7,24 @@ import { buildScrollMap, previewToSource, sourceToPreview, type ScrollAnchor, ty
 // 全画面のエディタ（MAI-9 の「5. 編集モードの挙動」、MAI-30、MAI-31）。Markdown は左に本文、右にプレビュー。
 // Python は本文だけ（行番号とインデントを保つ折り返しは、カードと同じ）。
 // カードの上での編集と同じく、本文は File に直接書く（少し待ってまとめて保存する）。Esc か Ctrl（⌘）+Enter で閉じる。
-// vim モード（MAI-60）では Esc は vim に渡し、:q / :wq / ZZ / Space x か、ノーマルモードの Ctrl（⌘）+Enter で閉じる
+// vim モード（MAI-60）では Esc は vim に渡し、:q / :wq / ZZ / Space x か、ノーマルモードの Ctrl（⌘）+Enter で閉じる。
+// Claude のパネル（MAI-102）は、表示の「Claude」でプレビューの代わりに右半分に出す（Python と表も）。パネルは App が持ち、
+// 右半分の置き場所（claudeSlot）にパネルの DOM を移して見せる。パネルを閉じると、前の表示に戻る
 
 type Mode = 'both' | 'source' | 'preview'
+type View = Mode | 'claude'
 
 const MODES: { mode: Mode; label: string }[] = [
   { mode: 'source', label: '本文' },
   { mode: 'both', label: '両方' },
   { mode: 'preview', label: 'プレビュー' },
 ]
+
+// App から呼ぶ操作（パネルの「選んでいる所を添える」と Ctrl（⌘）+Alt+Enter で、選んでいる行を添える。パネルを閉じたらエディタに戻る）
+export interface FileEditorHandle {
+  askClaude(): void
+  focus(): void
+}
 
 // プレビューを描き直すまでの時間（打つたびに描き直すと重いので）
 const PREVIEW_DELAY_MS = 150
@@ -66,20 +75,33 @@ export function FileEditor(props: {
   onReference?(lines: { fileId: string; startLine: number; endLine: number; snapshot: string }): void
   // 選んでいる行を添えて、画面のパネルから Claude に頼む
   onAskClaude?(lines: { fileId: string; startLine: number; endLine: number; snapshot: string }): void
+  // 右半分の Claude のパネル（MAI-102。Claude を使えるときだけ onShowClaude を渡す）。claudeShown は右半分に出しているか。
+  // claudeSlot は右半分の置き場所（出している間だけある）で、App がここにパネルの DOM を移す。
+  // onShowClaude は表示の「Claude」を押したとき（パネルを開いて右半分に出す）、onHideClaude はほかの表示に切り替えたとき（パネルは閉じずに隠す）
+  claudeShown?: boolean
+  claudeSlot?(element: HTMLDivElement | null): void
+  onShowClaude?(): void
+  onHideClaude?(): void
+  handle?: RefObject<FileEditorHandle | null>
   // PDF にしてダウンロードする（Markdown のとき。md2pdf）
   onExportPdf?(fileId: string): Promise<void>
   // focus の文字列が見つからなかった（位置不明）
   onLost?(): void
   onClose(): void
 }) {
-  const { workspace, files, fileId, focus, onQuote, onReference, onAskClaude, onExportPdf, onLost, onClose } = props
+  const { workspace, files, fileId, focus, onQuote, onReference, onAskClaude, claudeShown, claudeSlot, onShowClaude, onHideClaude, handle } = props
+  const { onExportPdf, onLost, onClose } = props
   const file = workspace.getFile(fileId)
   const isCode = file?.kind === 'code'
   const isTable = file?.kind === 'table'
   // Python と表（CSV）にはプレビューがない
   const sourceOnly = isCode || isTable
   const [chosenMode, setMode] = useState<Mode>('both')
-  const mode: Mode = sourceOnly ? 'source' : chosenMode
+  const mode: View = claudeShown && onShowClaude ? 'claude' : sourceOnly ? 'source' : chosenMode
+  const views: { mode: View; label: string }[] = [
+    ...(sourceOnly ? MODES.filter((m) => m.mode === 'source') : MODES),
+    ...(onShowClaude ? [{ mode: 'claude' as const, label: 'Claude' }] : []),
+  ]
   const [text, setText] = useState<string | null>(null)
   // エディタを作り直した回数。スクロールの見張りを付け直す目印（MAI-44）
   const [editorVersion, setEditorVersion] = useState(0)
@@ -187,6 +209,19 @@ export function FileEditor(props: {
     onAskClaude({ fileId, ...editor.selectedLines() })
   }
 
+  // 描くたびに作り直す（askClaude が今の fileId と onAskClaude を使うように）
+  useImperativeHandle(handle, () => ({ askClaude, focus: () => editorRef.current?.focus() }))
+
+  const chooseView = (view: View) => {
+    if (view === 'claude') {
+      onShowClaude?.()
+      return
+    }
+    setMode(view)
+    if (mode === 'claude') onHideClaude?.()
+    editorRef.current?.focus()
+  }
+
   // vim モードを切り替える（エディタは作り直さない）
   useEffect(() => {
     vimOnRef.current = vimOn
@@ -204,8 +239,11 @@ export function FileEditor(props: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.defaultPrevented) return
+      // 右半分の Claude のパネルの中のキーはパネルのもの（ボタンの上の Ctrl+Enter などで閉じない。MAI-102）
+      if (e.target instanceof Element && e.target.closest('.claude-panel')) return
       const inEditor = e.target instanceof Node && sourceRef.current?.contains(e.target) === true
-      if ((e.key === 'Escape' && !(vimOn && inEditor)) || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+      // Ctrl（⌘）+Alt+Enter は、選んでいる行を添えて Claude に頼むキー（App）なので閉じない
+      if ((e.key === 'Escape' && !(vimOn && inEditor)) || (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey)) {
         e.preventDefault()
         onClose()
       }
@@ -350,10 +388,10 @@ export function FileEditor(props: {
         <span className={isCode ? 'file-editor-type code' : isTable ? 'file-editor-type table' : 'file-editor-type'}>{isCode ? 'PY' : isTable ? 'CSV' : 'MD'}</span>
         <strong className="file-editor-title">{file?.title ?? ''}</strong>
         <span className="file-editor-path">{file?.path}</span>
-        {!sourceOnly && (
+        {views.length > 1 && (
           <div className="file-editor-modes">
-            {MODES.map(({ mode: m, label }) => (
-              <button key={m} className={mode === m ? 'active' : ''} onClick={() => setMode(m)}>
+            {views.map(({ mode: m, label }) => (
+              <button key={m} className={mode === m ? 'active' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => chooseView(m)}>
                 {label}
               </button>
             ))}
@@ -379,7 +417,7 @@ export function FileEditor(props: {
             className="file-editor-quote"
             onMouseDown={(e) => e.preventDefault()}
             onClick={askClaude}
-            title="選んでいる行を添えて、右のパネルから Claude に頼む"
+            title="選んでいる行を添えて、右半分の Claude に頼む（Ctrl+Alt+Enter）"
           >
             Claude に頼む
           </button>
@@ -426,6 +464,7 @@ export function FileEditor(props: {
         >
           <div className="md-card-body" dangerouslySetInnerHTML={{ __html: html }} />
         </div>
+        {mode === 'claude' && <div className="file-editor-claude" ref={claudeSlot} />}
       </div>
       {vimOn && vimMode && <footer className="file-editor-status">{VIM_MODE_LABELS[vimMode]}</footer>}
       {text === null && <div className="file-editor-loading">読み込み中…</div>}

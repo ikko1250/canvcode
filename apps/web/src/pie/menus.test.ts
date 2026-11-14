@@ -48,6 +48,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     addSlideRow: vi.fn(),
     removeSlideRow: vi.fn(),
     resetSlideRowHeight: vi.fn(),
+    moveSlideRow: vi.fn(),
     applySlideTemplate: vi.fn(),
     hasSlides,
     exportSlidesPdf: vi.fn(),
@@ -287,6 +288,34 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
       context({}, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, slideCount: 1, slideRows: { canRemove: true, manualHeight: true } }, true),
     )
     expect(labels(sub(full, 'スライド'))).toEqual(['比率を切り替え', '非表示にする', '行を足す', '行を消す', '行の高さを自動に戻す', 'スライドを PDF に出力'])
+  })
+
+  it('moves the row of the selected cell up and down from one entry (MAI-104)', () => {
+    // 動かせる向きだけを「行を移動 ›」に並べる
+    const ctx = context({}, { count: 1, reorderCount: 1, slideRows: { canRemove: true, canMoveUp: true, canMoveDown: true } }, true)
+    const menu = actionsOf(ctx)
+    expect(labels(menu?.items)).toEqual(['重なり順', '固定する', '複製', '行を足す', '行を消す', '行を移動', 'スライドを PDF に出力'])
+    expect(labels(sub(menu, '行を移動'))).toEqual(['上へ', '下へ'])
+    run(sub(menu, '行を移動'), '上へ')
+    expect(ctx.moveSlideRow).toHaveBeenLastCalledWith(-1)
+    run(sub(menu, '行を移動'), '下へ')
+    expect(ctx.moveSlideRow).toHaveBeenLastCalledWith(1)
+    const top = actionsOf(context({}, { count: 1, reorderCount: 1, slideRows: { canRemove: true, canMoveUp: false, canMoveDown: true } }, true))
+    expect(labels(sub(top, '行を移動'))).toEqual(['下へ'])
+    // 1 行だけ（どちらへも動かせない）なら出さない
+    expect(labels(actionsOf(context({}, { count: 1, reorderCount: 1, slideRows: { canRemove: false } }, true))?.items)).not.toContain('行を移動')
+    // 文字のあるセル（画像にもできる）を選んだとき：文字を「文字 ›」にまとめ、「画像 ›」を外して 8 つに収め、行の項目はまとめない
+    const cell = actionsOf(
+      context({}, { count: 1, reorderCount: 1, hasText: true, exportImage: true, slideRows: { canRemove: true, canMoveUp: true, canMoveDown: true } }, true),
+    )
+    expect(labels(cell?.items)).toEqual(['文字', '重なり順', '固定する', '複製', '行を足す', '行を消す', '行を移動', 'スライドを PDF に出力'])
+    // スライドの項目がまとまらないなら（文字・ページのまとめだけなら）、「画像 ›」は出したまま
+    const texts = actionsOf(context({}, { count: 3, arrangeCount: 3, hasText: true, exportImage: true }, true))
+    expect(labels(texts?.items)).toEqual(['文字', '整列', '等間隔', '固定する', '複製', '画像', 'スライドを PDF に出力'])
+    const inFrame = actionsOf(context({}, { count: 3, arrangeCount: 3, reorderCount: 1, hasText: true, exportImage: true }))
+    expect(labels(inFrame?.items)).toContain('画像')
+    const pages = actionsOf(context({ hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false }, { count: 1, hasText: true, exportImage: true }))
+    expect(labels(pages?.items)).toContain('画像')
   })
 
   it('applies a template to the only selected slide when it has no children (slides v2)', () => {

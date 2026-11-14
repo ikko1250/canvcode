@@ -102,6 +102,8 @@ export interface PieMenuContext {
   removeSlideRow(): void
   // 選んでいるセルの行の高さを自動に戻す（手で決めた高さを外す。スライド v2）
   resetSlideRowHeight(): void
+  // 選んでいるセルの行を 1 つ上（-1）か下（1）へ動かす（MAI-104）
+  moveSlideRow(delta: -1 | 1): void
   // 選んでいるスライド（子が無いもの）にテンプレート（表紙・箇条書き・表・表＋画像）を置く（スライド v2）
   applySlideTemplate(kind: SlideLayoutKind): void
   // 今のキャンバスにスライドがあるか（非表示のものも数える）と、スライドを PDF に出力する（スライド v2）
@@ -149,8 +151,8 @@ export interface SelectionMenuContext {
   slideCount: number
   slidesHidden: boolean
   // 表・箇条書き・表＋画像の slide-layout の中（またはそのスライド）を選んでいれば、選んでいるセルの行を消せるか・
-  // その行が手で決めた高さを持つか。そうでなければ null（スライド v2）
-  slideRows: { canRemove: boolean; manualHeight?: boolean } | null
+  // その行が手で決めた高さを持つか・その行を上下へ動かせるか（MAI-104）。そうでなければ null（スライド v2）
+  slideRows: { canRemove: boolean; manualHeight?: boolean; canMoveUp?: boolean; canMoveDown?: boolean } | null
   // スライドを 1 つだけ選んでいて、そのスライドに子が無いか。テンプレートを置ける（スライド v2）
   slideTemplate: boolean
   // PDF の URL のリンクのカードを 1 つだけ選んでいるか（「PDF ポータルを作成」を出す）
@@ -234,18 +236,21 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 // 操作のメニューの項目（MAI-57）。出す必要のないものは入れない。
 // ページの項目（最大 6 つ。「単語を調べる」「文字を選ぶ」を含む）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる。
 // スライドの項目（選んでいるスライドの 2 つと、子の無いスライドを 1 つだけ選んでいるときの「テンプレート ›」、
-// 行を持つスライドの中身を選んでいるときの「行を足す」「行を消す」「行の高さを自動に戻す」、キャンバスにスライドがあるときの「スライドを PDF に出力」）を足して
+// 行を持つスライドの中身を選んでいるときの「行を足す」「行を消す」「行を移動 ›」「行の高さを自動に戻す」、キャンバスにスライドがあるときの「スライドを PDF に出力」）を足して
 // 8 つを超えるときは、まず文字の項目（3 つ）を「文字 ›」にまとめ、まだ超えるならスライドの項目を「スライド ›」にまとめる
 // （まとめれば選択の項目は 8 つに収まる）
 function buildActionItems(ctx: PieMenuContext): PieEntry[] {
-  // 「画像 ›」（MAI-89）を足して 8 つを超えるとき（PDF のページの Canvas で、文字とスライドを含む 3 つ以上を選んだとき）は、
-  // 今の並びを変えないよう「画像 ›」を出さない（右クリックからは出せる）
-  const items = buildActionItemsWith(ctx)
-  if (items.length <= 8 || !ctx.selection.exportImage) return items
-  return buildActionItemsWith({ ...ctx, selection: { ...ctx.selection, exportImage: false } })
+  // 「画像 ›」（MAI-89）を足して 8 つを超えるとき（PDF のページの Canvas で、文字とスライドを含む 3 つ以上を選んだとき）と、
+  // スライドの項目が「スライド ›」にまとまってしまうとき（スライドの行のセルを選んで「行を移動 ›」が出るとき。MAI-104）は、
+  // 今の並びを変えないよう「画像 ›」を出さない（右クリックからは出せる）。ほかのまとめ（文字・ページ・表）では外さない
+  const withImage = buildActionItemsWith(ctx)
+  if (!ctx.selection.exportImage) return withImage.items
+  const without = buildActionItemsWith({ ...ctx, selection: { ...ctx.selection, exportImage: false } })
+  return withImage.items.length > 8 || (withImage.slidesFolded && !without.slidesFolded) ? without.items : withImage.items
 }
 
-function buildActionItemsWith(ctx: PieMenuContext): PieEntry[] {
+// 項目と、スライドの項目を「スライド ›」にまとめたか
+function buildActionItemsWith(ctx: PieMenuContext): { items: PieEntry[]; slidesFolded: boolean } {
   const { pdf, selection } = ctx
   const pages: PieEntry[] = []
   if (pdf.hasPages) {
@@ -309,6 +314,11 @@ function buildActionItemsWith(ctx: PieMenuContext): PieEntry[] {
   if (selection.slideRows) {
     slides.push({ label: '行を足す', onSelect: ctx.addSlideRow })
     if (selection.slideRows.canRemove) slides.push({ label: '行を消す', onSelect: ctx.removeSlideRow })
+    // 上へ・下へは 1 つの項目にまとめる（2 つにすると、セルを選んだときにスライドの項目が「スライド ›」にまとまる。MAI-104）
+    const moves: PieEntry[] = []
+    if (selection.slideRows.canMoveUp) moves.push({ label: '上へ', onSelect: () => ctx.moveSlideRow(-1) })
+    if (selection.slideRows.canMoveDown) moves.push({ label: '下へ', onSelect: () => ctx.moveSlideRow(1) })
+    if (moves.length > 0) slides.push({ label: '行を移動', items: moves })
     if (selection.slideRows.manualHeight) slides.push({ label: '行の高さを自動に戻す', onSelect: ctx.resetSlideRowHeight })
   }
   if (ctx.hasSlides) slides.push({ label: 'スライドを PDF に出力', onSelect: ctx.exportSlidesPdf })
@@ -321,8 +331,9 @@ function buildActionItemsWith(ctx: PieMenuContext): PieEntry[] {
     const table = buildTableItems(ctx, ctx.table)
     items.unshift(...(table.length + items.length > 8 ? [{ label: '表', items: table }] : table))
   }
-  if (pages.length === 0) return items
-  return pages.length + items.length <= 8 ? [...pages, ...items] : [{ label: 'ページ', items: pages }, ...items]
+  if (pages.length === 0) return { items, slidesFolded: foldSlides }
+  if (pages.length + items.length <= 8) return { items: [...pages, ...items], slidesFolded: foldSlides }
+  return { items: [{ label: 'ページ', items: pages }, ...items], slidesFolded: foldSlides }
 }
 
 // キーボードのない端末（スマホ）で、左下に並べるボタン（メニューの id と名前）
