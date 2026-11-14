@@ -388,6 +388,22 @@ export function App(props: { initial: InitialRecords }) {
   })
   const [canvasClaudeSlot, setCanvasClaudeSlot] = useState<HTMLDivElement | null>(null)
   const [editorClaudeSlot, setEditorClaudeSlot] = useState<HTMLDivElement | null>(null)
+  // パネルの中で最後にフォーカスがあったもの。パネルの外へ移ったら消す（エディタが閉じて置き場所ごと外れたときは、イベントなしに外れるので残る）
+  const claudeFocusRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    const onIn = (e: FocusEvent) => {
+      if (e.target instanceof HTMLElement) claudeFocusRef.current = e.target
+    }
+    const onOut = (e: FocusEvent) => {
+      if (e.relatedTarget instanceof Node && !claudeHost.contains(e.relatedTarget)) claudeFocusRef.current = null
+    }
+    claudeHost.addEventListener('focusin', onIn)
+    claudeHost.addEventListener('focusout', onOut)
+    return () => {
+      claudeHost.removeEventListener('focusin', onIn)
+      claudeHost.removeEventListener('focusout', onOut)
+    }
+  }, [claudeHost])
   const fileEditorRef = useRef<FileEditorHandle | null>(null)
   // PDF の上で選んだ語を調べる（o メニューの「単語を調べる」。MAI-99）。答えは選んだ所のそばの吹き出しに出す。
   // 選んだ Canvas（request.canvasId）から移ったら閉じる。閉じるときは、待っている頼みもやめ、ハイライトも消す
@@ -609,6 +625,8 @@ export function App(props: { initial: InitialRecords }) {
       }
       setOpenFileId(fileId)
       setFileFocus(options.focus ?? null)
+      // 前のエディタで隠したままブラウザの「戻る」で閉じていても、パネルを開いていれば右半分に出す（MAI-102）
+      setEditorClaudeHidden(false)
       if (options.push !== false) history.pushState({ fileId }, '', fileUrl(fileId))
     },
     [workspace, notify],
@@ -2019,11 +2037,14 @@ export function App(props: { initial: InitialRecords }) {
   const claudeSlot = claudeInEditor ? editorClaudeSlot : canvasClaudeSlot
   useLayoutEffect(() => {
     if (!claudeSlot || claudeHost.parentNode === claudeSlot) return
-    // DOM を動かすとフォーカスが外れるので、パネルの中にあったら戻す
+    // DOM を動かすとフォーカスが外れるので、パネルの中にあったら戻す（エディタが閉じて置き場所ごと外れたときは、もう外れているので覚えたものを使う）
     const active = document.activeElement
+    const focused = active instanceof HTMLElement && active !== document.body ? active : claudeFocusRef.current
     claudeSlot.appendChild(claudeHost)
-    if (active instanceof HTMLElement && active !== document.body && claudeHost.contains(active)) active.focus({ preventScroll: true })
+    if (focused && focused.isConnected && claudeHost.contains(focused) && (active === document.body || active === focused)) focused.focus({ preventScroll: true })
   }, [claudeSlot, claudeHost])
+  // パネルが見えている置き場所（隠しているなら null）。変わったら、パネルは会話の欄と入力欄のスクロールを戻す（DOM を移すと先頭に戻るため）
+  const claudePlacement = claudeSlot && !(claudeSlot === canvasClaudeSlot && openFileId && !claudeInEditor) ? claudeSlot : null
 
   return (
     <div className="app">
@@ -2454,6 +2475,7 @@ export function App(props: { initial: InitialRecords }) {
             focusRequest={claudeFocus}
             draft={claudeDraft}
             // 全画面のエディタでは、選んでいる行を添える
+            placement={claudePlacement}
             onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
             onClearAttachment={() => setClaudeAttachment(null)}
             onClose={() => {

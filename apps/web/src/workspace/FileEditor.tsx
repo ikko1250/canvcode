@@ -239,6 +239,8 @@ export function FileEditor(props: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.defaultPrevented) return
+      // 右半分の Claude のパネルの中のキーはパネルのもの（ボタンの上の Ctrl+Enter などで閉じない。MAI-102）
+      if (e.target instanceof Element && e.target.closest('.claude-panel')) return
       const inEditor = e.target instanceof Node && sourceRef.current?.contains(e.target) === true
       // Ctrl（⌘）+Alt+Enter は、選んでいる行を添えて Claude に頼むキー（App）なので閉じない
       if ((e.key === 'Escape' && !(vimOn && inEditor)) || (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey)) {

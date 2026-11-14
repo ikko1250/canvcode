@@ -442,7 +442,8 @@ test('C does nothing in the fullscreen file editor (MAI-91)', async ({ page }) =
 
 // 全画面のエディタを開く（サイドバーから）
 async function openFileEditor(page: Page) {
-  await page.getByRole('button', { name: '☰' }).click()
+  // サイドバーが閉じていれば開く
+  if (await page.getByRole('button', { name: '☰' }).isVisible()) await page.getByRole('button', { name: '☰' }).click()
   await page.locator('.sidebar-title', { hasText: 'Input test' }).click()
   await expect(page.locator('.file-editor .cm-content')).toBeFocused()
 }
@@ -533,4 +534,42 @@ test('moves the panel between the canvas and the file editor without closing it 
   expect(Math.abs(box.x + box.width - viewport.width)).toBeLessThan(2)
   expect(Math.round(box.width)).toBe(381)
   await expect(promptBox(page)).toHaveValue('kept')
+})
+
+test('keeps the scroll of the conversation, and the keys of the panel, when the panel moves into the file editor (MAI-102)', async ({ page }) => {
+  const now = Date.now()
+  // 会話の欄がスクロールするほどの長さ
+  const jobs = Array.from({ length: 30 }, (_, i) => ({
+    id: `k${i}`, threadId: 't1', prompt: `質問 ${i}`, status: 'done', createdAt: now + 60_000 + i, eventCount: 1, events: [{ kind: 'text', text: `答え ${i}\n\n${'長い答え。'.repeat(20)}` }],
+  }))
+  await openApp(page, { jobs })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  const log = page.locator('.claude-log')
+  // 途中まで読み返した位置
+  await log.evaluate((el) => {
+    el.scrollTop = 300
+    el.dispatchEvent(new Event('scroll'))
+  })
+  await openFileEditor(page)
+  await expect(panel(page)).toBeVisible()
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(300)
+  // プレビューに切り替えて戻しても、閉じても同じ所
+  await editorView(page, 'プレビュー').click()
+  await editorView(page, 'Claude').click()
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(300)
+
+  // パネルの中のボタンの上の Ctrl+Enter では、エディタを閉じない
+  await page.getByRole('button', { name: '新規' }).focus()
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect(page.locator('.file-editor')).toBeVisible()
+
+  // プレビューで隠したまま、ブラウザの「戻る」で閉じても、次に開くときは右半分に出る
+  await editorView(page, 'プレビュー').click()
+  await expect(panel(page)).toBeHidden()
+  await page.goBack()
+  await expect(page.locator('.file-editor')).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
+  await openFileEditor(page)
+  await expect(panel(page)).toBeVisible()
+  expect(await panelOnTop(page)).toBe(true)
 })
