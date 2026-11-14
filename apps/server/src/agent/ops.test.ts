@@ -147,6 +147,9 @@ describe('edit_canvas', () => {
     expect(lines.find((line) => line.startsWith('node:md '))).toContain(' ~300x320')
     expect(lines.find((line) => line.startsWith('node:fixed '))).toContain(' 300x200')
     expect(lines[0]).toMatch(/ bounds=0,80,560x\d+ /)
+    // 回したノードには rot= を付ける（read_canvas の行と同じ）
+    const turned = edit([{ op: 'create', type: 'geo', as: 'turned', x: 0, y: 400, w: 200, h: 20, rotation: 90 }])
+    expect(turned.boxes![turned.created.turned!]).toMatch(/ 200x20 rot=90$/)
     // 多ければ、先頭の 100 だけを返し、残りは数だけ
     const many = edit(Array.from({ length: 120 }, (_, i) => ({ op: 'create', type: 'geo', x: i * 10, y: 1000, w: 5, h: 5 })))
     expect(Object.keys(many.boxes!)).toHaveLength(100)
@@ -167,6 +170,13 @@ describe('edit_canvas', () => {
     const fourth = edit([{ op: 'move', ids: ['$head'], dx: 10 }])
     expect(fourth.boxes).toEqual({ [third.created.head!]: '510,0 100x40' })
     expect(world(records, first.created.head!)).toMatchObject({ x: 0, y: 0 })
+    // 同じ呼び出しのあとで付け直す名前を、付ける前に指したら、前の呼び出しのノードではなく断る
+    expect(() =>
+      edit([
+        { op: 'connect', from: '$head', to: '$next' },
+        { op: 'create', type: 'geo', as: 'head', x: 900, y: 0, w: 10, h: 10 },
+      ]),
+    ).toThrow(/\$head is named by a later op of this call/)
     // ほかの Canvas では使えない
     const other = edit([{ op: 'create', type: 'portal', as: 'room', name: '別室', x: 0, y: 500 }]).canvases!.room!.canvas
     expect(() => edit([{ op: 'move', ids: ['$next'], dx: 1 }], { canvasId: other })).toThrow(/unknown reference \$next/)
@@ -177,7 +187,11 @@ describe('edit_canvas', () => {
     // 500 を超える ops は断り、ファイルで渡せることを教える。ファイルなら 5000 まで
     const ops = Array.from({ length: 600 }, (_, i) => ({ op: 'create', type: 'geo', x: i, y: 2000, w: 5, h: 5 }))
     expect(() => edit(ops)).toThrow(/Send at most 500 per call \(up to 5000 in an ops_file\)/)
-    expect(edit(ops, { maxOps: 5000 }).counts.created).toBe(600)
+    const big = edit(ops, { maxOps: 5000 })
+    expect(big.counts.created).toBe(600)
+    // created は 500 まで（残りは数だけ）
+    expect(Object.keys(big.created)).toHaveLength(500)
+    expect(big.moreCreated).toBe(100)
     expect(records.childrenOf(root).length).toBeGreaterThan(600)
   })
 

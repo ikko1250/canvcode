@@ -48,6 +48,10 @@ export const MAX_OPS = 500
 export const MAX_FILE_OPS = 5000
 // 結果に位置と大きさを返すノードの数（MAI-105。超えた分は数だけ返す）
 const MAX_BOXES = 100
+// 結果の created に入れる数（MAI-105。超えた分は数だけ返す。名前を付けたものから入れる）
+const MAX_CREATED = 500
+// 1 回の呼び出しで作れるノードの数（MAI-105。ops_file と grid で、とても大きな編集が同期で走らないように）
+export const MAX_CREATED_NODES = 5000
 // 位置を決めずに作ったノードを、Canvas の中身の右に置くときの間隔
 const AUTO_GAP = 80
 // 見ている範囲の中心の近くで空いた所を探すとき：ほかのノードとの間隔と、探す輪の数（ノードの大きさの半分ずつ外へ）
@@ -238,7 +242,7 @@ type StyleInput = Partial<Record<keyof typeof style, unknown>> & { text?: string
 // ツールの入力のスキーマ（小さく保つ。操作ごとの形は parseOp で確かめる）
 export const editCanvasInput = {
   canvas_id: z.string().optional().describe("Canvas id (default: the one the user is viewing)"),
-  ops: z.array(z.looseObject({ op: z.string() })).min(1).max(MAX_OPS).optional().describe('Operations (see get_canvas_format)'),
+  ops: z.array(z.looseObject({ op: z.string() })).min(1).optional().describe('Operations (see get_canvas_format)'),
   ops_file: z.string().optional().describe('Instead of ops: a JSON file in the workspace with the ops'),
   if_rev: z.number().int().min(0).optional().describe('Fail if a node to change was modified after this rev'),
   label: z.string().max(MAX_LABEL).optional().describe('Short description shown to the user'),
@@ -296,6 +300,8 @@ export interface EditResult {
   created: Record<string, string>
   canvases?: Record<string, CreatedCanvas>
   counts: { created: number; updated: number; deleted: number }
+  // created が MAX_CREATED を超えた分の数（MAI-105）
+  moreCreated?: number
   // 作った・変えたノードの、編集のあとの位置と大きさ（MAI-105。read_canvas の行と同じ "x,y wxh"、~ は見積もり。矢印は "x,y→x,y"）。
   // MAX_BOXES を超えた分は moreBoxes に数だけ。bounds は Canvas の中身全体の外接の箱
   boxes?: Record<string, string>
@@ -305,9 +311,13 @@ export interface EditResult {
 }
 
 // 操作をすべて行い、保存して知らせる。失敗したら EditError を投げる（何も変えない）
+// ops の数の上限を確かめる（MCP は PDF を読む前にも呼ぶ）
+export function checkOpCount(count: number, maxOps = MAX_OPS): void {
+  if (count > maxOps) throw new EditError(`Too many ops (${count}). Send at most ${maxOps} per call${maxOps < MAX_FILE_OPS ? ` (up to ${MAX_FILE_OPS} in an ops_file)` : ''}.`)
+}
+
 export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
-  const maxOps = request.maxOps ?? MAX_OPS
-  if (request.ops.length > maxOps) throw new EditError(`Too many ops (${request.ops.length}). Send at most ${maxOps} per call${maxOps < MAX_FILE_OPS ? ` (up to ${MAX_FILE_OPS} in an ops_file)` : ''}.`)
+  checkOpCount(request.ops.length, request.maxOps)
   const workspace = host.workspace()
   const canvas = workspace.getCanvas(request.canvasId)
   if (!canvas) throw new EditError(`Unknown canvas id ${request.canvasId}. Use list_canvases to find one.`)
@@ -318,7 +328,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const tx = workspace.store.begin(label, { scope: canvas.id, history: 'ignore', source: 'user', meta })
   // 画面の操作と同じく、commit の直前に slide-layout の子を並べ直す
   editor.arrangeSlideLayoutsOnCommit(tx)
-  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs, request.images, host.namesOf(canvas.id))
+  const run = new EditRun(host, editor, tx, meta, request.viewport, request.pdfs, request.images, host.namesOf(canvas.id), namedIn(request.ops))
   let patch: Patch<WorkspaceRecord>
   try {
     for (const [i, raw] of request.ops.entries()) {
@@ -387,7 +397,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   )
   // "as" の名前は、あとの呼び出しでも使えるように覚える（MAI-105）
   host.rememberNames(canvas.id, run.names())
-  return { batch, rev, created: run.created, ...run.canvasResult(), counts, ...boxesOf(records, canvas.id, entries), ...(run.warnings.length ? { warnings: run.warnings } : {}) }
+  return { batch, rev, ...createdOf(run.created), ...run.canvasResult(), counts, ...boxesOf(records, canvas.id, entries), ...(run.warnings.length ? { warnings: run.warnings } : {}) }
 }
 
 // AI の編集を取り消す。そのあとに変わったレコードがあれば、何もせずに EditError を投げる
@@ -432,6 +442,25 @@ function overflowWarnings(editor: Editor, patch: Patch<WorkspaceRecord>): string
     const parts = [nodes.length ? `text does not fit in ${listIds(nodes)}` : '', extraRows ? `${extraRows} row(s) over the limit are not placed` : '']
     return [`slide ${slideId} overflows: ${parts.filter(Boolean).join('; ')}`]
   })
+}
+
+// この呼び出しで "as" を付ける名前（前の呼び出しの同じ名前を、付ける前に指さないように。MAI-105）
+function namedIn(ops: unknown[]): Set<string> {
+  const names = new Set<string>()
+  for (const op of ops) {
+    const as = (op as { as?: unknown } | null)?.as
+    if (typeof as === 'string') names.add(as)
+  }
+  return names
+}
+
+// created（MAX_CREATED まで。名前を付けたものから）と、入れなかった数（MAI-105）
+function createdOf(created: Record<string, string>): Pick<EditResult, 'created' | 'moreCreated'> {
+  const entries = Object.entries(created)
+  if (entries.length <= MAX_CREATED) return { created }
+  const named = entries.filter(([key]) => !key.startsWith('#'))
+  const kept = [...named, ...entries.filter(([key]) => key.startsWith('#'))].slice(0, MAX_CREATED)
+  return { created: Object.fromEntries(kept), moreCreated: entries.length - kept.length }
 }
 
 // 作った・変えたノードの位置と大きさ（作ったものから。MAI-105）と、Canvas の中身全体の外接の箱
@@ -487,8 +516,11 @@ class EditRun {
   private readonly viewport: Box | undefined
   private readonly pdfs: ReadonlyMap<number, PreparedPdf> | undefined
   private readonly images: ReadonlyMap<number, PreparedImage> | undefined
-  // 前の呼び出しで "as" を付けたノード（MAI-105。この呼び出しの名前が先）
+  // 前の呼び出しで "as" を付けたノード（MAI-105。この呼び出しの名前が先）と、この呼び出しで付ける名前（付ける前は、前の呼び出しのものを指さない）
   private readonly remembered: ReadonlyMap<string, string>
+  private readonly declared: ReadonlySet<string>
+  // 作ったノードの数（MAX_CREATED_NODES まで）
+  private createdNodes = 0
 
   constructor(
     host: AgentHost,
@@ -499,8 +531,10 @@ class EditRun {
     pdfs?: ReadonlyMap<number, PreparedPdf>,
     images?: ReadonlyMap<number, PreparedImage>,
     remembered: ReadonlyMap<string, string> = new Map(),
+    declared: ReadonlySet<string> = new Set(),
   ) {
     this.remembered = remembered
+    this.declared = declared
     this.host = host
     this.editor = editor
     this.tx = tx
@@ -1118,6 +1152,7 @@ class EditRun {
   }
 
   private remember(nodeId: string, as: string | undefined, i: number): void {
+    if (++this.createdNodes > MAX_CREATED_NODES) throw new EditError(`one call can create at most ${MAX_CREATED_NODES} nodes`)
     if (as !== undefined) {
       if (this.refs.has(as)) throw new EditError(`"as": "${as}" is already used`)
       this.refs.set(as, nodeId)
@@ -1129,8 +1164,15 @@ class EditRun {
   private node(ref: string): string {
     let nodeId = ref
     if (ref.startsWith('$')) {
-      const found = this.refs.get(ref.slice(1)) ?? this.remembered.get(ref.slice(1))
-      if (!found) throw new EditError(`unknown reference ${ref} (name a node with "as" in an earlier op or an earlier edit of this canvas)`)
+      const name = ref.slice(1)
+      const found = this.refs.get(name) ?? (this.declared.has(name) ? undefined : this.remembered.get(name))
+      if (!found) {
+        throw new EditError(
+          this.declared.has(name)
+            ? `${ref} is named by a later op of this call; refer to it after that op`
+            : `unknown reference ${ref} (name a node with "as" in an earlier op or an earlier edit of this canvas)`,
+        )
+      }
       nodeId = found
     }
     const node = nodeIn(this.tx, nodeId)

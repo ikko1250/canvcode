@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { isAbsolute, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -8,7 +9,7 @@ import { normalizeRefId } from '@canvcode/core'
 import { findPlotColumn, normalizePlotSpec, PLOT_KINDS, PLOT_MAX_LEGEND_NCOL, plotTable, plotUsesX, type ImageProps, type PlotKind, type PlotSpec } from '@canvcode/nodes'
 import { HttpError, type FileInfo } from './files.ts'
 import type { AgentHost } from './agent/host.ts'
-import { EditError, editCanvas, editCanvasInput, MAX_FILE_OPS, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
+import { checkOpCount, EditError, editCanvas, editCanvasInput, MAX_FILE_OPS, undoCanvasEdit, type CreatedCanvas, type PreparedImage } from './agent/ops.ts'
 import { preparePdfs, type PdfSources } from './agent/pdfSource.ts'
 import { canvasFormatGuide, listCanvases, OutlineError, readCanvas, readNodes, slideIdOf } from './agent/outline.ts'
 import { PlotError, STYLE_FILE_NAME, type Plotter } from './plot.ts'
@@ -330,6 +331,8 @@ function registerCanvasTools(
         const ops = fromFile?.ops ?? inline!
         const label = inlineLabel ?? fromFile?.label
         const viewport = user?.canvasId === canvasId ? user.viewport : undefined
+        // PDF を読んで保存する前に、数を確かめる
+        checkOpCount(ops.length, fromFile ? MAX_FILE_OPS : undefined)
         const pdfs = await preparePdfs(ops, pdf)
         const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport, pdfs, ...(fromFile ? { maxOps: MAX_FILE_OPS } : {}) })
         // 取り込んだ PDF の文字（ページごとに「=== page N ===」）のファイル。AI が grep して、どのページかを探せる。
@@ -735,6 +738,8 @@ const MAX_OPS_FILE_BYTES = 20 * 1024 * 1024
 // edit_canvas で取り込んだ PDF の文字を取り出し終えるのを待つ時間（ミリ秒。全部の PDF で合わせて）
 const PDF_TEXT_WAIT_MS = 3000
 
+// パスはワークスペースの中だけ（シンボリックリンクは、たどった先で確かめる）。.canvcode（CanvCode の管理用）の中は読まない。
+// 読めない JSON の理由に中身は出さない
 async function readOpsFile(files: RefDeps['files'], path: string): Promise<{ ops: unknown[]; label?: string }> {
   let abs: string
   try {
@@ -744,14 +749,20 @@ async function readOpsFile(files: RefDeps['files'], path: string): Promise<{ ops
   }
   const info = await stat(abs).catch(() => null)
   if (!info?.isFile()) throw new EditError(`ops_file: no file at ${path}`)
+  const [real, root] = await Promise.all([realpath(abs), realpath(files.root)])
+  const rel = relative(root, real)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new EditError(`ops_file ${path} is outside the workspace`)
+  if (rel.split(sep)[0] === '.canvcode') throw new EditError(`ops_file ${path} is in .canvcode (CanvCode's own data); write it elsewhere in the workspace`)
   if (info.size > MAX_OPS_FILE_BYTES) throw new EditError(`ops_file ${path} is too large (over ${MAX_OPS_FILE_BYTES / 1024 / 1024} MB)`)
   let parsed: unknown
   try {
-    parsed = JSON.parse(await readFile(abs, 'utf8'))
-  } catch (error) {
-    throw new EditError(`ops_file ${path} is not JSON: ${error instanceof Error ? error.message : String(error)}`)
+    parsed = JSON.parse(await readFile(real, 'utf8'))
+  } catch {
+    throw new EditError(`ops_file ${path} is not valid JSON`)
   }
   const body = Array.isArray(parsed) ? { ops: parsed } : (parsed as { ops?: unknown; label?: unknown } | null)
+  const extra = body && !Array.isArray(parsed) && typeof parsed === 'object' ? Object.keys(body).filter((key) => key !== 'ops' && key !== 'label') : []
+  if (extra.length) throw new EditError(`ops_file ${path}: only "ops" and "label" are read (${extra.join(', ')}); pass canvas_id and if_rev to edit_canvas`)
   if (!body || !Array.isArray(body.ops) || body.ops.length === 0) throw new EditError(`ops_file ${path} must hold a non-empty array of ops, or {"ops": [...]}`)
   if (body.ops.some((op) => typeof op !== 'object' || op === null || typeof (op as { op?: unknown }).op !== 'string')) {
     throw new EditError(`ops_file ${path}: every op must be an object with "op"`)

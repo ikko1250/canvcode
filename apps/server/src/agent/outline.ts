@@ -348,7 +348,7 @@ interface LineContext {
   parentShown: boolean
 }
 
-// edit_canvas の結果に返す、ノードの位置と大きさ（MAI-105）。boxes は id → "x,y wxh"（read_canvas の行と同じ書き方。
+// edit_canvas の結果に返す、ノードの位置と大きさ（MAI-105）。boxes は id → "x,y wxh [rot=度]"（read_canvas の行と同じ書き方。
 // w・h に ~ が付くのは見積もり）、矢印は "x,y→x,y"。bounds は Canvas の中身全体の外接の箱 "x,y wxh"。
 // ids のうち Canvas にないもの（消したもの・別の Canvas へ移したもの）は出さない
 export function nodeBoxes(records: RecordStore, canvasId: string, ids: readonly string[]): { boxes: Record<string, string>; bounds?: string } {
@@ -363,7 +363,8 @@ export function nodeBoxes(records: RecordStore, canvasId: string, ids: readonly 
       const ends = endpoints(item, bindings.get(id) ?? [])
       boxes[id] = `${point(ends.start.world)}→${point(ends.end.world)}`
     } else {
-      boxes[id] = `${point(applyMat(item.world, { x: item.box.x, y: item.box.y }))} ${item.estimated ? '~' : ''}${round(item.box.w)}x${round(item.box.h)}`
+      const rotation = worldRotation(item)
+      boxes[id] = `${point(applyMat(item.world, { x: item.box.x, y: item.box.y }))} ${item.estimated ? '~' : ''}${round(item.box.w)}x${round(item.box.h)}${rotation ? ` rot=${rotation}` : ''}`
     }
   }
   return { boxes, ...(tree.length ? { bounds: boundsText(tree, ' ') } : {}) }
@@ -853,10 +854,10 @@ const EDIT_GUIDE = `
 ## Editing (edit_canvas)
 edit_canvas(canvas_id?, ops | ops_file, if_rev?, label?) runs all ops in order as one atomic edit (max 500 ops; 5000 in an ops_file): if any op fails, nothing changes and the error names ops[i].
 Batch a whole change into one call. label is a short description the user sees with an undo button. Pass if_rev=<rev you read> to refuse if those nodes changed since.
-ops_file: a path in the workspace to a JSON file with the ops array (or {"ops":[…],"label":"…"}). When a script generates the ops, have it write that file and pass ops_file; do not print the JSON and copy it into ops (that costs its tokens twice).
-Result: {"batch","rev","created":{"<as or #i>":"<new id>"},"counts":{created,updated,deleted},"boxes":{"<id>":"<x>,<y> <W>x<H>"},"bounds":"<x>,<y> <W>x<H>","warnings"?}. boxes = where each created or changed node ended up, as in read_canvas (~ = estimated; arrows "x,y→x,y"; created first, at most 100, "moreBoxes":<n> for the rest); bounds = around all top-level nodes. Use them instead of reading the canvas again. undo_canvas_edit(batch_id) undoes it.
+ops_file: a path in the workspace (not in .canvcode) to a JSON file with the ops array (or {"ops":[…],"label":"…"}; canvas_id and if_rev go to edit_canvas itself). When a script generates the ops, have it write that file and pass ops_file; do not print the JSON and copy it into ops (that costs its tokens twice).
+Result: {"batch","rev","created":{"<as or #i>":"<new id>"},"counts":{created,updated,deleted},"boxes":{"<id>":"<x>,<y> <W>x<H>"},"bounds":"<x>,<y> <W>x<H>","warnings"?}. boxes = where each created or changed node ended up, as in read_canvas (~ = estimated; rot= when rotated; arrows "x,y→x,y"; created first, at most 100, "moreBoxes":<n> for the rest); bounds = around all top-level nodes. created lists at most 500 (named ones first, "moreCreated":<n> for the rest). Use them instead of reading the canvas again. undo_canvas_edit(batch_id) undoes it.
 
-Ids: an op may name what it creates with "as":"a"; later ops refer to it as "$a". Names stay usable as "$a" in later edit_canvas calls on the same canvas (until the server restarts; using a name again points it to the newer node), so a large job can be split into several calls without looking up ids.
+Ids: an op may name what it creates with "as":"a"; later ops refer to it as "$a". Names stay usable as "$a" in later edit_canvas calls on the same canvas (until the server restarts; using a name again points it to the newer node), so a large job can be split into several calls without looking up ids. They are shared by everyone editing the canvas: when other agents may edit it too, use names unlikely to clash (e.g. "rates_title", not "title"). Within one call, "$a" before the op that names a refers to nothing (an error), not to an older a.
 Coordinates: world. x,y = top-left of the node's box, as in read_canvas (also inside rotated frames/groups; the server converts).
 Position (create/move): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40} (aligns top or left edges). Omitted on create: in free space near the centre of the user's view (else right of the existing content); later unpositioned creates in the same call stack below it.
 Colours are hex (#rrggbb); fill/stroke also accept "none".

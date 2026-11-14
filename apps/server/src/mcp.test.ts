@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -290,16 +290,28 @@ describe('MCP server', () => {
     const labelled = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ops_file: 'out/labelled.json' })
     expect(labelled.isError).toBe(false)
     expect(records.getAgentOp(labelled.data.batch)?.label).toBe('ファイルから')
-    writeFileSync(join(workspace, 'out', 'bad.json'), '{"ops": [')
+    writeFileSync(join(workspace, 'out', 'bad.json'), 'TOPSECRET {"ops": [')
     writeFileSync(join(workspace, 'out', 'empty.json'), '[]')
+    writeFileSync(join(workspace, 'out', 'extra.json'), JSON.stringify({ canvas_id: 'canvas:x', ops: [{ op: 'create', type: 'note', text: 'x' }] }))
+    // ワークスペースの外を指すシンボリックリンクと、.canvcode の中
+    const outside = mkdtempSync(join(tmpdir(), 'canvcode-outside-'))
+    cleanups.push(() => rmSync(outside, { recursive: true, force: true }))
+    writeFileSync(join(outside, 'ops.json'), JSON.stringify([{ op: 'create', type: 'note', text: 'outside' }]))
+    symlinkSync(join(outside, 'ops.json'), join(workspace, 'out', 'link.json'))
+    writeFileSync(join(workspace, '.canvcode', 'ops.json'), JSON.stringify([{ op: 'create', type: 'note', text: 'x' }]))
     const before = records.rev
     for (const [args, message] of [
       [{ ops_file: 'out/ops.json', ops: [{ op: 'create', type: 'note', text: 'x' }] }, /exactly one of ops, ops_file/],
       [{}, /exactly one of ops, ops_file/],
       [{ ops_file: '../outside.json' }, /outside the workspace/],
+      [{ ops_file: 'out/link.json' }, /outside the workspace/],
+      [{ ops_file: '.canvcode/ops.json' }, /is in \.canvcode/],
       [{ ops_file: 'out/none.json' }, /no file at out\/none\.json/],
-      [{ ops_file: 'out/bad.json' }, /is not JSON/],
+      [{ ops_file: 'out/bad.json' }, /^ops_file out\/bad\.json is not valid JSON$/],
       [{ ops_file: 'out/empty.json' }, /non-empty array of ops/],
+      [{ ops_file: 'out/extra.json' }, /only "ops" and "label" are read \(canvas_id\)/],
+      // ops に直接 501 個渡すと、ops_file を案内する（MCP の入力のスキーマで先に止めない）
+      [{ ops: Array.from({ length: 501 }, () => ({ op: 'create', type: 'note', text: 'x' })) }, /Send at most 500 per call \(up to 5000 in an ops_file\)/],
     ] as const) {
       const failed = await call(client, 'edit_canvas', { canvas_id: records.rootCanvasId, ...args })
       expect(failed.isError, JSON.stringify(args)).toBe(true)
