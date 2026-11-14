@@ -84,6 +84,8 @@ export interface PieMenuContext {
   lockPdfPages(): void
   // 次のドラッグで、PDF のページの上の語をなぞって調べる（MAI-99）
   lookUpWord(): void
+  // 次のドラッグで、PDF のページの上の文字を語単位でなぞって選び、引用・コピー・AI に渡す（MAI-103）
+  selectPdfText(): void
   // 選んでいるテキスト・付箋の文字を 1 段階大きく（1）・小さく（-1）する
   stepFontSize(direction: 1 | -1): void
   setTextAlign(align: TextAlign): void
@@ -232,7 +234,7 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 ]
 
 // 操作のメニューの項目（MAI-57）。出す必要のないものは入れない。
-// ページの項目（最大 5 つ。「単語を調べる」を含む）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる。
+// ページの項目（最大 6 つ。「単語を調べる」「文字を選ぶ」を含む）と選択の項目（最大 8 つ）を合わせて 8 つを超えるときは、ページの項目を「ページ ›」にまとめる。
 // スライドの項目（選んでいるスライドの 2 つと、子の無いスライドを 1 つだけ選んでいるときの「テンプレート ›」、
 // 行を持つスライドの中身を選んでいるときの「行を足す」「行を消す」「行を移動 ›」「行の高さを自動に戻す」、キャンバスにスライドがあるときの「スライドを PDF に出力」）を足して
 // 8 つを超えるときは、まず文字の項目（3 つ）を「文字 ›」にまとめ、まだ超えるならスライドの項目を「スライド ›」にまとめる
@@ -257,6 +259,8 @@ function buildActionItemsWith(ctx: PieMenuContext): { items: PieEntry[]; slidesF
     if (!pdf.noneLocked) pages.push({ label: 'ページをすべて選ぶ（固定を外す）', onSelect: ctx.unlockAndSelectPdfPages })
     if (!pdf.allLocked) pages.push({ label: 'ページを固定する', onSelect: ctx.lockPdfPages })
     if (pdf.canLookUp) pages.push({ label: '単語を調べる', onSelect: ctx.lookUpWord })
+    // Claude が使えなくても出す（コピーと引用ノートは Claude なしで使える。MAI-103）
+    pages.push({ label: '文字を選ぶ', onSelect: ctx.selectPdfText })
   }
   const text: PieEntry[] = []
   if (selection.hasText) {

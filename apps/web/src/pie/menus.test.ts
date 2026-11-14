@@ -35,6 +35,7 @@ function context(pdf: Partial<PdfMenuContext> = {}, selection: Partial<Selection
     unlockAndSelectPdfPages: vi.fn(),
     lockPdfPages: vi.fn(),
     lookUpWord: vi.fn(),
+    selectPdfText: vi.fn(),
     stepFontSize: vi.fn(),
     setTextAlign: vi.fn(),
     alignSelection: vi.fn(),
@@ -85,17 +86,17 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
   it('shows page items only when the canvas has PDF pages, omitting the ends and no-op lock items', () => {
     const ctx = context({ hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false })
     const menu = actionsOf(ctx)
-    expect(labels(menu?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）'])
+    expect(labels(menu?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', '文字を選ぶ'])
     run(menu?.items, '次のページ')
     expect(ctx.panToPage).toHaveBeenCalledWith('next')
     run(menu?.items, 'ページをすべて選ぶ（固定を外す）')
     expect(ctx.unlockAndSelectPdfPages).toHaveBeenCalledTimes(1)
 
     const middle = actionsOf(context({ hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false }))
-    expect(labels(middle?.items)).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する'])
+    expect(labels(middle?.items)).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する', '文字を選ぶ'])
 
     const last = context({ hasPages: true, canNext: false, canPrev: true, allLocked: false, noneLocked: true })
-    expect(labels(actionsOf(last)?.items)).toEqual(['前のページ', 'ページを固定する'])
+    expect(labels(actionsOf(last)?.items)).toEqual(['前のページ', 'ページを固定する', '文字を選ぶ'])
     run(actionsOf(last)?.items, '前のページ')
     expect(last.panToPage).toHaveBeenCalledWith('prev')
     run(actionsOf(last)?.items, 'ページを固定する')
@@ -108,16 +109,18 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
   it('offers 単語を調べる with the page items when Claude is available (MAI-99)', () => {
     const ctx = context({ hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false, canLookUp: true })
     const menu = actionsOf(ctx)
-    expect(labels(menu?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', '単語を調べる'])
+    expect(labels(menu?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', '単語を調べる', '文字を選ぶ'])
     run(menu?.items, '単語を調べる')
     expect(ctx.lookUpWord).toHaveBeenCalledTimes(1)
-    // Claude が使えなければ出さない。PDF のページがなければ、Claude が使えても出さない
+    run(menu?.items, '文字を選ぶ')
+    expect(ctx.selectPdfText).toHaveBeenCalledTimes(1)
+    // Claude が使えなければ出さない（「文字を選ぶ」は出す。MAI-103）。PDF のページがなければ、Claude が使えても出さない
     expect(labels(actionsOf(context({ hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false }))?.items)).not.toContain('単語を調べる')
     expect(actionsOf(context({ canLookUp: true }))).toBeUndefined()
     // ページの項目と同じく、8 つを超えるときは「ページ ›」にまとめる
     const folded = actionsOf(context({ hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false, canLookUp: true }, { count: 3, arrangeCount: 3 }))
     expect(labels(folded?.items)[0]).toBe('ページ')
-    expect(labels(sub(folded, 'ページ'))).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する', '単語を調べる'])
+    expect(labels(sub(folded, 'ページ'))).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する', '単語を調べる', '文字を選ぶ'])
   })
 
   it('shows text items only when text or note nodes are selected', () => {
@@ -205,10 +208,10 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     const pdf = { hasPages: true, canNext: true, canPrev: true, allLocked: false, noneLocked: false }
     const menu = actionsOf(context(pdf, { count: 3, arrangeCount: 3, hasText: true }))
     expect(labels(menu?.items)).toEqual(['ページ', '文字を大きく', '文字を小さく', '揃え', '整列', '等間隔', '固定する', '複製'])
-    expect(labels(sub(menu, 'ページ'))).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する'])
+    expect(labels(sub(menu, 'ページ'))).toEqual(['次のページ', '前のページ', 'ページをすべて選ぶ（固定を外す）', 'ページを固定する', '文字を選ぶ'])
     // 8 つまでなら、ページの項目もそのまま並べる
     const fits = actionsOf(context(pdf, { count: 2, arrangeCount: 2, hasText: false }))
-    expect(fits?.items).toHaveLength(7)
+    expect(fits?.items).toHaveLength(8)
     expect(labels(fits?.items)[0]).toBe('次のページ')
   })
 
@@ -229,7 +232,7 @@ describe('buildPieMenus: actions menu (MAI-57)', () => {
     ])
     // PDF のページの項目と一緒でも出る
     const pdf = { hasPages: true, canNext: true, canPrev: false, allLocked: true, noneLocked: false }
-    expect(labels(actionsOf(context(pdf, {}, true))?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', 'スライドを PDF に出力'])
+    expect(labels(actionsOf(context(pdf, {}, true))?.items)).toEqual(['次のページ', 'ページをすべて選ぶ（固定を外す）', '文字を選ぶ', 'スライドを PDF に出力'])
   })
 
   it('folds the slide items into a submenu when they would still push the ring over 8 after folding the text items', () => {

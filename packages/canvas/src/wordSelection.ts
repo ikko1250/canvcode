@@ -1,5 +1,5 @@
 import type { Box, Vec } from '@canvcode/core'
-import { needsSpace, type PdfTextItem } from './quotes.ts'
+import { joinLines, needsSpace, type PdfTextItem } from './quotes.ts'
 
 // PDF のページの上で、なぞった語を選ぶ（o メニューの「単語を調べる」。MAI-99）。DOM を使わない部分だけをここに置く。
 // - ページの文字の断片（PDF.js の getTextContent）を、PDF に書かれた順（ブラウザで PDF の文字を選ぶときと同じ順。2 段組でも
@@ -139,6 +139,23 @@ export function wordIndexAt(page: PdfPageText, point: Vec): number {
   return best
 }
 
+// 行ごとの箱（読む順）のうち、選び始めた段の部分（MAI-103）。左右に重ならない箱が来たら、別の段（2 段組の右の段など）に移ったとみなす。
+// 出典の範囲は 1 つの矩形なので、段をまたいだ選択を全部囲むと、ほぼ本文全体になってしまうため
+export function startColumnBoxes(boxes: readonly Box[]): Box[] {
+  const first = boxes[0]
+  if (!first) return []
+  let left = first.x
+  let right = first.x + first.w
+  const out: Box[] = [first]
+  for (const box of boxes.slice(1)) {
+    if (box.x >= right || box.x + box.w <= left) break
+    left = Math.min(left, box.x)
+    right = Math.max(right, box.x + box.w)
+    out.push(box)
+  }
+  return out
+}
+
 // a 番目の語から b 番目の語まで（どちらが先でもよい）を選ぶ
 export function selectWords(page: PdfPageText, a: number, b: number): WordSelection | null {
   const first = page.words[Math.min(a, b)]
@@ -147,7 +164,8 @@ export function selectWords(page: PdfPageText, a: number, b: number): WordSelect
   const start = first.start
   const end = last.end
   return {
-    text: page.text.slice(start, end).replace(/\s+/g, ' ').trim(),
+    // 改行（段落の区切り）は、英数字どうしなら空白に、日本語なら何も入れずにつなぐ（MAI-103）
+    text: joinLines(page.text.slice(start, end)),
     context: sentencesAround(page.text, start, end),
     start,
     end,

@@ -851,7 +851,8 @@ export function App(props: { initial: InitialRecords }) {
     [workspace, navigate, openFile, notify],
   )
 
-  // 引用する範囲を決めた・文字を選んで「引用」を押した：ノートを横に置くか、コピーするかを選ばせる
+  // 引用する範囲を決めた・文字を選んで「引用」を押した・PDF の文字をなぞって選んだ（「文字を選ぶ」。MAI-103）：
+  // ノートを横に置くか、コピーするか、AI に渡すかを選ばせる
   const onQuote = useCallback(
     async (request: QuoteRequest) => {
       const view = viewRef.current
@@ -860,7 +861,7 @@ export function App(props: { initial: InitialRecords }) {
       let draft: QuoteDraft | null
       let place: () => void
       if (request.kind === 'pdf') {
-        draft = await view.quoteFromPdf(request.pageId, request.rect)
+        draft = request.draft ?? (await view.quoteFromPdf(request.pageId, request.rect))
         const page = editor.index.get(request.pageId)?.worldBounds
         const d = draft
         place = () => {
@@ -874,17 +875,27 @@ export function App(props: { initial: InitialRecords }) {
           if (card) view.placeQuote(d, request.nodeId, card.y)
         }
       }
-      if (!draft || view.editor !== editor) {
+      // 閉じたら、矩形の範囲となぞった文字のハイライトを消す
+      const clear = () => {
         view.clearQuoteRegion()
+        view.clearWordHighlight()
+      }
+      if (!draft || view.editor !== editor) {
+        clear()
         return
       }
       const d = draft
+      // Claude のパネルに添える所の名前。なぞった文字なら、その頭を出す
+      const pdfLabel = (pageIndex: number) =>
+        request.kind === 'pdf' && request.draft ? `PDF の ${pageIndex + 1} ページ「${truncateLabel(d.quote, 16)}」` : `PDF の ${pageIndex + 1} ページの範囲`
       setMenu({
         x: request.clientX,
         y: request.clientY,
         items: [
           { label: request.kind === 'pdf' ? 'このページの横に引用ノート' : 'カードの横に引用ノート', onSelect: place },
           { label: '引用をコピー', onSelect: () => void view.copyQuote(d) },
+          // PDF の文字だけ（出典なし。改行は入れていない）。図として切り抜く範囲なら出さない
+          ...(request.kind === 'pdf' && d.quote && !d.figure ? [{ label: '文字をコピー', onSelect: () => void view.copyQuoteText(d) }] : []),
           {
             label: 'AIに渡すIDをコピー',
             onSelect: () => {
@@ -905,7 +916,7 @@ export function App(props: { initial: InitialRecords }) {
                     const loc = d.locator
                     if (loc.kind === 'pdf') {
                       const figure = d.figure ? { figure: true as const } : {}
-                      askClaude(`PDF の ${loc.pageIndex + 1} ページの範囲`, () =>
+                      askClaude(pdfLabel(loc.pageIndex), () =>
                         view.saveReference({ kind: 'pdf', fileId: d.fileId, pageIndex: loc.pageIndex, rect: loc.rect, text: d.quote, ...figure }),
                       )
                     } else if (loc.kind === 'markdown') {
@@ -916,7 +927,7 @@ export function App(props: { initial: InitialRecords }) {
               ]
             : []),
         ],
-        onClose: () => view.clearQuoteRegion(),
+        onClose: clear,
       })
     },
     [setMenu, claude, askClaude],
@@ -1999,6 +2010,10 @@ export function App(props: { initial: InitialRecords }) {
         closeWordLookup()
         view?.armWordLookup()
       },
+      selectPdfText: () => {
+        closeWordLookup()
+        view?.armWordLookup('text')
+      },
       stepFontSize: (direction) => stepTextFontSize(editor, view, textNodesOf(editor), direction),
       setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
       alignSelection: (edge) => editor.alignSelection(edge),
@@ -2496,4 +2511,10 @@ export function App(props: { initial: InitialRecords }) {
         )}
     </div>
   )
+}
+
+// 名前に出す文字（空白は 1 つにし、長ければ切って … を付ける）
+function truncateLabel(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > max ? `${line.slice(0, max)}…` : line
 }

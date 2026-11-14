@@ -4,7 +4,7 @@ import { CanvasView } from './view.ts'
 import type { PdfTextItem } from './quotes.ts'
 import { SelectTool, type ToolContext, type ToolPointer, type WordSelectionEvent } from './tools.ts'
 import { Workspace } from './workspace.ts'
-import { pdfPageText, selectWords, sentencesAround, wordIndexAt } from './wordSelection.ts'
+import { pdfPageText, selectWords, sentencesAround, startColumnBoxes, wordIndexAt } from './wordSelection.ts'
 
 // PDF のページの上で、なぞった語を選ぶ（MAI-99）
 
@@ -86,6 +86,22 @@ describe('wordIndexAt と selectWords', () => {
     expect(selected.boxes[0]).toMatchObject({ x: 'Large language '.length * 6, y: 0, h: 10 })
     expect(selected.boxes[0]!.x + selected.boxes[0]!.w).toBeCloseTo('Large language models are trained'.length * 6)
     expect(selected.boxes[1]).toMatchObject({ x: 0, y: 12, w: 'on a corpus'.length * 6 })
+  })
+
+  it('段落をまたいで選んでも改行を入れない（英語は空白、日本語は何も入れずにつなぐ。MAI-103）', () => {
+    const page = pdfPageText([line('End of one.', 0, 0), line('Start of two', 0, 60), line('日本語の段落', 0, 120), line('次の段落', 0, 180)])
+    expect(page.text).toBe('End of one.\nStart of two\n日本語の段落\n次の段落')
+    expect(selectWords(page, indexOf(page, 'one'), indexOf(page, 'Start'))?.text).toBe('one. Start')
+    expect(selectWords(page, indexOf(page, '段落'), indexOf(page, '次'))?.text).toBe('段落次')
+  })
+
+  it('出典の範囲は、選び始めた段の部分だけを囲む（2 段組をまたいだとき。MAI-103）', () => {
+    const left = [{ x: 50, y: 600, w: 200, h: 10 }, { x: 40, y: 612, w: 210, h: 10 }]
+    const right = [{ x: 320, y: 100, w: 220, h: 10 }, { x: 320, y: 112, w: 100, h: 10 }]
+    expect(startColumnBoxes([...left, ...right])).toEqual(left)
+    // 同じ段なら全部（行の途中から始まっていても）
+    expect(startColumnBoxes([{ x: 150, y: 0, w: 100, h: 10 }, { x: 40, y: 12, w: 210, h: 10 }, { x: 40, y: 24, w: 60, h: 10 }])).toHaveLength(3)
+    expect(startColumnBoxes([])).toEqual([])
   })
 
   it('1 つの語だけも選べる', () => {
