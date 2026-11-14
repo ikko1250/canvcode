@@ -58,7 +58,7 @@ import { LinkPreviewer } from './linkPreview.ts'
 import { joinLines, locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
 import { matchRects, PdfSearchResults, type PdfSearchHit } from './pdfSearch.ts'
-import { pdfPageText, selectWords, wordIndexAt, type CharWidths, type PdfPageText, type WordSelection } from './wordSelection.ts'
+import { pdfPageText, selectWords, startColumnBoxes, wordIndexAt, type CharWidths, type PdfPageText, type WordSelection } from './wordSelection.ts'
 import {
   canvasRefTarget,
   pdfRegionRequests,
@@ -1220,7 +1220,8 @@ export class CanvasView {
       const b = applyMat(current.worldMatrix, { x: ((box.x + box.w) / size.width) * w, y: ((box.y + box.h) / size.height) * h })
       return boxFromPoints(a, b)
     })
-    const union = unionBoxes(words.boxes)
+    // 出典の範囲（1 つの矩形）は、選び始めた段の部分を囲む（2 段組をまたいでも、ページの本文全体にならないように。MAI-103）
+    const union = unionBoxes(startColumnBoxes(words.boxes))
     if (!union) return null
     const rect = { x: union.x / size.width, y: union.y / size.height, w: union.w / size.width, h: union.h / size.height }
     return { words, world, rect }
@@ -1666,7 +1667,8 @@ export class CanvasView {
       requests.map(async ({ nodeId, assetId, fileId, pageIndex, rect }) => {
         try {
           const { text, figure } = await this.pageRegionText(assetId, pageIndex, rect)
-          regions.set(nodeId, { fileId, pageIndex, rect, text, ...(figure ? { figure: true as const } : {}) })
+          // AI に渡す PDF の文字は改行を入れない（MAI-103）
+          regions.set(nodeId, { fileId, pageIndex, rect, text: joinLines(text), ...(figure ? { figure: true as const } : {}) })
         } catch (error) {
           console.warn('Failed to read the text of a PDF page', error)
         }

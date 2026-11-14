@@ -174,6 +174,14 @@ describe('text in a PDF region', () => {
     expect(joinLines('英語の後\nEnglish')).toBe('英語の後English')
     expect(joinLines('two　spaces\t here')).toBe('two spaces here')
     expect(joinLines('')).toBe('')
+    // 英字・数字のほか、括弧・引用符・アクセントのある文字どうしも空白を挟む
+    expect(joinLines('one.\n(Two')).toBe('one. (Two')
+    expect(joinLines('said.”\n“Next')).toBe('said.” “Next')
+    expect(joinLines('café\nnext')).toBe('café next')
+    expect(joinLines('Fig. 1\n[2] Smith')).toBe('Fig. 1 [2] Smith')
+    // 日本語の句読点・括弧・全角の文字の前後は空白を入れない
+    expect(joinLines('文です。\n（注）')).toBe('文です。（注）')
+    expect(joinLines('ＡＢＣ\nDEF')).toBe('ＡＢＣDEF')
   })
 
   it('treats a region with little text as a figure', () => {

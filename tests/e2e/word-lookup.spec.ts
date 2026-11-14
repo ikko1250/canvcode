@@ -260,3 +260,38 @@ test('quotes the traced text without Claude, and Esc leaves the mode (MAI-103)',
   await expect(menuItems(page)).toHaveCount(0)
   await expect.poll(() => wordHighlight(page)).toBeNull()
 })
+
+test('goes back to looking up after selecting text, and Esc before tracing leaves the text mode (MAI-103)', async ({ page }) => {
+  const lookups: Lookup[] = []
+  await openApp(page, { claude: true, lookups })
+  await traceText(page)
+  await expect(menuItems(page)).toHaveCount(5)
+  await page.keyboard.press('Escape')
+  await expect(menuItems(page)).toHaveCount(0)
+  // 次の「単語を調べる」は、メニューではなく調べる
+  await chooseLookUp(page)
+  const from = await lineAt(page, 72 + 45, 0)
+  const to = await lineAt(page, 72 + 84, 1)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 6 })
+  await page.mouse.up()
+  await expect(page.getByRole('dialog', { name: '単語を調べる' })).toBeVisible()
+  await expect.poll(() => lookups.length).toBe(1)
+  await expect(menuItems(page)).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  // 「文字を選ぶ」を選んでから、なぞる前に Esc でやめる
+  const rect = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2)
+  await page.keyboard.down('o')
+  await page.locator('.pie-item', { hasText: '文字を選ぶ' }).click({ force: true })
+  await page.keyboard.up('o')
+  await page.keyboard.press('Escape')
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 6 })
+  await page.mouse.up()
+  await expect(menuItems(page)).toHaveCount(0)
+  expect(lookups).toHaveLength(1)
+  expect(await wordHighlight(page)).toBeNull()
+})

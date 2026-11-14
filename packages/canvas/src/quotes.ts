@@ -111,14 +111,17 @@ export function joinLines(text: string): string {
   return out.replace(/\s+/g, ' ').trim()
 }
 
+// 行・段落・断片の間に空白を入れるか。どちらかが日本語・中国語の文字（漢字・かな・全角の記号）か空白なら入れない。
+// それ以外（英字・数字・アクセントのある文字・括弧・引用符など）どうしなら入れる（MAI-103。前は ASCII の英数字と一部の記号だけで、
+// 「one.」と「(Two」や「café」と「next」をつなげていた）
 export function needsSpace(before: string, after: string): boolean {
   const last = [...before].at(-1) ?? ''
   const first = [...after][0] ?? ''
-  return isLatin(last) && isLatin(first)
+  return spaced(last) && spaced(first)
 }
 
-function isLatin(ch: string): boolean {
-  return /[A-Za-z0-9.,;:!?)\]'"%-]/.test(ch) && !/[\u3000-\u9fff\uff00-\uffef]/.test(ch)
+function spaced(ch: string): boolean {
+  return ch !== '' && !/\s/.test(ch) && !/[\u2e80-\u2fff\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(ch)
 }
 
 // ---- Markdown ----

@@ -861,8 +861,8 @@ export function App(props: { initial: InitialRecords }) {
         items: [
           { label: request.kind === 'pdf' ? 'このページの横に引用ノート' : 'カードの横に引用ノート', onSelect: place },
           { label: '引用をコピー', onSelect: () => void view.copyQuote(d) },
-          // 文字だけ（出典なし）。図（文字のない範囲）なら出さない
-          ...(d.quote ? [{ label: '文字をコピー', onSelect: () => void view.copyQuoteText(d) }] : []),
+          // PDF の文字だけ（出典なし。改行は入れていない）。図として切り抜く範囲なら出さない
+          ...(request.kind === 'pdf' && d.quote && !d.figure ? [{ label: '文字をコピー', onSelect: () => void view.copyQuoteText(d) }] : []),
           {
             label: 'AIに渡すIDをコピー',
             onSelect: () => {

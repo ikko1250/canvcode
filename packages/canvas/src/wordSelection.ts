@@ -139,6 +139,23 @@ export function wordIndexAt(page: PdfPageText, point: Vec): number {
   return best
 }
 
+// 行ごとの箱（読む順）のうち、選び始めた段の部分（MAI-103）。左右に重ならない箱が来たら、別の段（2 段組の右の段など）に移ったとみなす。
+// 出典の範囲は 1 つの矩形なので、段をまたいだ選択を全部囲むと、ほぼ本文全体になってしまうため
+export function startColumnBoxes(boxes: readonly Box[]): Box[] {
+  const first = boxes[0]
+  if (!first) return []
+  let left = first.x
+  let right = first.x + first.w
+  const out: Box[] = [first]
+  for (const box of boxes.slice(1)) {
+    if (box.x >= right || box.x + box.w <= left) break
+    left = Math.min(left, box.x)
+    right = Math.max(right, box.x + box.w)
+    out.push(box)
+  }
+  return out
+}
+
 // a 番目の語から b 番目の語まで（どちらが先でもよい）を選ぶ
 export function selectWords(page: PdfPageText, a: number, b: number): WordSelection | null {
   const first = page.words[Math.min(a, b)]
