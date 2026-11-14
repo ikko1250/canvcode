@@ -42,13 +42,16 @@ interface Props {
   focusRequest: number
   // 入力欄に入れておく頼み方の下書き（n が変わるたびに入れ直す。「グラフを作る」の「Claude におまかせ」）
   draft?: { text: string; n: number } | null
+  // パネルが見えている置き場所（MAI-102。App がパネルの DOM をキャンバスの右と全画面のエディタの右半分の間で移す）。
+  // 変わったら、会話の欄と入力欄のスクロールを戻す（DOM を移すと先頭に戻り、scroll イベントも来ないため）
+  placement?: Element | null
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
 }
 
 export function ClaudePanel(props: Props) {
-  const { client, canvasId, attachment, focusRequest, draft, onAttachSelection, onClearAttachment, onClose } = props
+  const { client, canvasId, attachment, focusRequest, draft, placement, onAttachSelection, onClearAttachment, onClose } = props
   const state = useClaudeState(client)
   const { threads } = state
   // 選んだ会話。null は新しい会話
@@ -104,6 +107,14 @@ export function ClaudePanel(props: Props) {
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
   const stick = useRef(true)
+  // 最後にスクロールした位置（置き場所が変わったら戻す。MAI-102）
+  const scrolled = useRef({ log: 0, input: 0 })
+  useEffect(() => {
+    if (!placement) return
+    const log = logRef.current
+    if (log) log.scrollTop = stick.current ? log.scrollHeight : scrolled.current.log
+    if (inputRef.current) inputRef.current.scrollTop = scrolled.current.input
+  }, [placement])
   useEffect(() => {
     const log = logRef.current
     if (log && stick.current) log.scrollTop = log.scrollHeight
@@ -241,6 +252,7 @@ export function ClaudePanel(props: Props) {
         ref={logRef}
         onScroll={(e) => {
           const el = e.currentTarget
+          scrolled.current.log = el.scrollTop
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
       >
@@ -288,6 +300,7 @@ export function ClaudePanel(props: Props) {
           rows={3}
           placeholder={thread ? '続けて頼む…' : 'Claude に頼む…'}
           onChange={(e) => setPrompt(e.target.value)}
+          onScroll={(e) => (scrolled.current.input = e.currentTarget.scrollTop)}
           onKeyDown={onKeyDown}
         />
         {error && <div className="claude-error">{error}</div>}
