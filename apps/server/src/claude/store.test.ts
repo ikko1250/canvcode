@@ -116,6 +116,35 @@ describe('ClaudeStore', () => {
     expect(readdirSync(dir).some((name) => name.startsWith('claude.db.broken-'))).toBe(false)
   })
 
+  it('adds the model and effort columns, and lists a thread with those of its last request, not of a background turn (MAI-106)', () => {
+    const dir = dataDir()
+    // origin はあるが model・effort のない claude.db
+    const old = new DatabaseSync(join(dir, 'claude.db'))
+    old.exec(`
+      CREATE TABLE jobs (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, prompt TEXT NOT NULL, origin TEXT, ref_id TEXT, canvas_id TEXT, status TEXT NOT NULL,
+        created_at INTEGER NOT NULL, finished_at INTEGER, cost_usd REAL, duration_ms INTEGER, session_id TEXT, event_count INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE events (job_id TEXT NOT NULL, seq INTEGER NOT NULL, event TEXT NOT NULL, PRIMARY KEY (job_id, seq));
+      INSERT INTO jobs (id, thread_id, prompt, status, created_at, event_count) VALUES ('a', 'a', 'old', 'done', 1, 0);
+      PRAGMA user_version = 1;
+    `)
+    old.close()
+    let store = new ClaudeStore(dir)
+    expect(store.thread('a')).not.toHaveProperty('model')
+    expect(store.job('a')).not.toHaveProperty('model')
+    store.insertJob(job('b', 'a', 2, { model: 'opus', effort: 'high' }))
+    // バックグラウンドのターンは、会話の値にしない
+    store.insertJob(job('c', 'a', 3, { origin: 'background', model: 'haiku', effort: 'low' }))
+    store.close()
+    store = open(dir)
+    expect(store.thread('a')).toMatchObject({ model: 'opus', effort: 'high', jobCount: 3 })
+    expect(store.threads()[0]).toMatchObject({ threadId: 'a', model: 'opus', effort: 'high' })
+    expect(store.job('c')).toMatchObject({ model: 'haiku', effort: 'low' })
+    // 既定（model なし）で頼んだら、会話の値も既定
+    store.insertJob(job('d', 'a', 4))
+    expect(store.thread('a')).not.toHaveProperty('model')
+    expect(store.thread('a')).not.toHaveProperty('effort')
+  })
+
   it('moves a broken database aside and starts over', () => {
     const dir = dataDir()
     writeFileSync(join(dir, 'claude.db'), 'not a database'.repeat(100))

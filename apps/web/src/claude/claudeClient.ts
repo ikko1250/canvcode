@@ -8,9 +8,28 @@ import { useSyncExternalStore } from 'react'
 // - 会話には、動いているバックグラウンドの作業（tasks）と、画面で答えを待っている問い合わせ（permissions）が付く。
 //   作業が終わって Claude が自分で続けたジョブは origin: 'background'
 // - SSE は、使えるとわかったときにつなぐ（パネルを開く前でも、問い合わせを Claude のボタンの印で知らせるため）
-// - 型はサーバーの claude/jobs.ts・claude/store.ts と同じ形
+// - 型はサーバーの claude/jobs.ts・claude/store.ts・claude/models.ts と同じ形
+// - 選べるモデルと effort（MAI-106）は、パネルを開いたときに GET /api/claude/models で 1 回だけ読む（読めなければ、次に開いたときに読み直す）
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
+
+// 推論の強さ（MAI-106）
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+// 選べるモデル。value を model に渡す。efforts は選べる effort（effort のないモデルなら空）
+export interface ModelChoice {
+  value: string
+  label: string
+  description?: string
+  efforts: Effort[]
+}
+
+// default は、モデルを渡さないとき（「既定」）に動くモデル。fromClaude は Claude Code に聞けたか（false なら固定の 3 つ）
+export interface ModelCatalog {
+  models: ModelChoice[]
+  default: { value?: string; label?: string }
+  fromClaude: boolean
+}
 
 export type JobEvent =
   | { kind: 'text'; text: string }
@@ -53,6 +72,9 @@ export interface ClaudeJob {
   finishedAt?: number
   costUsd?: number
   durationMs?: number
+  // 頼んだモデルと effort（なければ既定。MAI-106）
+  model?: string
+  effort?: Effort
   eventCount: number
   events: JobEvent[]
 }
@@ -73,6 +95,9 @@ export interface ThreadSummary {
   running: boolean
   tasks?: BackgroundTask[]
   permissions?: PendingPermission[]
+  // 最後に頼んだモデルと effort（なければ既定。MAI-106）
+  model?: string
+  effort?: Effort
 }
 
 export type StreamMessage =
@@ -86,6 +111,8 @@ export interface StartRequest {
   refId?: string
   canvasId?: string
   threadId?: string
+  model?: string
+  effort?: Effort
 }
 
 // 'checking'：確かめている。'off'：サーバーで切ってある。'on'：使える
@@ -99,6 +126,8 @@ export interface ClaudeState {
   jobs: ReadonlyMap<string, ClaudeJob>
   // 中身を読んだ会話
   loaded: ReadonlySet<string>
+  // 選べるモデルと effort（読むまでない。MAI-106）
+  models?: ModelCatalog
 }
 
 export function useClaudeState(client: ClaudeClient): ClaudeState {
@@ -169,6 +198,8 @@ async function post(url: string): Promise<void> {
 
 // サーバーにつながらなかったときに、使えるか確かめ直すまでの時間
 const RECHECK_MS = 10_000
+// モデルの一覧を Claude Code に聞けなかった（固定の一覧だった）とき、読み直すまでの時間（サーバーが聞き直すのと同じ）
+const MODELS_RETRY_MS = 60_000
 
 export class ClaudeClient {
   // useSyncExternalStore に渡すので、変わったときだけ作り直す
@@ -176,6 +207,9 @@ export class ClaudeClient {
   private source: EventSource | null = null
   private recheck: number | null = null
   private readonly loading = new Set<string>()
+  private loadingModels = false
+  // 最後にモデルの一覧を読んだ時刻（Claude Code に聞けなかった固定の一覧なら、MODELS_RETRY_MS たってから読み直す）
+  private modelsAt = 0
   private readonly listeners = new Set<() => void>()
 
   constructor() {
@@ -231,6 +265,25 @@ export class ClaudeClient {
     }
   }
 
+  // 選べるモデルと effort を読む（読んであれば何もしない。MAI-106）
+  async loadModels(): Promise<void> {
+    const models = this.snapshot.models
+    if (this.loadingModels || this.snapshot.availability !== 'on') return
+    if (models && (models.fromClaude || Date.now() - this.modelsAt < MODELS_RETRY_MS)) return
+    this.loadingModels = true
+    try {
+      const res = await fetch(`${BASE}/models`)
+      if (!res.ok) return
+      const loaded = (await res.json()) as ModelCatalog
+      this.modelsAt = Date.now()
+      this.set({ ...this.snapshot, models: loaded })
+    } catch (error) {
+      console.warn('Failed to load the Claude models', error)
+    } finally {
+      this.loadingModels = false
+    }
+  }
+
   async start(request: StartRequest): Promise<ClaudeJob> {
     const res = await fetch(`${BASE}/jobs`, {
       method: 'POST',
@@ -244,7 +297,16 @@ export class ClaudeClient {
     // 新しい会話なら、一覧にも入れておく（SSE の変化が届けば、それで置き換わる）
     if (!this.snapshot.jobs.has(job.id)) {
       const known = this.snapshot.threads.some((t) => t.threadId === job.threadId)
-      const thread: ThreadSummary = { threadId: job.threadId, title: job.prompt, createdAt: job.createdAt, updatedAt: job.createdAt, jobCount: 1, running: true }
+      const thread: ThreadSummary = {
+        threadId: job.threadId,
+        title: job.prompt,
+        createdAt: job.createdAt,
+        updatedAt: job.createdAt,
+        jobCount: 1,
+        running: true,
+        ...(job.model ? { model: job.model } : {}),
+        ...(job.effort ? { effort: job.effort } : {}),
+      }
       this.set({
         ...this.snapshot,
         threads: known ? this.snapshot.threads : [thread, ...this.snapshot.threads],

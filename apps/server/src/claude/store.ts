@@ -1,11 +1,14 @@
 import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk'
 import type { Job, JobEvent, JobStatus, JobSummary } from './jobs.ts'
+import { isEffortLevel } from './models.ts'
 
 // 画面から頼んだ Claude Code のジョブと会話（thread）を保存する（.canvcode/claude.db）。
 // - ジョブ 1 つが 1 行。出来事（JobEvent）は 1 つずつ足す（届くたびに書く）
-// - origin の列は後から足した（表の版は上げない。上げると、古いサーバーが claude.db を壊れたものとして脇に移してしまう。古いサーバーはこの列を読まないだけ）
+// - origin の列は後から足した（表の版は上げない。上げると、古いサーバーが claude.db を壊れたものとして脇に移してしまう。古いサーバーはこの列を読まないだけ）。
+//   model・effort の列（MAI-106）も同じように後から足した
 // - 続きを頼むときは、その会話の最後のジョブの session_id を Claude Code の resume に渡す。
 //   Claude Code の会話の中身（transcript）は Claude Code が ~/.claude/projects/ に持っているので、サーバーを再起動しても続けられる
 // - 起動したときに動いていることになっているジョブは、止まったもの（failed）にする
@@ -20,6 +23,9 @@ export interface ThreadSummary {
   updatedAt: number
   jobCount: number
   running: boolean
+  // 最後に頼んだ（バックグラウンドでない）依頼のモデルと effort（MAI-106。なければ既定）。前の会話を開いたとき、その値に戻す
+  model?: string
+  effort?: EffortLevel
 }
 
 export interface StoredJob extends Job {
@@ -42,6 +48,8 @@ interface JobRow {
   duration_ms: number | null
   session_id: string | null
   event_count: number
+  model: string | null
+  effort: string | null
 }
 
 interface ThreadRow {
@@ -51,6 +59,8 @@ interface ThreadRow {
   updated_at: number
   job_count: number
   running: number
+  model: string | null
+  effort: string | null
 }
 
 export class ClaudeStore {
@@ -73,8 +83,8 @@ export class ClaudeStore {
   insertJob(job: StoredJob): void {
     this.db
       .prepare(
-        `INSERT INTO jobs (id, thread_id, prompt, origin, ref_id, canvas_id, status, created_at, finished_at, cost_usd, duration_ms, session_id, event_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO jobs (id, thread_id, prompt, origin, ref_id, canvas_id, status, created_at, finished_at, cost_usd, duration_ms, session_id, event_count, model, effort)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         job.id,
@@ -90,6 +100,8 @@ export class ClaudeStore {
         job.durationMs ?? null,
         job.sessionId ?? null,
         job.events.length,
+        job.model ?? null,
+        job.effort ?? null,
       )
     job.events.forEach((event, seq) => this.appendEvent(job.id, seq, event))
   }
@@ -186,6 +198,8 @@ export class ClaudeStore {
       ...(row.cost_usd !== null ? { costUsd: row.cost_usd } : {}),
       ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
       ...(row.session_id ? { sessionId: row.session_id } : {}),
+      ...(row.model ? { model: row.model } : {}),
+      ...(isEffortLevel(row.effort) ? { effort: row.effort } : {}),
       eventCount: events.length,
       events,
     }
@@ -198,7 +212,9 @@ const THREAD_SELECT = `
     MIN(created_at) AS created_at,
     MAX(COALESCE(finished_at, created_at)) AS updated_at,
     COUNT(*) AS job_count,
-    SUM(status = 'running') AS running
+    SUM(status = 'running') AS running,
+    (SELECT model FROM jobs AS last WHERE last.thread_id = jobs.thread_id AND last.origin IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1) AS model,
+    (SELECT effort FROM jobs AS last WHERE last.thread_id = jobs.thread_id AND last.origin IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1) AS effort
   FROM jobs`
 
 function threadOf(row: ThreadRow): ThreadSummary {
@@ -209,6 +225,8 @@ function threadOf(row: ThreadRow): ThreadSummary {
     updatedAt: row.updated_at,
     jobCount: row.job_count,
     running: row.running > 0,
+    ...(row.model ? { model: row.model } : {}),
+    ...(isEffortLevel(row.effort) ? { effort: row.effort } : {}),
   }
 }
 
@@ -246,6 +264,9 @@ function open(path: string): DatabaseSync {
     // origin のない claude.db（前のサーバーが作ったもの）に足す
     const columns = db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]
     if (!columns.some((column) => column.name === 'origin')) db.exec('ALTER TABLE jobs ADD COLUMN origin TEXT')
+    // model・effort のない claude.db に足す（MAI-106）
+    if (!columns.some((column) => column.name === 'model')) db.exec('ALTER TABLE jobs ADD COLUMN model TEXT')
+    if (!columns.some((column) => column.name === 'effort')) db.exec('ALTER TABLE jobs ADD COLUMN effort TEXT')
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     return db
   } catch (error) {
