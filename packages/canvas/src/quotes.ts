@@ -99,14 +99,29 @@ export function textInRegion(items: PdfTextItem[], region: Box): RegionText {
 }
 
 // 英数字（とその記号）どうしの間には空白を入れる。日本語の文字の間には入れない（wordSelection.ts も使う）
+// 改行（段落の区切り）を消して 1 行にする（MAI-103。引用・コピー・AI に渡す PDF の文字は改行を入れない）。
+// 改行の前後が英数字どうしなら空白を挟み、ほか（日本語など）は何も入れずにつなぐ。続く空白は 1 つにする
+export function joinLines(text: string): string {
+  let out = ''
+  for (const part of text.split(/\s*\n\s*/)) {
+    if (!part) continue
+    if (out && needsSpace(out, part)) out += ' '
+    out += part
+  }
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+// 行・段落・断片の間に空白を入れるか。どちらかが日本語・中国語の文字（漢字・かな・全角の記号）か空白なら入れない。
+// それ以外（英字・数字・アクセントのある文字・括弧・引用符など）どうしなら入れる（MAI-103。前は ASCII の英数字と一部の記号だけで、
+// 「one.」と「(Two」や「café」と「next」をつなげていた）
 export function needsSpace(before: string, after: string): boolean {
   const last = [...before].at(-1) ?? ''
   const first = [...after][0] ?? ''
-  return isLatin(last) && isLatin(first)
+  return spaced(last) && spaced(first)
 }
 
-function isLatin(ch: string): boolean {
-  return /[A-Za-z0-9.,;:!?)\]'"%-]/.test(ch) && !/[\u3000-\u9fff\uff00-\uffef]/.test(ch)
+function spaced(ch: string): boolean {
+  return ch !== '' && !/\s/.test(ch) && !/[\u2e80-\u2fff\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(ch)
 }
 
 // ---- Markdown ----

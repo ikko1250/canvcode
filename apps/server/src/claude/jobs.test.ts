@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { HookCallback, ModelInfo, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ClaudeJobs,
@@ -11,6 +11,7 @@ import {
   MAX_PENDING_PERMISSIONS,
   MAX_RUNNING,
   MAX_SESSIONS,
+  MODEL_PROBE_RETRY_MS,
   TOO_MANY_PERMISSIONS,
   type ClaudeJobsDeps,
   type Job,
@@ -74,6 +75,14 @@ const tasksChanged = (tasks: { id: string; description: string; ambient?: boolea
     tasks: tasks.map((task) => ({ task_id: task.id, description: task.description, task_type: 'local_agent', ...(task.ambient ? { ambient: true } : {}) })),
   }) as unknown as SDKMessage
 
+// Claude Code が返すモデルの一覧（MAI-106。'default' の行は Claude Code の組み込みの既定）
+const MODEL_LIST = [
+  { value: 'default', resolvedModel: 'claude-fable-5-2', displayName: 'Default (recommended)', description: 'Fable 5.2', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5', description: 'For complex work', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { value: 'claude-haiku-4-5-20251001', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'Fastest' },
+  { value: 'claude-opus-4-6', resolvedModel: 'claude-opus-4-6', displayName: 'Opus 4.6', description: 'Older', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'max'] },
+] as ModelInfo[]
+
 // 偽の query（ストリーミング入力）。送られた文を sent に記録し、テストから emit() で SDK のメッセージを流す。
 // emit() は、最後に受け取ったメッセージの uuid を、そのターンの assistant（サブエージェントの中は除く）と result に user_message_uuids として付ける
 // （CLI と同じ。result でターンが終わる）。emitMeta() は付けない（CLI が自分で起こしたターン）。
@@ -86,6 +95,8 @@ interface FakeQuery {
   turn: string | undefined
   interrupts: { cancelQueued: boolean }[]
   stopped: string[]
+  // setModel・applyFlagSettings で変えたモデルと effort と、送られた文を、呼ばれた順に（MAI-106）
+  log: string[]
   aborted: boolean
   emit: (...messages: SDKMessage[]) => void
   emitMeta: (...messages: SDKMessage[]) => void
@@ -93,7 +104,9 @@ interface FakeQuery {
   fail: (error: Error) => void
 }
 
-function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger?: boolean; onInterrupt?: (q: FakeQuery) => void } = {}) {
+function fakeSdk(
+  options: { reply?: (q: FakeQuery, text: string) => void; linger?: boolean; onInterrupt?: (q: FakeQuery) => void; setModel?: (model?: string) => Promise<void> } = {},
+) {
   const queries: FakeQuery[] = []
   const run: RunQuery = (params) => {
     const out: SDKMessage[] = []
@@ -107,6 +120,7 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
       turn: undefined,
       interrupts: [],
       stopped: [],
+      log: [],
       aborted: false,
       emit: (...messages) => {
         for (const message of messages) {
@@ -138,6 +152,7 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
       for await (const message of params.prompt) {
         const text = message.message.content as string
         q.sent.push(text)
+        q.log.push(`send:${text.split('\n').at(-1)}`)
         q.uuids.push(message.uuid!)
         q.turn = message.uuid
         options.reply?.(q, text)
@@ -168,6 +183,16 @@ function fakeSdk(options: { reply?: (q: FakeQuery, text: string) => void; linger
       stopTask: async (taskId: string) => {
         q.stopped.push(taskId)
       },
+      // CLI が答えるまで少し待つ（送る文が変え終わるのを待つことを確かめる）
+      setModel: async (model?: string) => {
+        await (options.setModel?.(model) ?? new Promise((resolve) => setTimeout(resolve, 5)))
+        q.log.push(`model:${model ?? '-'}`)
+      },
+      applyFlagSettings: async (settings: { effortLevel?: string | null }) => {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        q.log.push(`effort:${settings.effortLevel ?? '-'}`)
+      },
+      supportedModels: async () => MODEL_LIST,
     }
   }
   return { run, queries }
@@ -297,6 +322,174 @@ describe('ClaudeJobs', () => {
     expect(a.costUsd).toBeCloseTo(0.01)
     expect(b.costUsd).toBeCloseTo(0.01)
     expect(b.events).toEqual([{ kind: 'text', text: 'bです' }])
+  })
+
+  it('runs a thread with the chosen model and effort, changes them before the next message, and keeps them per thread (MAI-106)', async () => {
+    const sdk = replying()
+    const jobs = makeJobs({ run: sdk.run })
+    const a = await finished(jobs, jobs.start({ prompt: 'a', model: 'opus', effort: 'high' }).id)
+    const [q] = sdk.queries
+    expect(q.options.model).toBe('opus')
+    expect(q.options.effort).toBe('high')
+    expect(a).toMatchObject({ model: 'opus', effort: 'high' })
+    expect(jobs.threads()[0]).toMatchObject({ threadId: a.threadId, model: 'opus', effort: 'high' })
+
+    // 違うモデルにしたら、送る前に変える（effort を外したら、モデルの既定に戻す）。変え終わってから文を流す
+    const b = await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId, model: 'sonnet' }).id)
+    expect(sdk.queries).toHaveLength(1)
+    expect(q.log).toEqual(['send:a', 'model:sonnet', 'effort:-', 'send:b'])
+    expect(b.model).toBe('sonnet')
+    expect(b.effort).toBeUndefined()
+    const thread = jobs.threads()[0]
+    expect(thread.model).toBe('sonnet')
+    expect(thread.effort).toBeUndefined()
+    // 同じなら変えない
+    await finished(jobs, jobs.start({ prompt: 'c', threadId: a.threadId, model: 'sonnet' }).id)
+    expect(q.log.slice(4)).toEqual(['send:c'])
+    // 既定に戻すと、モデルを渡さずに変える（既定のモデルを使う）
+    await finished(jobs, jobs.start({ prompt: 'd', threadId: a.threadId }).id)
+    expect(q.log.slice(5)).toEqual(['model:-', 'effort:-', 'send:d'])
+    expect(jobs.get(jobs.thread(a.threadId)!.jobs.at(-1)!.id)?.model).toBeUndefined()
+
+    // 何も選ばない会話は、Options に model も effort も渡さない
+    const other = await finished(jobs, jobs.start({ prompt: 'e' }).id)
+    expect(sdk.queries[1].options.model).toBeUndefined()
+    expect(sdk.queries[1].options.effort).toBeUndefined()
+    expect(jobs.threads().find((t) => t.threadId === other.threadId)?.model).toBeUndefined()
+  })
+
+  it("uses the server's model for the default, and resumes a closed thread with the chosen model (MAI-106)", async () => {
+    const sdk = replying()
+    const jobs = makeJobs({ run: sdk.run, model: 'claude-server', idleCloseMs: 0 })
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    expect(sdk.queries[0].options.model).toBe('claude-server')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    // 閉じた会話を続けるときは、選んだモデルで立てる
+    await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId, model: 'haiku', effort: 'low' }).id)
+    expect(sdk.queries).toHaveLength(2)
+    expect(sdk.queries[1].options).toMatchObject({ resume: 's1', model: 'haiku', effort: 'low' })
+    expect(sdk.queries[1].log).toEqual(['send:b'])
+  })
+
+  it('returns a running thread to the model and effort of the workspace settings for the default (MAI-106)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'canvcode-claude-default-'))
+    cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
+    mkdirSync(join(workspace, '.claude'))
+    writeFileSync(join(workspace, '.claude', 'settings.json'), JSON.stringify({ model: 'opus', effortLevel: 'high' }))
+    const sdk = replying()
+    const jobs = makeJobs({ run: sdk.run, workspace })
+    const a = await finished(jobs, jobs.start({ prompt: 'a', model: 'haiku', effort: 'low' }).id)
+    // 渡さないと Claude Code の組み込みの既定になるので、設定の値を明示する（新しいプロセスと同じモデル・effort になる）
+    await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId }).id)
+    expect(sdk.queries[0].log).toEqual(['send:a', 'model:opus', 'effort:high', 'send:b'])
+  })
+
+  it('does not send a request stopped while the model is changing (MAI-106)', async () => {
+    let release!: () => void
+    const sdk = fakeSdk({
+      reply: (q) => q.emit(init('s1'), success('s1')),
+      setModel: (model) => (model === 'sonnet' ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve()),
+    })
+    const jobs = makeJobs({ run: sdk.run })
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    const b = jobs.start({ prompt: 'b', threadId: a.threadId, model: 'sonnet' })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(jobs.cancel(b.id).status).toBe('cancelled')
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const [q] = sdk.queries
+    expect(q.sent).toEqual(['a'])
+    expect(q.interrupts).toEqual([])
+    // 次の依頼はふつうに送れる（モデルはもう sonnet）
+    const c = await finished(jobs, jobs.start({ prompt: 'c', threadId: a.threadId, model: 'sonnet' }).id)
+    expect(c.status).toBe('done')
+    expect(q.sent).toEqual(['a', 'c'])
+  })
+
+  it('fails a request when the model cannot be changed (refused or no answer), without sending it, and tries again next time (MAI-106)', async () => {
+    const attempts: (string | undefined)[] = []
+    const sdk = fakeSdk({
+      reply: (q) => q.emit(init('s1'), success('s1')),
+      setModel: (model) => {
+        attempts.push(model)
+        if (model === 'bad') return Promise.reject(new Error('model not allowed'))
+        if (model === 'stuck') return new Promise<void>(() => {})
+        return Promise.resolve()
+      },
+    })
+    const jobs = makeJobs({ run: sdk.run, configureTimeoutMs: 30 })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const a = await finished(jobs, jobs.start({ prompt: 'a' }).id)
+    const b = await finished(jobs, jobs.start({ prompt: 'b', threadId: a.threadId, model: 'bad' }).id)
+    expect(b.status).toBe('failed')
+    expect(b.events).toEqual([{ kind: 'error', message: 'モデルを変えられなかったので、依頼を送りませんでした（model not allowed）' }])
+    // 前のモデルのままなので、同じものを選んで送れば、もう一度変えようとする
+    await finished(jobs, jobs.start({ prompt: 'c', threadId: a.threadId, model: 'bad' }).id)
+    expect(attempts).toEqual(['bad', 'bad'])
+    // 答えが来なければ、時間切れで失敗にする
+    const d = await finished(jobs, jobs.start({ prompt: 'd', threadId: a.threadId, model: 'stuck' }).id)
+    expect(d.status).toBe('failed')
+    expect(d.events[0]).toMatchObject({ kind: 'error', message: expect.stringContaining('did not answer in time') })
+    expect(sdk.queries[0].sent).toEqual(['a'])
+    // 選び直せば送れる
+    const e = await finished(jobs, jobs.start({ prompt: 'e', threadId: a.threadId, model: 'sonnet' }).id)
+    expect(e.status).toBe('done')
+    spy.mockRestore()
+  })
+
+  it('lists the models Claude Code offers, without its own default row, and names the model the default runs (MAI-106)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'canvcode-claude-models-'))
+    cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
+    const sdk = fakeSdk({ linger: true })
+    const jobs = makeJobs({ run: sdk.run, workspace })
+    // 設定がなければ、Claude Code の組み込みの既定（'default' の行の説明）
+    const catalog = await jobs.models()
+    expect(catalog.fromClaude).toBe(true)
+    expect(catalog.models).toEqual([
+      { value: 'opus', label: 'Opus 5.5', description: 'For complex work', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest', efforts: [] },
+      { value: 'claude-opus-4-6', label: 'Opus 4.6', description: 'Older', efforts: ['low', 'medium', 'high', 'max'] },
+    ])
+    expect(catalog.default).toEqual({ label: 'Fable 5.2' })
+    // 一覧を聞くだけのプロセスは、ツールも MCP も使わず、すぐ閉じる。2 回目は覚えた一覧を使う
+    expect(sdk.queries).toHaveLength(1)
+    expect(sdk.queries[0].options).toMatchObject({ cwd: workspace, tools: [], mcpServers: {}, strictMcpConfig: true, settingSources: ['project'] })
+    expect(sdk.queries[0].aborted).toBe(true)
+    expect(sdk.queries[0].sent).toEqual([])
+    // ワークスペースの .claude/settings.json の model が既定
+    mkdirSync(join(workspace, '.claude'))
+    writeFileSync(join(workspace, '.claude', 'settings.json'), JSON.stringify({ model: 'opus' }))
+    expect((await jobs.models()).default).toEqual({ value: 'opus', label: 'Opus 5.5' })
+    writeFileSync(join(workspace, '.claude', 'settings.json'), JSON.stringify({ model: 'claude-opus-5-5' }))
+    expect((await jobs.models()).default).toEqual({ value: 'claude-opus-5-5', label: 'Opus 5.5' })
+    expect(sdk.queries).toHaveLength(1)
+    // サーバーの CANVCODE_CLAUDE_MODEL があれば、それが既定
+    const server = makeJobs({ run: fakeSdk({ linger: true }).run, workspace, model: 'claude-unknown' })
+    expect((await server.models()).default).toEqual({ value: 'claude-unknown', label: 'claude-unknown' })
+  })
+
+  it('falls back to opus, sonnet and haiku when Claude Code cannot list the models, and asks again later (MAI-106)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      let calls = 0
+      const failing: RunQuery = () => {
+        calls++
+        throw new Error('no claude')
+      }
+      const jobs = makeJobs({ run: failing })
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const catalog = await jobs.models()
+      expect(catalog.fromClaude).toBe(false)
+      expect(catalog.models.map((m) => m.value)).toEqual(['opus', 'sonnet', 'haiku'])
+      await jobs.models()
+      expect(calls).toBe(1)
+      vi.advanceTimersByTime(MODEL_PROBE_RETRY_MS)
+      await jobs.models()
+      expect(calls).toBe(2)
+      spy.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('lets Claude use subagents, showing their tool uses and denials but not their text', async () => {

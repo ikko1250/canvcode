@@ -27,6 +27,9 @@ const run: RunQuery = ({ prompt }) => ({
   },
   interrupt: async () => {},
   stopTask: async () => {},
+  setModel: async () => {},
+  applyFlagSettings: async () => {},
+  supportedModels: async () => [],
 })
 
 // 送られた文ごとに、Bash を使ってよいか canUseTool で尋ね、その答え（allow / deny）を文章にして返す偽の query
@@ -42,6 +45,9 @@ const askingRun: RunQuery = ({ prompt, options }) => ({
   },
   interrupt: async () => {},
   stopTask: async () => {},
+  setModel: async () => {},
+  applyFlagSettings: async () => {},
+  supportedModels: async () => [],
 })
 
 function makeJobs(query: RunQuery = run): ClaudeJobs {
@@ -182,6 +188,23 @@ describe('/api/claude', () => {
     })
   })
 
+  it('lists the models to choose from (MAI-106)', async () => {
+    const base = await setup(
+      makeJobs(() => ({
+        async *[Symbol.asyncIterator]() {},
+        interrupt: async () => {},
+        stopTask: async () => {},
+        setModel: async () => {},
+        applyFlagSettings: async () => {},
+        supportedModels: async () => [{ value: 'sonnet', displayName: 'Sonnet 5.5', description: 'd', supportsEffort: true, supportedEffortLevels: ['low', 'high'] }],
+      })),
+    )
+    const res = await fetch(`${base}/api/claude/models`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ models: [{ value: 'sonnet', label: 'Sonnet 5.5', description: 'd', efforts: ['low', 'high'] }], default: {}, fromClaude: true })
+    expect((await post(`${base}/api/claude/models`, {})).status).toBe(405)
+  })
+
   it('answers 404 when disabled', async () => {
     const base = await setup(null)
     expect((await fetch(`${base}/api/claude/threads`)).status).toBe(404)
@@ -193,5 +216,11 @@ describe('parseStart', () => {
     expect(parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', canvasId: '', threadId: null })).toEqual({ prompt: 'x', refId: 'ref:Ab12Cd34Ef' })
     expect(() => parseStart({ prompt: 'x', refId: '!!' })).toThrow(/refId/)
     expect(() => parseStart({ prompt: 1 })).toThrow(/prompt/)
+    // モデルと effort（MAI-106）。空なら既定
+    expect(parseStart({ prompt: 'x', model: 'opus[1m]', effort: 'xhigh' })).toEqual({ prompt: 'x', model: 'opus[1m]', effort: 'xhigh' })
+    expect(parseStart({ prompt: 'x', model: '', effort: null })).toEqual({ prompt: 'x' })
+    expect(() => parseStart({ prompt: 'x', model: 'opus; rm -rf /' })).toThrow(/invalid model/)
+    expect(() => parseStart({ prompt: 'x', model: '--model' })).toThrow(/invalid model/)
+    expect(() => parseStart({ prompt: 'x', effort: 'extreme' })).toThrow(/invalid effort/)
   })
 })

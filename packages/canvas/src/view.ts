@@ -55,10 +55,10 @@ import {
   type ClipboardPayload,
 } from './clipboard.ts'
 import { LinkPreviewer } from './linkPreview.ts'
-import { locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
+import { joinLines, locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
 import { matchRects, PdfSearchResults, type PdfSearchHit } from './pdfSearch.ts'
-import { pdfPageText, selectWords, wordIndexAt, type CharWidths, type PdfPageText, type WordSelection } from './wordSelection.ts'
+import { pdfPageText, selectWords, startColumnBoxes, wordIndexAt, type CharWidths, type PdfPageText, type WordSelection } from './wordSelection.ts'
 import {
   canvasRefTarget,
   pdfRegionRequests,
@@ -148,7 +148,7 @@ export interface CanvasViewOptions {
   // 旧データ（.ricbackup）がドロップされた（MAI-36）
   onImportBackup?: (file: File) => void
   // 「単語を調べる」で、PDF のページの上の語をなぞって離した（MAI-99）。呼び出し側が調べて、吹き出しで見せる。
-  // 閉じるときに clearWordHighlight を呼ぶ
+  // 閉じるときに clearWordHighlight を呼ぶ。「文字を選ぶ」（MAI-103）でなぞったときは、onQuote に選んだ文字（draft）を渡す
   onWordLookup?: (request: WordLookupRequest) => void
 }
 
@@ -167,8 +167,9 @@ export interface WordLookupRequest {
 }
 
 // 引用の頼み（MAI-33）。source は出典のノード（PDF のページ、Markdown カード）で、引用ノートをその横に置く
+// PDF の draft は、「文字を選ぶ」（MAI-103）でなぞった文字（なければ rect の中の文字を読む）。そのときはハイライトが残るので、閉じるときに clearWordHighlight を呼ぶ
 export type QuoteRequest =
-  | { kind: 'pdf'; pageId: string; rect: Box; clientX: number; clientY: number }
+  | { kind: 'pdf'; pageId: string; rect: Box; clientX: number; clientY: number; draft?: QuoteDraft }
   | { kind: 'markdown'; nodeId: string; draft: QuoteDraft; clientX: number; clientY: number }
 
 // 1 回のホイールイベントで変える倍率の上限。マウスの 1 段で約 0.67 倍になる
@@ -232,6 +233,8 @@ export class CanvasView {
   // 単語を調べる（MAI-99）：ページの文字をつないだもの（PDF の Asset とページごと。最近のものだけ）と、いまなぞっている所
   private readonly pageTexts = new Map<string, Promise<{ size: { width: number; height: number }; page: PdfPageText }>>()
   private wordDrag: { pageId: string; from: Vec; to: Vec } | null = null
+  // なぞったあとに、語を調べる（MAI-99）か、選んだ文字を引用・コピー・AI に渡す（MAI-103）か
+  private wordPurpose: 'lookup' | 'text' = 'lookup'
   private charWidths: CharWidths | null = null
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
@@ -1090,7 +1093,8 @@ export class CanvasView {
       const figure = region.figure
         ? { assetId: props.assetId, pageIndex: props.pageIndex, rect, pageWidth: props.w, aspect: (rect.h * props.h) / (rect.w * props.w) }
         : null
-      return { fileId: props.fileId, locator: { kind: 'pdf', pageIndex: props.pageIndex, rect }, quote: region.text, figure }
+      // 改行は入れない（MAI-103）
+      return { fileId: props.fileId, locator: { kind: 'pdf', pageIndex: props.pageIndex, rect }, quote: joinLines(region.text), figure }
     } catch (error) {
       console.error('Failed to read the text of a PDF page', error)
       this.options.notify('PDF の文字を読み取れませんでした')
@@ -1107,10 +1111,12 @@ export class CanvasView {
 
   // ---- 単語を調べる（MAI-99） ----
 
-  // 次のドラッグを、PDF のページの上で調べる語を選ぶものにする（o メニューの「単語を調べる」）。カーソルは文字を選ぶときのもの
-  armWordLookup(): void {
+  // 次のドラッグを、PDF のページの上で語を選ぶものにする。カーソルは文字を選ぶときのもの。
+  // purpose が 'lookup' なら選んだ語を調べ（o メニューの「単語を調べる」）、'text' なら選んだ文字を onQuote に渡す（「文字を選ぶ」。MAI-103）
+  armWordLookup(purpose: 'lookup' | 'text' = 'lookup'): void {
     this.tool.cancel()
     this.wordDrag = null
+    this.wordPurpose = purpose
     this.editor.session.set({ toolId: 'select', wordLookupArmed: true, wordHighlight: null, quoteArmed: false, quoteRegion: null })
     this.cursorOverride = 'text'
     this.updateCursor()
@@ -1170,6 +1176,13 @@ export class CanvasView {
     if (!union) return this.clearWordHighlight()
     const topLeft = worldToScreen(camera, { x: union.x, y: union.y })
     const bottomRight = worldToScreen(camera, { x: union.x + union.w, y: union.y + union.h })
+    if (this.wordPurpose === 'text') {
+      // 選んだ文字（改行は入れない）を、矩形で引用したときと同じメニューに渡す。メニューは選んだ所の右下に出す
+      const quote = joinLines(selected.words.text)
+      const draft: QuoteDraft = { fileId: props.fileId, locator: { kind: 'pdf', pageIndex: props.pageIndex, rect: selected.rect }, quote, figure: null }
+      this.options.onQuote({ kind: 'pdf', pageId: drag.pageId, rect: selected.rect, clientX: bottomRight.x + bounds.left, clientY: bottomRight.y + bounds.top, draft })
+      return
+    }
     this.options.onWordLookup({
       canvasId: editor.canvasId,
       pageId: drag.pageId,
@@ -1207,7 +1220,8 @@ export class CanvasView {
       const b = applyMat(current.worldMatrix, { x: ((box.x + box.w) / size.width) * w, y: ((box.y + box.h) / size.height) * h })
       return boxFromPoints(a, b)
     })
-    const union = unionBoxes(words.boxes)
+    // 出典の範囲（1 つの矩形）は、選び始めた段の部分を囲む（2 段組をまたいでも、ページの本文全体にならないように。MAI-103）
+    const union = unionBoxes(startColumnBoxes(words.boxes))
     if (!union) return null
     const rect = { x: union.x / size.width, y: union.y / size.height, w: union.w / size.width, h: union.h / size.height }
     return { words, world, rect }
@@ -1291,6 +1305,12 @@ export class CanvasView {
       }
     }
     this.options.notify('引用をコピーしました。貼り付けると引用ノートになります')
+  }
+
+  // 引用の文字だけをクリップボードに載せる（出典は付けない。PDF の文字は改行を入れずにつないである。MAI-103）
+  async copyQuoteText(draft: QuoteDraft): Promise<void> {
+    this.clearQuoteRegion()
+    this.options.notify((await writeClipboardText(draft.quote)) ? '文字をコピーしました' : 'コピーできませんでした')
   }
 
   // 画像ノードの画像を指す Markdown の画像のリンクをクリップボードに載せる（Markdown に貼ると画像が出る。#33）
@@ -1647,7 +1667,8 @@ export class CanvasView {
       requests.map(async ({ nodeId, assetId, fileId, pageIndex, rect }) => {
         try {
           const { text, figure } = await this.pageRegionText(assetId, pageIndex, rect)
-          regions.set(nodeId, { fileId, pageIndex, rect, text, ...(figure ? { figure: true as const } : {}) })
+          // AI に渡す PDF の文字は改行を入れない（MAI-103）
+          regions.set(nodeId, { fileId, pageIndex, rect, text: joinLines(text), ...(figure ? { figure: true as const } : {}) })
         } catch (error) {
           console.warn('Failed to read the text of a PDF page', error)
         }
@@ -2477,6 +2498,13 @@ export class CanvasView {
         return
       }
       void this.deleteSelection()
+      return
+    }
+    // スライドの表の行・箇条書きの項目のセルを選んでいれば、Alt+↑/↓ でその行を上下に動かす（MAI-104）。
+    // 端の行でも、セルを少し動かして表から外さないよう、ここで止める
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && editor.slideLayoutRowState()?.row != null) {
+      e.preventDefault()
+      editor.moveSlideLayoutRow(e.key === 'ArrowUp' ? -1 : 1)
       return
     }
     if (e.key.startsWith('Arrow')) {

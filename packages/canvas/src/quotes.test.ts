@@ -3,7 +3,7 @@ import type { NodeRecord } from '@canvcode/core'
 import type { QuoteCardProps } from '@canvcode/nodes'
 import { copySelection, insertPayloadWithResult, quotePayload } from './clipboard.ts'
 import { Editor } from './editor.ts'
-import { locateQuote, looksLikeFigure, quoteRange, textInRegion, type PdfTextItem, type QuoteDraft } from './quotes.ts'
+import { joinLines, locateQuote, looksLikeFigure, quoteRange, textInRegion, type PdfTextItem, type QuoteDraft } from './quotes.ts'
 import { Workspace } from './workspace.ts'
 
 // 引用ノートと逆リンク（MAI-33）
@@ -161,6 +161,27 @@ describe('text in a PDF region', () => {
     // 左から 60 まで：1 行目の前半 6 文字と、2 行目
     const region = textInRegion(items, { x: 0, y: 0, w: 60, h: 30 })
     expect(region.text).toBe('これは引用す次の行です')
+  })
+
+  it('joins paragraphs without line breaks for the quote: a space between English words, nothing in Japanese (MAI-103)', () => {
+    // 行の間が大きく空いた所は、段落の区切り（改行）として読む
+    const items = [item('First paragraph.', 0, 0, 160), item('Second one', 0, 40, 100), item('日本語の段落', 0, 80, 60), item('次の段落です', 0, 120, 60)]
+    const region = textInRegion(items, { x: 0, y: 0, w: 200, h: 140 })
+    expect(region.text).toBe('First paragraph.\nSecond one\n日本語の段落\n次の段落です')
+    // 英字と日本語の間は、行のつなぎ方と同じく空白を入れない
+    expect(joinLines(region.text)).toBe('First paragraph. Second one日本語の段落次の段落です')
+    expect(joinLines('  a\n\n  b  \n')).toBe('a b')
+    expect(joinLines('英語の後\nEnglish')).toBe('英語の後English')
+    expect(joinLines('two　spaces\t here')).toBe('two spaces here')
+    expect(joinLines('')).toBe('')
+    // 英字・数字のほか、括弧・引用符・アクセントのある文字どうしも空白を挟む
+    expect(joinLines('one.\n(Two')).toBe('one. (Two')
+    expect(joinLines('said.”\n“Next')).toBe('said.” “Next')
+    expect(joinLines('café\nnext')).toBe('café next')
+    expect(joinLines('Fig. 1\n[2] Smith')).toBe('Fig. 1 [2] Smith')
+    // 日本語の句読点・括弧・全角の文字の前後は空白を入れない
+    expect(joinLines('文です。\n（注）')).toBe('文です。（注）')
+    expect(joinLines('ＡＢＣ\nDEF')).toBe('ＡＢＣDEF')
   })
 
   it('treats a region with little text as a figure', () => {

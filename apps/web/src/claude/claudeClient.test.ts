@@ -146,4 +146,42 @@ describe('questions waiting for an answer', () => {
     await expect(client.answerPermission('t1', 'p2', 'deny')).rejects.toThrow('その問い合わせはもうありません')
     client.dispose()
   })
+
+  it('reads the models again after a while when the server could not ask Claude Code for them (MAI-106)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      let catalog = { models: [{ value: 'opus', label: 'Opus', efforts: [] }], default: {}, fromClaude: false }
+      let reads = 0
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          if (url.endsWith('/models')) {
+            reads++
+            return new Response(JSON.stringify(catalog))
+          }
+          return new Response(JSON.stringify({ threads: [] }))
+        }),
+      )
+      vi.stubGlobal('EventSource', class { close() {} })
+      const client = new ClaudeClient()
+      await vi.waitFor(() => expect(client.state.availability).toBe('on'))
+      await client.loadModels()
+      await client.loadModels()
+      expect(reads).toBe(1)
+      expect(client.state.models?.fromClaude).toBe(false)
+      // 1 分たてば読み直す。Claude Code に聞けた一覧は、もう読み直さない
+      catalog = { ...catalog, fromClaude: true }
+      vi.setSystemTime(Date.now() + 60_000)
+      await client.loadModels()
+      expect(reads).toBe(2)
+      expect(client.state.models?.fromClaude).toBe(true)
+      vi.setSystemTime(Date.now() + 120_000)
+      await client.loadModels()
+      expect(reads).toBe(2)
+      client.dispose()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
 })

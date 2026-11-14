@@ -7,10 +7,13 @@ import {
   type BackgroundTask,
   type ClaudeClient,
   type ClaudeJob,
+  type ModelCatalog,
   type JobEvent,
   type PendingPermission,
   type PermissionAnswer,
 } from './claudeClient.ts'
+import { ModelPicker } from './ModelPicker.tsx'
+import { jobSettingLabel, loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } from './modelChoice.ts'
 
 // 画面から Claude Code に頼むパネル（キャンバスの右に並べる）。
 // - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新規」で切る）。会話はサーバーの SQLite に残り、
@@ -23,6 +26,8 @@ import {
 // - Canvas の編集は、ほかの AI の編集と同じく画面の下に「AI：…［元に戻す］」が出る（AgentToasts）
 // - パネルの中のキー入力は、キャンバスのショートカットに渡さない（data-own-keys）。押したらパネルにフォーカスを移すので、
 //   回答を選んで Delete や矢印キーを押しても、キャンバスで選んでいるノードは消えも動きもしない
+// - 送るボタンの横で、モデルと effort を選べる（MAI-106。ModelPicker）。会話ごとに覚え（前の会話を開くと、その会話の最後の依頼の値に戻る）、
+//   新しい会話は、ブラウザに覚えた最後に選んだ値から始める。終わった依頼の行に、選んで頼んだモデルと effort を添える
 
 // 添える場所。refId が null の間は保存している
 export interface ClaudeAttachment {
@@ -42,13 +47,16 @@ interface Props {
   focusRequest: number
   // 入力欄に入れておく頼み方の下書き（n が変わるたびに入れ直す。「グラフを作る」の「Claude におまかせ」）
   draft?: { text: string; n: number } | null
+  // パネルが見えている置き場所（MAI-102。App がパネルの DOM をキャンバスの右と全画面のエディタの右半分の間で移す）。
+  // 変わったら、会話の欄と入力欄のスクロールを戻す（DOM を移すと先頭に戻り、scroll イベントも来ないため）
+  placement?: Element | null
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
 }
 
 export function ClaudePanel(props: Props) {
-  const { client, canvasId, attachment, focusRequest, draft, onAttachSelection, onClearAttachment, onClose } = props
+  const { client, canvasId, attachment, focusRequest, draft, placement, onAttachSelection, onClearAttachment, onClose } = props
   const state = useClaudeState(client)
   const { threads } = state
   // 選んだ会話。null は新しい会話
@@ -67,6 +75,7 @@ export function ClaudePanel(props: Props) {
   const logRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => client.connect(), [client])
+  useEffect(() => void client.loadModels(), [client, state.availability])
   useEffect(() => inputRef.current?.focus({ preventScroll: true }), [focusRequest])
   // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）。
   // 閉じていたパネルは下書きと一緒に開く（初めから下書きがある）ので、null から比べて、開いたときも入れる
@@ -79,6 +88,18 @@ export function ClaudePanel(props: Props) {
   // 見ている会話。選んだ会話が消されていれば、新しい会話
   const thread = threads.find((t) => t.threadId === chosenId)
   const threadId = thread ? thread.threadId : null
+  // 次に送るときのモデルと effort（MAI-106）。会話を替えたら、その会話の値（新しい会話ならブラウザに覚えた値）にする
+  const [setting, setSetting] = useState<ModelSetting>(() => (thread ? settingOf(thread) : loadSetting()))
+  const [settingFor, setSettingFor] = useState<string | null>(threadId)
+  if (settingFor !== threadId) {
+    setSettingFor(threadId)
+    const next = thread ? settingOf(thread) : loadSetting()
+    if (!sameSetting(next, setting)) setSetting(next)
+  }
+  const chooseSetting = (next: ModelSetting) => {
+    setSetting(next)
+    saveSetting(next)
+  }
   // 見ている会話の中身を読む（つなぎ直したあとも読み直す）
   useEffect(() => {
     if (threadId && !state.loaded.has(threadId)) void client.loadThread(threadId)
@@ -104,6 +125,14 @@ export function ClaudePanel(props: Props) {
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
   const stick = useRef(true)
+  // 最後にスクロールした位置（置き場所が変わったら戻す。MAI-102）
+  const scrolled = useRef({ log: 0, input: 0 })
+  useEffect(() => {
+    if (!placement) return
+    const log = logRef.current
+    if (log) log.scrollTop = stick.current ? log.scrollHeight : scrolled.current.log
+    if (inputRef.current) inputRef.current.scrollTop = scrolled.current.input
+  }, [placement])
   useEffect(() => {
     const log = logRef.current
     if (log && stick.current) log.scrollTop = log.scrollHeight
@@ -115,7 +144,13 @@ export function ClaudePanel(props: Props) {
     setSending(true)
     setError(null)
     client
-      .start({ prompt: text, canvasId, ...(attachment?.refId ? { refId: attachment.refId } : {}), ...(thread ? { threadId: thread.threadId } : {}) })
+      .start({
+        prompt: text,
+        canvasId,
+        ...(attachment?.refId ? { refId: attachment.refId } : {}),
+        ...(thread ? { threadId: thread.threadId } : {}),
+        ...settingOf(setting),
+      })
       .then((job) => {
         setPrompt('')
         setThreadId(job.threadId)
@@ -241,6 +276,7 @@ export function ClaudePanel(props: Props) {
         ref={logRef}
         onScroll={(e) => {
           const el = e.currentTarget
+          scrolled.current.log = el.scrollTop
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
       >
@@ -256,6 +292,7 @@ export function ClaudePanel(props: Props) {
           <JobView
             key={job.id}
             job={job}
+            catalog={state.models}
             asking={waiting.jobs.has(job.id)}
             pendingIds={waiting.ids}
             onCancel={() => void client.cancel(job.id)}
@@ -288,6 +325,7 @@ export function ClaudePanel(props: Props) {
           rows={3}
           placeholder={thread ? '続けて頼む…' : 'Claude に頼む…'}
           onChange={(e) => setPrompt(e.target.value)}
+          onScroll={(e) => (scrolled.current.input = e.currentTarget.scrollTop)}
           onKeyDown={onKeyDown}
         />
         {error && <div className="claude-error">{error}</div>}
@@ -297,6 +335,7 @@ export function ClaudePanel(props: Props) {
               止める
             </button>
           )}
+          <ModelPicker catalog={state.models} setting={setting} onChange={chooseSetting} />
           <button
             type="button"
             className="claude-send"
@@ -398,8 +437,8 @@ function TaskList(props: {
 }
 
 // asking は、このジョブが画面で許可を待っているか。pendingIds は、会話で答えを待っている問い合わせの id
-function JobView(props: { job: ClaudeJob; asking: boolean; pendingIds: ReadonlySet<string>; onCancel(): void }) {
-  const { job, asking, pendingIds, onCancel } = props
+function JobView(props: { job: ClaudeJob; catalog: ModelCatalog | undefined; asking: boolean; pendingIds: ReadonlySet<string>; onCancel(): void }) {
+  const { job, catalog, asking, pendingIds, onCancel } = props
   // 答えの出来事があった問い合わせ（答えのない「尋ねた」を見分けるため）
   const answered = useMemo(() => new Set(job.events.flatMap((event) => (event.kind === 'answer' ? [event.id] : []))), [job.events])
   return (
@@ -430,7 +469,7 @@ function JobView(props: { job: ClaudeJob; asking: boolean; pendingIds: ReadonlyS
             </button>
           </>
         ) : (
-          statusText(job)
+          statusText(job, jobSettingLabel(catalog, job))
         )}
       </div>
     </div>
@@ -512,10 +551,12 @@ function taskTypeLabel(type: string): string {
   return '作業'
 }
 
-function statusText(job: ClaudeJob): string {
+// model は、選んで頼んだモデルと effort（既定なら添えない。MAI-106）
+function statusText(job: ClaudeJob, model: string | undefined): string {
   const parts: string[] = []
   if (job.durationMs !== undefined) parts.push(`${(job.durationMs / 1000).toFixed(1)} 秒`)
   if (job.costUsd !== undefined && job.costUsd > 0) parts.push(`$${job.costUsd.toFixed(2)}`)
+  if (model) parts.push(model)
   const detail = parts.length > 0 ? `（${parts.join('・')}）` : ''
   if (job.status === 'done') return `完了${detail}`
   if (job.status === 'cancelled') return `止めました${detail}`

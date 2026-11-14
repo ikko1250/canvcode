@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRecord, type ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
@@ -79,7 +80,7 @@ import { BackupStatus } from './backup/BackupStatus.tsx'
 import { Breadcrumb } from './workspace/Breadcrumb.tsx'
 import { ConfirmDialog, type DialogChoice } from './workspace/ConfirmDialog.tsx'
 import { ContextMenu, type MenuItem } from './workspace/ContextMenu.tsx'
-import { FileEditor } from './workspace/FileEditor.tsx'
+import { FileEditor, type FileEditorHandle } from './workspace/FileEditor.tsx'
 import { exportMarkdownPdf } from './markdownPdf.ts'
 import { downloadLinkPdf, isPdfUrl } from './linkPdf.ts'
 import { createSlidePdfExporter } from './slidePdfExport.ts'
@@ -376,6 +377,34 @@ export function App(props: { initial: InitialRecords }) {
   const [claudeOpen, setClaudeOpen] = useState(false)
   const [claudeAttachment, setClaudeAttachment] = useState<ClaudeAttachment | null>(null)
   const [claudeFocus, setClaudeFocus] = useState(0)
+  // 全画面のエディタでは、パネルをプレビューの代わりに右半分に出す（MAI-102）。エディタでほかの表示に切り替えたら、
+  // パネルは閉じずに隠す（editorClaudeHidden）。エディタを閉じると、キャンバスの右に戻る。
+  // パネルは 1 つのまま（書きかけの文と選んでいた会話を保つため、描き直さない）で、claudeHost の DOM を置き場所に移す
+  const [editorClaudeHidden, setEditorClaudeHidden] = useState(false)
+  const [claudeHost] = useState(() => {
+    const host = document.createElement('div')
+    host.className = 'claude-host'
+    return host
+  })
+  const [canvasClaudeSlot, setCanvasClaudeSlot] = useState<HTMLDivElement | null>(null)
+  const [editorClaudeSlot, setEditorClaudeSlot] = useState<HTMLDivElement | null>(null)
+  // パネルの中で最後にフォーカスがあったもの。パネルの外へ移ったら消す（エディタが閉じて置き場所ごと外れたときは、イベントなしに外れるので残る）
+  const claudeFocusRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    const onIn = (e: FocusEvent) => {
+      if (e.target instanceof HTMLElement) claudeFocusRef.current = e.target
+    }
+    const onOut = (e: FocusEvent) => {
+      if (e.relatedTarget instanceof Node && !claudeHost.contains(e.relatedTarget)) claudeFocusRef.current = null
+    }
+    claudeHost.addEventListener('focusin', onIn)
+    claudeHost.addEventListener('focusout', onOut)
+    return () => {
+      claudeHost.removeEventListener('focusin', onIn)
+      claudeHost.removeEventListener('focusout', onOut)
+    }
+  }, [claudeHost])
+  const fileEditorRef = useRef<FileEditorHandle | null>(null)
   // PDF の上で選んだ語を調べる（o メニューの「単語を調べる」。MAI-99）。答えは選んだ所のそばの吹き出しに出す。
   // 選んだ Canvas（request.canvasId）から移ったら閉じる。閉じるときは、待っている頼みもやめ、ハイライトも消す
   const [wordLookup, setWordLookup] = useState<{ request: WordLookupRequest; state: WordLookupState } | null>(null)
@@ -407,6 +436,7 @@ export function App(props: { initial: InitialRecords }) {
   const askClaude = useCallback((label: string, save?: () => Promise<string | null>) => {
     setClaudeOpen(true)
     setClaudeFocus((n) => n + 1)
+    setEditorClaudeHidden(false)
     if (!save) return
     const attachment: ClaudeAttachment = { label, refId: null }
     setClaudeAttachment(attachment)
@@ -595,6 +625,8 @@ export function App(props: { initial: InitialRecords }) {
       }
       setOpenFileId(fileId)
       setFileFocus(options.focus ?? null)
+      // 前のエディタで隠したままブラウザの「戻る」で閉じていても、パネルを開いていれば右半分に出す（MAI-102）
+      setEditorClaudeHidden(false)
       if (options.push !== false) history.pushState({ fileId }, '', fileUrl(fileId))
     },
     [workspace, notify],
@@ -602,6 +634,7 @@ export function App(props: { initial: InitialRecords }) {
   const closeFile = useCallback(() => {
     setOpenFileId(null)
     setFileFocus(null)
+    setEditorClaudeHidden(false)
     if (fileIdFromUrl()) history.back()
     viewRef.current?.root.focus({ preventScroll: true })
   }, [])
@@ -818,7 +851,8 @@ export function App(props: { initial: InitialRecords }) {
     [workspace, navigate, openFile, notify],
   )
 
-  // 引用する範囲を決めた・文字を選んで「引用」を押した：ノートを横に置くか、コピーするかを選ばせる
+  // 引用する範囲を決めた・文字を選んで「引用」を押した・PDF の文字をなぞって選んだ（「文字を選ぶ」。MAI-103）：
+  // ノートを横に置くか、コピーするか、AI に渡すかを選ばせる
   const onQuote = useCallback(
     async (request: QuoteRequest) => {
       const view = viewRef.current
@@ -827,7 +861,7 @@ export function App(props: { initial: InitialRecords }) {
       let draft: QuoteDraft | null
       let place: () => void
       if (request.kind === 'pdf') {
-        draft = await view.quoteFromPdf(request.pageId, request.rect)
+        draft = request.draft ?? (await view.quoteFromPdf(request.pageId, request.rect))
         const page = editor.index.get(request.pageId)?.worldBounds
         const d = draft
         place = () => {
@@ -841,17 +875,27 @@ export function App(props: { initial: InitialRecords }) {
           if (card) view.placeQuote(d, request.nodeId, card.y)
         }
       }
-      if (!draft || view.editor !== editor) {
+      // 閉じたら、矩形の範囲となぞった文字のハイライトを消す
+      const clear = () => {
         view.clearQuoteRegion()
+        view.clearWordHighlight()
+      }
+      if (!draft || view.editor !== editor) {
+        clear()
         return
       }
       const d = draft
+      // Claude のパネルに添える所の名前。なぞった文字なら、その頭を出す
+      const pdfLabel = (pageIndex: number) =>
+        request.kind === 'pdf' && request.draft ? `PDF の ${pageIndex + 1} ページ「${truncateLabel(d.quote, 16)}」` : `PDF の ${pageIndex + 1} ページの範囲`
       setMenu({
         x: request.clientX,
         y: request.clientY,
         items: [
           { label: request.kind === 'pdf' ? 'このページの横に引用ノート' : 'カードの横に引用ノート', onSelect: place },
           { label: '引用をコピー', onSelect: () => void view.copyQuote(d) },
+          // PDF の文字だけ（出典なし。改行は入れていない）。図として切り抜く範囲なら出さない
+          ...(request.kind === 'pdf' && d.quote && !d.figure ? [{ label: '文字をコピー', onSelect: () => void view.copyQuoteText(d) }] : []),
           {
             label: 'AIに渡すIDをコピー',
             onSelect: () => {
@@ -872,7 +916,7 @@ export function App(props: { initial: InitialRecords }) {
                     const loc = d.locator
                     if (loc.kind === 'pdf') {
                       const figure = d.figure ? { figure: true as const } : {}
-                      askClaude(`PDF の ${loc.pageIndex + 1} ページの範囲`, () =>
+                      askClaude(pdfLabel(loc.pageIndex), () =>
                         view.saveReference({ kind: 'pdf', fileId: d.fileId, pageIndex: loc.pageIndex, rect: loc.rect, text: d.quote, ...figure }),
                       )
                     } else if (loc.kind === 'markdown') {
@@ -883,7 +927,7 @@ export function App(props: { initial: InitialRecords }) {
               ]
             : []),
         ],
-        onClose: () => view.clearQuoteRegion(),
+        onClose: clear,
       })
     },
     [setMenu, claude, askClaude],
@@ -1589,7 +1633,9 @@ export function App(props: { initial: InitialRecords }) {
       if (!(e.ctrlKey || e.metaKey) || !e.altKey || e.key !== 'Enter' || claude.state.availability !== 'on') return
       if (e.target instanceof Element && e.target.closest('.claude-panel')) return
       e.preventDefault()
-      askClaudeAboutSelection()
+      // 全画面のエディタでは、選んでいる行を添える（MAI-102）
+      if (fileEditorRef.current) fileEditorRef.current.askClaude()
+      else askClaudeAboutSelection()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1946,7 +1992,12 @@ export function App(props: { initial: InitialRecords }) {
         hasText: selectedTextNodes.length > 0,
         slideCount: selectedSlides.length,
         slidesHidden: selectedSlides.every((s) => s.props.hidden),
-        slideRows: slideRows && { canRemove: slideRows.canRemove, manualHeight: slideRows.manualHeight },
+        slideRows: slideRows && {
+          canRemove: slideRows.canRemove,
+          manualHeight: slideRows.manualHeight,
+          canMoveUp: slideRows.canMoveUp,
+          canMoveDown: slideRows.canMoveDown,
+        },
         slideTemplate: templateSlideId !== null,
         pdfLink: pdfLinkId !== null,
         image: imageId !== null,
@@ -1958,6 +2009,10 @@ export function App(props: { initial: InitialRecords }) {
       lookUpWord: () => {
         closeWordLookup()
         view?.armWordLookup()
+      },
+      selectPdfText: () => {
+        closeWordLookup()
+        view?.armWordLookup('text')
       },
       stepFontSize: (direction) => stepTextFontSize(editor, view, textNodesOf(editor), direction),
       setTextAlign: (align) => setTextAlign(editor, view, textNodesOf(editor), align),
@@ -1978,6 +2033,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       removeSlideRow: () => editor.removeSlideLayoutRow(),
       resetSlideRowHeight: () => editor.resetSlideLayoutRowHeight(),
+      moveSlideRow: (delta) => editor.moveSlideLayoutRow(delta),
       applySlideTemplate: (kind) => {
         if (!templateSlideId || !editor.applySlideTemplate(templateSlideId, kind)) return notify('中身のあるスライドには、テンプレートを使えません')
         // 選択は変わらないので、描き直して操作の項目（行を足す など）を決め直す
@@ -1995,6 +2051,21 @@ export function App(props: { initial: InitialRecords }) {
       ...tableMenu(tableUnder, origin),
     })
   }
+
+  // Claude のパネルの置き場所（MAI-102）。全画面のエディタを開いていて、エディタで隠していなければ、エディタの右半分
+  const claudeAvailable = claudeOpen && claudeState.availability === 'on'
+  const claudeInEditor = claudeAvailable && openFileId !== null && !editorClaudeHidden
+  const claudeSlot = claudeInEditor ? editorClaudeSlot : canvasClaudeSlot
+  useLayoutEffect(() => {
+    if (!claudeSlot || claudeHost.parentNode === claudeSlot) return
+    // DOM を動かすとフォーカスが外れるので、パネルの中にあったら戻す（エディタが閉じて置き場所ごと外れたときは、もう外れているので覚えたものを使う）
+    const active = document.activeElement
+    const focused = active instanceof HTMLElement && active !== document.body ? active : claudeFocusRef.current
+    claudeSlot.appendChild(claudeHost)
+    if (focused && focused.isConnected && claudeHost.contains(focused) && (active === document.body || active === focused)) focused.focus({ preventScroll: true })
+  }, [claudeSlot, claudeHost])
+  // パネルが見えている置き場所（隠しているなら null）。変わったら、パネルは会話の欄と入力欄のスクロールを戻す（DOM を移すと先頭に戻るため）
+  const claudePlacement = claudeSlot && !(claudeSlot === canvasClaudeSlot && openFileId && !claudeInEditor) ? claudeSlot : null
 
   return (
     <div className="app">
@@ -2363,6 +2434,11 @@ export function App(props: { initial: InitialRecords }) {
                     )
                 : undefined
             }
+            claudeShown={claudeInEditor}
+            claudeSlot={setEditorClaudeSlot}
+            onShowClaude={claudeState.availability === 'on' ? () => askClaude('') : undefined}
+            onHideClaude={() => setEditorClaudeHidden(true)}
+            handle={fileEditorRef}
             onExportPdf={exportPdf}
             onLost={() => notify('引用した文字列が見つかりません（位置不明）。覚えていた行を開きました')}
             onClose={closeFile}
@@ -2409,23 +2485,36 @@ export function App(props: { initial: InitialRecords }) {
           />
         )}
       </div>
-      {claudeOpen && claudeState.availability === 'on' && (
-        <ClaudePanel
-          client={claude}
-          canvasId={canvasId}
-          attachment={claudeAttachment}
-          focusRequest={claudeFocus}
-          draft={claudeDraft}
-          onAttachSelection={() => askClaudeAboutSelection(true)}
-          onClearAttachment={() => setClaudeAttachment(null)}
-          onClose={() => {
-            setClaudeOpen(false)
-            // 開き直したときに、使い終わった下書きをもう一度入れない
-            setClaudeDraft(null)
-            view?.root.focus({ preventScroll: true })
-          }}
-        />
-      )}
+      {/* Claude のパネルの、キャンバスの右の置き場所。全画面のエディタを開いている間は、右半分に移すか隠す（MAI-102） */}
+      <div className={openFileId && !claudeInEditor ? 'claude-slot hidden' : 'claude-slot'} ref={setCanvasClaudeSlot} />
+      {claudeAvailable &&
+        createPortal(
+          <ClaudePanel
+            client={claude}
+            canvasId={canvasId}
+            attachment={claudeAttachment}
+            focusRequest={claudeFocus}
+            draft={claudeDraft}
+            // 全画面のエディタでは、選んでいる行を添える
+            placement={claudePlacement}
+            onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
+            onClearAttachment={() => setClaudeAttachment(null)}
+            onClose={() => {
+              setClaudeOpen(false)
+              // 開き直したときに、使い終わった下書きをもう一度入れない
+              setClaudeDraft(null)
+              if (fileEditorRef.current) fileEditorRef.current.focus()
+              else view?.root.focus({ preventScroll: true })
+            }}
+          />,
+          claudeHost,
+        )}
     </div>
   )
+}
+
+// 名前に出す文字（空白は 1 つにし、長ければ切って … を付ける）
+function truncateLabel(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > max ? `${line.slice(0, max)}…` : line
 }
