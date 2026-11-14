@@ -1201,6 +1201,24 @@ body,
   visibility: hidden;
 }
 
+/* Claude のパネルを、プレビューの代わりに右半分に出す（MAI-102）。パネルは App が claude-host ごとここに移す */
+.file-editor-body.mode-claude .file-editor-preview {
+  display: none;
+}
+
+.file-editor-claude {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-editor-claude .claude-panel {
+  flex: 1;
+  width: auto;
+  border-left: none;
+}
+
 .file-editor-preview .md-card-body {
   max-width: 820px;
   margin: 0 auto;
@@ -2823,6 +2841,18 @@ button.pdf-page-number:hover {
 
 .word-lookup-actions button:hover {
   background: #eef1f4;
+}
+
+/* Claude のパネルの置き場所（MAI-102）。パネルは claude-host ごと、キャンバスの右（claude-slot）か、
+   全画面のエディタの右半分（file-editor-claude）に移す。どちらも箱を作らず、パネルをそのまま並べる */
+.claude-slot,
+.claude-host {
+  display: contents;
+}
+
+/* 全画面のエディタでほかの表示に切り替えている間は、パネルを閉じずに隠す */
+.claude-slot.hidden {
+  display: none;
 }
 
 /* Claude に頼むパネル（claude/ClaudePanel.tsx）。キャンバスの右に並べる（右上のデザインパネルと重ならない）。
