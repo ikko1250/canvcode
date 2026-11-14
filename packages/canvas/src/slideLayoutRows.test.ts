@@ -285,6 +285,44 @@ describe('moveSlideLayoutRow (MAI-104)', () => {
     })
   }
 
+  it('moves the manual height with the row, and redoes', () => {
+    const { editor, slots } = setup(3)
+    const rows = slots().rows
+    const layoutId = editor.getNode(rows[0].body)!.parentId
+    editor.transact('manual', (tx) => {
+      const layout = editor.getNode(layoutId)!
+      const current = (layout.props as SlideLayoutProps).slots
+      tx.put({ ...layout, props: { ...layout.props, slots: { ...current, rows: current.rows.map((row, i) => (i === 0 ? { ...row, h: 200 } : row)) } } })
+    })
+    editor.setSelection([rows[0].body])
+    expect(editor.moveSlideLayoutRow(1)).toBe(true)
+    expect(slots().rows.map((row) => row.h)).toEqual([undefined, 200, undefined])
+    expect(editor.undo()).toBe(true)
+    expect(slots().rows.map((row) => row.h)).toEqual([200, undefined, undefined])
+    expect(editor.redo()).toBe(true)
+    expect(slots().rows.map((row) => row.body)).toEqual([rows[1].body, rows[0].body, rows[2].body])
+  })
+
+  it('moves only among the placed rows (rows over the limit keep their place), and not in a locked layout', () => {
+    const max = maxRows()
+    const { editor, slots, layout } = setup(max + 1)
+    const rows = slots().rows
+    // 並べている最後の行は、上限を超えた行と入れ替えない
+    editor.setSelection([rows[max - 1].body])
+    expect(editor.slideLayoutRowState()).toMatchObject({ canMoveUp: true, canMoveDown: false })
+    expect(editor.moveSlideLayoutRow(1)).toBe(false)
+    // 上限を超えた行は動かせない
+    editor.setSelection([rows[max].body])
+    expect(editor.slideLayoutRowState()).toMatchObject({ canMoveUp: false, canMoveDown: false })
+    expect(editor.moveSlideLayoutRow(-1)).toBe(false)
+    expect(slots().rows).toEqual(rows)
+    // ロックした layout では、行の状態を出さない（Alt+↑/↓ はふつうの矢印キーと同じになる）
+    editor.transact('lock', (tx) => tx.put({ ...editor.getNode(layout.id)!, locked: true }))
+    editor.setSelection([rows[0].body])
+    expect(editor.slideLayoutRowState()).toBeNull()
+    expect(editor.moveSlideLayoutRow(1)).toBe(false)
+  })
+
   it('undoes in one step, and does nothing without a selected cell', () => {
     const { editor, slots, get, box, slide, title } = setup(3)
     const rows = slots().rows

@@ -239,16 +239,16 @@ const TEXT_ALIGNS: [TextAlign, string][] = [
 // （まとめれば選択の項目は 8 つに収まる）
 function buildActionItems(ctx: PieMenuContext): PieEntry[] {
   // 「画像 ›」（MAI-89）を足して 8 つを超えるとき（PDF のページの Canvas で、文字とスライドを含む 3 つ以上を選んだとき）と、
-  // ほかの項目をまとめる（「スライド ›」など）数が増えるとき（スライドの行のセルを選んで「行を移動 ›」が出るとき。MAI-104）は、
-  // 今の並びを変えないよう「画像 ›」を出さない（右クリックからは出せる）
+  // スライドの項目が「スライド ›」にまとまってしまうとき（スライドの行のセルを選んで「行を移動 ›」が出るとき。MAI-104）は、
+  // 今の並びを変えないよう「画像 ›」を出さない（右クリックからは出せる）。ほかのまとめ（文字・ページ・表）では外さない
   const withImage = buildActionItemsWith(ctx)
   if (!ctx.selection.exportImage) return withImage.items
   const without = buildActionItemsWith({ ...ctx, selection: { ...ctx.selection, exportImage: false } })
-  return withImage.items.length > 8 || withImage.folds > without.folds ? without.items : withImage.items
+  return withImage.items.length > 8 || (withImage.slidesFolded && !without.slidesFolded) ? without.items : withImage.items
 }
 
-// 項目と、8 つに収めるためにまとめたもの（「文字 ›」「スライド ›」「表 ›」「ページ ›」）の数
-function buildActionItemsWith(ctx: PieMenuContext): { items: PieEntry[]; folds: number } {
+// 項目と、スライドの項目を「スライド ›」にまとめたか
+function buildActionItemsWith(ctx: PieMenuContext): { items: PieEntry[]; slidesFolded: boolean } {
   const { pdf, selection } = ctx
   const pages: PieEntry[] = []
   if (pdf.hasPages) {
@@ -320,19 +320,16 @@ function buildActionItemsWith(ctx: PieMenuContext): { items: PieEntry[]; folds: 
   if (ctx.hasSlides) slides.push({ label: 'スライドを PDF に出力', onSelect: ctx.exportSlidesPdf })
   const foldText = text.length > 0 && text.length + items.length + slides.length > 8
   const foldSlides = slides.length > 1 && (foldText ? 1 : text.length) + items.length + slides.length > 8
-  let folds = (foldText ? 1 : 0) + (foldSlides ? 1 : 0)
   items.unshift(...(foldText ? [{ label: '文字', items: text }] : text))
   items.push(...(foldSlides ? [{ label: 'スライド', items: slides }] : slides))
   // 表の項目は先頭に置く（ポインタの下の列への操作なので）。合わせて 8 つを超えるときは「表 ›」にまとめる
   if (ctx.table) {
     const table = buildTableItems(ctx, ctx.table)
-    const foldTable = table.length + items.length > 8
-    if (foldTable) folds++
-    items.unshift(...(foldTable ? [{ label: '表', items: table }] : table))
+    items.unshift(...(table.length + items.length > 8 ? [{ label: '表', items: table }] : table))
   }
-  if (pages.length === 0) return { items, folds }
-  if (pages.length + items.length <= 8) return { items: [...pages, ...items], folds }
-  return { items: [{ label: 'ページ', items: pages }, ...items], folds: folds + 1 }
+  if (pages.length === 0) return { items, slidesFolded: foldSlides }
+  if (pages.length + items.length <= 8) return { items: [...pages, ...items], slidesFolded: foldSlides }
+  return { items: [{ label: 'ページ', items: pages }, ...items], slidesFolded: foldSlides }
 }
 
 // キーボードのない端末（スマホ）で、左下に並べるボタン（メニューの id と名前）

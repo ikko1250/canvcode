@@ -66,7 +66,7 @@ import {
   type SlideLayoutRowKind,
   insertSlideLayoutRow,
   slideLayoutRowOf,
-  movedSlideLayoutRow,
+  movedPresentRow,
   slotsWithAutoRowHeight,
   slotsWithResizedRows,
 } from './slideLayoutRows.ts'
@@ -155,7 +155,8 @@ export interface SlideLayoutRowState {
   canRemove: boolean
   // 選んでいるセルの行が、手で決めた高さ（h）を持つか（「行の高さを自動に戻す」を出す）
   manualHeight: boolean
-  // 選んでいるセルの行（rows の中の番号。セルを選んでいなければ null）と、その行を上・下へ動かせるか（MAI-104）
+  // 選んでいるセルの行（rows の中の番号。セルを選んでいなければ null）と、その行を上・下へ動かせるか（MAI-104）。
+  // 動かせるのは並べている行（上限までの行）の中だけ（上限を超えた行は位置を変えないので、入れ替えるとセルが重なる）
   row: number | null
   canMoveUp: boolean
   canMoveDown: boolean
@@ -1459,8 +1460,8 @@ export class Editor {
       canRemove: target.row !== null && target.rows.length > 1,
       manualHeight: target.row !== null && target.rows[target.row].h !== undefined,
       row: target.row,
-      canMoveUp: target.row !== null && target.row > 0,
-      canMoveDown: target.row !== null && target.row < target.rows.length - 1,
+      canMoveUp: target.row !== null && target.row > 0 && target.row < Math.min(target.rows.length, maxRows),
+      canMoveDown: target.row !== null && target.row < Math.min(target.rows.length, maxRows) - 1,
       rowCount: target.rows.length,
       maxRows,
     }
@@ -1472,8 +1473,10 @@ export class Editor {
   moveSlideLayoutRow(delta: -1 | 1): boolean {
     const target = this.slideLayoutRowTarget()
     if (!target || target.row === null) return false
-    const { layout, slots, row } = target
-    const next = movedSlideLayoutRow(slots, row, row + delta)
+    const { layout, rows, row } = target
+    const placed = Math.min(rows.length, this.slideLayoutMaxRowsOf(layout, rows))
+    if (row >= placed || row + delta < 0 || row + delta >= placed) return false
+    const next = movedPresentRow(slotsOf((layout.props as Record<string, unknown>).slots), rows, row, row + delta)
     if (!next) return false
     this.transact(delta < 0 ? 'move slide row up' : 'move slide row down', (tx) => {
       tx.put({ ...layout, props: { ...layout.props, slots: next } })

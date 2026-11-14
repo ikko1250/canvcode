@@ -610,6 +610,23 @@ describe('edit_canvas slides', () => {
     expect(() => edit([{ op: 'move_row', cell: rows[0]!.body, to: 1, by: 1 }])).toThrow(/exactly one of to, by/)
   })
 
+  it('moves a row after deleting another body in the same call, and the deleted row loses its label too (MAI-104)', () => {
+    const { records, edit } = setup()
+    const slideId = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table' }]).created.s!
+    const rows = slotsOf(records, slideId).rows
+    edit([
+      { op: 'delete', ids: [rows[1]!.body] },
+      { op: 'move_row', cell: rows[0]!.body, by: 1 },
+    ])
+    expect(slotsOf(records, slideId).rows).toEqual([rows[2], rows[0]])
+    expect(records.get(rows[1]!.label!)).toBeUndefined()
+    expectRows(records, slideId, 'table', '16:9', { x: 0, y: 0 })
+    // ロックした layout は断る
+    const layoutId = records.get(rows[0]!.body)!.parentId
+    edit([{ op: 'update', id: layoutId, locked: true }])
+    expect(() => edit([{ op: 'move_row', cell: rows[0]!.body, by: -1 }])).toThrow(/is locked/)
+  })
+
   it('closes the rows up when a row body is deleted, and undoes the edits', () => {
     const { records, host, edit } = setup()
     const created = edit([{ op: 'create', type: 'slide', as: 's', x: 0, y: 0, template: 'table' }])

@@ -22,7 +22,7 @@ import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor 
 import { nodeIn, type Editor } from '@canvcode/canvas/editor'
 import { patchAdjust, tableHeightPatch } from '@canvcode/canvas/slideLayoutAdjust'
 import { presentRows, slideLayoutMaxRows } from '@canvcode/canvas/slideLayoutArrange'
-import { hasSlideLayoutRows, movedSlideLayoutRow, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
+import { hasSlideLayoutRows, movedPresentRow, slideLayoutRowOf } from '@canvcode/canvas/slideLayoutRows'
 import type { HistoryMeta, OwnerPortalDeletion } from '@canvcode/canvas/workspace'
 import { z } from 'zod'
 import type { AgentOpEntry, StoredRecord } from '../records.ts'
@@ -988,11 +988,16 @@ class EditRun {
     const layout = nodeIn(this.tx, nodeIn(this.tx, ref)!.parentId)
     if (layout?.type !== 'slide-layout') throw new EditError(`${ref} is not a cell of a slide layout`)
     if (layout.locked) throw new EditError(`${layout.id} is locked`)
-    const slots = slotsOf((layout.props as Record<string, unknown>).slots)
+    const props = layout.props as Record<string, unknown>
+    const slots = slotsOf(props.slots)
     const rows = presentRows(slots, (id) => nodeIn(this.tx, id)?.parentId === layout.id)
     const at = slideLayoutRowOf(rows, ref)
     if (at < 0) throw new EditError(`${ref} is not a cell of a row`)
-    const next = movedSlideLayoutRow({ ...slots, rows }, at, op.to ?? at + op.by!)
+    if (!hasSlideLayoutRows(props.layout)) throw new EditError(`a ${String(props.layout)} slide has no rows`)
+    // 動かせるのは並べている行（上限までの行）の中だけ（上限を超えた行は位置を変えないので、入れ替えるとセルが重なる）
+    const placed = Math.min(rows.length, slideLayoutMaxRows(props.layout, rows, (id) => (id ? nodeIn(this.tx, id) : undefined)))
+    if (at >= placed) throw new EditError(`row ${at} is over the limit of ${placed} rows and is not placed; remove rows or shorten the text first`)
+    const next = movedPresentRow(slots, rows, at, Math.min(op.to ?? at + op.by!, placed - 1))
     if (next) this.tx.put({ ...layout, props: { ...layout.props, slots: next } })
   }
 
