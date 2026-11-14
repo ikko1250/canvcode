@@ -99,6 +99,18 @@ export function textInRegion(items: PdfTextItem[], region: Box): RegionText {
 }
 
 // 英数字（とその記号）どうしの間には空白を入れる。日本語の文字の間には入れない（wordSelection.ts も使う）
+// 改行（段落の区切り）を消して 1 行にする（MAI-103。引用・コピー・AI に渡す PDF の文字は改行を入れない）。
+// 改行の前後が英数字どうしなら空白を挟み、ほか（日本語など）は何も入れずにつなぐ。続く空白は 1 つにする
+export function joinLines(text: string): string {
+  let out = ''
+  for (const part of text.split(/\s*\n\s*/)) {
+    if (!part) continue
+    if (out && needsSpace(out, part)) out += ' '
+    out += part
+  }
+  return out.replace(/\s+/g, ' ').trim()
+}
+
 export function needsSpace(before: string, after: string): boolean {
   const last = [...before].at(-1) ?? ''
   const first = [...after][0] ?? ''

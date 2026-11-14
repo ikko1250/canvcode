@@ -177,5 +177,86 @@ test('does not offer 単語を調べる when Claude is not available', async ({ 
   await page.keyboard.down('o')
   await expect(page.locator('.pie-item', { hasText: 'ページをすべて選ぶ' })).toBeVisible()
   await expect(page.locator('.pie-item', { hasText: '単語を調べる' })).toHaveCount(0)
+  // 文字を選ぶのは、Claude がなくても出す（MAI-103）
+  await expect(page.locator('.pie-item', { hasText: '文字を選ぶ' })).toBeVisible()
   await page.keyboard.up('o')
+})
+
+// 「文字を選ぶ」（MAI-103）：なぞるのは「単語を調べる」と同じで、離すと調べずに、矩形で引用したときと同じメニューを出す
+async function traceText(page: Page) {
+  // 置いた引用ノートなどを選んでいると、ページの項目が「ページ ›」にまとまるので、選択を外してから
+  await page.evaluate(() => (window as unknown as { canvcode: { editor: { setSelection(ids: string[]): void } } }).canvcode.editor.setSelection([]))
+  const rect = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2)
+  await page.keyboard.down('o')
+  await page.locator('.pie-item', { hasText: '文字を選ぶ' }).click({ force: true })
+  await page.keyboard.up('o')
+  await expect(page.locator('.canvas-container > div[tabindex]')).toHaveCSS('cursor', 'text')
+  // 1 行目の「model」から、2 行目の「text」まで（行をまたぎ、行末のハイフンで切れた語をつなぐ）
+  const from = await lineAt(page, 72 + 45, 0)
+  const to = await lineAt(page, 72 + 84, 1)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 6 })
+  await page.mouse.up()
+}
+
+const wordHighlight = (page: Page) =>
+  page.evaluate(() => (window as unknown as { canvcode: { editor: { session: { get(): { wordHighlight: unknown } } } } }).canvcode.editor.session.get().wordHighlight)
+
+const menuItems = (page: Page) => page.locator('.context-menu button')
+
+test('selects the text traced on a PDF page and quotes, copies or gives it to Claude (MAI-103)', async ({ page, context, browserName }) => {
+  const lookups: Lookup[] = []
+  const refs: Record<string, unknown>[] = []
+  await openApp(page, { claude: true, lookups })
+  await page.route('**/api/refs', async (route) => {
+    refs.push(route.request().postDataJSON() as Record<string, unknown>)
+    await route.fulfill({ status: 200, json: {} })
+  })
+  await page.route('**/api/claude/models', (route) => route.fulfill({ json: { models: [], default: {}, fromClaude: false } }))
+
+  await traceText(page)
+  // 調べずに、引用のメニューを出す。なぞった所はハイライトしたまま
+  await expect(menuItems(page)).toHaveText(['このページの横に引用ノート', '引用をコピー', '文字をコピー', 'AIに渡すIDをコピー', 'Claude に頼む…'])
+  expect(await wordHighlight(page)).not.toBeNull()
+  expect(lookups).toEqual([])
+  // 選択ツールに戻っている
+  expect(await page.evaluate(() => (window as any).canvcode.editor.session.get().wordLookupArmed)).toBe(false)
+
+  // 文字だけをコピーする（改行は入れない）。閉じたらハイライトを消す
+  if (browserName === 'chromium') await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await menuItems(page).filter({ hasText: '文字をコピー' }).click()
+  await expect(menuItems(page)).toHaveCount(0)
+  await expect.poll(() => wordHighlight(page)).toBeNull()
+  if (browserName === 'chromium') expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('model was trained on a large corpus of text')
+
+  // 引用ノートを置く（出典はなぞった所を囲む箱）
+  await traceText(page)
+  await menuItems(page).filter({ hasText: 'このページの横に引用ノート' }).click()
+  await expect.poll(() => quoteNotes(page)).toEqual([{ quote: 'model was trained on a large corpus of text', memo: '' }])
+  // 置いたノートはメモの編集が始まっているので、終えてから次へ
+  await page.keyboard.press('Escape')
+
+  // Claude に頼む：なぞった文字を ref にして、パネルに添える
+  await traceText(page)
+  await menuItems(page).filter({ hasText: 'Claude に頼む…' }).click()
+  await expect(page.locator('.claude-attachment')).toContainText('PDF の 1 ページ「model was traine…」')
+  await expect.poll(() => refs.length).toBe(1)
+  expect(refs[0]).toMatchObject({ kind: 'pdf', fileId: FILE_ID, pageIndex: 0, text: 'model was trained on a large corpus of text' })
+  const rect = refs[0]!.rect as { x: number; y: number; w: number; h: number }
+  // 囲む箱は 2 行分（ページの中の割合）
+  expect(rect.x).toBeGreaterThan(0.05)
+  expect(rect.h).toBeGreaterThan(0.04)
+  expect(rect.h).toBeLessThan(0.1)
+})
+
+test('quotes the traced text without Claude, and Esc leaves the mode (MAI-103)', async ({ page }) => {
+  await openApp(page, { claude: false })
+  await traceText(page)
+  // 「AIに渡すIDをコピー」は、SSH の先の Claude Code に貼るためのものなので、画面の Claude がなくても出る
+  await expect(menuItems(page)).toHaveText(['このページの横に引用ノート', '引用をコピー', '文字をコピー', 'AIに渡すIDをコピー'])
+  await page.keyboard.press('Escape')
+  await expect(menuItems(page)).toHaveCount(0)
+  await expect.poll(() => wordHighlight(page)).toBeNull()
 })

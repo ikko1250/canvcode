@@ -217,6 +217,7 @@ describe('buildPieMenus', () => {
     unlockAndSelectPdfPages: vi.fn(),
     lockPdfPages: vi.fn(),
     lookUpWord: vi.fn(),
+    selectPdfText: vi.fn(),
     stepFontSize: vi.fn(),
     setTextAlign: vi.fn(),
     alignSelection: vi.fn(),

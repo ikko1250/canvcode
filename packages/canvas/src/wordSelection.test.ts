@@ -88,6 +88,13 @@ describe('wordIndexAt と selectWords', () => {
     expect(selected.boxes[1]).toMatchObject({ x: 0, y: 12, w: 'on a corpus'.length * 6 })
   })
 
+  it('段落をまたいで選んでも改行を入れない（英語は空白、日本語は何も入れずにつなぐ。MAI-103）', () => {
+    const page = pdfPageText([line('End of one.', 0, 0), line('Start of two', 0, 60), line('日本語の段落', 0, 120), line('次の段落', 0, 180)])
+    expect(page.text).toBe('End of one.\nStart of two\n日本語の段落\n次の段落')
+    expect(selectWords(page, indexOf(page, 'one'), indexOf(page, 'Start'))?.text).toBe('one. Start')
+    expect(selectWords(page, indexOf(page, '段落'), indexOf(page, '次'))?.text).toBe('段落次')
+  })
+
   it('1 つの語だけも選べる', () => {
     const i = indexOf(page, 'corpus')
     expect(selectWords(page, i, i)).toMatchObject({ text: 'corpus', context: 'Large language models are trained on a corpus of text.' })

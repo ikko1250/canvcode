@@ -1,5 +1,5 @@
 import type { Box, Vec } from '@canvcode/core'
-import { needsSpace, type PdfTextItem } from './quotes.ts'
+import { joinLines, needsSpace, type PdfTextItem } from './quotes.ts'
 
 // PDF のページの上で、なぞった語を選ぶ（o メニューの「単語を調べる」。MAI-99）。DOM を使わない部分だけをここに置く。
 // - ページの文字の断片（PDF.js の getTextContent）を、PDF に書かれた順（ブラウザで PDF の文字を選ぶときと同じ順。2 段組でも
@@ -147,7 +147,8 @@ export function selectWords(page: PdfPageText, a: number, b: number): WordSelect
   const start = first.start
   const end = last.end
   return {
-    text: page.text.slice(start, end).replace(/\s+/g, ' ').trim(),
+    // 改行（段落の区切り）は、英数字どうしなら空白に、日本語なら何も入れずにつなぐ（MAI-103）
+    text: joinLines(page.text.slice(start, end)),
     context: sentencesAround(page.text, start, end),
     start,
     end,
