@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { normalizeRefId } from '@canvcode/core'
 import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
+import { isEffortLevel, isModelName } from './models.ts'
 
 // 画面から Claude Code に頼む API（claude/jobs.ts）。
 // - GET /api/claude/threads：会話の一覧（最後に動いたものから）{ threads }
@@ -10,7 +11,9 @@ import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
 // - POST /api/claude/threads/<id>/tasks/<taskId>/stop：バックグラウンドの作業を 1 つ止める。204（もう動いていなければ 404）
 // - POST /api/claude/threads/<id>/permissions/<permissionId> { decision: 'allow' | 'deny' }：画面で待っている問い合わせに答える。204
 //   （もう待っていなければ 404）。content-type は application/json だけ受ける（別のサイトのフォームから送らせないため。415）
-// - POST /api/claude/jobs { prompt, refId?, canvasId?, threadId? }：頼む（threadId があれば、その会話の続き）。201 { job }
+// - GET /api/claude/models：選べるモデルと effort（claude/models.ts の ModelCatalog。MAI-106）。初めは Claude Code に聞くので、少し待たせる
+// - POST /api/claude/jobs { prompt, refId?, canvasId?, threadId?, model?, effort? }：頼む（threadId があれば、その会話の続き。
+//   model・effort がなければ既定）。201 { job }
 // - GET /api/claude/jobs/<id>：1 つのジョブ
 // - POST /api/claude/jobs/<id>/cancel：止める（そのターンだけ。バックグラウンドの作業は残る）
 // - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running }（running は動いているジョブ）、
@@ -41,6 +44,14 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
   if (path === `${PREFIX}/threads`) {
     if (req.method !== 'GET') return methodNotAllowed(res)
     sendJson(res, 200, { threads: jobs.threads() })
+    return true
+  }
+  if (path === `${PREFIX}/models`) {
+    if (req.method !== 'GET') return methodNotAllowed(res)
+    jobs.models().then(
+      (catalog) => sendJson(res, 200, catalog),
+      (error: unknown) => sendError(res, error),
+    )
     return true
   }
   const stop = /^\/api\/claude\/threads\/([0-9a-f-]{36})(?:\/tasks\/([^/]+))?\/stop$/.exec(path)
@@ -140,8 +151,10 @@ async function answerPermission(req: IncomingMessage, res: ServerResponse, jobs:
 
 export function parseStart(body: unknown): StartRequest {
   if (typeof body !== 'object' || body === null) throw new JobError(400, 'invalid body')
-  const { prompt, refId, canvasId, threadId } = body as Record<string, unknown>
+  const { prompt, refId, canvasId, threadId, model, effort } = body as Record<string, unknown>
   if (typeof prompt !== 'string') throw new JobError(400, 'prompt is required')
+  if (model !== undefined && model !== null && model !== '' && !isModelName(model)) throw new JobError(400, 'invalid model')
+  if (effort !== undefined && effort !== null && effort !== '' && !isEffortLevel(effort)) throw new JobError(400, 'invalid effort')
   const optional = (value: unknown, name: string): string | undefined => {
     if (value === undefined || value === null || value === '') return undefined
     if (typeof value !== 'string' || value.length > 200) throw new JobError(400, `invalid ${name}`)
@@ -157,6 +170,8 @@ export function parseStart(body: unknown): StartRequest {
     ...(normalized ? { refId: normalized } : {}),
     ...(canvas ? { canvasId: canvas } : {}),
     ...(thread ? { threadId: thread } : {}),
+    ...(isModelName(model) ? { model } : {}),
+    ...(isEffortLevel(effort) ? { effort } : {}),
   }
 }
 

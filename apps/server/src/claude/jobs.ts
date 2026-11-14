@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { relative } from 'node:path'
-import type { CanUseTool, Options, PermissionResult, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { CanUseTool, EffortLevel, ModelInfo, Options, PermissionResult, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { catalogOf, defaultModelValue, probeModels, type ModelCatalog } from './models.ts'
 import {
   askedByRule,
   askTool,
@@ -14,7 +15,7 @@ import {
   type Guard,
   type GuardSettings,
 } from './permissions.ts'
-import { ClaudeSession, type BackgroundTask, type RunQuery } from './session.ts'
+import { ClaudeSession, type BackgroundTask, type ModelSettings, type RunQuery } from './session.ts'
 import type { ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
 
 export type { BackgroundTask, RunQuery } from './session.ts'
@@ -32,6 +33,8 @@ export type { BackgroundTask, RunQuery } from './session.ts'
 //   （答えを書かなかったターンはジョブにしない）
 // - 止めるのは 3 通り：ジョブ（今のターンだけ。interrupt）・作業 1 つ（stopTask）・会話（プロセスごと。バックグラウンドの作業も止まる）
 // - 起動したときに、途切れたジョブを止まったものにする
+// - モデルと effort（MAI-106）は依頼ごとに受け、ジョブに残す（会話の一覧は最後の依頼のものを返す）。プロセスを立てるときは Options で渡し、
+//   動いているプロセスの値と違えば、送る前に configure で変える。渡されなければ既定（CANVCODE_CLAUDE_MODEL か、ワークスペースの設定）
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -90,6 +93,9 @@ export interface JobSummary {
   // Claude Code が見積もったそのターンの費用（USD）と、かかった時間
   costUsd?: number
   durationMs?: number
+  // 頼んだモデルと effort（MAI-106。なければ既定）。バックグラウンドのジョブは、そのときのプロセスの値
+  model?: string
+  effort?: EffortLevel
   eventCount: number
 }
 
@@ -110,6 +116,9 @@ export interface StartRequest {
   canvasId?: string
   // 続ける会話
   threadId?: string
+  // モデルと effort（MAI-106。なければ既定）
+  model?: string
+  effort?: EffortLevel
 }
 
 // 変化。job は、ジョブが変わった（events はその変化で足した出来事。from 番目から）。thread は、会話の作業の一覧が変わった。thread-deleted は、会話を消した
@@ -146,6 +155,8 @@ export const CANCEL_GRACE_MS = 10_000
 export const PERMISSION_TIMEOUT_MS = 10 * 60_000
 // 1 つの会話で答えを待てる問い合わせの数。超えたものは尋ねずに断る（サブエージェントが並ぶと、一度にたくさん来うる）
 export const MAX_PENDING_PERMISSIONS = 20
+// モデルの一覧を聞けなかったとき、聞き直すまでの時間（ミリ秒）
+export const MODEL_PROBE_RETRY_MS = 60_000
 export const TOO_MANY_PERMISSIONS = `待っている許可が多すぎます（1 つの会話で ${MAX_PENDING_PERMISSIONS} まで）。前の許可の答えを待ってから、もう一度試してください`
 
 export interface ClaudeJobsDeps {
@@ -170,6 +181,8 @@ export interface ClaudeJobsDeps {
   tmpRoot?: string
   // 既定は PERMISSION_TIMEOUT_MS
   permissionTimeoutMs?: number
+  // モデルの一覧を Claude Code に聞くときに待つ時間（ミリ秒。既定は probeModels の 30 秒）
+  modelProbeTimeoutMs?: number
 }
 
 // CANVCODE_CLAUDE_MAX_TURNS（正の整数）・CANVCODE_CLAUDE_MAX_BUDGET_USD（正の数）・CANVCODE_CLAUDE_PERMISSION_TIMEOUT_MS（正の整数）。
@@ -218,6 +231,8 @@ interface LiveThread {
   backgroundToolUses: Set<string>
   // 最初の system/init を確かめた
   initialized: boolean
+  // プロセスのモデルと effort（MAI-106。立てたとき、または最後に configure した値）
+  settings: ModelSettings
   // 前の result までの費用（total_cost_usd は query の合計なので、差がそのターンの費用）。resume したプロセスは前のプロセスの合計から数えるので、
   // それを知らなければ NaN（最初のターンの費用は出さない）
   costSoFar: number
@@ -245,6 +260,8 @@ export class ClaudeJobs {
   private readonly costTotals = new Map<string, number>()
   private readonly listeners = new Set<JobListener>()
   private readonly guardSettings: GuardSettings
+  // Claude Code に聞いたモデルの一覧（MAI-106。初めて頼まれたときに聞く。聞けなければ undefined で、しばらくして聞き直す）
+  private modelList: Promise<ModelInfo[] | undefined> | undefined
 
   constructor(deps: ClaudeJobsDeps) {
     this.deps = deps
@@ -303,9 +320,15 @@ export class ClaudeJobs {
       live = undefined
     }
     if (!live) this.makeRoom()
+    const settings: ModelSettings = { ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}) }
+    // 動いているプロセスのモデルか effort が違えば、送る前に変える（既定に戻すときは、サーバーの CANVCODE_CLAUDE_MODEL を渡す）
+    if (live && (live.settings.model !== settings.model || live.settings.effort !== settings.effort)) {
+      live.session.configure({ ...(settings.model ?? this.deps.model ? { model: settings.model ?? this.deps.model } : {}), ...(settings.effort ? { effort: settings.effort } : {}) })
+      live.settings = settings
+    }
     const id = randomUUID()
     const threadId = request.threadId ?? id
-    const thread = live ?? this.open(threadId, resume, request.canvasId)
+    const thread = live ?? this.open(threadId, resume, request.canvasId, settings)
     const job: StoredJob = {
       id,
       threadId,
@@ -314,6 +337,7 @@ export class ClaudeJobs {
       ...(request.canvasId ? { canvasId: request.canvasId } : {}),
       status: 'running',
       createdAt: Date.now(),
+      ...settings,
       // 誰のターンでもないときに届いた作業の知らせは、この依頼の初めに出す
       events: thread.pending.splice(0),
       eventCount: 0,
@@ -428,9 +452,10 @@ export class ClaudeJobs {
     void this.closeThread(idle.threadId)
   }
 
-  private open(threadId: string, resume: string | undefined, canvasId: string | undefined): LiveThread {
+  private open(threadId: string, resume: string | undefined, canvasId: string | undefined, settings: ModelSettings): LiveThread {
     const thread = {
       threadId,
+      settings,
       ...(resume ? { sessionId: resume } : {}),
       ...(canvasId ? { canvasId } : {}),
       pending: [],
@@ -504,7 +529,8 @@ export class ClaudeJobs {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(thread.canvasId) },
       // 画面に作業ごとの止めるボタンがある。interrupt はターンだけを止め、バックグラウンドの作業は残す
       perTaskStopAffordance: true,
-      ...(this.deps.model ? { model: this.deps.model } : {}),
+      ...(thread.settings.model ?? this.deps.model ? { model: thread.settings.model ?? this.deps.model } : {}),
+      ...(thread.settings.effort ? { effort: thread.settings.effort } : {}),
       maxTurns: this.maxTurns(),
       ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
       // env は Claude Code の環境を丸ごと置き換えるので、process.env を広げたうえで足す。
@@ -515,6 +541,34 @@ export class ClaudeJobs {
 
   private maxTurns(): number {
     return this.deps.maxTurns ?? DEFAULT_MAX_TURNS
+  }
+
+  // 画面で選べるモデルと effort、既定で動くモデル（MAI-106）。一覧は初めて頼まれたときに Claude Code に聞いて覚える
+  async models(): Promise<ModelCatalog> {
+    if (!this.modelList) {
+      const list: Promise<ModelInfo[] | undefined> = probeModels(this.deps.run ?? defaultRun, this.probeOptions(), this.deps.modelProbeTimeoutMs).catch((error: unknown) => {
+        console.error('Claude Code にモデルの一覧を聞けませんでした', error)
+        // しばらくしたら聞き直す
+        setTimeout(() => {
+          if (this.modelList === list) this.modelList = undefined
+        }, MODEL_PROBE_RETRY_MS).unref()
+        return undefined
+      })
+      this.modelList = list
+    }
+    return catalogOf(await this.modelList, defaultModelValue(this.deps.workspace, this.deps.model))
+  }
+
+  // モデルの一覧を聞くだけのプロセスの Options（ツールも MCP も使わない。設定は会話と同じくワークスペースのものだけ）
+  private probeOptions(): Options {
+    return {
+      cwd: this.deps.workspace,
+      tools: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      settingSources: ['project'],
+      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_TMPDIR: this.guardSettings.tmpRoot },
+    }
   }
 
   // 画面でユーザーに尋ね、答え（許す・断る）か、時間切れか、取り消しを待つ（docs/claude-permissions-plan.md の段階 2）。
@@ -615,6 +669,7 @@ export class ClaudeJobs {
       origin: 'background',
       status: 'running',
       createdAt: Date.now(),
+      ...thread.settings,
       events: thread.pending.splice(0),
       eventCount: 0,
       ...(thread.sessionId ? { sessionId: thread.sessionId } : {}),

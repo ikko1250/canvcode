@@ -439,3 +439,107 @@ test('C does nothing in the fullscreen file editor (MAI-91)', async ({ page }) =
   await expect(panel(page)).toHaveCount(0)
   await expect(page.locator('.file-editor')).toBeVisible()
 })
+
+test('chooses the model and effort next to the send button, per thread (MAI-106)', async ({ page }) => {
+  const catalog = {
+    models: [
+      { value: 'opus', label: 'Opus 5.5', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      { value: 'claude-opus-4-6', label: 'Opus 4.6', efforts: ['low', 'medium', 'high', 'max'] },
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', efforts: [] },
+    ],
+    default: { value: 'opus', label: 'Opus 5.5' },
+    fromClaude: true,
+  }
+  await page.route('**/api/claude/models', (route) => route.fulfill({ json: catalog }))
+  const sent: Record<string, unknown>[] = []
+  await page.route('**/api/claude/jobs', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    sent.push(body)
+    const job = {
+      id: `j${sent.length + 1}`,
+      threadId: (body.threadId as string | undefined) ?? `00000000-0000-4000-8000-00000000000${sent.length}`,
+      prompt: body.prompt,
+      status: 'done',
+      createdAt: Date.now(),
+      durationMs: 1200,
+      costUsd: 0.45,
+      ...(body.model ? { model: body.model } : {}),
+      ...(body.effort ? { effort: body.effort } : {}),
+      eventCount: 1,
+      events: [{ kind: 'text', text: 'ok' }],
+    }
+    await route.fulfill({ status: 201, json: { job } })
+  })
+  await openApp(page)
+  const button = page.locator('.claude-model-button')
+  const popover = page.locator('.claude-model-popover')
+  // 会話 t1 は既定で頼んだもの。既定で動くモデルの名前を添える
+  await expect(button).toHaveText('既定（Opus 5.5）')
+
+  // 押すと上に開き、モデルと effort を選べる（選べない effort は出さない）
+  await button.click()
+  await expect(popover).toBeVisible()
+  await popover.getByRole('combobox').first().selectOption('claude-opus-4-6')
+  await expect(popover.getByRole('combobox').nth(1).locator('option')).toHaveText(['既定', 'Low', 'Medium', 'High', 'Max'])
+  await popover.getByRole('combobox').nth(1).selectOption('high')
+  await expect(button).toHaveText('Opus 4.6 · High')
+  // 効かないモデルでは effort を選べない（選んでいた effort は既定に戻る）
+  await popover.getByRole('combobox').first().selectOption('claude-haiku-4-5-20251001')
+  await expect(popover.getByRole('combobox').nth(1)).toBeDisabled()
+  await expect(button).toHaveText('Haiku 4.5')
+  await popover.getByRole('combobox').first().selectOption('opus')
+  await popover.getByRole('combobox').nth(1).selectOption('xhigh')
+  // Esc は欄だけを閉じる（パネルは閉じない）
+  await page.keyboard.press('Escape')
+  await expect(popover).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
+  await expect(button).toBeFocused()
+
+  // 送ると、選んだモデルと effort で頼み、終わった行に添える
+  await promptBox(page).fill('続き')
+  await page.getByRole('button', { name: '送る' }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  expect(sent[0]).toMatchObject({ prompt: '続き', threadId: 't1', model: 'opus', effort: 'xhigh' })
+  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45・Opus 5.5 · XHigh）')
+
+  // 新しい会話は、最後に選んだ値から始める（ブラウザに覚える）
+  await page.getByRole('button', { name: '新規' }).click()
+  await expect(button).toHaveText('Opus 5.5 · XHigh')
+  await button.click()
+  await popover.getByRole('combobox').first().selectOption('')
+  await popover.getByRole('combobox').nth(1).selectOption('')
+  await expect(button).toHaveText('既定（Opus 5.5）')
+  // 欄の外を押すと閉じる
+  await page.locator('.claude-log').click({ position: { x: 10, y: 10 } })
+  await expect(popover).toHaveCount(0)
+  await promptBox(page).fill('新しく')
+  await page.getByRole('button', { name: '送る' }).click()
+  await expect.poll(() => sent.length).toBe(2)
+  expect(sent[1]).not.toHaveProperty('model')
+  expect(sent[1]).not.toHaveProperty('effort')
+  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45）')
+})
+
+test('restores the model and effort of a thread when it is opened again (MAI-106)', async ({ page }) => {
+  await page.route('**/api/claude/models', (route) =>
+    route.fulfill({ json: { models: [{ value: 'claude-opus-4-6', label: 'Opus 4.6', efforts: ['low', 'high'] }], default: {}, fromClaude: false } }),
+  )
+  await openApp(page)
+  // 前の会話 t2 は Opus 4.6・Low で頼んだもの（あとから足した差し替えが先に当たるので、読み直すと一覧に出る）
+  const now = Date.now()
+  const t1 = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false, tasks: [], permissions: [] }
+  const t2 = { threadId: 't2', title: 'older', createdAt: now - 60_000, updatedAt: now - 60_000, jobCount: 1, running: false, model: 'claude-opus-4-6', effort: 'low' }
+  await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [t1, t2] } }))
+  await page.route('**/api/claude/threads/t2', (route) => route.fulfill({ json: { jobs: [] } }))
+  await page.reload()
+  await page.locator('.claude-toggle').click()
+  await expect(page.locator('.claude-thread-select option', { hasText: 'older' })).toHaveCount(1)
+  await page.locator('.claude-thread-select').selectOption('t2')
+  await expect(page.locator('.claude-model-button')).toHaveText('Opus 4.6 · Low')
+  await page.locator('.claude-thread-select').selectOption('t1')
+  // 既定で動くモデルがわからなければ「既定」だけ
+  await expect(page.locator('.claude-model-button')).toHaveText('既定')
+  // 一覧を Claude Code に聞けなかったときは、そう書く
+  await page.locator('.claude-model-button').click()
+  await expect(page.locator('.claude-model-note')).toContainText('聞けなかった')
+})

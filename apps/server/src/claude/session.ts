@@ -1,15 +1,28 @@
-import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { EffortLevel, ModelInfo, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 
 // 会話 1 つの Claude Code のプロセス（claude/jobs.ts が使う）。
 // - query() を 1 回だけ呼び、prompt にメッセージを順に流す入れ物（InputQueue）を渡す（ストリーミング入力）。続きのメッセージはその入れ物に足す
 // - 届いたメッセージはそのまま onMessage に渡す。バックグラウンドの作業の一覧（background_tasks_changed。届くたびに置き換える）だけはここで持つ
 // - 閉じるときは入れ物を閉じる（stdin の終わり）。作業が残っていると CLI は終わらないので、そのときと、待っても終わらないときは abort する
 // - 前の同じ会話のプロセスが終わる途中なら、それを待ってから query を立てる（同じ session を 2 つのプロセスで開かない）
+// - モデルと effort（MAI-106）は、立てるときは Options で渡し、動いている間に変えるときは configure（setModel・applyFlagSettings）で変える。
+//   変えている途中に送るメッセージは、変え終わってから流す（変えたあとのモデルで答えるように）
 
 export interface SessionQuery extends AsyncIterable<SDKMessage> {
   // cancelQueued は、まだ答え始めていない（待っている）メッセージも取り消す（d.ts にはないが、SDK の Query は受け取る）
   interrupt(options?: { cancelQueued?: boolean }): Promise<unknown>
   stopTask(taskId: string): Promise<void>
+  // ストリーミング入力のときだけ使える（MAI-106）。model を渡さなければ既定のモデル、effortLevel が null ならモデルの既定
+  setModel(model?: string): Promise<void>
+  applyFlagSettings(settings: { effortLevel?: EffortLevel | null }): Promise<void>
+  supportedModels(): Promise<ModelInfo[]>
+}
+
+// 会話のモデルと effort（MAI-106）。model がなければ既定のモデル（サーバーの CANVCODE_CLAUDE_MODEL か、ワークスペースの設定）、
+// effort がなければモデルの既定
+export interface ModelSettings {
+  model?: string
+  effort?: EffortLevel
 }
 
 // 既定は Agent SDK の query（使うときに読み込むので Promise でもよい）
@@ -73,13 +86,53 @@ export class ClaudeSession {
   private readonly abort = new AbortController()
   private readonly input = new InputQueue()
   private query: SessionQuery | undefined
+  // query を立てたら、それで解ける（立てられなかったら undefined）。configure は立つのを待ってから当てる
+  private readonly queryReady: Promise<SessionQuery | undefined>
+  private resolveQuery!: (query: SessionQuery | undefined) => void
+  // モデルを変えている途中（送るメッセージはこれを待つ）
+  private configuring: Promise<void> | undefined
 
   constructor(run: RunQuery, options: Options, handlers: SessionHandlers, after?: Promise<void>) {
+    this.queryReady = new Promise((resolve) => (this.resolveQuery = resolve))
     this.exited = this.read(run, options, handlers, after)
   }
 
   send(text: string, uuid: string): void {
-    this.input.push(text, uuid)
+    const configuring = this.configuring
+    if (!configuring) {
+      this.input.push(text, uuid)
+      return
+    }
+    // モデルを変え終わってから流す（そのあいだにプロセスが終わっていれば流さない。次の依頼は新しいプロセスで続ける）
+    void configuring.then(() => {
+      try {
+        this.input.push(text, uuid)
+      } catch {
+        // 入れ物が閉じている
+      }
+    })
+  }
+
+  // プロセスのモデルと effort を変える（MAI-106。次に送るメッセージから効く）。query を立てる前なら、立つのを待ってから当てる。
+  // 変えられなくても（古い CLI など）、送るのは止めない
+  configure(settings: ModelSettings): void {
+    const done: Promise<void> = (this.configuring ?? Promise.resolve())
+      .then(() => this.queryReady)
+      .then(async (query) => {
+        if (!query) return
+        await query.setModel(settings.model)
+        await query.applyFlagSettings({ effortLevel: settings.effort ?? null })
+      })
+      .catch((error: unknown) => console.error('Claude のモデルを変えられませんでした', error))
+      .finally(() => {
+        if (this.configuring === done) this.configuring = undefined
+      })
+    this.configuring = done
+  }
+
+  // 使えるモデルの一覧（query を立てたあとだけ）
+  async supportedModels(): Promise<ModelInfo[] | undefined> {
+    return this.query?.supportedModels()
   }
 
   // 今のターンだけを止める（バックグラウンドの作業は残る。perTaskStopAffordance）。cancelQueued なら、待っているメッセージも取り消す
@@ -114,6 +167,7 @@ export class ClaudeSession {
       if (!this.abort.signal.aborted) {
         this.query = await run({ prompt: this.input, options: { ...options, abortController: this.abort } })
         this.started = true
+        this.resolveQuery(this.query)
         for await (const message of this.query) {
           if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
             // ambient は動きではないもの（見張りなど）
@@ -127,6 +181,7 @@ export class ClaudeSession {
     } catch (error) {
       if (!this.abort.signal.aborted) failure = error
     }
+    this.resolveQuery(undefined)
     this.input.close()
     handlers.onExit(failure)
     this.tasks = []

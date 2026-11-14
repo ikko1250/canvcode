@@ -3185,6 +3185,64 @@ button.pdf-page-number:hover {
   color: #fff;
 }
 
+/* 送るボタンの横の、モデルと effort（MAI-106）。押すと選ぶ欄が上に開く */
+.claude-model {
+  position: relative;
+  min-width: 0;
+}
+
+.claude-panel .claude-model-button {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.claude-model-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 240px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+}
+
+.claude-model-popover label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.claude-model-popover label > span {
+  width: 52px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.claude-model-popover select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #ffffff;
+  font: inherit;
+}
+
+.claude-model-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .claude-panel .claude-send {
   border-color: var(--accent);
   background: var(--accent);
