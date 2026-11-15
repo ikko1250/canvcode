@@ -1,4 +1,4 @@
-import type { Effort, ModelCatalog } from './claudeClient.ts'
+import type { Effort, ModelCatalog, ModelChoice } from './claudeClient.ts'
 
 // Claude のパネルで選ぶモデルと effort（MAI-106）。DOM を使わない部分だけを置く。
 // - どちらもなければ既定（サーバーの CANVCODE_CLAUDE_MODEL か、ワークスペースの .claude/settings.json のモデル。effort はモデルの既定）
@@ -76,4 +76,49 @@ export function effortsOf(catalog: ModelCatalog | undefined, model: string | und
 export function withModel(catalog: ModelCatalog | undefined, setting: ModelSetting, model: string | undefined): ModelSetting {
   const effort = setting.effort && effortsOf(catalog, model).includes(setting.effort) ? setting.effort : undefined
   return settingOf({ model, effort })
+}
+
+// モデルの系統。選ぶ欄のスライダーの段で、左から軽く速いものの順
+export const FAMILIES = ['haiku', 'sonnet', 'opus', 'fable'] as const
+export type Family = (typeof FAMILIES)[number]
+export const FAMILY_LABELS: Record<Family, string> = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable' }
+
+// モデルの系統。名前（opus・claude-opus-4-8 など）か、一覧の表示名から見分ける。どれでもなければ undefined
+export function familyOf(catalog: ModelCatalog | undefined, model: string | undefined): Family | undefined {
+  if (!model) return undefined
+  const label = catalog?.models.find((choice) => choice.value === model)?.label ?? ''
+  const text = `${model} ${label}`.toLowerCase()
+  return FAMILIES.find((family) => text.includes(family))
+}
+
+export interface ModelStop {
+  family: Family
+  value: string
+  label: string
+}
+
+// スライダーの段：系統ごとの最新版。Claude Code の一覧は最新版を指す名前（opus など）の行を先に返すので、その行を使い、
+// なければ一覧で最初に出てくる同じ系統の行を使う。一覧にない系統（固定の一覧の Fable など）の段は作らない
+export function modelStops(catalog: ModelCatalog | undefined): ModelStop[] {
+  const models = catalog?.models ?? []
+  return FAMILIES.flatMap((family) => {
+    const choice = models.find((c) => c.value === family) ?? models.find((c) => familyOf(catalog, c.value) === family)
+    return choice ? [{ family, value: choice.value, label: choice.label }] : []
+  })
+}
+
+// 選んでいるモデルがスライダーのどの段か（古いバージョンなら、その系統の段）。既定なら、既定で動くモデルの系統。
+// どの段でもなければ -1
+export function modelStopIndex(catalog: ModelCatalog | undefined, stops: readonly ModelStop[], model: string | undefined): number {
+  const family = familyOf(catalog, model ?? catalog?.default.value)
+  return family ? stops.findIndex((stop) => stop.family === family) : -1
+}
+
+// 「Model ›」で開く、全部のバージョンの一覧。スライダーと同じ系統の順にまとめ、系統の中は Claude Code の順（新しいものが先）。
+// 系統のわからないものは最後。選んでいるモデルが一覧になければ（前の会話で使った古いモデルなど）足す
+export function modelGroups(catalog: ModelCatalog | undefined, model: string | undefined): ModelChoice[][] {
+  const models = [...(catalog?.models ?? [])]
+  if (model && !models.some((choice) => choice.value === model)) models.push({ value: model, label: model, efforts: [...EFFORTS] })
+  const families: (Family | undefined)[] = [...FAMILIES, undefined]
+  return families.map((family) => models.filter((choice) => familyOf(catalog, choice.value) === family)).filter((group) => group.length > 0)
 }

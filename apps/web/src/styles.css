@@ -3229,42 +3229,194 @@ button.pdf-page-number:hover {
   color: var(--muted);
 }
 
+/* 選ぶ欄：Model と Effort の 2 本のスライダー。「Model ›」で全部のバージョンの一覧に替わる */
 .claude-model-popover {
+  --model-bg: #e8eefc;
+  --model-line: #3b5bdb;
+  --model-ink: #1f2328;
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  width: 240px;
-  padding: 10px 12px;
-  border: 1px solid var(--panel-border);
+  gap: 6px;
+  width: 296px;
+  padding: 10px 14px 12px;
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  background: var(--model-bg);
+  box-shadow: 0 6px 20px rgba(24, 41, 68, 0.16);
+  color: var(--model-ink);
 }
 
-.claude-model-popover label {
+.claude-model-row {
   display: flex;
-  align-items: center;
   gap: 8px;
 }
 
-.claude-model-popover label > span {
-  width: 52px;
-  flex-shrink: 0;
-  color: var(--muted);
+/* 名前はトラックの高さに揃える（名前の行がトラックの上か下に付くので、その反対側に寄せる） */
+.claude-model-row-top {
+  align-items: flex-end;
 }
 
-.claude-model-popover select {
+.claude-model-row-bottom {
+  align-items: flex-start;
+}
+
+.claude-model-name {
+  flex-shrink: 0;
+  width: 60px;
+  height: 24px;
+  font-size: 14px;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.claude-panel .claude-model-more,
+.claude-panel .claude-model-back {
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+
+.claude-panel .claude-model-more:hover,
+.claude-panel .claude-model-back:hover {
+  color: var(--model-line);
+}
+
+.claude-stops {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-width: 0;
-  padding: 3px 6px;
-  border: 1px solid var(--panel-border);
+}
+
+.claude-stops-labels {
+  position: relative;
+  height: 15px;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.claude-stops-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  white-space: nowrap;
+}
+
+.claude-stops-selected {
+  font-weight: 700;
+  transition: left 120ms ease;
+}
+
+/* 段の中心は、両端からつまみの半分（17px）内側に等しく並べる（ModelPicker.tsx の KNOB_WIDTH） */
+.claude-stops-track {
+  position: relative;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--model-bg);
+  box-shadow: inset 0 0 0 2px var(--model-line);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.claude-stops-track:focus-visible {
+  outline: 2px solid var(--model-line);
+  outline-offset: 2px;
+}
+
+.claude-stops-track[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.claude-stops-dot {
+  position: absolute;
+  top: calc(50% - 3.5px);
+  left: calc(17px - 3.5px + (100% - 34px) * var(--t));
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--model-ink);
+}
+
+.claude-stops-knob {
+  position: absolute;
+  top: 0;
+  left: calc((100% - 34px) * var(--t));
+  width: 34px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--model-ink);
+  transition: left 120ms ease;
+}
+
+.claude-panel .claude-model-reset {
+  align-self: flex-end;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+.claude-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.claude-model-group {
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+  border-top: 1px solid rgba(59, 91, 219, 0.2);
+}
+
+.claude-panel .claude-model-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 4px 8px;
+  border: none;
   border-radius: 6px;
-  background: #ffffff;
-  font: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.claude-panel .claude-model-option:hover {
+  background: rgba(59, 91, 219, 0.08);
+}
+
+.claude-panel .claude-model-option[aria-checked='true'] {
+  background: rgba(59, 91, 219, 0.16);
+}
+
+.claude-model-option-label {
+  font-size: 13px;
+}
+
+.claude-model-option[aria-checked='true'] .claude-model-option-label {
+  font-weight: 700;
+}
+
+.claude-model-option-description {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .claude-model-note {
