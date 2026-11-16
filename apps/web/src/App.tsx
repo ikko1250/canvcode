@@ -42,6 +42,8 @@ import {
   PORTAL_DEFAULT_SIZE,
   SHORTCUT_CARD_HEIGHT,
   type NoteProps,
+  baseFormatOf,
+  noteStyle,
   plainTextOf,
   type QuoteCardProps,
   type TableCardProps,
@@ -71,7 +73,7 @@ import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
-import { memoParagraphs, requestMemo } from './claude/memo.ts'
+import { memoParagraphs, memoSource, requestMemo } from './claude/memo.ts'
 import { lookupMemo, requestLookup } from './claude/lookup.ts'
 import { citationParagraphs, citeSourceOf, requestCitation } from './claude/cite.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
@@ -1001,6 +1003,7 @@ export function App(props: { initial: InitialRecords }) {
   )
 
   // 付箋の文字（音声入力で入れた話し言葉など）を、Claude（既定は Sonnet）に箇条書きのメモにしてもらい、付箋の文字と置き換える（Undo 1 回で戻る）。
+  // 文字は書式付きの Markdown で渡し、答えの書式（太字・色など）を残す（claude/memo.ts）。
   // 待っている間に付箋が変わった・消えた・編集を始めた・別の Canvas に移ったなら、置き換えない。同じ付箋を重ねて頼まない
   const memoizing = useRef(new Set<string>())
   const noteToMemo = useCallback(
@@ -1009,12 +1012,12 @@ export function App(props: { initial: InitialRecords }) {
       const node = editor?.getNode(nodeId)
       if (!editor || node?.type !== 'note' || memoizing.current.has(nodeId)) return
       const before = (node.props as NoteProps).paragraphs
-      const text = plainTextOf(before).trim()
-      if (!text) return
+      if (!plainTextOf(before).trim()) return
+      const source = memoSource(before, baseFormatOf(noteStyle(node.props as NoteProps)))
       memoizing.current.add(nodeId)
       notify('箇条書きのメモにしています…')
       try {
-        const items = await requestMemo(text)
+        const answer = await requestMemo(source.markdown, plainTextOf(before).trim())
         const view = viewRef.current
         const current = editor.getNode(nodeId)
         if (view?.editor !== editor || current?.type !== 'note') return notify('付箋が見えなくなったので、メモにしませんでした')
@@ -1022,7 +1025,8 @@ export function App(props: { initial: InitialRecords }) {
         if (view.textEditor.editingId === nodeId || JSON.stringify(props.paragraphs) !== JSON.stringify(before)) {
           return notify('待っている間に付箋が変わったので、置き換えませんでした')
         }
-        editor.transact('箇条書きのメモにする', (tx) => tx.put({ ...current, props: { ...props, paragraphs: memoParagraphs(items, before[0]?.runs[0]?.format) } }))
+        const paragraphs = memoParagraphs(answer, baseFormatOf(noteStyle(props)), source.common)
+        editor.transact('箇条書きのメモにする', (tx) => tx.put({ ...current, props: { ...props, paragraphs } }))
       } catch (error) {
         notify(`メモにできませんでした：${error instanceof Error ? error.message : String(error)}`)
       } finally {

@@ -137,7 +137,7 @@ export const DEFAULT_LIST_STYLES: Record<TextListType, readonly TextListStyle[]>
   ordered: ['decimal', 'lower-alpha', 'lower-roman'],
 }
 
-const BULLET_GLYPHS: Record<BulletStyle, string> = { disc: '•', circle: '◦', square: '▪', dash: '–', check: '✓' }
+export const BULLET_GLYPHS: Record<BulletStyle, string> = { disc: '•', circle: '◦', square: '▪', dash: '–', check: '✓' }
 
 export function listTypeOfStyle(style: TextListStyle): TextListType {
   return (BULLET_STYLES as readonly string[]).includes(style) ? 'bullet' : 'ordered'

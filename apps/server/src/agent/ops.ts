@@ -15,7 +15,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, SHORTCUT_CARD_HEIGHT, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp } from '@canvcode/nodes'
+import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, hasNodeRichFormatting, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, richTextTargetOfType, SHORTCUT_CARD_HEIGHT, withRichTextMarkdown, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -66,6 +66,8 @@ const PLACE_GAP = 40
 // AI が作るテキストの既定の幅（サーバーでは文字を測れないので、幅を決めて折り返す）
 const TEXT_DEFAULT_WIDTH = 240
 const MAX_LABEL = 80
+// md（書式付きの Markdown）の長さの上限（読むのはサーバーの中なので、大きすぎるものを断る）
+const MAX_MD = 200_000
 const MAX_LISTED_IDS = 10
 
 // 作れる型（矢印は connect で作る）。card は File の種類から型を決める。slide-layout はスライドのテンプレート（template）で作る。
@@ -146,6 +148,8 @@ const place = z
 // AI に分かりやすい形の props（型ごとに、使えるものだけを本物の props に直す）
 const style = {
   text: z.string().optional(),
+  // テキスト・付箋・図形の文字を、書式付きの Markdown で（richMarkdown.ts の書き方）。text・label の代わり
+  md: z.string().max(MAX_MD).optional(),
   color: hex.optional(),
   fill: paint.optional(),
   stroke: paint.optional(),
@@ -798,6 +802,11 @@ class EditRun {
     if (node.locked && changesOtherThanLock) throw new EditError(`${nodeId} is locked. Add "locked": false to change it`)
     const def = this.editor.getType(node)
     let props = applyStyle(node.type, node.props as Record<string, unknown>, op, false)
+    // 書式のある文字を text（label）で書き換えると、書式がなくなる（md なら残せる）
+    const target = richTextTargetOfType(node.type)
+    if (target && (op.text !== undefined || op.label !== undefined) && hasNodeRichFormatting(target, node.props)) {
+      this.warnings.push(`${nodeId}: text replaced its formatted text (bold, colours, lists…) with plain text. To keep formatting, write md instead (read_nodes gives the current md)`)
+    }
     if (op.crop !== undefined) props = cropProps(nodeId, node.type, props, op.crop)
     if (op.w !== undefined || op.h !== undefined) {
       if (!def.resize) throw new EditError(`${node.type} cannot be resized`)
@@ -1272,13 +1281,10 @@ class EditRun {
     const all = this.defaults.get('*')
     if (!all && !card && !typed) return op
     const merged: Record<string, unknown> = { ...all, ...card, ...typed }
-    const aliases: [string, string][] = [['text', 'label'], ['text', 'name'], ['file', 'path'], ...(op.type === 'note' ? [['color', 'fill'] as [string, string]] : [])]
+    const aliases: string[][] = [['text', 'label', 'md'], ['text', 'name'], ['file', 'path'], ...(op.type === 'note' ? [['color', 'fill']] : [])]
     const given = op as Record<string, unknown>
-    for (const [a, b] of aliases) {
-      if (given[a] !== undefined || given[b] !== undefined) {
-        delete merged[a]
-        delete merged[b]
-      }
+    for (const names of aliases) {
+      if (names.some((name) => given[name] !== undefined)) for (const name of names) delete merged[name]
     }
     return { ...merged, ...op }
   }
@@ -1294,7 +1300,10 @@ class EditRun {
         if (key in item) throw new EditError(`items[${k}]: ${key} is set by the grid`)
       }
       const name = typeof item.as === 'string' ? item.as : as !== undefined ? `${as}.${k}` : `#${i}.${k}`
-      const parsed = opSchemas.create.safeParse({ op: 'create', ...cell, ...item, as: name, x: 0, y: 0 })
+      // 項目の文字（text・md・label）は、格子に書いた文字の代わり（別名の両方を使わない）
+      const shared: Record<string, unknown> = { ...cell }
+      if (['text', 'md', 'label'].some((key) => item[key] !== undefined)) for (const key of ['text', 'md', 'label']) delete shared[key]
+      const parsed = opSchemas.create.safeParse({ op: 'create', ...shared, ...item, as: name, x: 0, y: 0 })
       if (!parsed.success) {
         const issue = parsed.error.issues[0]!
         throw new EditError(`items[${k}]: ${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`)
@@ -1442,6 +1451,7 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
     return value as T | undefined
   }
   const text = take<string>('text')
+  const md = take<string>('md')
   const label = take<string>('label')
   const name = take<string>('name')
   const color = take<string>('color')
@@ -1554,6 +1564,15 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
         set('h', h, 'h')
       }
       break
+  }
+  // 書式付きの文字（テキスト・付箋・図形）。大きさ・色などを当てたあとの既定に対して読む（既定と同じ値は持たない）
+  const target = md === undefined ? undefined : richTextTargetOfType(type)
+  if (md !== undefined && target) {
+    if (text !== undefined || label !== undefined) throw new EditError(`give either md or ${text !== undefined ? 'text' : 'label'}`)
+    const parsed = withRichTextMarkdown(target, props, md)
+    if (parsed.issues.length) throw new EditError(`md: ${parsed.issues.join('; ')}`)
+    Object.assign(props, parsed.props)
+    accepted.add('md')
   }
   const rejected = [...used].filter((field) => !accepted.has(field))
   if (rejected.length) throw new EditError(`${rejected.join(', ')} ${rejected.length > 1 ? 'are' : 'is'} not supported for ${type}`)

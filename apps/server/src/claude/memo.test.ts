@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DEFAULT_MEMO_MODEL, handleMemo, MAX_RUNNING_MEMOS, MemoWriter, parseMemo, type MemoQuery } from './memo.ts'
+import { DEFAULT_MEMO_MODEL, handleMemo, MAX_RUNNING_MEMOS, memoItems, MemoWriter, parseMemo, type MemoQuery } from './memo.ts'
 
 // 付箋の文字を箇条書きのメモにする
 
@@ -37,40 +37,47 @@ const hanging: MemoQuery = ({ options }) =>
     yield success('')
   })()
 
+// 箇条書きの段落（level の深さの、書式のない文字 1 つ）
+const item = (text: string, level = 0) => ({ runs: [{ text }], list: { type: 'bullet', level } })
+
 describe('parseMemo', () => {
-  it('「- 」の行を項目にし、字下げ 2 つで 1 段深くする', () => {
+  it('「- 」の行を項目にし、字下げで 1 段深くする', () => {
     expect(parseMemo('- 受信側も AI を使う\n  - 送信側も AI で喋る\n  - 受信側も AI で喋る\n- 人間の役割は何か')).toEqual([
-      { text: '受信側も AI を使う', level: 0 },
-      { text: '送信側も AI で喋る', level: 1 },
-      { text: '受信側も AI で喋る', level: 1 },
-      { text: '人間の役割は何か', level: 0 },
+      item('受信側も AI を使う'),
+      item('送信側も AI で喋る', 1),
+      item('受信側も AI で喋る', 1),
+      item('人間の役割は何か'),
     ])
   })
 
-  it('前置き・コードブロック・空の行は捨て、ほかの記号の箇条書きと太字も読む', () => {
-    expect(parseMemo('以下がメモです：\n```\n* **送信側**も AI\n\n・受信側も AI\n1. 順番\n```')).toEqual([
-      { text: '送信側も AI', level: 0 },
-      { text: '受信側も AI', level: 0 },
-      { text: '順番', level: 0 },
+  it('前置き・コードブロックの行・空の行は捨て、ほかの記号の箇条書きを読み、書式は残す', () => {
+    expect(parseMemo('以下がメモです：\n```\n* **送信側**も AI\n\n・受信側も [AI]{color=#e03131}\n1. 順番\n```')).toEqual([
+      { runs: [{ text: '送信側', format: { fontWeight: 700 } }, { text: 'も AI' }], list: { type: 'bullet', level: 0 } },
+      { runs: [{ text: '受信側も ' }, { text: 'AI', format: { color: '#e03131' } }], list: { type: 'bullet', level: 0 } },
+      item('順番'),
     ])
   })
 
   it('前の項目より 2 段以上深くせず、3 段より深くもしない', () => {
-    expect(parseMemo('    - いきなり深い\n- 外\n  - 1 段\n    - 2 段\n      - 3 段')).toEqual([
-      { text: 'いきなり深い', level: 0 },
-      { text: '外', level: 0 },
-      { text: '1 段', level: 1 },
-      { text: '2 段', level: 2 },
-      { text: '3 段', level: 2 },
-    ])
+    expect(parseMemo('    - いきなり深い\n- 外\n  - 1 段\n    - 2 段\n      - 3 段')).toEqual([item('いきなり深い'), item('外'), item('1 段', 1), item('2 段', 2), item('3 段', 2)])
   })
 
   it('「-5 度」「3.5 倍」のような行は箇条書きと読まない。箇条書きが 1 つもなければ、行をそのまま項目にする', () => {
-    expect(parseMemo('-5 度まで下がる\n3.5 倍になった')).toEqual([
-      { text: '-5 度まで下がる', level: 0 },
-      { text: '3.5 倍になった', level: 0 },
-    ])
+    expect(parseMemo('-5 度まで下がる\n3.5 倍になった')).toEqual([item('-5 度まで下がる'), item('3.5 倍になった')])
     expect(parseMemo('\n\n')).toEqual([])
+  })
+
+  it('全角の句読点・空白の記号と、空白のない「•」も箇条書きと読む', () => {
+    expect(parseMemo('1．一つ目\n2）二つ目\n-\u3000三つ目\n•四つ目')).toEqual([item('一つ目'), item('二つ目'), item('三つ目'), item('四つ目')])
+    // 番号は、どこから始まっていても箇条書きにする（「3.5 倍」は番号ではないので、項目があれば前置きと同じく捨てる）
+    expect(parseMemo('2. 二つ目から\n   (3) 三つ目\n①丸\n3.5 倍')).toEqual([item('二つ目から'), item('三つ目', 1), item('丸')])
+  })
+
+  it('前の画面には、項目の文字と深さを返す', () => {
+    expect(memoItems(parseMemo('- **a** b\n  - c'))).toEqual([
+      { text: 'a b', level: 0 },
+      { text: 'c', level: 1 },
+    ])
   })
 })
 
@@ -78,7 +85,7 @@ describe('MemoWriter', () => {
   it('既定のモデル（Sonnet）を、ツール・MCP・設定なし、会話を残さず、1 ターンだけ動かす', async () => {
     const calls: { prompt: string; options: Options }[] = []
     const memo = new MemoWriter({ run: answering('- 項目', calls) })
-    expect(await memo.write('えっと、項目です')).toEqual([{ text: '項目', level: 0 }])
+    expect(await memo.write('えっと、項目です')).toEqual([item('項目')])
     expect(calls).toHaveLength(1)
     const { prompt, options } = calls[0]!
     expect(prompt).toContain('<text>\nえっと、項目です\n</text>')
@@ -139,22 +146,27 @@ describe('POST /api/claude/memo', () => {
 
   const post = (url: string, body: string, type = 'application/json') => fetch(url, { method: 'POST', headers: { 'content-type': type }, body })
 
-  it('文章を項目の並びにして返す', async () => {
-    const url = await start(new MemoWriter({ run: answering('- 送信側も AI\n  - 喋る') }))
-    const response = await post(url, JSON.stringify({ text: '  送信側もAI使ってしゃぶるし  ' }))
+  it('Markdown の文章を、書式付きの箇条書きの段落にして返す（前の画面の text と items も）', async () => {
+    const calls: { prompt: string; options: Options }[] = []
+    const url = await start(new MemoWriter({ run: answering('- **送信側**も AI\n  - 喋る', calls) }))
+    const response = await post(url, JSON.stringify({ markdown: '  **送信側**もAI使ってしゃぶるし  ' }))
     expect(response.status).toBe(200)
+    expect(calls[0]!.prompt).toContain('<text>\n**送信側**もAI使ってしゃぶるし\n</text>')
     expect(await response.json()).toEqual({
+      paragraphs: [{ runs: [{ text: '送信側', format: { fontWeight: 700 } }, { text: 'も AI' }], list: { type: 'bullet', level: 0 } }, item('喋る', 1)],
       items: [
         { text: '送信側も AI', level: 0 },
         { text: '喋る', level: 1 },
       ],
     })
+    expect((await post(url, JSON.stringify({ text: 'a' }))).status).toBe(200)
   })
 
-  it('JSON でない・text がない・長すぎる・GET は断る', async () => {
+  it('JSON でない・markdown がない・長すぎる・GET は断る', async () => {
     const url = await start(new MemoWriter({ run: answering('- a') }))
     expect((await post(url, 'text=a', 'application/x-www-form-urlencoded')).status).toBe(415)
-    expect((await post(url, JSON.stringify({ text: '  ' }))).status).toBe(400)
+    expect((await post(url, JSON.stringify({ markdown: '  ' }))).status).toBe(400)
+    expect((await post(url, JSON.stringify({}))).status).toBe(400)
     expect((await post(url, '{')).status).toBe(400)
     expect((await post(url, JSON.stringify({ text: 'あ'.repeat(20_001) }))).status).toBe(413)
     expect((await fetch(url)).status).toBe(405)

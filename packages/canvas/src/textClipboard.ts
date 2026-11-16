@@ -16,7 +16,8 @@ import { decodeBase64, encodeBase64 } from './clipboard.ts'
 // 書式は既定に重ねた実際の値（resolveRichText）で載せ、貼り付け先で、その既定と同じ値を落とす。
 // text/html には、ほかのアプリでも色・大きさ・フォント・太字などの装飾（MAI-79）が残るよう style を付けた HTML を載せ、アプリ内の形式も属性に入れておく。
 // リストの段落（MAI-78）は、ほかのアプリでもリストになるよう ul / ol と li にする（階層は入れ子。記号の形は list-style-type で、
-// CSS で表せない形（1) (1) ①）は 1. にする）。text/plain には記号・番号と、階層ごとに 2 つの空白を付ける
+// CSS で表せない形（1) (1) ①）は 1. にする）。plain（記号・番号と、階層ごとに 2 つの空白を付けたプレーンテキスト）は、書式もリストもない文字の text/plain。
+// 書式かリストがあれば、編集中のコピーは text/plain に Markdown（richMarkdown.ts）を載せる（textEditor.ts）
 
 export const TEXT_CLIPBOARD_MIME = 'application/x-canvcode-text+json'
 const HTML_ATTRIBUTE = 'data-canvcode-text'

@@ -1,7 +1,8 @@
 import type { NodeRecord } from '@canvcode/core'
 import { geoLabelParagraphs, geoLabelStyle, withGeoLabel, type GeoProps } from '../geo.ts'
-import type { TextStyle } from './layout.ts'
+import { baseFormatOf, type TextStyle } from './layout.ts'
 import { noteStyle, type NoteProps } from './noteNode.ts'
+import { hasRichFormatting, parseRichMarkdown, richTextToMarkdown, standardMarkdownOf } from './richMarkdown.ts'
 import { paragraphsOf, type TextParagraph } from './richText.ts'
 import { textStyle, type TextProps } from './textNode.ts'
 
@@ -57,7 +58,35 @@ const RICH_TEXT_TARGETS: Record<string, RichTextTarget> = {
 }
 
 export function richTextTargetOf(node: NodeRecord | undefined): RichTextTarget | undefined {
-  return node ? RICH_TEXT_TARGETS[node.type] : undefined
+  return node ? richTextTargetOfType(node.type) : undefined
+}
+
+export function richTextTargetOfType(type: string): RichTextTarget | undefined {
+  return Object.hasOwn(RICH_TEXT_TARGETS, type) ? RICH_TEXT_TARGETS[type] : undefined
+}
+
+// ---- Markdown（richMarkdown.ts）との行き来。MCP（edit_canvas の md・read_nodes）・コピー・貼り付けで使う ----
+
+// ノードの文字の Markdown（ノードの既定の書式と同じ値は書かない）
+export function richTextMarkdownOf(target: RichTextTarget, props: object): string {
+  return richTextToMarkdown(target.paragraphs(props), { base: baseFormatOf(target.style(props)) })
+}
+
+// ほかのアプリへ渡すノードの文字（普通の Markdown。太字・斜体・取り消し線・等幅・リストがなければ null。standardMarkdownOf）
+export function standardMarkdownOfNode(target: RichTextTarget, props: object): string | null {
+  return standardMarkdownOf(target.paragraphs(props), baseFormatOf(target.style(props)))
+}
+
+// ノードの文字が、既定から変えた書式かリストを持つか（持たなければプレーンテキストと同じ）
+export function hasNodeRichFormatting(target: RichTextTarget, props: object): boolean {
+  return hasRichFormatting(target.paragraphs(props), baseFormatOf(target.style(props)))
+}
+
+// Markdown を、ノードの文字にした props。ノードの既定の書式（props の大きさ・色など）と同じ値は持たない。
+// issues は読めなかった書式の指定（parseRichMarkdown）
+export function withRichTextMarkdown(target: RichTextTarget, props: object, markdown: string): { props: object; issues: string[] } {
+  const { paragraphs, issues } = parseRichMarkdown(markdown, { base: baseFormatOf(target.style(props)) })
+  return { props: target.withParagraphs(props, paragraphs), issues }
 }
 
 export function hasRichText(node: NodeRecord | undefined): boolean {

@@ -342,6 +342,7 @@ describe('rich text editing (MAI-74)', () => {
     const copy = clipboardEvent('copy')
     element.dispatchEvent(copy.event)
     expect(copy.event.defaultPrevented).toBe(true)
+    // ほかのアプリへは、色・大きさを渡さない（普通の Markdown にない）
     expect(copy.store['text/plain']).toBe('ig r')
     expect(copy.store[TEXT_CLIPBOARD_MIME]).toBeTruthy()
     expect(copy.store['text/html']).toContain('font-size: 40px')
@@ -605,7 +606,7 @@ describe('lists (MAI-78)', () => {
     setCaret(nodes[0], 0, nodes[3], 3)
     const copy = clipboardEvent('copy')
     element.dispatchEvent(copy.event)
-    expect(copy.store['text/plain']).toBe('1. one\n  ◦ sub\n2. two\nend')
+    expect(copy.store['text/plain']).toBe('1. one\n   - sub\n2. two\nend')
     const html = copy.store['text/html'].replace(/ style="[^"]*"/g, '')
     expect(html).toContain('<ol><li><span>one</span><ul><li><span>sub</span></li></ul></li><li><span>two</span></li></ol><p><span>end</span></p>')
 
@@ -772,6 +773,192 @@ describe('bold, italic, underline and strikethrough (MAI-79)', () => {
     setCaret(textNodes(element)[0], 2)
     element.dispatchEvent(clipboardEvent('paste', store).event)
     expect(runsOf(editor, text.id)).toEqual([[{ text: 'abab', format: { fontWeight: 700, underline: true } }]])
+    textEditor.finish()
+  })
+})
+
+describe('Markdown while editing (paste, copy, typing)', () => {
+  const RED = { color: '#e03131' }
+
+  it('reads pasted text as Markdown, under the format at the caret, and keeps a trailing newline as a paragraph', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'x', format: { fontSize: 20 } }] }], { fontSize: 16 })
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 1)
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': '**a** [b]{color=#e03131}\n- c\n' }).event)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([
+      { runs: [{ text: 'x', format: { fontSize: 20 } }, { text: 'a', format: { fontSize: 20, fontWeight: 700 } }, { text: ' ', format: { fontSize: 20 } }, { text: 'b', format: { fontSize: 20, ...RED } }] },
+      { runs: [{ text: 'c', format: { fontSize: 20 } }], list: { type: 'bullet', level: 0 } },
+      { runs: [{ text: '', format: { fontSize: 20 } }] },
+    ])
+    textEditor.finish()
+  })
+
+  it('pastes as plain text with Ctrl+Shift+V, even when the clipboard has formatted text', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'x')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 1)
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, bubbles: true }))
+    const json = JSON.stringify({ kind: 'canvcode/text', version: 1, paragraphs: [{ runs: [{ text: 'rich', format: RED }] }] })
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': '**a**', [TEXT_CLIPBOARD_MIME]: json }).event)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'x**a**' }] }])
+    // 次の貼り付けは、また Markdown として読む
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true }))
+    setCaret(textNodes(element)[0], 0)
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': '*i*' }).event)
+    expect(propsOf(editor, text.id).paragraphs[0]!.runs[0]).toEqual({ text: 'i', format: { italic: true } })
+    textEditor.finish()
+  })
+
+  it('copies plain text without Markdown escapes', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'a*b_c')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const node = textNodes(element)[0]
+    setCaret(node, 0, node, 5)
+    const copy = clipboardEvent('copy')
+    element.dispatchEvent(copy.event)
+    expect(copy.store['text/plain']).toBe('a*b_c')
+    textEditor.finish()
+  })
+
+  it('turns typed **bold** into bold, undoes to the typed text, and types on without bold', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'これは **重要*')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    typeInto(element, textNodes(element)[0], 'これは **重要*'.length, '*')
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'これは ' }, { text: '重要', format: { fontWeight: 700 } }] }])
+    // 書式にした文字のあとに打つ文字は、太字にしない
+    expect(textEditor.selectionFormats().map((format) => format.bold)).toEqual([false])
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'これは **重要**' }] }])
+    textEditor.finish()
+  })
+
+  it('turns typed [text]{attributes}, ~~strike~~ and `code` into formats, and leaves snake_case alone', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, '[予算]{color=#e03131 ~~旧~ `npm snake_case')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    typeInto(element, textNodes(element)[0], '[予算]{color=#e03131'.length, '}')
+    expect(propsOf(editor, text.id).paragraphs[0]!.runs).toEqual([{ text: '予算', format: RED }, { text: ' ~~旧~ `npm snake_case' }])
+    // 最後のテキストノード（書式のない部分）の中で、needle の後ろに打つ
+    const typeAfter = (needle: string, value: string) => {
+      const node = textNodes(element).at(-1)!
+      typeInto(element, node, node.data.indexOf(needle) + needle.length, value)
+    }
+    typeAfter('~~旧~', '~')
+    typeAfter('`npm', '`')
+    typeAfter('snake_case', '_')
+    expect(propsOf(editor, text.id).paragraphs[0]!.runs).toEqual([
+      { text: '予算', format: RED },
+      { text: ' ' },
+      { text: '旧', format: { strikethrough: true } },
+      { text: ' ' },
+      { text: 'npm', format: { fontFamily: 'monospace' } },
+      { text: ' snake_case_' },
+    ])
+    textEditor.finish()
+  })
+})
+
+describe('Markdown paste details (review)', () => {
+  it('makes the paragraph a list when the first pasted line is an item at the start of a paragraph, and keeps the marker as text in the middle', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'tail')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 0)
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': '- a\n- b ' }).event)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([
+      { runs: [{ text: 'a' }], list: { type: 'bullet', level: 0 } },
+      { runs: [{ text: 'b tail' }], list: { type: 'bullet', level: 0 } },
+    ])
+    textEditor.finish()
+
+    const middle = makeText(editor, 'xy')
+    textEditor.start(middle.id)
+    const other = editingElement(layer)
+    setCaret(textNodes(other)[0], 1)
+    other.dispatchEvent(clipboardEvent('paste', { 'text/plain': '- a\n- **b**' }).event)
+    expect(propsOf(editor, middle.id).paragraphs).toEqual([
+      { runs: [{ text: 'x- a' }] },
+      { runs: [{ text: 'b', format: { fontWeight: 700 } }, { text: 'y' }], list: { type: 'bullet', level: 0 } },
+    ])
+    textEditor.finish()
+  })
+
+  it('pastes text without any Markdown format as it is (backslashes, numbers, code)', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, '')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    const value = 'def __init__(self): return a*b*c  # C:\\\\server\\share\\*.log\n3. step'
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': value }).event)
+    expect(plainTextOf(propsOf(editor, text.id).paragraphs)).toBe(value)
+    textEditor.finish()
+  })
+
+  it('forgets Ctrl+Shift+V when no paste followed it', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'x')
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    setCaret(textNodes(element)[0], 1)
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, bubbles: true }))
+    element.dispatchEvent(new KeyboardEvent('keyup', { key: 'V', code: 'KeyV', bubbles: true }))
+    element.dispatchEvent(clipboardEvent('paste', { 'text/plain': '**a**' }).event)
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'x' }, { text: 'a', format: { fontWeight: 700 } }] }])
+    textEditor.finish()
+  })
+
+  it('does not turn markers typed inside monospace text into formats', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: 'x *b', format: { fontFamily: 'monospace' } }] }])
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    typeInto(element, textNodes(element)[0], 4, '*')
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'x *b*', format: { fontFamily: 'monospace' } }] }])
+    textEditor.finish()
+  })
+})
+
+describe('typing a heading', () => {
+  it('turns "# " at the start of a paragraph into a heading, undoes to the typed text, and Enter at its end goes back to normal text', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, 'a\n#Title', { fontSize: 20 })
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    typeInto(element, textNodes(element)[1], 1, ' ')
+    // 20 × 1.6 = 32
+    const heading = { fontWeight: 700, fontSize: 32 }
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'a' }] }, { runs: [{ text: 'Title', format: heading }] }])
+    const title = textNodes(element)[1]
+    setCaret(title, title.length)
+    beforeInput(element, 'insertParagraph')
+    expect(propsOf(editor, text.id).paragraphs).toEqual([{ runs: [{ text: 'a' }] }, { runs: [{ text: 'Title', format: heading }] }, { runs: [{ text: '' }] }])
+    expect(textEditor.selectionFormats().map((format) => [format.bold, format.fontSize])).toEqual([[false, 20]])
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))
+    expect(plainTextOf(propsOf(editor, text.id).paragraphs)).toBe('a\n# Title')
+    textEditor.finish()
+  })
+
+  it('takes a full-width ＃ and space, and does not change list items or text after other characters', () => {
+    const { editor, layer, textEditor } = setup()
+    const text = makeText(editor, [{ runs: [{ text: '＃＃' }] }, { runs: [{ text: '#' }], list: { type: 'bullet', level: 0 } }, { runs: [{ text: 'x#' }] }], { fontSize: 20 })
+    textEditor.start(text.id)
+    const element = editingElement(layer)
+    typeInto(element, textNodes(element)[0], 2, '\u3000')
+    expect(propsOf(editor, text.id).paragraphs[0]).toEqual({ runs: [{ text: '', format: { fontWeight: 700, fontSize: 27 } }] })
+    typeInto(element, textNodes(element)[0], 1, ' ')
+    typeInto(element, textNodes(element)[1], 2, ' ')
+    expect(propsOf(editor, text.id).paragraphs.slice(1)).toEqual([{ runs: [{ text: '# ' }], list: { type: 'bullet', level: 0 } }, { runs: [{ text: 'x# ' }] }])
     textEditor.finish()
   })
 })
