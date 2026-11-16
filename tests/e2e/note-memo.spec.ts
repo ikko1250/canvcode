@@ -1,13 +1,13 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// 付箋の右クリックの「箇条書きのメモにする」：サーバー（/api/claude/memo。ここでは差し替え）の項目で、付箋の文字が箇条書きに置き換わり、
-// Undo 1 回で元に戻る。待っている間に付箋を書き換えたら、置き換えない
+// 付箋の右クリックの「箇条書きのメモにする」：付箋の文字を Markdown でサーバー（/api/claude/memo。ここでは差し替え）に渡し、
+// 答えの書式付きの段落で、付箋の文字が箇条書きに置き換わり、Undo 1 回で元に戻る。待っている間に付箋を書き換えたら、置き換えない
 
 const SPOKEN = 'そりゃ受け手の方もAIを使うでしょ。えっと、送信側もAI使って喋るし、受信側もAI使って喋るし。'
-const ITEMS = [
-  { text: '受け手も AI を使う', level: 0 },
-  { text: '送信側も AI で喋る', level: 1 },
-  { text: '受信側も AI で喋る', level: 1 },
+const PARAGRAPHS = [
+  { runs: [{ text: '受け手も ' }, { text: 'AI', format: { fontWeight: 700 } }, { text: ' を使う' }], list: { type: 'bullet', level: 0 } },
+  { runs: [{ text: '送信側も AI で喋る' }], list: { type: 'bullet', level: 1 } },
+  { runs: [{ text: '受信側も AI で喋る' }], list: { type: 'bullet', level: 1 } },
 ]
 
 async function openApp(page: Page, memo: Parameters<Page['route']>[1]): Promise<string> {
@@ -52,11 +52,12 @@ test('付箋の文字を箇条書きのメモに置き換え、Undo で戻す', 
   let sent: unknown
   const noteId = await openApp(page, async (route) => {
     sent = route.request().postDataJSON()
-    await route.fulfill({ json: { items: ITEMS } })
+    await route.fulfill({ json: { paragraphs: PARAGRAPHS } })
   })
   await chooseFromNoteMenu(page, noteId, '箇条書きのメモにする')
-  await expect.poll(() => paragraphsOf(page, noteId)).toEqual(ITEMS.map((item) => ({ runs: [{ text: item.text }], list: { type: 'bullet', level: item.level } })))
-  expect(sent).toEqual({ text: SPOKEN })
+  await expect.poll(() => paragraphsOf(page, noteId)).toEqual(PARAGRAPHS)
+  // text は前のサーバーのため（プレーンテキスト）
+  expect(sent).toEqual({ markdown: SPOKEN, text: SPOKEN })
   await page.keyboard.press('Control+z')
   await expect.poll(() => paragraphsOf(page, noteId)).toEqual([{ runs: [{ text: SPOKEN }] }])
 })
@@ -65,7 +66,7 @@ test('待っている間に付箋を書き換えたら置き換えず、失敗�
   let answer: (() => void) | undefined
   const noteId = await openApp(page, async (route) => {
     await new Promise<void>((resolve) => (answer = resolve))
-    await route.fulfill({ json: { items: ITEMS } })
+    await route.fulfill({ json: { paragraphs: PARAGRAPHS } })
   })
   await chooseFromNoteMenu(page, noteId, '箇条書きのメモにする')
   await expect.poll(() => Boolean(answer)).toBe(true)
@@ -83,4 +84,28 @@ test('待っている間に付箋を書き換えたら置き換えず、失敗�
   await chooseFromNoteMenu(page, noteId, '箇条書きのメモにする')
   await expect(page.getByText('メモにできませんでした：メモにするのに時間がかかりすぎたので、止めました')).toBeVisible()
   expect(await paragraphsOf(page, noteId)).toEqual([{ runs: [{ text: '書き換えた' }] }])
+})
+
+test('付箋の書式を Markdown で渡し、付箋全体に共通の書式は答えに重ねる', async ({ page }) => {
+  let sent: unknown
+  const noteId = await openApp(page, async (route) => {
+    sent = route.request().postDataJSON()
+    await route.fulfill({ json: { paragraphs: [{ runs: [{ text: '受け手も ' }, { text: 'AI', format: { fontWeight: 700 } }], list: { type: 'bullet', level: 0 } }] } })
+  })
+  // 付箋全体を青にし、「AI」だけ太字にする
+  const blue = { color: '#1971c2' }
+  await page.evaluate(
+    ({ id, blue }) => {
+      const editor = (window as any).canvcode.editor
+      const node = editor.getNode(id)
+      const paragraphs = [{ runs: [{ text: 'そりゃ受け手の方も', format: blue }, { text: 'AI', format: { ...blue, fontWeight: 700 } }, { text: 'を使うでしょ', format: blue }] }]
+      editor.transact('edit', (tx: any) => tx.put({ ...node, props: { ...node.props, paragraphs } }))
+    },
+    { id: noteId, blue },
+  )
+  await chooseFromNoteMenu(page, noteId, '箇条書きのメモにする')
+  await expect
+    .poll(() => paragraphsOf(page, noteId))
+    .toEqual([{ runs: [{ text: '受け手も ', format: blue }, { text: 'AI', format: { ...blue, fontWeight: 700 } }], list: { type: 'bullet', level: 0 } }])
+  expect(sent).toEqual({ markdown: 'そりゃ受け手の方も**AI**を使うでしょ', text: 'そりゃ受け手の方もAIを使うでしょ' })
 })

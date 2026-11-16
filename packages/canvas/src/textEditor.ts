@@ -9,10 +9,15 @@ import {
   formatAt,
   formatOfCharAt,
   formatsInRange,
+  headingShortcutDepth,
   indentList,
+  isMarkdownHeadingFormat,
   layoutRichText,
   listOf,
   listShortcut,
+  MARKDOWN_CODE_FONT,
+  markdownHeadingFormat,
+  markdownShortcutAt,
   normalizeRichText,
   paragraphIndexesInRange,
   paragraphText,
@@ -20,8 +25,10 @@ import {
   replaceRange,
   resolveFormat,
   resolveRichText,
+  richTextFromPaste,
   richTextFromPlain,
   richTextLength,
+  standardMarkdownOf,
   sliceRichText,
   textDecorations,
   toggledValue,
@@ -65,6 +72,15 @@ import { TEXT_CLIPBOARD_MIME, parseTextClipboard, textClipboardData } from './te
 //   カーソルだけなら、次に打つ文字の書式として覚えておき（pending）、カーソルが動いたら捨てる（一般的なエディタと同じ）
 // - 下線・取り消し線は CSS の text-decoration を使わず、Canvas と同じ線（layout.ts の textDecorations）を、
 //   編集用の要素に重ねた要素（decorations）に描く
+// Markdown（richMarkdown.ts の「付箋の Markdown」）：
+// - 閉じる記号を打つと、打った **太字**・*斜体*・~~取り消し線~~・`等幅`・[文字]{color=…} を書式にする（記号を消す。Undo 1 回で打った文字に戻る）。
+//   段落の頭で「# 」〜「###### 」（全角の ＃ と空白も）と打つと、その段落を見出しの書式（太字と大きさ）にする。見出しの終わりの Enter で、次の段落は普通の文字に戻す
+//   書式にした文字のあとに打つ文字は、記号の前の文字の書式に戻す（pending）。IME の変換中は変えない
+// - 貼り付けた文字（アプリ内の形式がないとき）は Markdown として読む（書式もリストもなければ、そのままの文字）。
+//   段落の途中に貼るときは、最初の行をリストとして読まない。Ctrl（⌘）+Shift+V なら書式なしの文字として貼る
+// - コピーしたとき、ほかのアプリへ渡す文字（text/plain）は、太字・斜体・取り消し線・等幅・リストがあれば普通の Markdown、
+//   なければプレーンテキスト（色・大きさなどは、アプリ内の形式と HTML で渡す）
+// - 等幅の文字の中で打った記号は、書式にしない
 // 範囲ごとの書式を持たない型（図形のラベルなど）も同じ要素で編集し、プレーンテキストとしてノードに入れる
 
 export interface TextEditorOptions {
@@ -135,6 +151,8 @@ export class TextEditor {
   private readonly options: TextEditorOptions
   private session: Session | null = null
   private finishing = false
+  // Ctrl（⌘）+Shift+V を押した（次の貼り付けを書式なしの文字にする）
+  private plainPaste = false
   private selectionSnapshot: TextSelection | null = null
   private readonly selectionListeners = new Set<() => void>()
 
@@ -188,6 +206,10 @@ export class TextEditor {
     element.addEventListener('beforeinput', (e) => this.onBeforeInput(e as InputEvent))
     element.addEventListener('input', (e) => this.onInput(e as InputEvent))
     element.addEventListener('keydown', (e) => this.onKeyDown(e))
+    // Ctrl+Shift+V の印は、そのキーの貼り付けにだけ使う（貼り付けが起きなかったときに、あとの貼り付けまで残さない）
+    element.addEventListener('keyup', () => {
+      this.plainPaste = false
+    })
     element.addEventListener('blur', (e) => this.onBlur(e))
     element.addEventListener('compositionstart', () => this.onCompositionStart())
     element.addEventListener('compositionend', () => this.onCompositionEnd())
@@ -237,6 +259,7 @@ export class TextEditor {
 
   finish(): void {
     const session = this.session
+    this.plainPaste = false
     if (!session || this.finishing) return
     this.finishing = true
     try {
@@ -655,18 +678,23 @@ export class TextEditor {
         this.edit('list', (paragraphs) => (list.level > 0 ? indentList(paragraphs, range, -1) : paragraphs.map((p, i) => (i === at.index ? withList(p, undefined) : p))), range)
         return
       }
-      // 新しい段落は、分けた段落の属性を引き継ぐ（箇条書きなど。MAI-78）
+      // 新しい段落は、分けた段落の属性を引き継ぐ（箇条書きなど。MAI-78）。見出しの終わりで分けたら、次の段落は見出しの書式にしない
+      const plainNext = at && spec.rich ? this.afterHeading(at, range.start) : null
       this.replaceSelection('paragraph', (paragraphs, r) => {
         const at = sliceRichText(paragraphs, r.start, r.start)[0]
         return [
           { ...at, runs: [] },
-          { ...at, runs: [] },
+          { ...at, runs: plainNext ? [plainNext] : [] },
         ]
       })
       return
     }
     if (type === 'insertText' || type === 'insertReplacementText') {
-      if (collapsed && type === 'insertText' && e.data === ' ' && spec.rich && this.convertToList(range.start)) {
+      if (collapsed && type === 'insertText' && spec.rich && ((e.data === ' ' && this.convertToList(range.start)) || ((e.data === ' ' || e.data === '\u3000') && this.convertToHeading(range.start, e.data)))) {
+        e.preventDefault()
+        return
+      }
+      if (collapsed && type === 'insertText' && e.data && spec.rich && this.convertMarkdownShortcut(range.start, e.data)) {
         e.preventDefault()
         return
       }
@@ -760,6 +788,87 @@ export class TextEditor {
     return true
   }
 
+  // 段落の頭に「# 」などを打った：記号を消して、段落を見出しの書式にする（richMarkdown.ts の markdownHeadingFormat）。変えなければ false。
+  // リストの段落では変えない。Undo で、空白まで打った文字に戻れるようにする
+  private convertToHeading(caret: number, space: string): boolean {
+    const session = this.session!
+    const spec = this.currentSpec()
+    if (!spec?.rich) return false
+    const at = this.paragraphAt(caret)
+    if (listOf(at.paragraph)) return false
+    const depth = headingShortcutDepth(paragraphText(at.paragraph).slice(0, caret - at.start))
+    if (depth === 0) return false
+    const base = baseFormat(spec.style)
+    const heading = markdownHeadingFormat(depth, base)
+    const typed = replaceRange(session.paragraphs, caret, caret, richTextFromPlain(space, formatAt(session.paragraphs, caret)), base)
+    this.pushUndo('typing')
+    session.undo.push({ paragraphs: typed, selection: { start: caret + 1, end: caret + 1 } })
+    session.redo = []
+    session.lastEdit = null
+    const removed = replaceRange(session.paragraphs, at.start, caret, [], base)
+    // 段落の文字（空なら、そこで打つ文字の書式）を見出しの書式にする
+    const formatted = removed.map((paragraph, i) =>
+      i === at.index
+        ? {
+            ...paragraph,
+            runs: paragraph.runs.map((run) => {
+              const format = cleanFormat({ ...run.format, ...heading })
+              return format ? { text: run.text, format } : { text: run.text }
+            }),
+          }
+        : paragraph,
+    )
+    this.commit(normalizeRichText(formatted, base))
+    this.rerender()
+    this.select(at.start, at.start)
+    return true
+  }
+
+  // 見出しの書式の段落の終わりで Enter を押したときの、次の段落の空の run（見出しの書式を外したもの）。見出しでなければ null
+  private afterHeading(at: { paragraph: TextParagraph; start: number }, caret: number): TextParagraph['runs'][number] | null {
+    const spec = this.currentSpec()
+    if (!spec?.rich) return null
+    const text = paragraphText(at.paragraph)
+    if (text === '' || caret !== at.start + text.length) return null
+    const base = baseFormat(spec.style)
+    const runs = at.paragraph.runs.filter((run) => run.text !== '')
+    if (!runs.every((run) => isMarkdownHeadingFormat(resolveFormat(base, run.format), base))) return null
+    const format = cleanFormat({ ...formatAt(this.session!.paragraphs, caret), fontWeight: undefined, fontSize: undefined, bold: undefined })
+    return format ? { text: '', format } : { text: '' }
+  }
+
+  // 閉じる記号を打った：**太字** などの記号を消して、中身を書式にする（richMarkdown.ts の markdownShortcutAt）。変えなければ false。
+  // Undo で、記号まで打った文字に戻れるようにする。書式にした文字のあとに打つ文字は、開く記号の前の文字の書式に戻す
+  private convertMarkdownShortcut(caret: number, typed: string): boolean {
+    if (!/^[*~`}]$/.test(typed)) return false
+    const session = this.session!
+    const spec = this.currentSpec()
+    if (!spec?.rich || this.typingFormat(caret)?.fontFamily === MARKDOWN_CODE_FONT) return false
+    const at = this.paragraphAt(caret)
+    const shortcut = markdownShortcutAt(paragraphText(at.paragraph).slice(0, caret - at.start) + typed)
+    if (!shortcut) return false
+    const base = baseFormat(spec.style)
+    const typedParagraphs = replaceRange(session.paragraphs, caret, caret, richTextFromPlain(typed, this.typingFormat(caret)), base)
+    const offset = (n: number) => at.start + n
+    const before = formatAt(typedParagraphs, offset(shortcut.start))
+    let next = applyRunFormat(typedParagraphs, offset(shortcut.innerStart), offset(shortcut.innerEnd), shortcut.format, base)
+    next = replaceRange(next, offset(shortcut.innerEnd), offset(shortcut.end), [], base)
+    next = replaceRange(next, offset(shortcut.start), offset(shortcut.innerStart), [], base)
+    this.pushUndo('typing')
+    session.undo.push({ paragraphs: typedParagraphs, selection: { start: caret + 1, end: caret + 1 } })
+    session.redo = []
+    session.lastEdit = null
+    this.commit(next)
+    this.rerender()
+    const end = offset(shortcut.innerEnd) - (shortcut.innerStart - shortcut.start)
+    this.select(end, end)
+    const patch: TextRunFormatPatch = {}
+    for (const key of Object.keys(shortcut.format) as (keyof TextRunFormat)[]) (patch as Record<string, unknown>)[key] = before?.[key]
+    session.pending = { at: end, patch }
+    this.notifySelection()
+    return true
+  }
+
   // Tab / Shift+Tab：選んでいる段落のうち、リストの段落の階層を上げ下げする（MAI-78）
   private indentSelection(delta: number): void {
     const session = this.session
@@ -828,8 +937,10 @@ export class TextEditor {
     e.preventDefault()
     if (range.start === range.end) return
     const slice = sliceRichText(session.paragraphs, range.start, range.end)
-    const data = textClipboardData(resolveRichText(slice, baseFormat(spec.style)))
-    e.clipboardData.setData('text/plain', data.plain)
+    const base = baseFormat(spec.style)
+    const data = textClipboardData(resolveRichText(slice, base))
+    // ほかのアプリへ渡す文字：太字・斜体・取り消し線・等幅・リストがあれば普通の Markdown、なければプレーンテキスト
+    e.clipboardData.setData('text/plain', (spec.rich ? standardMarkdownOf(slice, base) : null) ?? data.plain)
     if (spec.rich) {
       e.clipboardData.setData(TEXT_CLIPBOARD_MIME, data.json)
       e.clipboardData.setData('text/html', data.html)
@@ -842,21 +953,48 @@ export class TextEditor {
     const spec = this.currentSpec()
     if (!session || !spec || !e.clipboardData) return
     e.preventDefault()
+    const plainOnly = this.plainPaste
+    this.plainPaste = false
     const data = e.clipboardData
-    const rich = spec.rich ? parseTextClipboard({ json: data.getData(TEXT_CLIPBOARD_MIME), html: data.getData('text/html') }) : null
+    const rich = spec.rich && !plainOnly ? parseTextClipboard({ json: data.getData(TEXT_CLIPBOARD_MIME), html: data.getData('text/html') }) : null
     if (rich) {
       this.replaceSelection('paste', () => rich)
       return
     }
     const text = data.getData('text/plain')
     if (!text) return
-    // 貼った段落は、貼った位置の段落の属性（リストなど。MAI-78）を引き継ぐ（Enter と同じ）
-    this.replaceSelection('paste', (paragraphs, r) => {
-      const plain = richTextFromPlain(text, spec.rich ? formatAt(paragraphs, r.start) : undefined)
-      if (!spec.rich) return plain
-      const { runs: _runs, ...attributes } = sliceRichText(paragraphs, r.start, r.start)[0]
-      return plain.map((paragraph) => ({ ...attributes, ...paragraph }))
-    })
+    if (!spec.rich) {
+      this.replaceSelection('paste', () => richTextFromPlain(text))
+      return
+    }
+    // 文字は Markdown として読む（書式もリストもなければ、そのままの文字。Ctrl+Shift+V なら書式なし）。書式のない所は、貼った位置で打つ文字の書式にする。
+    // 段落の途中に貼るときは、最初の行をリストとして読まない（その段落の続きになる）。段落の頭に貼った最初の行がリストなら、その段落をリストにする。
+    // リストでない段落は、貼った位置の段落の属性（リストなど。MAI-78）を引き継ぐ（Enter と同じ）
+    const range = this.currentSelection()
+    const at = this.paragraphAt(range.start)
+    const atStart = range.start === at.start
+    const base = baseFormat(spec.style)
+    const typing = formatAt(session.paragraphs, range.start)
+    const read = plainOnly ? richTextFromPlain(text) : richTextFromPaste(text, { base, inlineFirstLine: !atStart })
+    const pasted = read.map((paragraph) => ({
+      ...paragraph,
+      runs: paragraph.runs.map((run) => {
+        const format = cleanFormat({ ...typing, ...run.format })
+        return format ? { text: run.text, format } : { text: run.text }
+      }),
+    }))
+    const firstList = atStart ? listOf(pasted[0]!) : undefined
+    const { runs: _runs, ...attributes } = sliceRichText(session.paragraphs, range.start, range.start)[0]
+    const parts = pasted.map((paragraph) => ({ ...attributes, ...paragraph }))
+    const caret = range.start + richTextLength(parts)
+    this.edit(
+      'paste',
+      (paragraphs) => {
+        const next = replaceRange(paragraphs, range.start, range.end, parts, base)
+        return firstList ? next.map((paragraph, i) => (i === at.index ? withList(paragraph, firstList) : paragraph)) : next
+      },
+      { start: caret, end: caret },
+    )
   }
 
   // ---- フォーカス ----
@@ -924,6 +1062,8 @@ export class TextEditor {
       return
     }
     const mod = e.ctrlKey || e.metaKey
+    // Ctrl（⌘）+Shift+V：次の貼り付けを書式なしの文字にする（貼り付けそのものは paste イベントで行う）
+    this.plainPaste = mod && e.shiftKey && !e.altKey && (e.key.toLowerCase() === 'v' || e.code === 'KeyV')
     // Tab はフォーカスを移さず、キャンバスのショートカットにも渡さない。リストの段落なら階層を上げ下げする（MAI-78）
     if (e.key === 'Tab' && !mod && !e.altKey) {
       e.preventDefault()

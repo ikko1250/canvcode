@@ -8,6 +8,7 @@ import {
   insertImages,
   insertLinkCard,
   insertPayload,
+  insertRichText,
   insertText,
   parsePayload,
   pastedUrl,
@@ -175,6 +176,32 @@ describe('pasting from outside', () => {
     const long = insertText(editor, 'x'.repeat(200), { x: 0, y: 0 })!
     expect((editor.getNode(long)!.props as { autoWidth: boolean }).autoWidth).toBe(false)
     expect(insertText(editor, '   ', { x: 0, y: 0 })).toBeNull()
+  })
+
+  it('reads pasted text as Markdown, and copies formatted nodes as standard Markdown (plain ones as plain text)', () => {
+    const { editor } = setup()
+    const id = insertText(editor, '**議題**\n- [予算]{color=#e03131} を決める', { x: 0, y: 0 })!
+    const node = editor.getNode(id)! as NodeRecord<TextProps>
+    expect(node.props.paragraphs).toEqual([
+      { runs: [{ text: '議題', format: { fontWeight: 700 } }] },
+      { runs: [{ text: '予算', format: { color: '#e03131' } }, { text: ' を決める' }], list: { type: 'bullet', level: 0 } },
+    ])
+    const note = editor.makeNode('note', { x: 0, y: 300, props: { paragraphs: richTextFromPlain('a*b') } })
+    editor.createNodes([note])
+    editor.setSelection([id, note.id])
+    // 色はほかのアプリへ渡さない。入れ子のリストの字下げは残す
+    expect(payloadText(editor, copySelection(editor)!)).toBe('**議題**\n- 予算 を決める\na*b')
+    const nested = editor.makeNode('note', { x: 0, y: 600, props: { paragraphs: [{ runs: [{ text: 'sub' }], list: { type: 'bullet', level: 1 } }] } })
+    editor.createNodes([nested])
+    editor.setSelection([nested.id])
+    expect(payloadText(editor, copySelection(editor)!)).toBe('  - sub')
+  })
+
+  it('makes a text node from formatted paragraphs (text copied while editing), dropping values equal to its defaults', () => {
+    const { editor } = setup()
+    const id = insertRichText(editor, (base) => [{ runs: [{ text: 'a', format: { color: '#e03131', fontSize: base.fontSize } }, { text: 'b' }] }], { x: 0, y: 0 })!
+    expect((editor.getNode(id)!.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'a', format: { color: '#e03131' } }, { text: 'b' }] }])
+    expect(insertRichText(editor, () => [{ runs: [{ text: '  ' }] }], { x: 0, y: 0 })).toBeNull()
   })
 
   it('treats text that is a single http(s) URL as a link', () => {

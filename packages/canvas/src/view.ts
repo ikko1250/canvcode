@@ -46,6 +46,7 @@ import {
   insertImages,
   insertPayloadWithResult,
   insertLinkCard,
+  insertRichText,
   insertText,
   pastedUrl,
   parsePayload,
@@ -54,6 +55,7 @@ import {
   quotePayload,
   type ClipboardPayload,
 } from './clipboard.ts'
+import { parseTextClipboard, TEXT_CLIPBOARD_MIME } from './textClipboard.ts'
 import { LinkPreviewer } from './linkPreview.ts'
 import { joinLines, locateQuote, locationLabel, looksLikeFigure, textInRegion, type QuoteDraft } from './quotes.ts'
 import { DocumentEditor } from './documentEditor.ts'
@@ -2604,6 +2606,9 @@ export class CanvasView {
       insertLinkCard(this.editor, url, center)
       return
     }
+    // 文字の編集中にコピーした文字（アプリ内の形式）は、書式ごとテキストにする
+    const rich = parseTextClipboard({ json: data.getData(TEXT_CLIPBOARD_MIME), html: data.getData('text/html') })
+    if (rich && insertRichText(this.editor, () => rich, center)) return
     if (text) insertText(this.editor, text, center)
   }
 

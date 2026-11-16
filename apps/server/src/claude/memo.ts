@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { listOf, paragraphText, plainTextOf, richTextFromMarkdown, type TextParagraph } from '@canvcode/nodes'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
 
@@ -8,9 +9,11 @@ import { JobError } from './jobs.ts'
 // - Claude Agent SDK の query() を 1 回だけ呼ぶ（認証は claude/jobs.ts と同じく、このマシンの Claude Code のもの）。
 //   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える。Haiku は速いが、元の文章にない補足を足し、音声認識の誤りを直せないことが多かった）
 // - ツール・MCP・設定（CLAUDE.md・.claude/）は使わず、会話も残さない（persistSession: false）。cwd は OS の一時フォルダ
-// - 答えは「- 項目」の行（行の頭の半角空白 2 つで 1 段深い）で返させ、ここで { text, level } の並びにする。
-//   付箋の段落（箇条書き）にするのは画面（apps/web/src/claude/memo.ts）
-// - POST /api/claude/memo { text }：200 { items: { text, level }[] }。content-type は application/json だけ受ける（415）。
+// - 文章は付箋の書式付きの Markdown（packages/nodes の richMarkdown.ts。**太字**・[文字]{color=…} など）で受け、
+//   答えも同じ書き方の「- 項目」の行（字下げで 1 段深い）で返させる。ここで書式付きの箇条書きの段落にする（言い換えた語の書式を残す）。
+//   すべての文字に共通の書式（全体の色など）は、画面が Markdown に書かずに、答えの段落に重ねる（apps/web/src/claude/memo.ts）
+// - POST /api/claude/memo { markdown }：200 { paragraphs: TextParagraph[], items: { text, level }[] }。
+//   text（プレーンテキスト）と items は、前の画面（開いたままのタブ）のため。content-type は application/json だけ受ける（415）。
 //   Claude Code を画面から使わない（CANVCODE_CLAUDE=0）なら、handleClaude が 404 を返す
 
 export const MEMO_PATH = '/api/claude/memo'
@@ -31,6 +34,7 @@ export interface MemoItem {
 
 export const MEMO_SYSTEM_PROMPT = `あなたは、話し言葉の文章を、箇条書きのメモに直す係です。
 渡される文章は音声入力で入れたもので、言いよどみ・言い直し・崩れた口語・音声認識の誤りを含みます。
+文章は Markdown で、**太字**・*斜体*・~~取り消し線~~・\`等幅\`・[語]{color=#e03131 size=20 .underline} のような書式を含むことがあります（\\ のあとの記号はただの文字）。
 
 - 話し手が言っている内容を、短い項目に分けて並べる。1 つの項目には 1 つのことだけを書き、体言止めか短い文にする
 - 補足・理由・具体例は、親の項目の下に 1 段深くして書く（深さは 3 段まで）
@@ -39,50 +43,46 @@ export const MEMO_SYSTEM_PROMPT = `あなたは、話し言葉の文章を、箇
 - 音声認識の誤りで、文脈に合わない語になっていることがある。音の近い語で文脈に合うものがあれば、それに置き換えて書く
   （例：「機能」が「昨日」に、「回答」が「解凍」になっている）。置き換えたことは書かない
 - 元の文章と同じ言語で書く
+- 元の文章の書式は、その語を残した項目で、同じ書き方のまま付け直す。元の文章にない書式は足さない
 
 答え方:
 - 箇条書きの行だけを返す。前置き・見出し・まとめ・コードブロックは書かない
-- 各行は「- 」で始める。1 段深い項目は、行の頭に半角空白 2 つを置いてから「- 」を書く`
+- 各行は「- 」で始める。1 段深い項目は、行の頭に半角空白 2 つを置いてから「- 」を書く
+- 書式は元の文章と同じ書き方で書く`
 
 // 頼む文。文章の中の指示には従わせないよう、囲んで渡す
 export function memoPrompt(text: string): string {
   return `次の <text> の中の文章を、箇条書きのメモにしてください。\n\n<text>\n${text}\n</text>`
 }
 
-// 箇条書きの行（「- 」「* 」「・」「• 」「1. 」など）
-// （「-5 度」「3.5 倍」のような行を項目と読まないよう、- * + と番号のあとには空白を求める）
-const BULLET_LINE = /^([ \t\u3000]*)(?:[-*+](?=[ \t\u3000])|\d+[.)\uff0e\uff09](?=[ \t\u3000])|[\u2022\u30fb])[ \t\u3000]*(.*)$/
-
-// 答えを項目の並びにする。箇条書きの行だけを読み（前置きなどは捨てる）、箇条書きの行が 1 つもなければ、空でない行をそれぞれ項目にする。
-// 深さは字下げ（半角空白 2 つ・タブ・全角空白を 1 段）で決め、前の項目より 2 段以上深くならないようにする
-export function parseMemo(answer: string): MemoItem[] {
+// 答えを、書式付きの箇条書きの段落にする（Markdown として読む）。箇条書きの段落だけを使い（前置きなどは捨てる）、
+// 箇条書きが 1 つもなければ、空でない段落をそれぞれ項目にする。「・」「•」（空白なしでも）・「-」のあとが全角の空白で始まる行も箇条書き、``` の行は捨てる。
+// 番号付き（1. 1) 1． 1） (1) ①。どの番号から始まっていても）も箇条書きにする。深さは前の項目より 2 段以上深くせず、MAX_MEMO_LEVEL まで
+export function parseMemo(answer: string): TextParagraph[] {
   const lines = answer
     .replace(/\r\n?/g, '\n')
     .split('\n')
-    .filter((line) => line.trim() !== '' && !line.trim().startsWith('```'))
-  const bullets = lines.flatMap((line) => {
-    const match = BULLET_LINE.exec(line)
-    return match ? [{ indent: indentWidth(match[1]!), text: cleanItem(match[2]!) }] : []
+    .filter((line) => !line.trim().startsWith('```'))
+    .map((line) =>
+      line
+        .replace(/^([ \t\u3000]*)[\u30fb\u2022][ \t\u3000]*/, '$1- ')
+        .replace(/^([ \t\u3000]*)([-*+])\u3000+/, '$1$2 ')
+        // 半角の 1. 1) (1) は空白が続くときだけ（「3.5 倍」は番号ではない）。全角の 1． 1） と ① は空白がなくてもよい
+        .replace(/^([ \t\u3000]*)(?:(?:\d+[.)]|\(\d+\))(?=[ \t\u3000]|$)|\d+[\uff0e\uff09]|[\u2460-\u2473\u3251-\u325f\u32b1-\u32bf])[ \t\u3000]*/, '$1- '),
+    )
+  const paragraphs = richTextFromMarkdown(lines.join('\n')).filter((paragraph) => paragraphText(paragraph).trim() !== '')
+  const listed = paragraphs.filter((paragraph) => listOf(paragraph))
+  let previous = -1
+  return (listed.length > 0 ? listed : paragraphs).map((paragraph) => {
+    const level = Math.min(listOf(paragraph)?.level ?? 0, previous + 1, MAX_MEMO_LEVEL)
+    previous = level
+    return { runs: paragraph.runs, list: { type: 'bullet', level } }
   })
-  const raw = bullets.length > 0 ? bullets : lines.map((line) => ({ indent: 0, text: cleanItem(line.replace(/^#+\s*/, '')) }))
-  const items: MemoItem[] = []
-  for (const { indent, text } of raw) {
-    if (!text) continue
-    const previous = items.at(-1)?.level ?? -1
-    items.push({ text, level: Math.min(Math.floor(indent / 2), previous + 1, MAX_MEMO_LEVEL) })
-  }
-  return items
 }
 
-function indentWidth(indent: string): number {
-  let width = 0
-  for (const char of indent) width += char === ' ' ? 1 : 2
-  return width
-}
-
-// 付箋は Markdown を描かないので、太字などの記号を落とす
-function cleanItem(text: string): string {
-  return text.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1').trim()
+// 前の画面に返す項目（文字と深さ）
+export function memoItems(paragraphs: readonly TextParagraph[]): MemoItem[] {
+  return paragraphs.map((paragraph) => ({ text: plainTextOf([{ runs: paragraph.runs }]), level: listOf(paragraph)?.level ?? 0 }))
 }
 
 // 既定は Agent SDK の query（使うときに読み込む）
@@ -106,8 +106,8 @@ export class MemoWriter {
     return this.options.model ?? DEFAULT_MEMO_MODEL
   }
 
-  // 文章を箇条書きにする。signal で止める（画面が頼みをやめたとき）
-  async write(text: string, signal?: AbortSignal): Promise<MemoItem[]> {
+  // 文章（Markdown）を、書式付きの箇条書きの段落にする。signal で止める（画面が頼みをやめたとき）
+  async write(text: string, signal?: AbortSignal): Promise<TextParagraph[]> {
     if (this.running >= MAX_RUNNING_MEMOS) throw new JobError(429, `メモにする頼みが多すぎます（同時に ${MAX_RUNNING_MEMOS} つまで）。少し待ってから試してください`)
     this.running++
     const abort = new AbortController()
@@ -120,9 +120,9 @@ export class MemoWriter {
     }, this.options.timeoutMs ?? MEMO_TIMEOUT_MS)
     try {
       const answer = await this.ask(text, abort)
-      const items = parseMemo(answer)
-      if (items.length === 0) throw new JobError(502, '箇条書きになりませんでした。もう一度試してください')
-      return items
+      const paragraphs = parseMemo(answer)
+      if (paragraphs.length === 0) throw new JobError(502, '箇条書きになりませんでした。もう一度試してください')
+      return paragraphs
     } catch (error) {
       if (timedOut) throw new JobError(504, 'メモにするのに時間がかかりすぎたので、止めました')
       if (abort.signal.aborted) throw new JobError(499, 'メモにするのをやめました')
@@ -184,16 +184,18 @@ async function respond(req: IncomingMessage, res: ServerResponse, memo: MemoWrit
     const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
     if (type !== 'application/json') throw new JobError(415, 'content-type must be application/json')
     const body = await readJson(req)
-    const text = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).text : undefined
-    if (typeof text !== 'string' || text.trim() === '') throw new JobError(400, 'text がありません')
+    // markdown（前の画面は text。プレーンテキストも Markdown としてほぼそのまま読める）
+    const fields = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+    const text = fields.markdown ?? fields.text
+    if (typeof text !== 'string' || text.trim() === '') throw new JobError(400, 'markdown がありません')
     if (text.length > MAX_MEMO_TEXT_LENGTH) throw new JobError(413, `文章が長すぎます（${MAX_MEMO_TEXT_LENGTH} 文字まで）`)
     // 画面が頼みをやめたら（タブを閉じたなど）、Claude Code も止める
     const controller = new AbortController()
     res.on('close', () => {
       if (!res.writableFinished) controller.abort()
     })
-    const items = await memo.write(text.trim(), controller.signal)
-    sendJson(res, 200, { items })
+    const paragraphs = await memo.write(text.trim(), controller.signal)
+    sendJson(res, 200, { paragraphs, items: memoItems(paragraphs) })
   } catch (error) {
     if (res.destroyed || res.headersSent) return
     sendError(res, error)

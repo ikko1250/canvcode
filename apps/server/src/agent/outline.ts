@@ -1,5 +1,5 @@
 import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
-import { ATTACHMENT_HEIGHT, formatFileSize, noteHeight, noteType, slideSize, type NoteProps, type SlideRatio } from '@canvcode/nodes'
+import { ATTACHMENT_HEIGHT, formatFileSize, hasNodeRichFormatting, noteHeight, noteType, richTextMarkdownOf, richTextTargetOfType, slideSize, type NoteProps, type SlideRatio } from '@canvcode/nodes'
 import { slideOrder } from '@canvcode/canvas/slideOrder'
 import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
 import { getMaxRowCount, getStandardMaxRowCount, TABLE_IMAGE_SPEC, TABLE_SPEC, TABLE_IMAGE_WIDTH_RANGE, TABLE_IMAGES_SPEC } from '@canvcode/slides'
@@ -551,12 +551,14 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
     case 'text':
     case 'note':
       out.text = clip(plainTextOfProps(p))
+      richMarkdown(out, type, p)
       copy('fontSize', 'fontFamily', 'color', 'align')
       if (type === 'text') copy('autoWidth')
       if (type === 'note') copy('sizing')
       break
     case 'geo': {
       copy('shape', 'label')
+      richMarkdown(out, type, p)
       out.fill = fillLabel(p.fill) ?? 'none'
       const stroke = p.stroke as { color?: unknown } | string | null | undefined
       out.stroke = typeof stroke === 'string' ? stroke : typeof stroke?.color === 'string' ? stroke.color : 'none'
@@ -780,6 +782,18 @@ function point(p: Vec): string {
   return `${round(p.x)},${round(p.y)}`
 }
 
+// 書式（既定から変えたもの）かリストを持つ文字は、書式付きの Markdown（md）も返す（edit_canvas の md でそのまま書き戻せる。
+// 長すぎれば返さず mdOmitted にする）。書式がなければ text と同じなので返さない
+const MAX_DETAIL_MARKDOWN = 20_000
+
+function richMarkdown(out: Record<string, unknown>, type: string, props: Record<string, unknown>): void {
+  const target = richTextTargetOfType(type)
+  if (!target || !hasNodeRichFormatting(target, props)) return
+  const markdown = richTextMarkdownOf(target, props)
+  if (markdown.length > MAX_DETAIL_MARKDOWN) out.mdOmitted = true
+  else out.md = markdown
+}
+
 function clip(text: string): string {
   return text.length > MAX_DETAIL_TEXT ? `${text.slice(0, MAX_DETAIL_TEXT)}…（${text.length - MAX_DETAIL_TEXT} 文字省略）` : text
 }
@@ -824,6 +838,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 
 ## Node types
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
+- text, note and geo text can be formatted (bold, colours, sizes, fonts, lists); read_nodes gives that as md (see Formatted text)
 - note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
 - geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
@@ -844,7 +859,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - slide-layout: the single child of a slide made by a template; it lays out the slide's contents. layout = title | bullets | table | table-image | table-images; slots = the ids of its children by role: title, subtitle, credits (title layout), panel, figure (table-image: the right frame; table-images: the lower left frame), figure2 (table-images: the lower right frame), rows [{label?, body}] (label: table layouts only). Its children are text (title, subtitle) and geo rects (cells).
 
 ## Details
-read_nodes returns compact JSON per node: world x, y, w, h, rotation, z-order index, parent, locked, plain text, fill/stroke colours, file, arrow ends, children ids, chart rows,
+read_nodes returns compact JSON per node: world x, y, w, h, rotation, z-order index, parent, locked, plain text (and md, the formatted text as Markdown, when it has formatting or lists), fill/stroke colours, file, arrow ends, children ids, chart rows,
 slide number and overflow ({nodes: ids of cells (and a title over two lines) whose text does not fit, extraRows: rows over the limit}), slide-layout layout, slots and adjust.
 ${options.editable ? EDIT_GUIDE : '\nEditing canvas nodes is not available; these tools are read-only.\n'}`
 }
@@ -871,9 +886,9 @@ Placing many nodes:
 
 Ops:
 - create: type (text | note | geo | frame | slide | card | portal | pdf | link), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
-  text: text, fontSize, color, align (left|center|right), w (wraps; default 240)
-  note: text, color (background), fontSize, align, w, h
-  geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label), fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize, align, cornerRadius, w, h
+  text: text or md, fontSize, color, align (left|center|right), w (wraps; default 240)
+  note: text or md, color (background), fontSize, align, w, h
+  geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label) or md, fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize, align, cornerRadius, w, h
   frame: name, w, h
   slide: name, ratio, hidden, template (see Slides below)
   card: file (document id from list_documents; markdown, code or table) or path (its path as list_documents shows it), w, h (fixes the height). If the document already has a card, the new one is a shortcut to it (dashed, "↗"), fixed at 200 high unless h is given.
@@ -883,9 +898,10 @@ Ops:
   link: url (http/https), text (or name; the title, default: the url), w (default 400; the height follows the text), props? {description, siteName}. A link card like one made by pasting a URL; Ctrl/⌘+click opens it. The server does not fetch the page, so it shows only what you give.
   portal (without target) and pdf add "canvases":{"<as or #i>":{"canvas":"canvas:…"}} to the result; pdf also gives "file", "pages" and "textPath" (the text of the PDF, a "=== page N ===" line before each page; absent when the PDF has no text), or "textPending":true while the text is still being extracted (read_nodes the portal later for its textPath).
 - update: id, any style fields above, x, y, w, h, rotation, opacity, locked. Locked nodes need "locked":false first.
+  text replaces formatted text with plain text (a warning says so); to keep or change formatting, read_nodes the md, edit it and write md (md over 20000 characters is not returned: mdOmitted).
   arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).
-- defaults: type?, parent?, and style fields of that type (no type: parent only; type card applies to every card type). Later create and grid ops of the call use them for what they omit (fill, stroke, fontSize, w, h, parent…); an op's own field wins, also over a default under another name of it (text / label / name, a note's color / fill). Write them once instead of repeating them on every node.
+- defaults: type?, parent?, and style fields of that type (no type: parent only; type card applies to every card type). Later create and grid ops of the call use them for what they omit (fill, stroke, fontSize, w, h, parent…); an op's own field wins, also over a default under another name of it (text / label / md / name, a note's color / fill). Write them once instead of repeating them on every node.
 - grid: type (text | note | geo | card | markdown-card | code-card | table-card), cols, items, gap?:20 (or gapX / gapY), as?, parent? (not a rotated one), position, style. items are texts ("8.50%") or create fields ({"text","as","fill","file",…}; no position). Lays them out row by row; each column is as wide as its widest cell and each row as tall as its tallest. Names: an item's as, else "<as>.<k>" (k from 0), e.g. "$t.4"; without as, created lists them as "#<op index>.<k>" (not kept for later calls).
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.
@@ -902,6 +918,16 @@ Ops:
 - add_row: slide (slide or slide-layout id; adds the last row) or after (a cell id; adds below its row), text? (body), label? (table layouts), as? (names the body; created also gets "<as>:label"). New cells copy the format of the neighbouring row.
 - move_row: cell (a label or body cell id) and exactly one of to (0-based row position after the move; clamped to the rows) or by (rows to move; negative moves up). The row's label, body and fixed height move together; positions and body colours follow the new order.
 Text size is estimated on the server (it cannot measure fonts); give text a width.
+
+Formatted text (md, instead of text for text, note and geo; read_nodes md uses the same syntax and reads back unchanged):
+- One line = one paragraph (an empty line is an empty paragraph); only the list rules below skip or join lines.
+- **bold**, *italic*, ~~strikethrough~~, \`monospace\`. They work next to Japanese text and punctuation: これは**「重要」**です. _ is not a format, and a single * between ASCII letters or digits stays text (2*3*4).
+- [text]{color=#e03131 size=20 font="M PLUS 1p" weight=600 .underline} for colour, size (px), font, weight and underline (also .bold .italic .strike). Spans nest and may contain the marks above.
+- Lists: "- " (bullet; the symbol follows the level) or the symbol itself (• ◦ ▪ – ✓); "1. " "1) " "(1) " "a. " "i. " "① " numbered in that style (numbers are recounted; a list must start at 1 / a / i / ①, else the line is text). Indent a nested item deeper than its parent. Empty lines between items are skipped (write []{} for an empty paragraph there); a line indented 2+ spaces right after an item continues it.
+- # / ## / ### make a bold, larger paragraph; lines between \`\`\` fences are monospace.
+- A backslash makes a symbol literal: \\* \\_ \\~ \\\` \\[ \\] \\- \\#.
+- Values equal to the node's own fontSize / colour are dropped. Unknown attributes and bad values are refused (the error names the line).
+Example: {"op":"create","type":"note","md":"**議題**\\n- [予算]{color=#e03131} を決める\\n  - 20 万円まで\\n- [資料]{.underline} を送る"}
 
 Slides (presentations):
 - create type "slide": ratio? ("16:9" default | "4:3"), name?, hidden?, template? and position (no w/h: the size comes from the ratio). update: name, ratio, hidden, template, adjust.

@@ -1296,3 +1296,84 @@ describe('edit_canvas scale', () => {
     expect(['node:f', 'node:n'].map((id) => records.get(id))).toEqual(before)
   })
 })
+
+describe('edit_canvas formatted text (md)', () => {
+  const NOTE_MD = '**議題**\n- [予算]{color=#e03131} を決める\n  - 20 万円まで\n- [資料]{.underline} を送る'
+
+  it('creates a note from md and reads it back as the same md', () => {
+    const { records, edit } = setup()
+    const { created } = edit([{ op: 'create', type: 'note', as: 'n', md: NOTE_MD, x: 0, y: 0 }])
+    const note = records.get(created.n!)!
+    const props = note.props as { paragraphs: unknown[] }
+    expect(props.paragraphs).toEqual([
+      { runs: [{ text: '議題', format: { fontWeight: 700 } }] },
+      { runs: [{ text: '予算', format: { color: '#e03131' } }, { text: ' を決める' }], list: { type: 'bullet', level: 0 } },
+      { runs: [{ text: '20 万円まで' }], list: { type: 'bullet', level: 1 } },
+      { runs: [{ text: '資料', format: { underline: true } }, { text: ' を送る' }], list: { type: 'bullet', level: 0 } },
+    ])
+    const read = readNodes(records, [created.n!]).nodes[0]!
+    expect(read.md).toBe(NOTE_MD)
+    // text はこれまでどおり（リストの記号付きのプレーンテキスト）
+    expect(read.text).toBe('議題\n- 予算 を決める\n  - 20 万円まで\n- 資料 を送る')
+  })
+
+  it('gives md only for formatted text', () => {
+    const { records, edit } = setup()
+    const { created } = edit([
+      { op: 'create', type: 'note', as: 'plain', text: 'a*b', x: 0, y: 0 },
+      { op: 'create', type: 'text', as: 't', md: '*斜体*', x: 0, y: 300 },
+      { op: 'create', type: 'geo', as: 'g', md: '- 一つ目\n- 二つ目', x: 400, y: 0, w: 200, h: 100 },
+    ])
+    const [plain, t, g] = readNodes(records, [created.plain!, created.t!, created.g!]).nodes
+    expect(plain).not.toHaveProperty('md')
+    expect(t!.md).toBe('*斜体*')
+    expect(g!.md).toBe('- 一つ目\n- 二つ目')
+    // 図形の label（プレーンテキスト）も文字に合わせる
+    expect(records.get(created.g!)!.props).toMatchObject({ label: '一つ目\n二つ目' })
+  })
+
+  it('drops formats equal to the size and colour given in the same op', () => {
+    const { records, edit } = setup()
+    const { created } = edit([{ op: 'create', type: 'text', as: 't', fontSize: 20, color: '#1971c2', md: '[a]{size=20 color=#1971c2}[b]{size=30}', x: 0, y: 0 }])
+    expect((records.get(created.t!)!.props as { paragraphs: unknown }).paragraphs).toEqual([{ runs: [{ text: 'a' }, { text: 'b', format: { fontSize: 30 } }] }])
+  })
+
+  it('refuses md with text, md on types without text, and bad attributes', () => {
+    const { edit } = setup()
+    expect(() => edit([{ op: 'create', type: 'note', text: 'a', md: 'b' }])).toThrow(/give either md or text/)
+    expect(() => edit([{ op: 'create', type: 'geo', label: 'a', md: 'b' }])).toThrow(/give either md or label/)
+    expect(() => edit([{ op: 'create', type: 'frame', md: 'a' }])).toThrow(/md is not supported for frame/)
+    expect(() => edit([{ op: 'create', type: 'note', md: 'ok\n[a]{colour=red}' }])).toThrow(/md: line 2: colour=red: expected a hex colour/)
+  })
+
+  it('warns when text replaces formatted text, and keeps formatting written as md', () => {
+    const { records, edit } = setup()
+    const { created } = edit([{ op: 'create', type: 'note', as: 'n', md: '**a** b', x: 0, y: 0 }])
+    const id = created.n!
+    const replaced = edit([{ op: 'update', id, text: 'c' }])
+    expect(replaced.warnings).toEqual([expect.stringMatching(new RegExp(`^${id}: text replaced its formatted text`))])
+    const plain = edit([{ op: 'update', id, text: 'd' }])
+    expect(plain.warnings).toBeUndefined()
+    const rich = edit([{ op: 'update', id, md: '~~d~~ e' }])
+    expect(rich.warnings).toBeUndefined()
+    expect(readNodes(records, [id]).nodes[0]!.md).toBe('~~d~~ e')
+  })
+
+  it('does not count the format of an empty paragraph as formatting', () => {
+    const { records, edit, root } = setup()
+    records.apply([node('node:n', 'note', root, 'a0', { paragraphs: [{ runs: [{ text: 'abc' }] }, { runs: [{ text: '', format: { fontWeight: 700 } }] }] })], [])
+    expect(readNodes(records, ['node:n']).nodes[0]).not.toHaveProperty('md')
+    expect(edit([{ op: 'update', id: 'node:n', text: 'x' }]).warnings).toBeUndefined()
+  })
+
+  it('takes md in grid items and defaults, an item text replacing a default md', () => {
+    const { records, edit } = setup()
+    const { created } = edit([
+      { op: 'defaults', type: 'note', md: '**既定**' },
+      { op: 'grid', type: 'note', as: 'g', cols: 2, x: 0, y: 0, items: [{ md: '*一*' }, '二', {}] },
+    ])
+    const texts = ['g.0', 'g.1', 'g.2'].map((name) => readNodes(records, [created[name]!]).nodes[0]!)
+    expect(texts.map((n) => n.md)).toEqual(['*一*', undefined, '**既定**'])
+    expect(texts[1]!.text).toBe('二')
+  })
+})

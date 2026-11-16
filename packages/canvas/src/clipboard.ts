@@ -9,7 +9,7 @@ import {
   type SourceAnchorRecord,
   type Vec,
 } from '@canvcode/core'
-import { ATTACHMENT_DEFAULT_WIDTH, ATTACHMENT_HEIGHT, LINK_CARD_DEFAULT_WIDTH, QUOTE_CARD_DEFAULT_WIDTH, richTextFromPlain, type ArrowProps, type DocumentReference, type QuoteCardProps } from '@canvcode/nodes'
+import { ATTACHMENT_DEFAULT_WIDTH, ATTACHMENT_HEIGHT, baseFormatOf, LINK_CARD_DEFAULT_WIDTH, normalizeRichText, plainTextOf, QUOTE_CARD_DEFAULT_WIDTH, richTextFromPaste, richTextTargetOf, standardMarkdownOfNode, type ArrowProps, type DocumentReference, type QuoteCardProps, type TextParagraph } from '@canvcode/nodes'
 import { freezeTerminal } from './bindings.ts'
 import type { Editor } from './editor.ts'
 import type { QuoteDraft } from './quotes.ts'
@@ -138,13 +138,22 @@ export function quotePayload(draft: QuoteDraft): ClipboardPayload {
   }
 }
 
-// ノードの文字（テキスト・付箋・図形のラベル）を、重なり順に改行でつなぐ
+// ノードの文字（テキスト・付箋・図形のラベル）を、重なり順に改行でつなぐ。
+// 太字・斜体・取り消し線・等幅・リストのある文字は普通の Markdown（richMarkdown.ts。ほかのアプリでも、ここに貼っても書式として読める）
 export function payloadText(editor: Editor, payload: ClipboardPayload): string {
   const texts: string[] = []
   for (const node of payload.nodes) {
     const type = editor.types.get(node.type)
+    const rich = richTextTargetOf(node)
     // リンクのカードは URL を載せる（ほかのアプリに貼ると URL になる）
-    const text = node.type === 'link-card' ? String((node.props as { url?: unknown }).url ?? '') : type?.editText?.(node).text.trim()
+    // Markdown は頭の空白（リストの字下げ）を残す
+    const markdown = rich ? standardMarkdownOfNode(rich, node.props) : null
+    const text =
+      node.type === 'link-card'
+        ? String((node.props as { url?: unknown }).url ?? '')
+        : markdown !== null
+          ? markdown.replace(/^\n+/, '').trimEnd()
+          : type?.editText?.(node).text.trim()
     if (text) texts.push(text)
   }
   return texts.join('\n')
@@ -321,15 +330,24 @@ export function decodeBase64(base64: string): string {
 const WRAP_LINE_CHARS = 80
 const WRAP_WIDTH = 600
 
+// 文字は Markdown として読む（**太字**・[文字]{color=…}・- の箇条書きなど。書式もリストもなければ、そのままの文字。richMarkdown.ts）
 export function insertText(editor: Editor, text: string, center: Vec): string | null {
   const trimmed = text.replace(/\r\n?/g, '\n').replace(/\s+$/, '')
   if (!trimmed) return null
-  const wrap = trimmed.split('\n').some((line) => line.length > WRAP_LINE_CHARS)
-  const node = editor.makeNode('text', {
-    x: 0,
-    y: 0,
-    props: wrap ? { paragraphs: richTextFromPlain(trimmed), autoWidth: false, w: WRAP_WIDTH } : { paragraphs: richTextFromPlain(trimmed), autoWidth: true },
-  })
+  return insertRichText(editor, (base) => richTextFromPaste(trimmed, { base }), center)
+}
+
+// 段落（書式付きの文字）からテキストノードを作る（文字の編集中にコピーした文字を、キャンバスに貼るときも）。
+// paragraphs は新しいテキストの既定の書式を受け取り、段落を返す（既定と同じ値の書式は持たない）
+export function insertRichText(editor: Editor, paragraphsFor: (base: ReturnType<typeof baseFormatOf>) => TextParagraph[], center: Vec): string | null {
+  const draft = editor.makeNode('text', { x: 0, y: 0 })
+  const base = baseFormatOf(richTextTargetOf(draft)!.style(draft.props))
+  const paragraphs = normalizeRichText(paragraphsFor(base), base)
+  if (!plainTextOf(paragraphs).trim()) return null
+  const wrap = plainTextOf(paragraphs)
+    .split('\n')
+    .some((line) => line.length > WRAP_LINE_CHARS)
+  const node = { ...draft, props: wrap ? { ...draft.props, paragraphs, autoWidth: false, w: WRAP_WIDTH } : { ...draft.props, paragraphs, autoWidth: true } }
   // 大きさは作ってみないとわからないので、索引に入れてから中心を合わせる
   editor.transact('paste text', (tx) => {
     const bounds = editor.getType(node).getBounds(node)
