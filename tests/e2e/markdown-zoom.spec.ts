@@ -35,6 +35,9 @@ async function textExtent(page: Page, card: { x: number; y: number; w: number; h
   await page.evaluate(([x, y, zoom]) => (window as any).canvcode.view.setCamera({ x, y, zoom }), [card.x - 10, card.y - 10, zoom])
   await expect.poll(() => page.evaluate(() => (window as any).canvcode.view.images.idle), { timeout: 20_000 }).toBe(true)
   await page.mouse.move(5, 5)
+  // キャンバスの上に重ねる UI（左上のパンくず、右上の「未接続」などの札）は、測る範囲に入ると文字と見分けられないので隠す
+  // （「未接続」の赤い文字と枠は、DADS のエラーの色にしてから暗い画素に数えられるようになった。MAI-111）
+  await page.addStyleTag({ content: '.topbar, .status-bar { visibility: hidden !important; }' })
   await page.waitForTimeout(200)
   const rect = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
   const width = Math.min(rect.width, (card.w + 20) * zoom)
