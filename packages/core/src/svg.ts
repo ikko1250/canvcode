@@ -100,13 +100,19 @@ const CSS_FUNCTIONS = new Set([
 const LOCAL_REF = /^#[^\s"'()<>\\]+$/
 // image に埋め込んだ画像（SVG は入れない。入れ子の SVG のスクリプトを確かめられないので）
 const DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=\s]*$/
-const NAME = /[A-Za-z_:À-￯][-\w.:·À-￯]*/y
-const SPACE = /[ \t\n]*/y
+const NAME = /[A-Za-z_:\u00C0-\uFFEF][-\w.:\u00B7\u00C0-\uFFEF]*/y
 const ENTITY = /&(?:#x([0-9a-fA-F]{1,6})|#([0-9]{1,7})|(lt|gt|amp|quot|apos));/g
+const ATTRIBUTE_SPACE = /[\t\n]/g
 const NAMED_ENTITIES: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }
 // XML に書けない文字（制御文字・対になっていないサロゲート・U+FFFE と U+FFFF）
-const INVALID_CHARS = /[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu
+const INVALID_CHARS = /[^\t\n\r\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/
+// CSS の識別子（関数の名前の候補）。重ならずに前から拾うので、値の長さに比例する時間で終わる（cssFunctions）
+const CSS_IDENT = /[A-Za-z_-][\w-]*/g
+const SPACE_CHAR = /\s/
+// 引用符で囲まない url() の中身に使えない文字（空白のほか）
+const URL_STOP = `"'()`
+const CSS_AT_RULES = /@(?:import|font-face|namespace)/i
 const LENGTH = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(px|pt|pc|mm|cm|in)?$/i
 const UNIT_PX: Record<string, number> = { px: 1, pt: 4 / 3, pc: 16, mm: 96 / 25.4, cm: 96 / 2.54, in: 96 }
 
@@ -159,16 +165,56 @@ function parseXml(input: string): XmlElement {
     return match![0]
   }
   const space = (): boolean => {
-    SPACE.lastIndex = pos
-    SPACE.exec(s)
-    const moved = SPACE.lastIndex > pos
-    pos = SPACE.lastIndex
-    return moved
+    const from = pos
+    while (pos < s.length && (s[pos] === ' ' || s[pos] === '\t' || s[pos] === '\n')) pos++
+    return pos > from
   }
   const closeAt = (token: string, from: number, what: string): number => {
     const at = s.indexOf(token, from)
     if (at < 0) fail(`unterminated ${what}`)
     return at
+  }
+  // 開始タグ（<名前 属性…> か <名前 属性…/>）を読み、親の子にする（開始タグなら、閉じるまで stack に積む）
+  const readStartTag = (): void => {
+    pos++
+    const element: XmlElement = { name: name(), attrs: [], children: [] }
+    if (root && stack.length === 0) fail('more than one root element')
+    const seen = new Set<string>()
+    let selfClosing = false
+    for (;;) {
+      const spaced = space()
+      if (s[pos] === '>') {
+        pos++
+        break
+      }
+      if (s.startsWith('/>', pos)) {
+        pos += 2
+        selfClosing = true
+        break
+      }
+      if (!spaced) fail('a space is expected before an attribute')
+      const attr = name()
+      space()
+      if (s[pos] !== '=') fail('"=" is expected')
+      pos++
+      space()
+      const quote = s[pos]
+      if (quote !== '"' && quote !== "'") fail('a quoted value is expected')
+      const close = closeAt(quote, pos + 1, 'attribute value')
+      const raw = s.slice(pos + 1, close)
+      if (raw.includes('<')) fail('"<" in an attribute value')
+      if (seen.has(attr)) fail(`duplicate attribute: ${attr}`)
+      seen.add(attr)
+      // 属性の値の空白は、空白 1 つにする（XML の決まり。&#10; などで書いた改行は残る）
+      element.attrs.push([attr, decode(raw.replace(ATTRIBUTE_SPACE, ' '), pos)])
+      pos = close + 1
+    }
+    if (++count > MAX_ELEMENTS) fail('too many elements')
+    if (stack.length >= MAX_DEPTH) fail('nested too deeply')
+    const parent = stack.at(-1)
+    if (parent) parent.children.push(element)
+    else root = element
+    if (!selfClosing) stack.push(element)
   }
   while (pos < s.length) {
     const lt = s.indexOf('<', pos)
@@ -181,7 +227,11 @@ function parseXml(input: string): XmlElement {
       pos = end
       continue
     }
-    if (s.startsWith('<!--', pos)) {
+    // < の次の文字で分ける（ふつうの開始タグを、ほかの形と比べずに読む）
+    const next = s[pos + 1]
+    if (next !== '!' && next !== '?' && next !== '/') {
+      readStartTag()
+    } else if (s.startsWith('<!--', pos)) {
       pos = closeAt('-->', pos + 4, 'comment') + 3
     } else if (s.startsWith('<![CDATA[', pos)) {
       const close = closeAt(']]>', pos + 9, 'CDATA section')
@@ -203,45 +253,7 @@ function parseXml(input: string): XmlElement {
       if (s[pos] !== '>') fail('">" is expected')
       pos++
     } else {
-      pos++
-      const element: XmlElement = { name: name(), attrs: [], children: [] }
-      if (root && stack.length === 0) fail('more than one root element')
-      const seen = new Set<string>()
-      let selfClosing = false
-      for (;;) {
-        const spaced = space()
-        if (s[pos] === '>') {
-          pos++
-          break
-        }
-        if (s.startsWith('/>', pos)) {
-          pos += 2
-          selfClosing = true
-          break
-        }
-        if (!spaced) fail('a space is expected before an attribute')
-        const attr = name()
-        space()
-        if (s[pos] !== '=') fail('"=" is expected')
-        pos++
-        space()
-        const quote = s[pos]
-        if (quote !== '"' && quote !== "'") fail('a quoted value is expected')
-        const close = closeAt(quote, pos + 1, 'attribute value')
-        const raw = s.slice(pos + 1, close)
-        if (raw.includes('<')) fail('"<" in an attribute value')
-        if (seen.has(attr)) fail(`duplicate attribute: ${attr}`)
-        seen.add(attr)
-        // 属性の値の空白は、空白 1 つにする（XML の決まり。&#10; などで書いた改行は残る）
-        element.attrs.push([attr, decode(raw.replace(/[\t\n]/g, ' '), pos)])
-        pos = close + 1
-      }
-      if (++count > MAX_ELEMENTS) fail('too many elements')
-      if (stack.length >= MAX_DEPTH) fail('nested too deeply')
-      const parent = stack.at(-1)
-      if (parent) parent.children.push(element)
-      else root = element
-      if (!selfClosing) stack.push(element)
+      readStartTag()
     }
   }
   if (stack.length > 0) fail(`unclosed element: ${stack.at(-1)!.name}`)
@@ -348,31 +360,84 @@ function safeHref(element: string, value: string): boolean {
 }
 
 // CSS（style 要素の中身・style 属性）。外を指す url() は none にする。エスケープ・@import・@font-face・@namespace があるか、
-// 知らない関数があれば null（全部捨てる）
+// 知らない関数・読めない url() があれば null（全部捨てる）
 function safeCss(css: string): string | null {
-  if (css.includes('\\') || /@(?:import|font-face|namespace)/i.test(css)) return null
-  const replaced = css.replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s"'()]*))\s*\)/gi, (match, a?: string, b?: string, c?: string) =>
-    LOCAL_REF.test((a ?? b ?? c ?? '').trim()) ? match : 'none',
-  )
-  return safeCssValue(replaced) ? replaced : null
+  if (css.includes('\\') || CSS_AT_RULES.test(css)) return null
+  const functions = cssFunctions(css)
+  if (!functions) return null
+  let out = ''
+  let last = 0
+  for (const fn of functions) {
+    if (fn.url === undefined) {
+      if (!CSS_FUNCTIONS.has(fn.name)) return null
+    } else if (!LOCAL_REF.test(fn.url)) {
+      out += `${css.slice(last, fn.start)}none`
+      last = fn.end
+    }
+  }
+  return out + css.slice(last)
 }
 
 // 値の中の関数が、使ってよいものだけか。url() は同じ文書の中（#id）を指すものだけ
 function safeCssValue(value: string): boolean {
   if (!value.includes('(')) return true
-  let urls = 0
-  for (const match of value.matchAll(/([A-Za-z_-][\w-]*)\s*\(/g)) {
-    const fn = match[1].toLowerCase()
-    if (fn === 'url') urls++
-    else if (!CSS_FUNCTIONS.has(fn)) return false
+  const functions = cssFunctions(value)
+  return functions !== null && functions.every((fn) => (fn.url === undefined ? CSS_FUNCTIONS.has(fn.name) : LOCAL_REF.test(fn.url)))
+}
+
+interface CssFunction {
+  // 小文字の名前
+  name: string
+  // 名前の始まりと、関数の終わり（url は閉じ括弧のあと、ほかは開き括弧のあと）
+  start: number
+  end: number
+  // url() の中身（引用符と前後の空白を除く）
+  url?: string
+}
+
+// 値の中の関数を前から拾う。識別子を重ならずに拾い、空白を挟んで ( が続けば関数とみなす（CSS では関数ではないが、安全側に扱う）。
+// url( は中身も読む（引用符で囲むか、空白・引用符・括弧のない文字列）。url と ( の間に空白がある・中身が読めないなら null。
+// 正規表現の後戻りで、長い値に値の長さの 2 乗の時間がかからないよう、手で読む（どの文字も定数回しか見ない）
+function cssFunctions(value: string): CssFunction[] | null {
+  const out: CssFunction[] = []
+  const ident = CSS_IDENT
+  ident.lastIndex = 0
+  for (let match = ident.exec(value); match; match = ident.exec(value)) {
+    let i = ident.lastIndex
+    while (i < value.length && SPACE_CHAR.test(value[i])) i++
+    if (value[i] !== '(') continue
+    const name = match[0].toLowerCase()
+    if (name !== 'url') {
+      out.push({ name, start: match.index, end: i + 1 })
+      continue
+    }
+    if (i !== ident.lastIndex) return null
+    const arg = readUrlArgument(value, i + 1)
+    if (!arg) return null
+    out.push({ name, start: match.index, end: arg.end, url: arg.url })
+    ident.lastIndex = arg.end
   }
-  if (urls === 0) return true
-  let local = 0
-  for (const match of value.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s"'()]*))\s*\)/gi)) {
-    if (!LOCAL_REF.test((match[1] ?? match[2] ?? match[3] ?? '').trim())) return false
-    local++
+  return out
+}
+
+// url( のあと（from）から、中身と閉じ括弧のあとの位置を読む。読めなければ null
+function readUrlArgument(value: string, from: number): { url: string; end: number } | null {
+  let i = from
+  while (i < value.length && SPACE_CHAR.test(value[i])) i++
+  let url: string
+  const quote = value[i]
+  if (quote === '"' || quote === "'") {
+    const close = value.indexOf(quote, i + 1)
+    if (close < 0) return null
+    url = value.slice(i + 1, close)
+    i = close + 1
+  } else {
+    const start = i
+    while (i < value.length && !SPACE_CHAR.test(value[i]) && !URL_STOP.includes(value[i])) i++
+    url = value.slice(start, i)
   }
-  return local === urls
+  while (i < value.length && SPACE_CHAR.test(value[i])) i++
+  return value[i] === ')' ? { url: url.trim(), end: i + 1 } : null
 }
 
 // 根の style から、大きさの宣言（width・height など）を外す。引用符を含むなど、区切れないときは style ごと捨てる
@@ -389,12 +454,17 @@ function attributeText(attrs: [string, string][]): string {
   return attrs.map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`).join('')
 }
 
+// 書き出すときに文字参照にする文字（属性の値では、読み直したときに空白にされないよう、タブと改行も）
+const TEXT_SPECIAL = /[&<>\r]/g
+const ATTRIBUTE_SPECIAL = /[&<>"\t\n\r]/g
+const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\t': '&#9;', '\n': '&#10;', '\r': '&#13;' }
+
 function escapeText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r/g, '&#13;')
+  return text.replace(TEXT_SPECIAL, (c) => ESCAPES[c])
 }
 
 function escapeAttribute(value: string): string {
-  return escapeText(value).replace(/"/g, '&quot;').replace(/\t/g, '&#9;').replace(/\n/g, '&#10;')
+  return value.replace(ATTRIBUTE_SPECIAL, (c) => ESCAPES[c])
 }
 
 // ---- 大きさ ----

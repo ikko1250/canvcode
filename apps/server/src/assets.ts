@@ -134,10 +134,9 @@ export class AssetStore {
     const claimed = req.headers['x-canvcode-sha256']
     if (typeof claimed === 'string' && claimed !== createHash('sha256').update(body).digest('hex')) throw new HttpError(400, 'hash mismatch')
     // SVG は、ブラウザが消毒したものだけを受け取る（消毒し直して変わるなら、置くもののハッシュがブラウザの知るものと違ってしまう）
-    if (svg && !sanitizedSvg(body).equals(body)) throw new HttpError(422, 'the svg is not sanitized')
     const hash = generic
       ? await this.storeFile(body, mime, fileExt)
-      : await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'))
+      : await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'), svg)
     sendJson(res, 200, { hash, mime, size: body.length })
   }
 
@@ -159,8 +158,9 @@ export class AssetStore {
   }
 
   // 原本を保存して、ハッシュを返す（すでにあれば何もしない）。旧データの取り込みからも使う。
-  // SVG は消毒したものを置き、大きさも SVG から読む（width・height は使わない。読めない SVG なら 422 の HttpError）
-  async storeOriginal(original: Buffer, mime: string, imageWidth: number, imageHeight: number): Promise<string> {
+  // SVG は消毒したものを置き、大きさも SVG から読む（width・height は使わない。読めない SVG なら 422 の HttpError）。
+  // onlySanitized なら、消毒して変わる SVG は置かずに 422 にする（ブラウザから受け取るとき。消毒は 1 回だけ）
+  async storeOriginal(original: Buffer, mime: string, imageWidth: number, imageHeight: number, onlySanitized = false): Promise<string> {
     const ext = ORIGINAL_TYPES[mime]
     if (!ext) throw new HttpError(415, `unsupported type: ${mime}`)
     let body = original
@@ -169,6 +169,7 @@ export class AssetStore {
     if (mime === SVG_MIME) {
       const svg = readSvg(original)
       body = Buffer.from(svg.svg, 'utf8')
+      if (onlySanitized && !body.equals(original)) throw new HttpError(422, 'the svg is not sanitized')
       width = svg.width
       height = svg.height
     }
@@ -413,10 +414,6 @@ function readSvg(body: Buffer): { svg: string; width: number; height: number } {
     if (error instanceof SvgError) throw new HttpError(422, `unreadable svg: ${error.message}`)
     throw error
   }
-}
-
-function sanitizedSvg(body: Buffer): Buffer {
-  return Buffer.from(readSvg(body).svg, 'utf8')
 }
 
 function headerNumber(req: IncomingMessage, name: string): number {

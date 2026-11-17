@@ -373,11 +373,43 @@ export function pastedUrl(text: string): string | null {
 }
 
 // 貼り付けた文字列が、まるごと 1 つの SVG（Figma の「SVG としてコピー」など）なら、その文字列。画像として取り込む（MAI-116）。
-// 前に XML の宣言・コメント・DOCTYPE があってもよい。文の中の SVG・ほかの文字が続くものは null
+// 前に XML の宣言・コメント・DOCTYPE があってもよい。文の中の SVG・ほかの文字が続くものは null。
+// 前から順に読み飛ばして <svg で始まるかを見る（1 本の正規表現にすると、コメントがたくさんあるときに分け方を全部試して遅くなる）
 export function pastedSvg(text: string): string | null {
   const trimmed = text.trim()
-  if (trimmed.length > MAX_SVG_BYTES || !trimmed.startsWith('<') || !trimmed.endsWith('</svg>')) return null
-  return /^(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE[^>[]*(?:\[[\s\S]*?\])?\s*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg[\s>][\s\S]*<\/svg>$/.test(trimmed) ? trimmed : null
+  if (trimmed.length > MAX_SVG_BYTES || !trimmed.endsWith('</svg>')) return null
+  let pos = 0
+  for (;;) {
+    while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++
+    let end: number
+    if (trimmed.startsWith('<?', pos)) {
+      end = trimmed.indexOf('?>', pos + 2)
+      if (end >= 0) end += 2
+    } else if (trimmed.startsWith('<!--', pos)) {
+      end = trimmed.indexOf('-->', pos + 4)
+      if (end >= 0) end += 3
+    } else if (trimmed.startsWith('<!DOCTYPE', pos)) {
+      end = doctypeEnd(trimmed, pos)
+    } else {
+      break
+    }
+    if (end < 0) return null
+    pos = end
+  }
+  return /^<svg[\s>]/.test(trimmed.slice(pos, pos + 5)) ? trimmed : null
+}
+
+// <!DOCTYPE …> のあとの位置（中に [ ] の定義があれば、その後ろの >）。閉じていなければ -1
+function doctypeEnd(text: string, start: number): number {
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '>') return i + 1
+    if (text[i] === '[') {
+      const close = text.indexOf(']', i)
+      const end = close < 0 ? -1 : text.indexOf('>', close)
+      return end < 0 ? -1 : end + 1
+    }
+  }
+  return -1
 }
 
 // リンクのカードを、center を中心に置く。タイトルなどは、あとから linkPreview.ts が書き込む

@@ -139,6 +139,20 @@ describe('sanitizeSvg', () => {
     expect(out).not.toMatch(/example\.com|@import|@font-face|image-set/i)
   })
 
+  it('reads CSS functions with spaces before the parenthesis as functions, and refuses url() it cannot read', () => {
+    const fill = (value: string) => clean(`<svg width="1" height="1"><rect fill="${value}"/></svg>`).match(/<rect([^/]*)\/>/)![1]
+    expect(fill('URL(#g)')).toBe(' fill="URL(#g)"')
+    expect(fill("url( '#g' )")).toBe(` fill="url( '#g' )"`)
+    // 空白を挟んだ ( も関数とみなす（安全側）。url と ( の間の空白・知らない名前・閉じない url( は捨てる
+    expect(fill('translate (1)')).toBe(' fill="translate (1)"')
+    expect(fill("image-set ('x.png' 1x)")).toBe('')
+    expect(fill('url (#g)')).toBe('')
+    expect(fill('xurl(#g)')).toBe('')
+    expect(fill('url(#g')).toBe('')
+    expect(fill("url('#g)")).toBe('')
+    expect(fill('url(#g) url(https://example.com/x)')).toBe('')
+  })
+
   it('drops the size from the style of the root element', () => {
     expect(clean('<svg width="10" height="10" style="width: 100%; height: 100%; fill: red"/>')).toBe(
       '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" style=" fill: red"/>',
@@ -176,6 +190,42 @@ describe('sanitizeSvg', () => {
     refuse('<!DOCTYPE svg [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;">]><svg><text>&b;</text></svg>')
     refuse('<!ENTITY x "y"><svg/>')
     refuse(`${'<g>'.repeat(300)}`.replace(/^<g>/, '<svg>') + `${'</g>'.repeat(299)}</svg>`)
+  })
+
+  // 長い・繰り返しの多い悪い値でも、値の長さに比例する時間で終わる（正規表現の後戻りで 2 乗の時間がかかると、
+  // サーバーは受け取るときに同期で消毒するので止まる）。どれも数十 ms で終わるので、1 秒を超えれば 2 乗になっている
+  it('finishes in time proportional to the size, even with long bad values', () => {
+    const n = 2_000_000
+    const cases: [string, string][] = [
+      // 長い識別子のあとに、( の付かない識別子
+      ['long identifier', `<svg><path fill="${'a'.repeat(9_000_000)} b(" d="M0 0"/></svg>`],
+      ['url( and spaces', `<svg><path style="fill: url(${' '.repeat(n)}x" d="M0 0"/></svg>`],
+      ['unclosed quote in url(', `<svg><style>.a{fill:url("${'a'.repeat(n)}}</style></svg>`],
+      ['many url(', `<svg><path fill="${'url('.repeat(n / 4)}" d="M0 0"/></svg>`],
+      ['many quoted url(', `<svg><path style="${"url(' ".repeat(n / 6)}" d="M0 0"/></svg>`],
+      ['many functions', `<svg><path fill="${'a('.repeat(n / 2)}" d="M0 0"/></svg>`],
+      ['spaces before (', `<svg><path fill="a${' '.repeat(n)}x(" d="M0 0"/></svg>`],
+      ['long number', `<svg width="${'1'.repeat(n)}x" height="1"/>`],
+      ['number and spaces', `<svg width="1${' '.repeat(n)}x" height="1"/>`],
+      ['long viewBox', `<svg viewBox="${'1'.repeat(n)} 0 1 1."/>`],
+      ['long #id', `<svg><use href="#${'a'.repeat(n)} "/></svg>`],
+      ['long data: URL', `<svg><image href="data:image/png;base64,${'A'.repeat(n)}!"/></svg>`],
+      ['many ; in the root style', `<svg width="1" height="1" style="${'  ;'.repeat(n / 3)}"/>`],
+      ['many @', `<svg><style>${'@'.repeat(n)}</style></svg>`],
+      ['many &', `<svg><text>${'&amp'.repeat(n / 4)}</text></svg>`],
+      ['unclosed comment', `<svg><!--${'-'.repeat(n)}</svg>`],
+      ['unclosed CDATA', `<svg><style><![CDATA[${']'.repeat(n)}</style></svg>`],
+      ['unclosed DOCTYPE', `<!DOCTYPE svg ${'['.repeat(n)}><svg/>`],
+    ]
+    for (const [name, source] of cases) {
+      const start = performance.now()
+      try {
+        sanitizeSvg(source)
+      } catch (error) {
+        expect(error, name).toBeInstanceOf(SvgError)
+      }
+      expect(performance.now() - start, name).toBeLessThan(1000)
+    }
   })
 
   it('reads a DOCTYPE with an internal subset when no entity is used, and drops processing instructions', () => {

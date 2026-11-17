@@ -227,6 +227,19 @@ describe('pasting from outside', () => {
     expect(pastedSvg(`${svg} and more`)).toBeNull()
     expect(pastedSvg('<svgx></svgx>')).toBeNull()
     expect(pastedSvg('<p>text</p>')).toBeNull()
+    expect(pastedSvg(`<!-- a\n${svg}`)).toBeNull()
+    expect(pastedSvg(`<!DOCTYPE svg [<!ENTITY a "b">]>${svg}`)).toContain(svg)
+    expect(pastedSvg(`<!DOCTYPE svg [<!ENTITY a "b">${svg}`)).toBeNull()
+  })
+
+  // コメントをたくさん並べ、途中が SVG でない文字でも、すぐに答える（前から順に読み飛ばすので、長さに比例する時間）
+  it('answers quickly for long text of many comments that is not an SVG', () => {
+    for (const text of [`${'<!---->'.repeat(200_000)}x</svg>`, `${'<!-- -->\n'.repeat(100_000)}<!DOCTYPE svg>${'<!---->'.repeat(100_000)}<p></svg>`]) {
+      const start = performance.now()
+      expect(pastedSvg(text)).toBeNull()
+      expect(performance.now() - start).toBeLessThan(1000)
+    }
+    expect(pastedSvg(`${'<!---->'.repeat(100_000)}<svg></svg>`)).not.toBeNull()
   })
 
   it('places a loading link card centred on the point, and copies it as its URL', () => {
