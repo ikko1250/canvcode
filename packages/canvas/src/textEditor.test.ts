@@ -455,6 +455,37 @@ describe('rich text editing (MAI-74)', () => {
     expect(props.label).toBe('ab\n')
     expect(props.labelParagraphs[0].runs[0]).toMatchObject({ text: 'a', format: { color: '#ff0000' } })
   })
+
+  // 図形の文字の縦の揃え（MAI-115）。Canvas の描画（layout.ts の alignedTextTop）と同じ位置に置く。
+  // 文字の箱は余白 8 を除いた 84 × 84、1 行は 18px × 1.35 = 24.3px
+  it('places a shape label at the top, the middle or the bottom of its box, like the canvas', () => {
+    const { editor, layer, textEditor } = setup()
+    const geo = editor.makeNode('geo', { x: 0, y: 0, props: { shape: 'rect', w: 100, h: 100, label: 'a' } })
+    editor.createNodes([geo])
+    const placed = (labelVerticalAlign: string | undefined, label = 'a') => {
+      editor.transact('align', (tx) => tx.put({ ...editor.getNode(geo.id)!, props: { ...(editor.getNode(geo.id)!.props as object), label, labelParagraphs: richTextFromPlain(label), labelVerticalAlign } }))
+      textEditor.start(geo.id)
+      const element = editingElement(layer)
+      const result = { paddingTop: parseFloat(element.style.paddingTop), height: parseFloat(element.style.height), y: Number(element.style.transform.match(/,\s*([-\d.]+)\)$/)![1]) }
+      textEditor.finish()
+      return result
+    }
+    expect(placed('top')).toEqual({ paddingTop: 0, height: 84, y: 8 })
+    const middle = placed(undefined)
+    expect(middle.paddingTop).toBeCloseTo(29.85)
+    expect(middle.paddingTop + middle.height).toBeCloseTo(84)
+    expect(middle.y).toBe(8)
+    const bottom = placed('bottom')
+    expect(bottom.paddingTop).toBeCloseTo(84 - 24.3)
+    expect(bottom.height).toBeCloseTo(24.3)
+    // 箱からあふれる文字（5 行 = 121.5px）は、要素ごと上へずらす（中央なら上下に、下揃えなら上にはみ出す）
+    const lines = 'a\nb\nc\nd\ne'
+    expect(placed('top', lines)).toMatchObject({ paddingTop: 0, y: 8 })
+    const over = placed('middle', lines)
+    expect(over.paddingTop).toBe(0)
+    expect(over.y).toBeCloseTo(8 - (121.5 - 84) / 2)
+    expect(placed('bottom', lines).y).toBeCloseTo(8 - (121.5 - 84))
+  })
 })
 
 // 箇条書き・番号付きリスト（MAI-78）

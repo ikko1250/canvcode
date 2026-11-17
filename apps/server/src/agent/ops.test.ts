@@ -246,6 +246,40 @@ describe('edit_canvas', () => {
     expect(() => edit([{ op: 'defaults', type: 'note', shape: 'ellipse' }, { op: 'create', type: 'note', text: 'x' }])).toThrow(/ops\[1\] \(create\)/)
   })
 
+  it('sets the padding and the vertical align of shape text, and shows them in read_nodes (MAI-115)', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      // DADS の入力欄（上下 12・左右 16・左揃え）とボタン（上下 8・左右 16）
+      { op: 'create', type: 'geo', as: 'field', text: '山田', w: 320, h: 48, align: 'left', padding: { top: 12, right: 16, bottom: 12, left: 16 } },
+      { op: 'defaults', type: 'geo', padding: 8, verticalAlign: 'bottom' },
+      { op: 'create', type: 'geo', as: 'button', text: '送信', place: { below: '$field' }, w: 120, h: 40 },
+      { op: 'create', type: 'geo', as: 'plain', text: '既定', place: { below: '$button' }, padding: { top: 4, right: 4, bottom: 4, left: 4 }, verticalAlign: 'top' },
+    ]).created
+    const props = (id: string) => records.get(id)!.props as Record<string, unknown>
+    expect(props(made.field!)).toMatchObject({ labelAlign: 'left', labelPadding: { top: 12, right: 16, bottom: 12, left: 16 } })
+    expect(props(made.field!)).not.toHaveProperty('labelVerticalAlign')
+    expect(props(made.button!)).toMatchObject({ labelPadding: 8, labelVerticalAlign: 'bottom' })
+    // 四方が同じなら数値にまとめる。op に書いたものが既定より先
+    expect(props(made.plain!)).toMatchObject({ labelPadding: 4, labelVerticalAlign: 'top' })
+    edit([{ op: 'update', id: made.button!, padding: { top: 8, right: 16, bottom: 8, left: 16 }, verticalAlign: 'middle' }])
+    expect(props(made.button!)).toMatchObject({ labelPadding: { top: 8, right: 16, bottom: 8, left: 16 }, labelVerticalAlign: 'middle' })
+    // read_nodes は持っているものだけを返す
+    const [field, button] = readNodes(records, [made.field!, made.button!]).nodes
+    expect(field).toMatchObject({ labelPadding: { top: 12, right: 16, bottom: 12, left: 16 } })
+    expect(field).not.toHaveProperty('labelVerticalAlign')
+    expect(button).toMatchObject({ labelPadding: { top: 8, right: 16, bottom: 8, left: 16 }, labelVerticalAlign: 'middle' })
+    // 図形のほかには使えない。形の崩れた値は断る
+    expect(() => edit([{ op: 'create', type: 'text', text: 'x', padding: 8 }])).toThrow(/padding is not supported for text/)
+    expect(() => edit([{ op: 'create', type: 'note', text: 'x', verticalAlign: 'top' }])).toThrow(/verticalAlign is not supported for note/)
+    expect(() => edit([{ op: 'update', id: made.button!, verticalAlign: 'center' }])).toThrow(/verticalAlign/)
+    expect(() => edit([{ op: 'update', id: made.button!, padding: -1 }])).toThrow(/padding/)
+    expect(() => edit([{ op: 'update', id: made.button!, padding: { top: 8, bottom: 8 } }])).toThrow(/padding/)
+    // 説明（get_canvas_format）にも書いてある
+    const guide = canvasFormatGuide({ editable: true })
+    expect(guide).toContain('verticalAlign (top | middle | bottom; default middle)')
+    expect(guide).toContain('labelPadding (geo)')
+  })
+
   it('lays out a grid from the contents only, with names and the size of the largest cell in each column and row (MAI-105)', () => {
     const { records, edit } = setup()
     const made = edit([

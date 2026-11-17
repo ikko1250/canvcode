@@ -30,6 +30,7 @@ import {
   type TextAlign,
   type TextLayout,
   type TextStyle,
+  type VerticalAlign,
 } from './text/layout.ts'
 import { paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParagraph } from './text/richText.ts'
 
@@ -50,6 +51,8 @@ import { paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParag
 // 古いアプリが label だけを書き換えたら、labelParagraphs と食い違うので、label を正として読む（geoLabelParagraphs）
 // 文字の余白（labelPadding。スライド v2 のテンプレートのセル）も版は上げない（足しただけの省略できる値。ないときは四方 8。
 // 読めない値も 8）
+// 文字の縦の揃え（labelVerticalAlign。MAI-115）も版は上げない（足しただけの省略できる値。ないとき・読めない値は上下の中央）。
+// 新しい値を知らない古いアプリは、今までどおり上下の中央に描く
 export type GeoShape = 'rect' | 'ellipse' | BlockArrowShape
 export const GEO_SHAPES: readonly GeoShape[] = ['rect', 'ellipse', 'blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']
 
@@ -68,7 +71,10 @@ export interface GeoLabelProps {
 }
 
 // 図形の箱から文字の箱までの余白（ワールド座標の px）。数値なら四方が同じ
-export type GeoLabelPadding = number | { top: number; right: number; bottom: number; left: number }
+export type GeoLabelPadding = number | GeoLabelSides
+export type GeoLabelSides = { top: number; right: number; bottom: number; left: number }
+export type GeoLabelSide = keyof GeoLabelSides
+export const GEO_LABEL_SIDES: readonly GeoLabelSide[] = ['top', 'right', 'bottom', 'left']
 
 export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps, GeoLabelProps {
   shape: GeoShape
@@ -78,8 +84,11 @@ export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps, Geo
   // 角の半径（MAI-84。矩形だけ）。ワールド座標の px。数値なら 4 つの角が同じ、配列なら [左上, 右上, 右下, 左下]。
   // リサイズしても値は保ち、描くときに短い辺の半分まで（4 つ別々なら CSS の border-radius と同じ縮小の規則で）に収める
   cornerRadius?: CornerRadius
-  // 文字の余白（スライド v2）。ないときは四方 LABEL_PADDING（8）。描画・編集・あふれの判定（geoLabelBox）に同じく効く
+  // 文字の余白（スライド v2。デザインパネルでも変えられる。MAI-115）。ないときは四方 GEO_LABEL_PADDING（8）。
+  // 描画・編集・あふれの判定（geoLabelBox）に同じく効く
   labelPadding?: GeoLabelPadding
+  // 文字の縦の揃え（MAI-115）。余白を除いた文字の箱の上・上下の中央・下。ないときは上下の中央（geoLabelVerticalAlign）
+  labelVerticalAlign?: VerticalAlign
 }
 
 export type GeoNode = NodeRecord<GeoProps>
@@ -168,8 +177,9 @@ export const geoType = defineNodeType<GeoProps>({
       const style = geoLabelStyle(node.props)
       const layout = geoLabelLayout(node.props)
       const box = geoLabelBox(node.props)
-      if (layout.maxFontSize * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, style, box, 'middle')
-      else drawTextLayout(ctx, layout, style, box, 'middle')
+      const vertical = geoLabelVerticalAlign(node.props)
+      if (layout.maxFontSize * info.zoom < TEXT_BAR_THRESHOLD_PX) drawTextBars(ctx, layout, style, box, vertical)
+      else drawTextLayout(ctx, layout, style, box, vertical)
     }
   },
 
@@ -216,7 +226,7 @@ export const geoType = defineNodeType<GeoProps>({
     style: geoLabelStyle(node.props),
     box: geoLabelBox(node.props),
     autoWidth: false,
-    verticalAlign: 'middle',
+    verticalAlign: geoLabelVerticalAlign(node.props),
     update: (label) => withGeoLabel(node.props, richTextFromPlain(label)),
     rich: { paragraphs: geoLabelParagraphs(node.props), update: (paragraphs) => withGeoLabel(node.props, paragraphs) },
     deleteIfEmpty: false,
@@ -312,7 +322,8 @@ function insideBox(box: { x: number; y: number; w: number; h: number }, point: {
   return point.x >= box.x && point.y >= box.y && point.x <= box.x + box.w && point.y <= box.y + box.h
 }
 
-const LABEL_PADDING = 8
+// 文字の余白の既定（四方。ワールド座標の px）
+export const GEO_LABEL_PADDING = 8
 // 行の高さの既定（倍率）。行の高さを持たない図形はこれで描く
 export const GEO_LABEL_DEFAULT_LINE_HEIGHT = 1.35
 
@@ -362,10 +373,10 @@ export function geoLabelBox(props: GeoProps): Box {
   }
 }
 
-// 文字の余白（四方）。持たないもの・壊れたもの（数でない・負の値）は LABEL_PADDING
-export function geoLabelPadding(props: Pick<GeoProps, 'labelPadding'>): { top: number; right: number; bottom: number; left: number } {
+// 文字の余白（四方）。持たないもの・壊れたもの（数でない・負の値）は GEO_LABEL_PADDING
+export function geoLabelPadding(props: Pick<GeoProps, 'labelPadding'>): GeoLabelSides {
   const value = props.labelPadding
-  const side = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : LABEL_PADDING)
+  const side = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : GEO_LABEL_PADDING)
   if (typeof value === 'number') {
     const all = side(value)
     return { top: all, right: all, bottom: all, left: all }
@@ -374,8 +385,20 @@ export function geoLabelPadding(props: Pick<GeoProps, 'labelPadding'>): { top: n
   return { top: side(sides.top), right: side(sides.right), bottom: side(sides.bottom), left: side(sides.left) }
 }
 
+// 四方の余白を、props に持つ形にする（四方が同じなら数値にまとめる。角丸の toCornerRadius と同じ）
+export function toGeoLabelPadding(sides: GeoLabelSides): GeoLabelPadding {
+  const { top, right, bottom, left } = sides
+  return top === right && top === bottom && top === left ? top : { top, right, bottom, left }
+}
+
+// 文字の縦の揃え。持たないもの・読めない値は上下の中央（今までの見た目）
+export function geoLabelVerticalAlign(props: Pick<GeoProps, 'labelVerticalAlign'>): VerticalAlign {
+  const value = props.labelVerticalAlign
+  return value === 'top' || value === 'bottom' ? value : 'middle'
+}
+
 // 余白を除いた箱。縮めて 1 より小さくなる向きは、真ん中の 1 にする
-function paddedBox(box: Box, padding: { top: number; right: number; bottom: number; left: number }): Box {
+function paddedBox(box: Box, padding: GeoLabelSides): Box {
   const w = box.w - padding.left - padding.right
   const h = box.h - padding.top - padding.bottom
   return {

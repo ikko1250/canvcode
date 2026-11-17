@@ -56,6 +56,8 @@ export type FieldControl =
   | { kind: 'switch'; title: string; icon: ComponentType }
   // 角丸（MAI-84。値は CornerRadius、書くのは CornerRadiusChange）。4 つの角を一緒に変える入力と、角ごとの 4 つの入力（controls.tsx の CornerRadiusField）
   | { kind: 'cornerRadius' }
+  // 図形の文字の余白（MAI-115。値は四方の GeoLabelSides、書くのは LabelPaddingChange）。四方を一緒に変える入力と、辺ごとの 4 つの入力（controls.tsx の LabelPaddingField）
+  | { kind: 'labelPadding' }
   // 影の一覧（MAI-86。値は Shadow[]、書くのは ShadowsChange）。影ごとの種類・表示・ずらし・ぼかし・広がり・色と、＋・−（ShadowsField.tsx）
   | { kind: 'shadows' }
   // グラフのデータの表（MAI-88。値は ChartRow[]、書くのは ChartRowsChange）。行ごとのラベル・値・色と、足す・消す・並べ替え・CSV/TSV の貼り付け（ChartDataField.tsx）

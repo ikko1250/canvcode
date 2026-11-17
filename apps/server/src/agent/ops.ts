@@ -15,7 +15,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, hasNodeRichFormatting, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, richTextTargetOfType, SHORTCUT_CARD_HEIGHT, withRichTextMarkdown, slotsOf, solidPaint, toFill, type ArrowheadKind, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp } from '@canvcode/nodes'
+import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, hasNodeRichFormatting, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, richTextTargetOfType, SHORTCUT_CARD_HEIGHT, withRichTextMarkdown, slotsOf, solidPaint, toFill, toGeoLabelPadding, VERTICAL_ALIGNS, type ArrowheadKind, type GeoLabelSides, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp, type VerticalAlign } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -164,6 +164,9 @@ const style = {
   name: z.string().optional(),
   label: z.string().optional(),
   cornerRadius: finite.min(0).optional(),
+  // 図形の文字の余白（px。数値なら四方が同じ）と縦の揃え（MAI-115。geo の labelPadding・labelVerticalAlign）
+  padding: z.union([finite.min(0), z.strictObject({ top: finite.min(0), right: finite.min(0), bottom: finite.min(0), left: finite.min(0) })]).optional(),
+  verticalAlign: z.enum(VERTICAL_ALIGNS as [VerticalAlign, ...VerticalAlign[]]).optional(),
   w: finite.positive().optional(),
   h: finite.positive().optional(),
   ratio: z.enum(['16:9', '4:3']).optional(),
@@ -1464,6 +1467,8 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
   const align = take<string>('align')
   const shape = take<string>('shape')
   const cornerRadius = take<number>('cornerRadius')
+  const padding = take<number | GeoLabelSides>('padding')
+  const verticalAlign = take<string>('verticalAlign')
   const ratio = take<string>('ratio')
   const hidden = take<boolean>('hidden')
   const w = creating ? take<number>('w') : undefined
@@ -1517,6 +1522,9 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       set('labelAlign', align, 'align')
       set('shape', shape, 'shape')
       set('cornerRadius', cornerRadius, 'cornerRadius')
+      // 四方が同じなら数値にまとめる（デザインパネルと同じ形）
+      set('labelPadding', padding === undefined ? undefined : typeof padding === 'number' ? padding : toGeoLabelPadding(padding), 'padding')
+      set('labelVerticalAlign', verticalAlign, 'verticalAlign')
       set('w', w, 'w')
       set('h', h, 'h')
       break

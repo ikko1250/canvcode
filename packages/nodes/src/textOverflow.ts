@@ -8,7 +8,8 @@ import { textLayout, type TextProps } from './text/textNode.ts'
 // 折り返した文字の高さが箱に収まらなければ、あふれとして知らせる（印を出すのは呼び出し側）。
 // 測るのは描画と同じレイアウト（geoLabelLayout・textLayout。折り返し・行の高さ・文字間・フォントが同じ）。
 // 文字の幅は layout.ts と同じく、Canvas があれば measureText で、なければ（Node でのテスト）概算で測る。
-// - geo：ラベルの箱（余白を除いた geoLabelBox）の高さと比べる
+// - geo：ラベルの箱（余白を除いた geoLabelBox）の高さと比べる。縦の揃え（labelVerticalAlign。MAI-115）は、
+//   あふれた文字がどちらへはみ出すかを変えるだけで（描画と編集用の DOM は layout.ts の alignedTextTop）、あふれるかは変えない
 // - text：高さは文字から決まり、箱からはあふれない。呼び出し側が上限の高さ（maxHeight）を渡したときだけ、それと比べる
 //   （渡さなければ null）。autoWidth のテキストも、改行の分だけ高さが伸びるので同じく比べる
 // 文字を持たない型は null。文字が空なら、何も描かないのであふれない（contentHeight は 0）
