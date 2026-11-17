@@ -34,15 +34,22 @@ export type FrameNode = NodeRecord<FrameProps>
 // 名前の文字の大きさと、名前と枠の間（どちらも画面上の CSS ピクセル）
 const LABEL_FONT_PX = 12
 const LABEL_GAP_PX = 4
+// 名前の文字の縁取り（地の色。画面上の CSS ピクセル）。ほかのノードに重なっても読めるようにする
+const LABEL_HALO_PX = 3
+const LABEL_HALO_COLOR = '#fafbfc'
 
-// 以下の 3 つは、frame と同じ枠を持つ型（スライド）でも使う。name には名前の部分に描く文字列を渡す（スライドは番号を付けたもの）
+// 以下は、frame と同じ枠を持つ型（スライド）でも使う。name には名前の部分に描く文字列を渡す（スライドは番号を付けたもの）
+
+// 名前の部分（枠の左上の上）に当たるか
+export function frameLabelHitTest(w: number, name: string, point: Vec, zoom: number): boolean {
+  const labelH = (LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom
+  const labelW = Math.min(w, (name.length * LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom)
+  return point.x >= 0 && point.x <= labelW && point.y >= -labelH && point.y <= 0
+}
 
 // 名前の部分と、枠の中（枠の線の近くを含む）で当たる
 export function frameHitTest(w: number, h: number, name: string, point: Vec, margin: number, zoom: number): boolean {
-  // 名前の部分（枠の左上の上）
-  const labelH = (LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom
-  const labelW = Math.min(w, (name.length * LABEL_FONT_PX + LABEL_GAP_PX * 2) / zoom)
-  if (point.x >= 0 && point.x <= labelW && point.y >= -labelH && point.y <= 0) return true
+  if (frameLabelHitTest(w, name, point, zoom)) return true
   return point.x >= -margin && point.y >= -margin && point.x <= w + margin && point.y <= h + margin
 }
 
@@ -55,13 +62,21 @@ export function drawFrameBox(ctx: CanvasRenderingContext2D, w: number, h: number
   ctx.strokeRect(0, 0, w, h)
 }
 
-// 名前は、倍率によらず画面上で同じ大きさで、枠の左上の上に描く。color は文字の色（スライドの警告で変える）
+// 名前は、倍率によらず画面上で同じ大きさで、枠の左上の上に描く。color は文字の色（スライドの警告で変える）。
+// 型の renderLabel から呼ぶ（ほかのノードを描いたあとに描くので、隠れない）。重なったノードの上でも読めるように、地の色で縁取る
 export function drawFrameLabel(ctx: CanvasRenderingContext2D, name: string, zoom: number, color = '#656d76'): void {
+  ctx.save()
   ctx.font = `500 ${LABEL_FONT_PX / zoom}px ${TEXT_FONT_FAMILY}`
-  ctx.fillStyle = color
   ctx.textBaseline = 'bottom'
   ctx.textAlign = 'left'
-  ctx.fillText(name, 0, -LABEL_GAP_PX / zoom)
+  const y = -LABEL_GAP_PX / zoom
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = (LABEL_HALO_PX * 2) / zoom
+  ctx.strokeStyle = LABEL_HALO_COLOR
+  ctx.strokeText(name, 0, y)
+  ctx.fillStyle = color
+  ctx.fillText(name, 0, y)
+  ctx.restore()
 }
 
 export const frameType = defineNodeType<FrameProps>({
@@ -74,8 +89,13 @@ export const frameType = defineNodeType<FrameProps>({
 
   hitTest: (node, point, margin, zoom) => frameHitTest(node.props.w, node.props.h, node.props.name, point, margin, zoom),
 
+  hitLabel: (node, point, zoom) => frameLabelHitTest(node.props.w, node.props.name, point, zoom),
+
   render(ctx, node, info) {
     drawFrameBox(ctx, node.props.w, node.props.h, info.zoom)
+  },
+
+  renderLabel(ctx, node, info) {
     drawFrameLabel(ctx, node.props.name, info.zoom)
   },
 

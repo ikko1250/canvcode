@@ -1709,6 +1709,14 @@ export class Editor {
     // フレームの名前は枠の外にあるので、名前の部分も探す（名前の高さ分、上に広げて探す）
     const labelIds = this.index.search({ x: point.x - marginWorld, y: point.y, w: marginWorld * 2, h: 24 / zoom })
     const ordered = this.index.sortByOrder([...new Set([...ids, ...labelIds])])
+    // 名前（型の renderLabel で描くもの）は、ほかのノードより手前に描くので、先に見る
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const entry = this.index.get(ordered[i])
+      const hitLabel = entry && this.getType(entry.node).hitLabel
+      if (!entry || !hitLabel || (entry.node.locked && !options.includeLocked)) continue
+      if (this.clippedAway(entry, point)) continue
+      if (hitLabel(entry.node, applyMat(invert(entry.worldMatrix), point), zoom, { slides: this.slides })) return entry.node
+    }
     for (let i = ordered.length - 1; i >= 0; i--) {
       const entry = this.index.get(ordered[i])
       if (!entry || (entry.node.locked && !options.includeLocked)) continue

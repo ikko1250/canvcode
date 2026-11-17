@@ -28,11 +28,14 @@ body,
   height: 100%;
 }
 
-/* キャンバスと、その上に重ねる UI */
+/* キャンバスと、その上に重ねる UI。キャンバスに付いて動く欄（AI モードの付箋の欄・書いている間の印・書式のツールバーなど）は、
+   キャンバスの外にはみ出さないよう切る（右に並ぶ Claude のパネルの上に出さない）。clip はスクロールできる箱を作らないので、
+   フォーカスで中身がずれない。position: fixed のもの（右クリックメニュー・ダイアログなど）は切られない */
 .main {
   position: relative;
   flex: 1;
   min-width: 0;
+  overflow: clip;
 }
 
 .canvas-container {
