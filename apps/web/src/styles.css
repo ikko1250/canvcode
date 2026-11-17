@@ -711,6 +711,9 @@ body,
   background: var(--panel-border);
 }
 
+/* モーダルのダイアログ（確認のダイアログ・グラフのダイアログ）。見た目は DADS のモーダルダイアログに合わせる（MAI-108）：
+   背後の面は黒の 60 %、ダイアログは 1px の黒の枠・角丸 8px・影は elevation-3。
+   幅は中身に合わせ（ボタンが多いときに折り返さないように）、480px から 600px まで（本文の 1 行が長くなりすぎないように） */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -718,15 +721,19 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(31, 35, 40, 0.28);
+  background: rgba(0, 0, 0, 0.6);
 }
 
 .dialog {
-  width: min(460px, calc(100vw - 32px));
-  padding: 18px 20px;
+  width: fit-content;
+  min-width: min(480px, calc(100vw - 32px));
+  max-width: min(600px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 20px 24px;
   background: #ffffff;
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  border: 1px solid #000000;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px 3px rgba(0, 0, 0, 0.1), 0 1px 6px 0 rgba(0, 0, 0, 0.3);
 }
 
 .dialog h2 {
@@ -741,10 +748,16 @@ body,
   white-space: pre-line;
 }
 
+/* 「やめる」（取り消し）は左端、決める側は右寄せで、右ほど重要（主な選択肢が右端。DADS のボタンの並べ方） */
 .dialog-buttons {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.dialog-buttons .dialog-cancel {
+  margin-right: auto;
 }
 
 .dialog-buttons button {
@@ -775,6 +788,7 @@ body,
 /* CSV からグラフを作るダイアログ（plot/PlotDialog.tsx）。左に作り方、右にプレビュー */
 .dialog.plot-dialog {
   width: min(960px, calc(100vw - 32px));
+  max-width: none;
   max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
@@ -968,10 +982,6 @@ body,
   color: #9a6700;
   font-size: 12px;
   line-height: 1.5;
-}
-
-.dialog-buttons .plot-claude {
-  margin-right: auto;
 }
 
 @media (max-width: 720px) {
