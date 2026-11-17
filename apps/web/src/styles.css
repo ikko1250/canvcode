@@ -1,6 +1,6 @@
-/* 画面の色・影・角丸（MAI-111）。デジタル庁デザインシステム（DADS）のデザイントークン（@digital-go-jp/design-tokens の
+/* 画面の色・影・角丸（MAI-111）と文字（MAI-112）。デジタル庁デザインシステム（DADS）のデザイントークン（@digital-go-jp/design-tokens の
    tokens.css。main.tsx でこのファイルより先に読み込む）を、役目の名前で指す。画面の規則はここで決めた名前だけを使い、
-   色の値を直接書かない。キャンバスに描く色（packages/ の中）と、ユーザーが選んだ色そのものは対象にしない。
+   色の値や文字の大きさを直接書かない。キャンバスに描く色と文字（packages/ の中）と、ユーザーが選んだ色そのものは対象にしない。
    もとの値はコメントに残す（もとは GitHub の Primer に近い色で、DADS のトークンのいちばん近い段に寄せた） */
 :root {
   /* 文字。本文は Solid Gray-800（DADS の本文の色。白の上で 12.6:1）。もとは #1f2328（デザインパネルは #252a31） */
@@ -144,16 +144,67 @@
   --dp-radius: var(--radius-panel);
   --dp-control-height: 32px;
 
+  /* 文字（MAI-112）。DADS のタイポグラフィに合わせる。DADS では、本文と UI の文字は 16px 以上が基準で、14px は場所の制約が
+     あるときだけ、14px 未満は原則として使わない。この画面はパネル・メニュー・サイドバーなど密な所がほとんどなので、
+     ふだんの文字は 14px（Dense のスタイル）にし、読む文（Claude との会話・ダイアログの本文など）は 16px（Standard）にする。
+     もとは 13px が基準で、9〜12px の文字が 62 か所あった。
+     - 役目ごとの変数は font の一括指定（太さ 大きさ / 行間 書体）にする。行間をいつも決めるため（決めないと書体の既定の行間になり、
+       Noto Sans JP の既定は 1.45 と高いので、部品が高くなる）
+     - 字間（letter-spacing）は font に入らず、子に受け継がれる。0 でないのは読む文と見出し（Standard の 0.02em）だけなので、
+       その 2 つの役目を使う所には --letter-spacing-body・heading を並べて書き、その中で 14px の文字やコードに戻す所には
+       --letter-spacing-ui・code（0）を書く。ほかの所は 0 のまま（body の既定）
+     - 太さは DADS の 400（N）と 700（B）だけ（--font-weight-400・700。もとは 500・600 もあった）。太字にするときは、
+       font のあとに font-weight: var(--font-weight-700) を書く
+     - 大きさと行間は DADS のトークン（--font-size-*・--line-height-*。rem なので、1rem = 16px のまま使う。body の注を見る） */
+
+  /* 書体。DADS の Noto Sans JP（--font-family-sans）。同梱の可変フォント（main.tsx の @fontsource-variable/noto-sans-jp。
+     @font-face の名前は 'Noto Sans JP Variable'。キャンバスの文字と同じもので、packages/nodes の BUNDLED_FONTS）を先頭に置き、
+     どの端末でも同じ字形と幅で描く。欧文の字も Noto Sans JP で描く。読み込めないとき（ネットワークなど）は、端末の Noto Sans JP、
+     なければ端末のゴシック。もとは system-ui が先頭で、端末ごとに書体が変わっていた */
+  --font-family-ui: 'Noto Sans JP Variable', var(--font-family-sans);
+  /* 等幅（計測の表示・コード・キーの表示・ファイルの場所・vim）。DADS の Noto Sans Mono（--font-family-mono と同じ名前）を先頭に置き、
+     端末にないときは、もとの ui-monospace（macOS の SF Mono など）で描く。Noto Sans Mono は同梱しない：等幅で描くのは短い添え書きだけで、
+     日本語の字を持たない（日本語の字はほかの書体で描く）書体のために、Web フォントを読み込ませないため */
+  --font-family-code: 'Noto Sans Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* 画面の地の文字。Dns-14N-130（14px・行間 1.3・字間 0）。body に置くので、ほかを指定しない所はこれになる。
+     パネルやメニューの中の説明・見出し・知らせ・ツールの行など、折り返すことのある密な所の文字 */
+  --font-ui: var(--font-weight-400) var(--font-size-14) / var(--line-height-130) var(--font-family-ui);
+  --letter-spacing-ui: 0;
+  /* 1 行の部品の文字。Dns-14N-120（14px・行間 1.2・字間 0）。ボタン・タブ・札・入力欄・メニューやパイメニューの項目・パンくずなど。
+     DADS のメニューリスト（小）と同じ行間。DADS のボタンの Oneline（行間 1・字間 0.02em）にすると、上下の余白で高さを決めている
+     今のボタンや項目が 3〜4px 低くなるので、行間 1.2 にして、もとの高さをほぼ保つ（部品の大きさは MAI-113 で決める） */
+  --font-control: var(--font-weight-400) var(--font-size-14) / var(--line-height-120) var(--font-family-ui);
+  /* 1 行の部品の 16px。Dns-16N-120。iOS で入力欄にフォーカスしたときに拡大しないよう 16px にする入力欄（PDF のページ番号）と、
+     全画面のエディタの File の名前 */
+  --font-control-large: var(--font-weight-400) var(--font-size-16) / var(--line-height-120) var(--font-family-ui);
+  /* 読む文。Std-16N-170（16px・行間 1.7・字間 0.02em）。Claude との会話（頼んだ文・回答・説明）と、その入力欄、
+     ダイアログの本文、調べた語の意味 */
+  --font-body: var(--font-weight-400) var(--font-size-16) / var(--line-height-170) var(--font-family-ui);
+  --letter-spacing-body: 0.02em;
+  /* 見出し。ダイアログの名前は Std-20B-150（20px・行間 1.5）、Claude の回答の中の見出しと調べた語は Std-18B-160（18px・行間 1.6）。
+     字間はどちらも 0.02em。ダイアログの名前は、DADS のモーダルダイアログの例（24px）より 1 段小さくし、長い名前
+     （「…」が外で変更されました）でも、幅 480px のダイアログで 1 行に収まるようにする */
+  --font-heading: var(--font-weight-700) var(--font-size-20) / var(--line-height-150) var(--font-family-ui);
+  --font-subheading: var(--font-weight-700) var(--font-size-18) / var(--line-height-160) var(--font-family-ui);
+  --letter-spacing-heading: 0.02em;
+  /* 等幅。Mono-14N-150（14px・行間 1.5・字間 0）。計測の表示、Claude の回答の中のコード、許可を待っているコマンド */
+  --font-code: var(--font-weight-400) var(--font-size-14) / var(--line-height-150) var(--font-family-code);
+  --letter-spacing-code: 0;
+  /* 1 行の部品の中の等幅（右クリックのメニューのキー、全画面のエディタのファイルの場所・vim のボタンとモード）。Mono-14N-150 の大きさで、
+     行間は、並ぶ部品の文字（--font-control）と同じ 1.2（1.5 だと、その部品だけ高くなる） */
+  --font-code-control: var(--font-weight-400) var(--font-size-14) / var(--line-height-120) var(--font-family-code);
+  /* 全画面のエディタの本文（CodeMirror）の大きさ。本文の基準の 16px（もとは 15px）。書体と行間は CodeMirror の設定のまま */
+  --font-size-editor: var(--font-size-16);
+  /* 文字で描いたアイコン（×・‹・☰・↑↓）。文字ではなく印なので、DADS のテキストスタイルは当てず、大きさだけ DADS の段にする。
+     ふつうは 16px、全画面のエディタを閉じる × は 20px。行間は 1（もとと同じ。ボタンの高さを変えない） */
+  --font-icon: var(--font-weight-400) var(--font-size-16) / var(--line-height-100) var(--font-family-ui);
+  --font-icon-large: var(--font-weight-400) var(--font-size-20) / var(--line-height-100) var(--font-family-ui);
+
   /* フォーカスの枠の色（MAI-109）。DADS のフォーカスカラー（Black と Yellow-300） */
   --focus-ring-outer: var(--color-neutral-black);
   --focus-ring-inner: var(--color-primitive-yellow-300);
 
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    'Noto Sans JP',
-    sans-serif;
   color: var(--color-text);
 }
 
@@ -166,10 +217,11 @@ body,
   background: var(--color-canvas);
 }
 
-/* 文字の大きさは body で決める。:root（html）には置かない。DADS のトークンの角丸などは rem で書いてあり、
-   :root の文字の大きさを変えると 1rem がずれる（13px だと --border-radius-8 が 6.5px になる）ため、1rem はブラウザの既定の 16px のままにする */
+/* 文字の大きさと書体は body で決める（画面の地の文字 --font-ui。MAI-112）。:root（html）には置かない。DADS のトークンの角丸や
+   文字の大きさは rem で書いてあり、:root の文字の大きさを変えると 1rem がずれる（13px だと --border-radius-8 が 6.5px、
+   --font-size-14 が 11.4px になる）ため、1rem はブラウザの既定の 16px のままにする */
 body {
-  font-size: 13px;
+  font: var(--font-ui);
 }
 
 /* 入力欄のプレースホルダー（MAI-110）。Firefox は既定で薄くする（opacity）ので、1 に戻す */
@@ -205,6 +257,22 @@ body {
   outline: 4px solid var(--focus-ring-outer) !important;
   outline-offset: 2px !important;
   box-shadow: var(--focus-ring-shadow, 0 0 0 2px var(--focus-ring-inner)) !important;
+}
+
+/* 1 行に切って省略記号を付ける所（overflow: hidden）。行間を書体の既定（Noto Sans JP は 1.45）より狭くしたので（MAI-112）、
+   欧文の下に出る字（g・p・y）の端が、行間 1.2 で 1.6px、1.3 で 0.9px ほど行の外に出て切れる。上下に 2px の余白をとって切れないようにし、
+   負のマージンで、まわりの並びはもとのままにする */
+.design-panel-title,
+.design-font-name,
+.design-font-option-name,
+.file-editor-title,
+.file-editor-path,
+.claude-tasks-header > span:nth-child(2),
+.claude-task-name,
+.claude-model-option-description,
+.claude-attachment span {
+  padding-block: 2px;
+  margin-block: -2px;
 }
 
 .app {
@@ -249,11 +317,14 @@ body {
   -webkit-touch-callout: none;
 }
 
+/* 名前は 14px（MAI-112）。4 文字の名前（そのほか）は丸に 1 行で収まらないので、2 文字ずつの 2 行にする（balance で行の長さをそろえる。
+   ないブラウザでは「そのほ／か」になる）。丸の大きさは変えない（触れる範囲は MAI-113） */
 .pie-buttons button {
   width: 56px;
   height: 56px;
   padding: 0;
-  font-size: 12px;
+  font: var(--font-control);
+  text-wrap: balance;
   color: var(--color-text);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -288,7 +359,7 @@ body {
 .pie-hub span {
   position: absolute;
   top: calc(100% + 4px);
-  font-size: 11px;
+  font: var(--font-control);
   color: var(--color-text-sub);
   white-space: nowrap;
 }
@@ -322,6 +393,7 @@ body {
   border-radius: var(--radius-control);
   box-shadow: var(--shadow-menu);
   color: var(--color-text);
+  font: var(--font-control);
   white-space: nowrap;
 }
 
@@ -343,7 +415,6 @@ body {
 }
 
 .pie-more {
-  font-size: 11px;
   opacity: 0.7;
 }
 
@@ -355,8 +426,7 @@ body {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
-  font: 12px ui-monospace, monospace;
-  line-height: 1.6;
+  font: var(--font-code);
   pointer-events: none;
 }
 
@@ -408,7 +478,6 @@ body {
   left: 12px;
   bottom: 12px;
   color: var(--color-text-sub);
-  font-size: 12px;
   pointer-events: none;
 }
 
@@ -430,8 +499,6 @@ body {
   border-radius: var(--radius-control);
   background: var(--color-notice);
   color: var(--color-text-on-fill);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 /* AI の編集の知らせ（AgentToasts）。ほかの知らせの上に出し、「元に戻す」を押せるようにする */
@@ -452,7 +519,7 @@ body {
   border-radius: var(--radius-small);
   background: transparent;
   color: inherit;
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -505,7 +572,7 @@ body {
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -536,9 +603,8 @@ body {
 
 /* 今の文字の大きさ（MAI-50） */
 .style-palette .value {
-  font-size: 12px;
+  font: var(--font-control);
   color: var(--color-text-sub);
-  line-height: 1;
   padding: 2px 0;
 }
 
@@ -569,8 +635,7 @@ body {
   border-radius: var(--radius-small);
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -632,7 +697,7 @@ body {
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-menu);
   color: var(--color-text-sub);
-  font-size: 11px;
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   pointer-events: none;
@@ -645,13 +710,14 @@ body {
 
 /* ---- ワークスペース（MAI-29） ---- */
 
+/* 幅は、文字を 14px にしたとき（MAI-112）に、名前の見える字数がもと（240px・13px）とほぼ同じになるよう、文字が大きくなった分と
+   ボタン（ここに置く・元に戻す）が広がった分だけ広げる */
 .sidebar {
-  width: 240px;
+  width: 264px;
   flex-shrink: 0;
   overflow-y: auto;
   background: var(--color-surface-sub);
   border-right: 1px solid var(--color-border-subtle);
-  font-size: 13px;
 }
 
 .sidebar-header {
@@ -666,9 +732,7 @@ body {
   border: 1px solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1;
+  font: var(--font-icon);
   padding: 4px 8px;
   cursor: pointer;
   color: var(--color-text-sub);
@@ -683,10 +747,11 @@ body {
   padding: 4px 0 12px;
 }
 
+/* 未配置・ゴミ箱の見出し。Dns-14B-130 */
 .sidebar-section h3 {
   margin: 8px 12px 4px;
-  font-size: 11px;
-  font-weight: 600;
+  font: var(--font-ui);
+  font-weight: var(--font-weight-700);
   color: var(--color-text-sub);
 }
 
@@ -709,7 +774,7 @@ body {
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -717,10 +782,11 @@ body {
   background: var(--color-hover);
 }
 
+/* 今の Canvas は太字（DADS のメニューリストの今の項目と同じ。Dns-14B-120。もとは 500） */
 .sidebar-title.current {
   background: var(--color-selected);
   color: var(--color-accent);
-  font-weight: 500;
+  font-weight: var(--font-weight-700);
 }
 
 .sidebar-row.trashed .sidebar-title {
@@ -734,7 +800,7 @@ body {
   padding: 3px 5px;
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-control);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .sidebar-action {
@@ -744,8 +810,7 @@ body {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
-  font-size: 11px;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -756,7 +821,6 @@ body {
 .sidebar-empty {
   padding: 2px 14px;
   color: var(--color-text-sub);
-  font-size: 12px;
 }
 
 .topbar {
@@ -786,7 +850,7 @@ body {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
-  font-size: 13px;
+  font: var(--font-control);
 }
 
 .breadcrumb button {
@@ -795,7 +859,7 @@ body {
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--color-accent);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -803,17 +867,18 @@ body {
   background: var(--color-hover);
 }
 
+/* 今の Canvas の名前。Dns-14B-120（もとは 600） */
 .breadcrumb strong {
   padding: 2px 4px;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .breadcrumb-rename {
   padding: 1px 4px;
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-small);
-  font: inherit;
-  font-weight: 600;
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
 }
 
 .breadcrumb-sep {
@@ -826,12 +891,14 @@ body {
   border-radius: var(--radius-small);
   background: var(--color-warning-bg);
   color: var(--color-warning-strong);
-  font-size: 11px;
 }
 
+/* 幅は項目の名前に合わせる（max-content。画面の端に寄せても項目が折り返さないように）。位置は ContextMenu.tsx が、測った大きさで
+   画面に収める */
 .context-menu {
   position: fixed;
   z-index: 20;
+  width: max-content;
   min-width: 220px;
   padding: 4px;
   background: var(--color-surface);
@@ -851,7 +918,7 @@ body {
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
   text-align: left;
   cursor: pointer;
 }
@@ -865,7 +932,7 @@ body {
 }
 
 .context-menu kbd {
-  font: 11px ui-monospace, monospace;
+  font: var(--font-code-control);
   color: var(--color-text-sub);
 }
 
@@ -877,7 +944,9 @@ body {
 
 /* モーダルのダイアログ（確認のダイアログ・グラフのダイアログ）。見た目は DADS のモーダルダイアログに合わせる（MAI-108）：
    背後の面は黒の 60 %、ダイアログは 1px の黒の枠・角丸 8px・影は elevation-3。
-   幅は中身に合わせ（ボタンが多いときに折り返さないように）、480px から 600px まで（本文の 1 行が長くなりすぎないように） */
+   幅は中身に合わせ（ボタンが多いときに折り返さないように）、480px から 640px まで（本文の 1 行が長くなりすぎないように）。
+   上限は、文字を 14px（ボタン）と 16px（本文）にしたとき（MAI-112）に、ボタンが 4 つのダイアログ（外で変更された File の確認）が
+   1 行に収まるよう、600px から広げた。本文（16px）の 1 行はおよそ 36 字 */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -891,7 +960,7 @@ body {
 .dialog {
   width: fit-content;
   min-width: min(480px, calc(100vw - 32px));
-  max-width: min(600px, calc(100vw - 32px));
+  max-width: min(640px, calc(100vw - 32px));
   box-sizing: border-box;
   padding: 20px 24px;
   background: var(--color-surface);
@@ -902,12 +971,14 @@ body {
 
 .dialog h2 {
   margin: 0 0 8px;
-  font-size: 15px;
+  font: var(--font-heading);
+  letter-spacing: var(--letter-spacing-heading);
 }
 
 .dialog p {
   margin: 0 0 16px;
-  line-height: 1.6;
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
   color: var(--color-text);
   white-space: pre-line;
 }
@@ -930,7 +1001,7 @@ body {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -960,9 +1031,11 @@ body {
   outline: none;
 }
 
+/* 見出しの横のファイルの名前は、本文の大きさ（Std-16N-170） */
 .plot-dialog-file {
   margin-left: 8px;
-  font-weight: normal;
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
   color: var(--color-text-sub);
 }
 
@@ -993,7 +1066,6 @@ body {
 
 .plot-field > span {
   color: var(--color-text-sub);
-  font-size: 12px;
 }
 
 .plot-field input,
@@ -1001,7 +1073,7 @@ body {
   padding: 4px 6px;
   border: 1px solid var(--color-border-field);
   border-radius: var(--radius-control);
-  font: inherit;
+  font: var(--font-control);
   color: var(--color-text);
   background: var(--color-surface);
 }
@@ -1028,8 +1100,7 @@ body {
   border-radius: 999px;
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1060,9 +1131,10 @@ body {
   color: var(--color-text-sub);
 }
 
+/* small の既定の小さな文字（smaller）にしない */
 .plot-columns small {
   margin-left: auto;
-  font-size: 11px;
+  font-size: inherit;
 }
 
 .plot-style-info {
@@ -1070,8 +1142,6 @@ body {
   flex-direction: column;
   gap: 4px;
   color: var(--color-text-sub);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .plot-swatches {
@@ -1092,8 +1162,7 @@ body {
   border: none;
   background: none;
   color: var(--color-accent);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1144,8 +1213,6 @@ body {
   margin: 0;
   padding-left: 18px;
   color: var(--color-warning);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 @media (max-width: 720px) {
@@ -1192,7 +1259,6 @@ body {
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-panel);
   color: var(--color-text);
-  font-size: 13px;
 }
 
 .pdf-search input {
@@ -1200,7 +1266,7 @@ body {
   padding: 4px 8px;
   border: 1px solid var(--color-border-field);
   border-radius: var(--radius-control);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .pdf-search input:focus {
@@ -1213,6 +1279,7 @@ body {
   white-space: nowrap;
 }
 
+/* ↑・↓・× は文字で描いたアイコン（もとはブラウザの既定のボタンの文字の 13.33px） */
 .pdf-search button {
   width: 26px;
   height: 26px;
@@ -1221,6 +1288,7 @@ body {
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--color-text);
+  font: var(--font-icon);
   cursor: pointer;
 }
 
@@ -1242,8 +1310,8 @@ body {
   border-radius: var(--radius-small);
   background: var(--color-kind-markdown-bg);
   color: var(--color-kind-markdown);
-  font-size: 9px;
-  font-weight: 700;
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
   vertical-align: 1px;
 }
 
@@ -1261,10 +1329,12 @@ body {
   background: var(--color-surface);
 }
 
+/* 狭い画面で 1 行に収まらないときは、部品を次の行へ送る（MAI-112。もとは部品が縦に細く潰れ、右端の部品が画面の外に出ていた） */
 .file-editor-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   flex-shrink: 0;
   padding: 8px 14px;
   border-bottom: 1px solid var(--color-border-subtle);
@@ -1276,12 +1346,23 @@ body {
   border-radius: var(--radius-small);
   background: var(--color-kind-markdown-bg);
   color: var(--color-kind-markdown);
-  font-size: 10px;
-  font-weight: 700;
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
 }
 
+/* 開いている File の名前。Dns-16B-120 */
 .file-editor-title {
-  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  font: var(--font-control-large);
+  font-weight: var(--font-weight-700);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 部品の名前は折り返さない（収まらなければ、部品ごと次の行へ送る） */
+.file-editor-header button {
+  white-space: nowrap;
 }
 
 .file-editor-path {
@@ -1291,7 +1372,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-sub);
-  font: 12px ui-monospace, monospace;
+  font: var(--font-code-control);
 }
 
 /* 角を丸めるのに overflow: hidden を使うと、ボタンのフォーカスの枠が切れて見えなくなるので、端のボタンの角を丸める（MAI-109） */
@@ -1306,7 +1387,7 @@ body {
   border: none;
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1333,7 +1414,7 @@ body {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1352,7 +1433,7 @@ body {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text-sub);
-  font: 12px ui-monospace, monospace;
+  font: var(--font-code-control);
   cursor: pointer;
 }
 
@@ -1368,7 +1449,7 @@ body {
   border-top: 1px solid var(--color-border-subtle);
   background: var(--color-surface-markdown);
   color: var(--color-text-sub);
-  font: 12px ui-monospace, monospace;
+  font: var(--font-code-control);
 }
 
 .file-editor-close {
@@ -1377,8 +1458,7 @@ body {
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--color-text-sub);
-  font-size: 20px;
-  line-height: 1;
+  font: var(--font-icon-large);
   cursor: pointer;
 }
 
@@ -1405,7 +1485,7 @@ body {
   min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--color-border-subtle);
-  font-size: 15px;
+  font-size: var(--font-size-editor);
 }
 
 .file-editor-preview {
@@ -1486,7 +1566,7 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 999px;
   color: var(--color-text-sub);
-  font-size: 12px;
+  font: var(--font-control);
   pointer-events: none;
 }
 
@@ -1517,8 +1597,7 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 999px;
   color: var(--color-text-sub);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1547,12 +1626,12 @@ button.pdf-page-number:hover {
   border-radius: var(--radius-small);
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
-  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする（Claude の入力欄と同じ） */
-  font-size: 16px;
+  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする（Claude の入力欄と同じ）。Dns-16N-120 */
+  font: var(--font-control-large);
   text-align: center;
 }
 
+/* マウスの端末では、札の高さに収まる 14px にする（Dns-14N-120。もとは 12px） */
 @media (pointer: fine) {
   .pdf-page-number.editing {
     height: 24px;
@@ -1560,7 +1639,7 @@ button.pdf-page-number:hover {
 
   .pdf-page-number input {
     height: 16px;
-    font-size: 12px;
+    font: var(--font-control);
   }
 }
 
@@ -1583,7 +1662,6 @@ button.pdf-page-number:hover {
   border: 1px solid var(--color-error-border);
   border-radius: var(--radius-control);
   color: var(--color-error-strong);
-  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -1627,14 +1705,12 @@ button.pdf-page-number:hover {
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-menu);
   color: var(--color-text);
-  font-size: 12px;
-  line-height: 1.6;
   overflow-wrap: anywhere;
   pointer-events: auto;
 }
 
 .backup-status-detail-title {
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
   margin-bottom: 2px;
 }
 
@@ -1654,7 +1730,7 @@ button.pdf-page-number:hover {
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1668,7 +1744,6 @@ button.pdf-page-number:hover {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
-  font-size: 12px;
   color: var(--color-text);
   pointer-events: none;
 }
@@ -1690,8 +1765,6 @@ button.pdf-page-number:hover {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xlarge);
   box-shadow: var(--shadow-panel);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .design-panel-header {
@@ -1720,9 +1793,10 @@ button.pdf-page-number:hover {
   color: var(--dp-secondary);
 }
 
+/* 選んでいるものの名前。Dns-14B-130（もとは 500） */
 .design-panel-title {
   overflow: hidden;
-  font-weight: 500;
+  font-weight: var(--font-weight-700);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -1760,7 +1834,7 @@ button.pdf-page-number:hover {
   border-radius: var(--dp-radius);
   background: var(--dp-surface);
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1817,10 +1891,11 @@ button.pdf-page-number:hover {
   border-top: 1px solid var(--dp-line);
 }
 
+/* セクションの見出し。Dns-14B-130（もとは 11px・600） */
 .design-section h3 {
   margin: 0 0 8px;
-  font-size: 11px;
-  font-weight: 600;
+  font: var(--font-ui);
+  font-weight: var(--font-weight-700);
   color: var(--dp-secondary);
 }
 
@@ -1840,7 +1915,6 @@ button.pdf-page-number:hover {
   flex: 0 0 52px;
   padding-top: 7px;
   color: var(--dp-secondary);
-  font-size: 12px;
   user-select: none;
 }
 
@@ -1906,7 +1980,7 @@ button.pdf-page-number:hover {
   border: none;
   background: transparent;
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1922,7 +1996,6 @@ button.pdf-page-number:hover {
 .design-unit {
   padding-right: 8px;
   color: var(--dp-secondary);
-  font-size: 11px;
 }
 
 /* スライダー：細い溝（左から今の値までをアクセントの色）と丸いつまみ。--fill は Slider が入れる今の位置 */
@@ -2062,8 +2135,7 @@ button.pdf-page-number:hover {
   /* 下向きの山。線の色は .design-select と同じく --color-text-sub の値 */
   background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
   color: var(--dp-secondary);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   appearance: none;
   cursor: pointer;
 }
@@ -2256,7 +2328,6 @@ button.pdf-page-number:hover {
 
 .design-panel button.design-gradient-remove {
   height: 22px;
-  font-size: 11px;
 }
 
 /* 画像の塗り（MAI-83）。表示のしかたの切り替え・切り抜きの範囲・タイルの倍率・画像の選択 */
@@ -2275,7 +2346,6 @@ button.pdf-page-number:hover {
 .design-panel .design-image-modes button {
   min-width: 0;
   padding: 0 2px;
-  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -2290,7 +2360,6 @@ button.pdf-page-number:hover {
   padding: 0 2px;
   white-space: nowrap;
   height: 24px;
-  font-size: 11px;
 }
 
 .design-image-list {
@@ -2397,7 +2466,6 @@ button.pdf-page-number:hover {
 
 .design-color-group-title {
   margin-bottom: 3px;
-  font-size: 10px;
   color: var(--color-text-sub);
 }
 
@@ -2461,7 +2529,7 @@ button.pdf-page-number:hover {
   background: var(--dp-field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
   appearance: none;
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .design-select:focus {
@@ -2495,24 +2563,23 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
+/* 「!」は 14px（Dns-14B-120）。丸は、14px の字が収まるよう 16px にする（もとは 14px の丸に 10px の字） */
 .design-font-missing-mark {
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--color-warning-mark);
   color: var(--color-text);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 14px;
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
+  line-height: 16px;
   text-align: center;
 }
 
 /* 選んでいるフォントがこの端末にないときの説明 */
 .design-font-missing {
   margin-top: 3px;
-  font-size: 10px;
-  line-height: 1.4;
   color: var(--color-caution);
 }
 
@@ -2544,7 +2611,7 @@ button.pdf-page-number:hover {
 
 .design-font-popup-header {
   padding: 2px 4px 4px;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
   color: var(--color-text);
 }
 
@@ -2557,7 +2624,7 @@ button.pdf-page-number:hover {
   border: 1px solid var(--color-border-field);
   border-radius: var(--radius-small);
   color: var(--color-text);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .design-font-filter:focus {
@@ -2572,7 +2639,6 @@ button.pdf-page-number:hover {
 
 .design-font-group {
   padding: 4px 4px 2px;
-  font-size: 10px;
   color: var(--color-text-sub);
 }
 
@@ -2582,7 +2648,6 @@ button.pdf-page-number:hover {
   gap: 6px;
   padding: 3px 6px;
   border-radius: var(--radius-small);
-  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2596,11 +2661,10 @@ button.pdf-page-number:hover {
   text-overflow: ellipsis;
 }
 
+/* 項目はそのフォントで描くので、注意の文字は画面の書体に戻す */
 .design-font-option-missing {
   flex: none;
-  font-family: system-ui, sans-serif;
-  font-size: 10px;
-  font-weight: 400;
+  font: var(--font-ui);
   color: var(--color-caution);
 }
 
@@ -2610,7 +2674,7 @@ button.pdf-page-number:hover {
 
 .design-font-option.selected {
   color: var(--color-accent);
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .design-font-empty {
@@ -2619,7 +2683,6 @@ button.pdf-page-number:hover {
 }
 
 .design-panel button.design-font-local {
-  font-size: 11px;
   color: var(--color-text-sub);
 }
 
@@ -2736,7 +2799,6 @@ button.pdf-page-number:hover {
 .design-chart-message {
   margin: 0 0 6px;
   color: var(--dp-secondary);
-  font-size: 11px;
 }
 
 /* 表を貼り付ける欄（「貼り付け」のボタンで開く） */
@@ -2756,7 +2818,8 @@ button.pdf-page-number:hover {
   border-radius: var(--dp-radius);
   background: var(--dp-field);
   color: var(--dp-text);
-  font: inherit;
+  /* 何行かの表を貼る欄なので、地の文字（行間 1.3） */
+  font: var(--font-ui);
   resize: vertical;
 }
 
@@ -2806,7 +2869,7 @@ button.pdf-page-number:hover {
   border-radius: var(--dp-radius);
   background: var(--dp-field);
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .design-chart-cell.numeric {
@@ -2881,12 +2944,10 @@ button.pdf-page-number:hover {
   justify-content: space-between;
   gap: 6px;
   color: var(--color-text-sub);
-  font-size: 11px;
 }
 
 .design-panel .design-chart-auto button {
   border-color: var(--color-border-subtle);
-  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -2917,7 +2978,6 @@ button.pdf-page-number:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
   color: var(--color-text-sub);
 }
 
@@ -2925,8 +2985,7 @@ button.pdf-page-number:hover {
   padding: 4px 6px;
   border: 1px solid var(--color-border-field);
   border-radius: var(--radius-small);
-  font: inherit;
-  font-size: 14px;
+  font: var(--font-control);
   color: var(--color-text);
 }
 
@@ -2937,7 +2996,6 @@ button.pdf-page-number:hover {
 /* 大小を比べる条件で、数・日付として読めない値（MAI-94） */
 .table-filter-warning {
   margin: 4px 0 0;
-  font-size: 12px;
   color: var(--color-error);
 }
 
@@ -2953,8 +3011,9 @@ button.pdf-page-number:hover {
   border-radius: var(--radius-panel);
   background: var(--color-surface);
   box-shadow: var(--shadow-menu);
-  font-size: 13px;
-  line-height: 1.55;
+  /* 語の意味は読む文なので、本文の文字（Std-16N-170） */
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 /* APA の引用を作っている間の印（MAI-98）。引用を置くアイテムの右下に出す */
@@ -2970,7 +3029,7 @@ button.pdf-page-number:hover {
   background: var(--color-surface);
   box-shadow: var(--shadow-menu);
   color: var(--color-text-sub);
-  font-size: 12px;
+  font: var(--font-control);
   white-space: nowrap;
 }
 
@@ -2979,8 +3038,7 @@ button.pdf-page-number:hover {
   border: none;
   background: none;
   color: var(--color-text-sub);
-  font-size: 15px;
-  line-height: 1.2;
+  font: var(--font-icon);
   cursor: pointer;
 }
 
@@ -2990,9 +3048,11 @@ button.pdf-page-number:hover {
   gap: 8px;
 }
 
+/* 調べた語。Std-18B-160 */
 .word-lookup-phrase {
   flex: 1;
-  font-size: 15px;
+  font: var(--font-subheading);
+  letter-spacing: var(--letter-spacing-heading);
   overflow-wrap: anywhere;
 }
 
@@ -3001,8 +3061,7 @@ button.pdf-page-number:hover {
   border: none;
   background: none;
   color: var(--color-text-sub);
-  font-size: 16px;
-  line-height: 1.2;
+  font: var(--font-icon);
   cursor: pointer;
 }
 
@@ -3030,7 +3089,7 @@ button.pdf-page-number:hover {
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface-sub);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -3060,7 +3119,6 @@ button.pdf-page-number:hover {
   min-height: 0;
   background: var(--color-surface-sub);
   border-left: 1px solid var(--color-border-subtle);
-  font-size: 13px;
 }
 
 /* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない（冒頭の :focus-visible でも、枠を出さない所にしている） */
@@ -3097,8 +3155,7 @@ button.pdf-page-number:hover {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -3121,8 +3178,7 @@ button.pdf-page-number:hover {
 .claude-panel .claude-close {
   border-color: transparent;
   background: transparent;
-  font-size: 16px;
-  line-height: 1;
+  font: var(--font-icon);
 }
 
 .claude-log {
@@ -3133,10 +3189,13 @@ button.pdf-page-number:hover {
   padding: 12px;
 }
 
+/* 会話の欄の文字（頼んだ文・回答・説明）は、読む文なので本文の文字（Std-16N-170。MAI-112）。
+   ツールの行・状態・エラーなどの添え書きは、パネルの地の文字（14px）のまま */
 .claude-hint {
   margin: 0;
   color: var(--color-text-sub);
-  line-height: 1.6;
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 .claude-job + .claude-job {
@@ -3149,7 +3208,8 @@ button.pdf-page-number:hover {
   padding: 8px 10px;
   border-radius: var(--radius-panel);
   background: var(--color-accent-soft);
-  line-height: 1.5;
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 .claude-prompt-text {
@@ -3160,12 +3220,14 @@ button.pdf-page-number:hover {
 .claude-prompt-ref {
   margin-top: 4px;
   color: var(--color-text-sub);
-  font-size: 11px;
+  font: var(--font-ui);
+  letter-spacing: var(--letter-spacing-ui);
 }
 
 .claude-text {
   margin: 6px 0;
-  line-height: 1.6;
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
   overflow-wrap: anywhere;
 }
 
@@ -3189,18 +3251,33 @@ button.pdf-page-number:hover {
   padding-left: 20px;
 }
 
+/* 回答の中の見出しは Std-18B-160、それより下の段（h4〜h6）は本文の太字（Std-16B-170。ブラウザの既定だと 14px 未満になる） */
 .claude-text h1,
 .claude-text h2,
 .claude-text h3 {
   margin: 10px 0 4px;
-  font-size: 14px;
+  font: var(--font-subheading);
+  letter-spacing: var(--letter-spacing-heading);
+}
+
+.claude-text h4,
+.claude-text h5,
+.claude-text h6 {
+  margin: 10px 0 4px;
+  font-weight: var(--font-weight-700);
+}
+
+/* コードは Mono-14N-150 */
+.claude-text code,
+.claude-text pre {
+  font: var(--font-code);
+  letter-spacing: var(--letter-spacing-code);
 }
 
 .claude-text code {
   padding: 1px 4px;
   border-radius: var(--radius-small);
   background: var(--color-code);
-  font-size: 12px;
 }
 
 .claude-text pre {
@@ -3224,10 +3301,11 @@ button.pdf-page-number:hover {
   border: 1px solid var(--color-border-subtle);
 }
 
+/* 上下の 1px は、欧文の下に出る字の端が overflow: hidden で切れないための余白（MAI-112。行の間は、もとの margin 2px とほぼ同じ） */
 .claude-tool {
-  margin: 2px 0;
+  margin: 1px 0;
+  padding: 1px 0;
   color: var(--color-text-sub);
-  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3237,10 +3315,10 @@ button.pdf-page-number:hover {
   content: '・';
 }
 
+/* ツールの行の中の等幅。大きさと行間は行のまま（14px） */
 .claude-tool-detail {
   margin-left: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-family: var(--font-family-code);
 }
 
 .claude-tool.denied {
@@ -3260,7 +3338,6 @@ button.pdf-page-number:hover {
 .claude-wake {
   margin-bottom: 6px;
   color: var(--color-text-sub);
-  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -3277,7 +3354,6 @@ button.pdf-page-number:hover {
   padding: 6px 12px;
   border-top: 1px solid var(--color-border-subtle);
   color: var(--color-text-sub);
-  font-size: 12px;
 }
 
 .claude-tasks-header,
@@ -3303,7 +3379,6 @@ button.pdf-page-number:hover {
 .claude-error {
   margin: 6px 0;
   color: var(--color-error-strong);
-  font-size: 12px;
   white-space: pre-wrap;
 }
 
@@ -3313,7 +3388,6 @@ button.pdf-page-number:hover {
   gap: 6px;
   margin-top: 6px;
   color: var(--color-text-sub);
-  font-size: 12px;
 }
 
 .claude-status.failed {
@@ -3359,7 +3433,6 @@ button.pdf-page-number:hover {
   padding: 2px 4px 2px 10px;
   border-radius: 999px;
   background: var(--color-accent-soft);
-  font-size: 12px;
 }
 
 .claude-attachment span {
@@ -3387,16 +3460,10 @@ button.pdf-page-number:hover {
   padding: 8px;
   border: 1px solid var(--color-border-field);
   border-radius: var(--radius-control);
-  font: inherit;
-  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする */
-  font-size: 16px;
-  line-height: 1.5;
-}
-
-@media (pointer: fine) {
-  .claude-compose textarea {
-    font-size: 13px;
-  }
+  /* 会話と同じ読む文の文字（16px）。iOS で入力欄にフォーカスしたときに拡大しないよう、16px より小さくしない。
+     もとはマウスの端末（pointer: fine）で 13px にしていたが、会話の文字が 16px になったので、どの端末でも 16px にする（MAI-112） */
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 .claude-compose-actions {
@@ -3457,11 +3524,12 @@ button.pdf-page-number:hover {
   align-items: flex-start;
 }
 
+/* 行の名前（Model・Effort）。Dns-14N-120 の文字を、溝の高さ（24px）の行の真ん中に置く */
 .claude-model-name {
   flex-shrink: 0;
   width: 60px;
   height: 24px;
-  font-size: 14px;
+  font: var(--font-control);
   line-height: 24px;
   white-space: nowrap;
 }
@@ -3473,7 +3541,6 @@ button.pdf-page-number:hover {
   border-radius: var(--radius-small);
   background: transparent;
   color: inherit;
-  font-size: 14px;
   text-align: left;
 }
 
@@ -3489,11 +3556,12 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
+/* 段の名前。Dns-14N-130（欧文の下に出る字（p・g）が溝に重ならないよう、行間 1 にしない）。
+   名前は位置を決めて重ねるので、行の高さを書く */
 .claude-stops-labels {
   position: relative;
-  height: 15px;
-  font-size: 11px;
-  line-height: 15px;
+  font: var(--font-ui);
+  height: calc(1em * var(--line-height-130));
 }
 
 .claude-stops-label {
@@ -3504,7 +3572,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-stops-selected {
-  font-weight: 700;
+  font-weight: var(--font-weight-700);
   transition: left 120ms ease;
 }
 
@@ -3553,7 +3621,6 @@ button.pdf-page-number:hover {
   border: none;
   background: transparent;
   color: var(--color-text-sub);
-  font-size: 11px;
   text-decoration: underline;
 }
 
@@ -3575,7 +3642,9 @@ button.pdf-page-number:hover {
   border-top: 1px solid var(--color-selected-border);
 }
 
+/* 名前と説明の 2 行なので、地の文字（Dns-14N-130） */
 .claude-panel .claude-model-option {
+  font: var(--font-ui);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -3596,19 +3665,14 @@ button.pdf-page-number:hover {
   background: var(--color-selected-on-soft);
 }
 
-.claude-model-option-label {
-  font-size: 13px;
-}
-
 .claude-model-option[aria-checked='true'] .claude-model-option-label {
-  font-weight: 700;
+  font-weight: var(--font-weight-700);
 }
 
 .claude-model-option-description {
   max-width: 100%;
   overflow: hidden;
   color: var(--color-text-sub);
-  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3621,7 +3685,6 @@ button.pdf-page-number:hover {
 .claude-model-note {
   margin: 0;
   color: var(--color-text-sub);
-  font-size: 12px;
 }
 
 .claude-panel .claude-send {
@@ -3637,8 +3700,7 @@ button.pdf-page-number:hover {
   border-radius: 999px;
   background: var(--color-surface);
   color: var(--color-text);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   cursor: pointer;
   pointer-events: auto;
 }
@@ -3669,12 +3731,11 @@ button.pdf-page-number:hover {
   padding: 8px 12px;
   border-top: 1px solid var(--color-warning-border);
   background: var(--color-warning-bg);
-  font-size: 12px;
 }
 
 .claude-permissions-header {
   color: var(--color-warning-strong);
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .claude-permission {
@@ -3700,7 +3761,6 @@ button.pdf-page-number:hover {
 
 .claude-permission-left {
   color: var(--color-text-sub);
-  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -3711,8 +3771,7 @@ button.pdf-page-number:hover {
   padding: 4px 6px;
   border-radius: var(--radius-small);
   background: var(--color-surface-sub);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font: var(--font-code);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
