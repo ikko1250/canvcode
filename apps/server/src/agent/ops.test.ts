@@ -280,6 +280,46 @@ describe('edit_canvas', () => {
     expect(guide).toContain('labelPadding (geo)')
   })
 
+  it('applies a DADS text style by name to text, notes and shape text, and shows it in read_nodes (MAI-114)', () => {
+    const { records, edit } = setup()
+    const made = edit([
+      { op: 'create', type: 'text', as: 'title', text: '見出し', textStyle: 'Std-32B-150' },
+      { op: 'create', type: 'note', as: 'memo', md: '本文の**太字**', textStyle: 'Std-16N-170' },
+      { op: 'defaults', type: 'geo', textStyle: 'Oln-16B-100' },
+      { op: 'create', type: 'geo', as: 'button', text: '送信', w: 120, h: 40 },
+      // op に書いた大きさは、既定のスタイルより先
+      { op: 'create', type: 'geo', as: 'sized', text: '大', w: 120, h: 40, fontSize: 30 },
+      { op: 'create', type: 'text', as: 'code', text: 'npm test', textStyle: 'Mono-14N-150' },
+    ]).created
+    const props = (id: string) => records.get(id)!.props as Record<string, unknown>
+    expect(props(made.title!)).toMatchObject({ fontSize: 32, fontWeight: 700, lineHeight: { unit: 'multiplier', value: 1.5 }, letterSpacing: 0.01 })
+    expect(props(made.memo!)).toMatchObject({ fontSize: 16, fontWeight: 400, lineHeight: { unit: 'multiplier', value: 1.7 }, letterSpacing: 0.02 })
+    // md はスタイルを当てたあとの既定に対して読む（太字は run に残る）
+    expect(JSON.stringify(props(made.memo!).paragraphs)).toContain('"fontWeight":700')
+    expect(props(made.button!)).toMatchObject({ labelFontSize: 16, labelFontWeight: 700, labelLineHeight: { unit: 'multiplier', value: 1 }, labelLetterSpacing: 0.02 })
+    expect(props(made.sized!)).toMatchObject({ labelFontSize: 30 })
+    expect(props(made.sized!)).not.toHaveProperty('labelLineHeight')
+    expect(props(made.code!)).toMatchObject({ fontSize: 14, fontFamily: 'monospace' })
+    // 書き換え：範囲ごとの大きさ・太さを外して、ノードの既定にする
+    edit([{ op: 'update', id: made.memo!, textStyle: 'Dns-14B-120' }])
+    expect(props(made.memo!)).toMatchObject({ fontSize: 14, fontWeight: 700, lineHeight: { unit: 'multiplier', value: 1.2 }, letterSpacing: 0 })
+    expect(JSON.stringify(props(made.memo!).paragraphs)).not.toContain('fontWeight')
+    // read_nodes は、ノードの文字が当たっているスタイルの名前を返す
+    const [title, memo, button, sized] = readNodes(records, [made.title!, made.memo!, made.button!, made.sized!]).nodes
+    expect(title).toMatchObject({ textStyle: 'Std-32B-150' })
+    expect(memo).toMatchObject({ textStyle: 'Dns-14B-120' })
+    expect(button).toMatchObject({ textStyle: 'Oln-16B-100' })
+    expect(sized).not.toHaveProperty('textStyle')
+    // 知らない名前・大きさとの両方・文字のない型は断る
+    expect(() => edit([{ op: 'update', id: made.title!, textStyle: 'Std-17N-171' }])).toThrow(/textStyle/)
+    expect(() => edit([{ op: 'update', id: made.title!, textStyle: 'Std-17N-170', fontSize: 20 }])).toThrow(/either fontSize or textStyle/)
+    expect(() => edit([{ op: 'create', type: 'frame', name: 'f', textStyle: 'Std-17N-170' }])).toThrow(/textStyle is not supported for frame/)
+    // 説明（get_canvas_format）にも書いてある
+    const guide = canvasFormatGuide({ editable: true })
+    expect(guide).toContain('fontSize or textStyle')
+    expect(guide).toContain('"Std-17N-170"')
+  })
+
   it('lays out a grid from the contents only, with names and the size of the largest cell in each column and row (MAI-105)', () => {
     const { records, edit } = setup()
     const made = edit([

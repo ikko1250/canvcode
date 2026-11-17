@@ -35,6 +35,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - 文字を編集中に範囲を選んでいれば、文字の色・大きさ・フォントはその範囲の値を見せ（行間はノード単位。MAI-76）、その範囲に当てる（MAI-74、MAI-75）。
 //   パネルにフォーカスが移っても文字の編集は終わらない（data-keep-text-editing）。値を入れ終えたら、編集中の文字にフォーカスを戻す
 // - 太字・斜体・下線・取り消し線（MAI-79）は 1 行にボタンを並べる（control の group）。編集中は Ctrl+B などと同じに切り替える（textToggles.ts）
+// - 「文字」の一番上は DADS のテキストスタイル（MAI-114）の一覧。選ぶと大きさ・太さ・行間・字間をまとめて変える（Undo 1 回）
 // - 色の項目はカラーピッカー（ColorPicker.tsx。MAI-81）。「このキャンバスで使った色」は、ピッカーを開いたときに今の Canvas から集める
 // - 塗りのグラデーション（MAI-82）を開いている間は、図形の上にハンドルを出す（session.paintEditing。1 つの図形を選んでいるときだけ）
 // - 画像の塗り（MAI-83）の画像は、CanvasView の Asset（ワークスペースの画像・ファイル・クリップボード）から選ぶ（paintImageSource）
@@ -321,7 +322,7 @@ function FieldView(props: {
     case 'chartData':
       return <ChartDataField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'select':
-      return <SelectField label={field.label} icon={field.icon} value={value} editor={editor} options={control.options} onDone={onDone} />
+      return <SelectField label={field.label} icon={field.icon} value={value} editor={editor} options={control.options} otherLabel={control.otherLabel} onDone={onDone} />
     case 'switch':
       return <SwitchField label={field.label} icon={field.icon} value={value} editor={editor} title={control.title} buttonIcon={control.icon} />
     case 'toggle':
