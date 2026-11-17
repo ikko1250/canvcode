@@ -28,6 +28,10 @@ import { FONT_WEIGHT_BOLD, listMarkers, listOf, richTextFromPlain, type TextPara
 
 export type TextAlign = 'left' | 'center' | 'right'
 
+// 文字の縦の揃え（文字を置く箱の上・上下の中央・下）。テキスト・付箋は上、図形の文字は選べる（MAI-115。ないときは中央）
+export type VerticalAlign = 'top' | 'middle' | 'bottom'
+export const VERTICAL_ALIGNS: readonly VerticalAlign[] = ['top', 'middle', 'bottom']
+
 export interface TextStyle {
   fontSize: number
   // 行の高さ（fontSize に対する倍率。CSS の line-height: 1.35 と同じく、文字ごとにその文字の大きさに掛ける）
@@ -134,6 +138,14 @@ export function stepFontSize(fontSize: number, direction: 1 | -1): number {
 // 古いレコードには align がないので、なければ左揃えとして扱う（MAI-50）
 export function textAlignOf(align: TextAlign | undefined): TextAlign {
   return align ?? 'left'
+}
+
+// 高さ height の文字を、box の中で縦に揃えたときの文字の上端（描画・編集用の DOM・下線で共通）。
+// 箱より高い文字は、上下の中央なら上下に、下揃えなら上にはみ出す
+export function alignedTextTop(box: { y: number; h: number }, height: number, verticalAlign: VerticalAlign): number {
+  if (verticalAlign === 'middle') return box.y + (box.h - height) / 2
+  if (verticalAlign === 'bottom') return box.y + box.h - height
+  return box.y
 }
 
 // 1 行の中の、同じ書式の文字の続き（MAI-74）
@@ -572,10 +584,10 @@ export function textDecorations(
   layout: TextLayout,
   style: Pick<TextStyle, 'align'>,
   box: { x: number; y: number; w: number; h: number },
-  verticalAlign: 'top' | 'middle',
+  verticalAlign: VerticalAlign,
 ): TextDecorationLine[] {
   const out: TextDecorationLine[] = []
-  const top = verticalAlign === 'middle' ? box.y + (box.h - layout.height) / 2 : box.y
+  const top = alignedTextTop(box, layout.height, verticalAlign)
   for (const line of layout.lines) {
     const left = lineLeft(line, style.align, box)
     const baseline = top + line.top + line.baseline
@@ -600,18 +612,18 @@ export function lineLeft(line: Pick<TextLine, 'width' | 'indent'>, align: TextAl
   return align === 'left' ? x : align === 'center' ? x + (w - line.width) / 2 : x + w - line.width
 }
 
-// box（ローカル座標）の中に描く。verticalAlign が middle なら、上下の中央に置く。
+// box（ローカル座標）の中に描く。縦は verticalAlign に揃える（上・上下の中央・下。alignedTextTop）。
 // 文字の色・大きさは行の中の書式ごと（segments）。style は揃えに使う
 export function drawTextLayout(
   ctx: CanvasRenderingContext2D,
   layout: TextLayout,
   style: TextStyle,
   box: { x: number; y: number; w: number; h: number },
-  verticalAlign: 'top' | 'middle',
+  verticalAlign: VerticalAlign,
 ): void {
   ctx.textBaseline = 'alphabetic'
   ctx.textAlign = 'left'
-  const top = verticalAlign === 'middle' ? box.y + (box.h - layout.height) / 2 : box.y
+  const top = alignedTextTop(box, layout.height, verticalAlign)
   let font = ''
   // 文字間（MAI-77）。ctx.letterSpacing が使えれば指定して描き、使えなければ文字ごとにずらして描く。描き終えたら戻す
   const native = hasNativeLetterSpacing(ctx)
@@ -680,10 +692,10 @@ export function drawTextBars(
   layout: TextLayout,
   style: TextStyle,
   box: { x: number; y: number; w: number; h: number },
-  verticalAlign: 'top' | 'middle',
+  verticalAlign: VerticalAlign,
 ): void {
   ctx.fillStyle = 'rgba(120, 120, 120, 0.45)'
-  const top = verticalAlign === 'middle' ? box.y + (box.h - layout.height) / 2 : box.y
+  const top = alignedTextTop(box, layout.height, verticalAlign)
   for (const line of layout.lines) {
     if (!line.width) continue
     const barH = line.fontSize * 0.6

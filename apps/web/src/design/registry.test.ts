@@ -6,6 +6,7 @@ import { designSections, propField, registerDesignSection, visibleSections, type
 import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartShowLabelsField, chartShowPercentField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
 import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
 import { arrowheadsField, applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, fontWeightField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { labelPaddingField, labelVerticalAlignField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -55,7 +56,8 @@ describe('design sections', () => {
   it('puts the text of a shape in the text tab, with the same fields as a text', () => {
     const { geo, text } = setup()
     const label = visibleSections([geo]).filter((s) => s.tab === '文字')
-    expect(label.map((s) => s.section.id)).toEqual(['text'])
+    // 書式の下に、図形だけの縦の揃えと余白（MAI-115）
+    expect(label.map((s) => s.section.id)).toEqual(['text', 'label-box'])
     expect(label[0].fields.map((f) => f.field.id)).toEqual(fieldIds([text]).filter((id) => id.startsWith('text.')))
     // 書式を持たない図形は既定（18px・中央揃え・行間 1.35 倍）
     const value = (id: string) => label[0].fields.find((f) => f.field.id === id)!.value
@@ -145,7 +147,7 @@ describe('design sections', () => {
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'corner', 'fill', 'test-border', 'stroke', 'effects', 'text', 'layer'])
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'corner', 'fill', 'test-border', 'stroke', 'effects', 'text', 'label-box', 'layer'])
     expect(visibleSections([geo], all)[3].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
@@ -630,6 +632,79 @@ describe('corner radius field (MAI-84)', () => {
     editor.createNodes([other])
     const value = visibleSections([editor.getNode(geo.id)!, editor.getNode(other.id)!]).find((s) => s.section.id === 'corner')!.fields[0].value
     expect(value).toEqual({ kind: 'mixed', values: [0, [4, 0, 0, 0]] })
+  })
+})
+
+describe('shape label box fields (MAI-115)', () => {
+  const labelBox = (nodes: NodeRecord[]) => visibleSections(nodes).find((s) => s.section.id === 'label-box')
+  const sides = (top: number, right: number, bottom: number, left: number) => ({ top, right, bottom, left })
+
+  it('shows the vertical align and the padding in the text tab of every shape, also without text', () => {
+    const { editor, geo, geo2, text, note } = setup()
+    const arrow = editor.makeNode('geo', { x: 0, y: 800, props: { shape: 'blockArrow', w: 200, h: 100, label: '' } })
+    for (const shape of [geo, geo2, arrow]) {
+      const section = labelBox([shape])!
+      expect(section.tab).toBe('文字')
+      expect(section.fields.map((f) => f.field.id)).toEqual(['label.verticalAlign', 'label.padding'])
+    }
+    // 持たない図形は、上下の中央・四方 8
+    expect(labelBox([geo])!.fields.map((f) => f.value)).toEqual([
+      { kind: 'same', value: 'middle' },
+      { kind: 'same', value: sides(8, 8, 8, 8) },
+    ])
+    // テキスト・付箋には出さない（一緒に選んでも出さない）
+    expect(labelBox([text])).toBeUndefined()
+    expect(labelBox([note])).toBeUndefined()
+    expect(labelBox([geo, text])).toBeUndefined()
+  })
+
+  it('writes the vertical align, and the padding of all sides as a number or of one side, each undoable', () => {
+    const { editor, geo } = setup()
+    const props = () => editor.getNode(geo.id)!.props as { labelVerticalAlign?: string; labelPadding?: unknown }
+    editNodes(editor, [geo.id], (node) => labelVerticalAlignField.write(node, 'bottom'), 'design')
+    expect(props().labelVerticalAlign).toBe('bottom')
+    // DADS の入力欄：上下 12・左右 16
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: null, value: 12 }), 'design')
+    expect(props().labelPadding).toBe(12)
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: 'left', value: 16 }), 'design')
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: 'right', value: 16 }), 'design')
+    expect(props().labelPadding).toEqual(sides(12, 16, 12, 16))
+    // 四方が同じになれば数値にまとめる。負の値は 0
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, sides(16, 16, 16, 16)), 'design')
+    expect(props().labelPadding).toBe(16)
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: 'top', value: -4 }), 'design')
+    expect(props().labelPadding).toEqual(sides(0, 16, 16, 16))
+    // 同じ値なら変えない（持たない図形に既定の 8 を書いても変えない）
+    const node = editor.getNode(geo.id)!
+    expect(labelPaddingField.write(node, { side: 'right', value: 16 })).toBe(node)
+    expect(labelVerticalAlignField.write(node, 'bottom')).toBe(node)
+    const plain = editor.makeNode('geo', { x: 0, y: 600, props: { shape: 'rect', w: 100, h: 100 } })
+    expect(labelPaddingField.write(plain, { side: null, value: 8 })).toBe(plain)
+    expect(labelVerticalAlignField.write(plain, 'middle')).toBe(plain)
+    // 1 回の変更が Undo 1 回で戻る
+    editor.undo()
+    expect(props().labelPadding).toBe(16)
+    editor.undo()
+    expect(props().labelPadding).toEqual(sides(12, 16, 12, 16))
+    for (let i = 0; i < 3; i++) editor.undo()
+    expect(props()).not.toHaveProperty('labelPadding')
+    expect(props().labelVerticalAlign).toBe('bottom')
+    editor.undo()
+    expect(props()).not.toHaveProperty('labelVerticalAlign')
+  })
+
+  it('reports mixed values when the selected shapes differ', () => {
+    const { editor, geo, geo2 } = setup()
+    editNodes(editor, [geo2.id], (node) => labelPaddingField.write(labelVerticalAlignField.write(node, 'top'), { side: 'top', value: 24 }), 'design')
+    const [align, padding] = labelBox([editor.getNode(geo.id)!, editor.getNode(geo2.id)!])!.fields.map((f) => f.value)
+    expect(align).toEqual({ kind: 'mixed', values: ['middle', 'top'] })
+    expect(padding).toEqual({ kind: 'mixed', values: [sides(8, 8, 8, 8), sides(24, 8, 8, 8)] })
+    // 両方に同じ変更を当て、1 回の Undo で両方戻る
+    editNodes(editor, [geo.id, geo2.id], (node) => labelPaddingField.write(node, { side: 'left', value: 16 }), 'design')
+    expect(labelBox([editor.getNode(geo.id)!, editor.getNode(geo2.id)!])!.fields[1].value).toEqual({ kind: 'mixed', values: [sides(8, 8, 8, 16), sides(24, 8, 8, 16)] })
+    editor.undo()
+    expect((editor.getNode(geo.id)!.props as { labelPadding?: unknown }).labelPadding).toBeUndefined()
+    expect((editor.getNode(geo2.id)!.props as { labelPadding?: unknown }).labelPadding).toEqual(sides(24, 8, 8, 8))
   })
 })
 

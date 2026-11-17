@@ -22,6 +22,7 @@ import {
   RotateCw,
   Ruler,
   Shapes,
+  SquareSquare,
   Strikethrough,
   Table2,
   Tag,
@@ -111,6 +112,14 @@ import {
   type TextParagraph,
   type TextRunFormat,
   type TextToggleFormat,
+  GEO_LABEL_PADDING,
+  geoLabelPadding,
+  geoLabelVerticalAlign,
+  toGeoLabelPadding,
+  VERTICAL_ALIGNS,
+  type GeoLabelPadding,
+  type GeoLabelSide,
+  type VerticalAlign,
 } from '@canvcode/nodes'
 import { arrowPivot, sameValue, type SharedValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
@@ -1017,6 +1026,73 @@ export const listStyleField: DesignField<TextListStyle | 'none'> = {
 // 図形の文字を選んでいれば「文字」のタブに出す（テキスト・付箋だけなら、ほかのセクションと同じタブ）
 export const TEXT_SECTION_TAB = '文字'
 
+// ---- 図形の文字の配置（MAI-115） ----
+
+// 図形の文字の縦の揃えと余白。DADS の部品（入力欄・ボタン・通知バナーなど）を図形で組むとき、文字の位置を合わせる。
+// - どの形（矩形・楕円・ブロック矢印）にも出す。余白は形の箱（ブロック矢印は軸の中）から測る（geo.ts の geoLabelBox）
+// - 文字が空の図形にも出す（「文字」のタブのほかの項目と同じ。文字を打つ前に決めておける）
+// - 「文字」のタブの、書式の下に出す（図形だけの項目なので、テキスト・付箋と一緒に選べば出さない）
+const isGeo = (node: NodeRecord): node is NodeRecord<GeoProps> => node.type === 'geo'
+
+// 縦の揃えのアイコン：枠の中の 2 行の文字（上・上下の中央・下）
+function verticalAlignIcon(top: number) {
+  return strokeIcon((color) => [
+    createElement('rect', { key: 'box', x: 2.5, y: 2.5, width: 11, height: 11, rx: 1.5, fill: 'none', stroke: color, strokeWidth: 1, opacity: 0.6 }),
+    createElement('line', { key: 'a', x1: 5, x2: 11, y1: top, y2: top, stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' }),
+    createElement('line', { key: 'b', x1: 5, x2: 9, y1: top + 2.5, y2: top + 2.5, stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' }),
+  ])
+}
+
+const VERTICAL_ALIGN_OPTIONS: SegmentOption[] = [
+  { value: 'top', title: '上揃え', icon: verticalAlignIcon(5) },
+  { value: 'middle', title: '上下中央揃え', icon: verticalAlignIcon(6.75) },
+  { value: 'bottom', title: '下揃え', icon: verticalAlignIcon(8.5) },
+]
+
+// 縦の揃えは、名前を出さずに 1 行に（row。上の「揃え」の行と同じく、左端からボタンを並べる）
+const LABEL_ALIGN_ROW = 'label.align'
+
+// 縦の揃え。値を持たない図形は上下の中央（geo.ts の geoLabelVerticalAlign）
+export const labelVerticalAlignField: DesignField<VerticalAlign> = {
+  id: 'label.verticalAlign',
+  label: '縦の揃え',
+  row: LABEL_ALIGN_ROW,
+  control: { kind: 'segmented', options: VERTICAL_ALIGN_OPTIONS },
+  appliesTo: isGeo,
+  read: (node) => geoLabelVerticalAlign(node.props as GeoProps),
+  write(node, value) {
+    if (!isGeo(node) || !VERTICAL_ALIGNS.includes(value) || geoLabelVerticalAlign(node.props) === value) return node
+    return { ...node, props: { ...node.props, labelVerticalAlign: value } }
+  },
+}
+
+// 余白。値は四方（geo.ts の geoLabelPadding。持たない図形は四方 8）。
+// 書くときは、余白そのもののほか、side が null なら四方を一緒に（数値で持つ）、そうでなければその辺だけ（四方が同じになれば数値にまとめる）。
+// 角丸（CornerRadiusChange）と同じ形
+export type LabelPaddingChange = GeoLabelPadding | { side: GeoLabelSide | null; value: number }
+
+export const labelPaddingField: DesignField<LabelPaddingChange> = {
+  id: 'label.padding',
+  label: '余白',
+  icon: SquareSquare,
+  control: { kind: 'labelPadding' },
+  appliesTo: isGeo,
+  read: (node) => geoLabelPadding(node.props as GeoProps),
+  write(node, change) {
+    if (!isGeo(node)) return node
+    let next: GeoLabelPadding
+    if (typeof change === 'object' && 'side' in change) {
+      if (!Number.isFinite(change.value)) return node
+      const value = Math.max(0, change.value)
+      next = change.side === null ? value : toGeoLabelPadding({ ...geoLabelPadding(node.props), [change.side]: value })
+    } else {
+      next = toGeoLabelPadding(geoLabelPadding({ labelPadding: change }))
+    }
+    if (sameValue(next, node.props.labelPadding ?? GEO_LABEL_PADDING)) return node
+    return { ...node, props: { ...node.props, labelPadding: next } }
+  },
+}
+
 function textSectionTab(nodes: readonly NodeRecord[]): string | undefined {
   return nodes.some((node) => node.type === 'geo') ? TEXT_SECTION_TAB : undefined
 }
@@ -1069,6 +1145,8 @@ export const builtinDesignSections: DesignSection[] = [
   { id: 'stroke', title: '線', order: 200, hideTitle: true, fields: [strokeColorField, strokeWidthField, strokeAlignField, strokeDashField, strokeDashLengthField, strokeDashGapField, arrowheadsField] },
   { id: 'effects', title: '効果', order: 250, hideTitle: true, fields: [shadowsField] },
   { id: 'text', title: '文字', order: 300, tab: textSectionTab, hideTitle: true, fields: [fontFamilyField, fontWeightField, fontSizeField, boldField, italicField, underlineField, strikethroughField, textColorField, lineHeightField, letterSpacingField, textAlignField, listTypeField, listStyleField] },
+  // 図形の文字の縦の揃えと余白（MAI-115）。「文字」のタブの、書式の下
+  { id: 'label-box', title: '文字の配置', order: 310, tab: TEXT_SECTION_TAB, hideTitle: true, fields: [labelVerticalAlignField, labelPaddingField] },
   { id: 'layer', title: 'レイヤー', order: 900, hideTitle: true, footer: true, fields: [opacityField] },
 
 ]

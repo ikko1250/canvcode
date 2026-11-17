@@ -15,7 +15,7 @@ import {
   type TextSelection,
 } from '@canvcode/canvas'
 import { IMAGE_VARIANT_SIZES, TEXT_TOGGLE_FORMATS } from '@canvcode/nodes'
-import { CornerRadiusField, LineHeightField, NumberField, SegmentedField, SelectField, SwitchField, ToggleGroup, type ValueEditor } from './controls.tsx'
+import { CornerRadiusField, LabelPaddingField, LineHeightField, NumberField, SegmentedField, SelectField, SwitchField, ToggleGroup, type ValueEditor } from './controls.tsx'
 import { ColorField, PaintField } from './ColorPicker.tsx'
 import { UsedColorsContext } from './usedColorsContext.ts'
 import { FontField } from './FontField.tsx'
@@ -43,6 +43,7 @@ import { applyTextToggle, editingTextOf, editingToggleValue } from './textToggle
 // - グラフ（MAI-88）は「グラフ」にデータの表（ChartDataField。行の色・ラベル・値、CSV/TSV の貼り付け）、ドーナツの穴・開始角度・ラベルの表示
 // - 図形の中の文字の書式は「文字」のタブに分ける（section.tab）。タブが 2 つ以上あるときだけ、見出しにタブを並べる。
 //   図形の文字を編集している間は、選んでいなければ「文字」のタブを開く
+// - 図形の文字の縦の揃えと余白（MAI-115）も「文字」のタブの、書式の下に出す。余白は角丸と同じく、四方を一緒に変える入力と辺ごとの 4 つの入力（LabelPaddingField）
 // - 図形の「形」（MAI-87）で矩形・楕円・ブロック矢印を切り替え、ブロック矢印の軸の太さなどを % で変える。図形の上の形のハンドルでも変えられる（blockArrowHandles.ts）
 // - 見出しはノードの種類のアイコンと名前。タブはアイコンのボタン。行の左は項目のアイコン（DesignField.icon。名前はツールチップ）で、
 //   見出しを出さないセクション（hideTitle）は区切り線だけで分ける。不透明度など footer のセクションは、タブによらず一番下に出す
@@ -313,6 +314,8 @@ function FieldView(props: {
       return <LineHeightField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'cornerRadius':
       return <CornerRadiusField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
+    case 'labelPadding':
+      return <LabelPaddingField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'shadows':
       return <ShadowsField label={field.label} icon={field.icon} value={value} editor={editor} onDone={onDone} />
     case 'chartData':

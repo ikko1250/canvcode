@@ -1,11 +1,11 @@
 import { Fragment, useEffect, useRef, useState, type ComponentType, type CSSProperties, type HTMLAttributes, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { isImeEvent, type SharedValue } from '@canvcode/canvas'
-import { CornerDownLeft, CornerDownRight, CornerUpLeft, CornerUpRight, Scan } from 'lucide-react'
-import { CORNER_RADIUS_MAX, cornerRadii, type CornerRadius, type LineHeight, type LineHeightUnit } from '@canvcode/nodes'
+import { CornerDownLeft, CornerDownRight, CornerUpLeft, CornerUpRight, PanelBottom, PanelLeft, PanelRight, PanelTop, Scan } from 'lucide-react'
+import { CORNER_RADIUS_MAX, GEO_LABEL_SIDES, cornerRadii, type CornerRadius, type GeoLabelSide, type GeoLabelSides, type LineHeight, type LineHeightUnit } from '@canvcode/nodes'
 import { clampLineHeight, parseLineHeight, parseNumber } from './parse.ts'
 import { useDraft } from './useDraft.ts'
 import type { DesignIcon, FieldControl, SegmentOption, SelectOption } from './registry.ts'
-import type { CornerRadiusChange, LineHeightChange } from './sections.ts'
+import type { CornerRadiusChange, LabelPaddingChange, LineHeightChange } from './sections.ts'
 
 // デザインパネルの入力部品（MAI-73）。数字・切り替えボタン・スライダー（色は ColorPicker.tsx）。
 // 部品は値を直接書き換えず、ValueEditor を通して変える：
@@ -168,56 +168,139 @@ const CORNER_RADIUS_CONTROL: NumberControl = { kind: 'number', min: 0, max: CORN
 const CORNER_CELL_CONTROL: NumberControl = { kind: 'number', min: 0, max: CORNER_RADIUS_MAX, step: 1, unit: 'px' }
 const CORNER_LABELS = ['左上', '右上', '右下', '左下'] as const
 const CORNER_ICONS = [CornerUpLeft, CornerUpRight, CornerDownRight, CornerDownLeft] as const
+// 2×2 に、角の位置どおりに並べる（左上・右上 / 左下・右下）
+const CORNER_CELLS = [0, 1, 3, 2].map((corner) => ({ index: corner, label: CORNER_LABELS[corner], icon: CORNER_ICONS[corner] }))
 
-// 角丸の半径。4 つの角を一緒に変える入力と、角ごとの 4 つの入力に切り替えるボタン（Figma と同じ）。
-// 一緒の入力は、角や選んだノードで値が違えば「混在」。角ごとの入力も、選んだノードでその角の値が違えば「混在」。
-// 角ごとに出すかはパネルの見た目だけで、値は変えない（角の値が違うノードを選んだときは、はじめから角ごとに出す）
+// 角丸の半径。4 つの角を一緒に変える入力と、角ごとの 4 つの入力（QuadNumberField）
 export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'> & { editor: ValueEditor<CornerRadiusChange> }) {
   const { label, icon, value, editor, onDone } = props
-  const all = (value.kind === 'same' ? [value.value] : value.values).map(cornerRadii)
-  const [separate, setSeparate] = useState(() => all.some((radii) => radii.some((r) => r !== radii[0])))
-  const shared = (values: number[]): SharedValue<number> =>
-    values.every((v) => v === values[0]) ? { kind: 'same', value: values[0] } : { kind: 'mixed', values }
-  const editorFor = (corner: number | null): ValueEditor<number> => ({
-    set: (radius) => editor.set({ corner, radius }),
-    preview: (radius) => editor.preview({ corner, radius }),
-    end: (commit) => editor.end(commit),
-  })
+  return (
+    <QuadNumberField
+      label={label}
+      icon={icon}
+      values={(value.kind === 'same' ? [value.value] : value.values).map(cornerRadii)}
+      editorFor={(corner) => ({
+        set: (radius) => editor.set({ corner, radius }),
+        preview: (radius) => editor.preview({ corner, radius }),
+        end: (commit) => editor.end(commit),
+      })}
+      control={CORNER_RADIUS_CONTROL}
+      cellControl={CORNER_CELL_CONTROL}
+      separateTitle="角ごとに変える"
+      separateIcon={Scan}
+      cells={CORNER_CELLS}
+      className="design-corner-radius"
+      testId="corner-radius-field"
+      onDone={onDone}
+    />
+  )
+}
+
+// ---- 図形の文字の余白（MAI-115） ----
+
+// スライダーは 0〜64 px（入力は LABEL_PADDING_MAX まで）
+const LABEL_PADDING_MAX = 1000
+const LABEL_PADDING_CONTROL: NumberControl = { kind: 'number', min: 0, max: LABEL_PADDING_MAX, step: 1, unit: 'px', slider: true, sliderMax: 64 }
+const LABEL_PADDING_CELL_CONTROL: NumberControl = { kind: 'number', min: 0, max: LABEL_PADDING_MAX, step: 1, unit: 'px' }
+const LABEL_SIDE_LABELS: Record<GeoLabelSide, string> = { top: '上', right: '右', bottom: '下', left: '左' }
+const LABEL_SIDE_ICONS: Record<GeoLabelSide, DesignIcon> = { top: PanelTop, right: PanelRight, bottom: PanelBottom, left: PanelLeft }
+// 2×2 に、上下を 1 段目・左右を 2 段目に並べる（DADS の「上下 12・左右 16」のように、向きごとにそろえることが多い）
+const LABEL_PADDING_CELLS = (['top', 'bottom', 'left', 'right'] as const).map((side) => ({
+  index: GEO_LABEL_SIDES.indexOf(side),
+  label: LABEL_SIDE_LABELS[side],
+  icon: LABEL_SIDE_ICONS[side],
+}))
+
+// 辺ごとに変えるボタンのアイコン：角を空けた 4 つの辺（角丸の「角ごと」の Scan と対になる形。lucide と同じ線）
+function SidesIcon(props: { size?: number; strokeWidth?: number }) {
+  const { size = 24, strokeWidth = 2 } = props
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" aria-hidden>
+      <path d="M8 3h8M21 8v8M16 21H8M3 16V8" />
+    </svg>
+  )
+}
+
+// 図形の文字の余白。四方を一緒に変える入力と、辺ごとの 4 つの入力（QuadNumberField。角丸と同じ操作）
+export function LabelPaddingField(props: Omit<FieldProps<GeoLabelSides>, 'editor'> & { editor: ValueEditor<LabelPaddingChange> }) {
+  const { label, icon, value, editor, onDone } = props
+  return (
+    <QuadNumberField
+      label={label}
+      icon={icon}
+      values={(value.kind === 'same' ? [value.value] : value.values).map((sides) => GEO_LABEL_SIDES.map((side) => sides[side]))}
+      editorFor={(index) => {
+        const side = index === null ? null : GEO_LABEL_SIDES[index]
+        return {
+          set: (v) => editor.set({ side, value: v }),
+          preview: (v) => editor.preview({ side, value: v }),
+          end: (commit) => editor.end(commit),
+        }
+      }}
+      control={LABEL_PADDING_CONTROL}
+      cellControl={LABEL_PADDING_CELL_CONTROL}
+      separateTitle="辺ごとに変える"
+      separateIcon={SidesIcon}
+      cells={LABEL_PADDING_CELLS}
+      className="design-label-padding"
+      testId="label-padding-field"
+      onDone={onDone}
+    />
+  )
+}
+
+// ---- 4 つの値（角丸・図形の文字の余白） ----
+
+// 4 つの値を一緒に変える入力と、別々の 4 つの入力に切り替えるボタン（Figma と同じ）。角丸の角（MAI-84）と、図形の文字の余白の辺（MAI-115）。
+// 一緒の入力は、4 つの値や選んだノードで値が違えば「混在」。別々の入力も、選んだノードでその値が違えば「混在」。
+// 別々に出すかはパネルの見た目だけで、値は変えない（4 つの値が違うノードを選んだときは、はじめから別々に出す）
+function QuadNumberField(props: {
+  label: string
+  icon?: DesignIcon
+  // 選んだノードごとの 4 つの値
+  values: readonly (readonly number[])[]
+  // index が null なら 4 つを一緒に、そうでなければその値だけを変える
+  editorFor: (index: number | null) => ValueEditor<number>
+  control: NumberControl
+  cellControl: NumberControl
+  // 別々に変えるボタンの名前とアイコン
+  separateTitle: string
+  separateIcon: DesignIcon
+  // 別々の入力。2 列の格子に、この順に（左から右、上から下へ）並べる
+  cells: readonly { index: number; label: string; icon?: DesignIcon }[]
+  className: string
+  testId: string
+  onDone?: () => void
+}) {
+  const { label, icon, values, editorFor, control, cellControl, separateTitle, separateIcon: SeparateIcon, cells, className, testId, onDone } = props
+  const [separate, setSeparate] = useState(() => values.some((four) => four.some((v) => v !== four[0])))
+  const shared = (list: number[]): SharedValue<number> => (list.every((v) => v === list[0]) ? { kind: 'same', value: list[0] } : { kind: 'mixed', values: list })
   const toggle = (
     <button
-      title="角ごとに変える"
-      aria-label="角ごとに変える"
+      title={separateTitle}
+      aria-label={separateTitle}
       aria-pressed={separate}
       className={separate ? 'design-icon-button active' : 'design-icon-button'}
       onPointerDown={(e) => e.preventDefault()}
       onClick={() => setSeparate(!separate)}
     >
-      <Scan size={16} strokeWidth={1.75} aria-hidden />
+      <SeparateIcon size={16} strokeWidth={1.75} aria-hidden />
     </button>
   )
   return (
-    <div className="design-corner-radius" data-testid="corner-radius-field">
-      <NumberField
-        label={label}
-        icon={icon}
-        value={shared(all.flat())}
-        editor={editorFor(null)}
-        control={CORNER_RADIUS_CONTROL}
-        onDone={onDone}
-        extra={toggle}
-      />
+    <div className={className} data-testid={testId}>
+      <NumberField label={label} icon={icon} value={shared(values.flat())} editor={editorFor(null)} control={control} onDone={onDone} extra={toggle} />
       {separate && (
         <div className="design-corner-grid">
-          {/* 2×2 に、角の位置どおりに並べる（左上・右上 / 左下・右下） */}
-          {[0, 1, 3, 2].map((corner) => (
+          {cells.map((cell) => (
             <NumberField
-              key={corner}
+              key={cell.index}
               className="design-corner-cell"
-              label={CORNER_LABELS[corner]}
-              icon={CORNER_ICONS[corner]}
-              value={shared(all.map((radii) => radii[corner]))}
-              editor={editorFor(corner)}
-              control={CORNER_CELL_CONTROL}
+              label={cell.label}
+              icon={cell.icon}
+              value={shared(values.map((four) => four[cell.index]))}
+              editor={editorFor(cell.index)}
+              control={cellControl}
               onDone={onDone}
             />
           ))}
@@ -226,7 +309,6 @@ export function CornerRadiusField(props: Omit<FieldProps<CornerRadius>, 'editor'
     </div>
   )
 }
-
 
 // ---- 行の高さ（MAI-76） ----
 
