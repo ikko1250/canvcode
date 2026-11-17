@@ -594,7 +594,7 @@ function OpacityInput(props: { label: string; value: number | null; onCommit: (o
     if (parsed !== null) onCommit(toOpacity(parsed))
   }
   return (
-    <span className="design-number design-opacity">
+    <label className="design-number design-opacity">
       <input
         type="text"
         inputMode="decimal"
@@ -624,6 +624,6 @@ function OpacityInput(props: { label: string; value: number | null; onCommit: (o
         }}
       />
       <span className="design-unit">%</span>
-    </span>
+    </label>
   )
 }

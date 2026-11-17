@@ -259,6 +259,91 @@ body {
   box-shadow: var(--focus-ring-shadow, 0 0 0 2px var(--focus-ring-inner)) !important;
 }
 
+/* 触れられる範囲（当たり。MAI-113）。DADS では、ボタンは見えない部分を含めて 44×44px 以上を確保する。WCAG 2.2 の AA（2.5.8）は
+   24×24px 以上。指で押すスマホ・タブレットでも使うので、見た目の大きさは変えずに、押せる範囲だけを広げる。
+   - 広げ方はここの 1 つ：押せる要素の中に見えない ::before を置き（position: absolute）、要素の外へはみ出させる。::before は
+     その要素の一部として当たるので、押すとその要素を押したことになり、:hover も効く。フォーカスの枠（MAI-109）は要素の枠に沿ったまま
+   - 広げる量は、44px（--target-size）に足りない分の半分ずつを、上下と左右に（要素の大きさから計算する。44px 以上なら広げない）。
+     隣の押せるものの当たりと重ならないよう、各方向に広げる上限を --target-reach-x・--target-reach-y（片側だけは
+     --target-reach-top・-bottom・-left・-right）で決める。並んだボタンなら、間の隙間の半分。上限は枠（border）の内側から数えるので、
+     枠のある要素は、外へ出る量が枠の太さだけ減る（1px の枠なら、隙間の半分に 1px を足して書く）。重なった所でどちらに当たるかは、
+     要素の重なり順で決まり、見た目からは分からないので、重ねない
+   - パネルやメニューの中の部品は、パネルの枠の外（キャンバス）へ出さない（上限をパネルの余白までにする）。キャンバスの上に 1 つで
+     浮かぶボタン（サイドバーを開く・Claude・右上の札など）は、まわりのキャンバスへ 44px まで広げる
+   - 要素は position: relative にする（:where で詳細度を 0 にしているので、ほかで absolute などにしている要素はそのまま）。
+     overflow: hidden の要素は ::before が切れるので、使わない（色の見本は、中の span を clip-path で切る）
+   - スクロールする入れ物の中では、::before もスクロールの範囲に数えられる。入れ物の内側の余白より外へ出さない
+   - ::before を置けない入力欄は、label で包んで label を広げる（.design-font-filter-field）。デザインパネルの数字の欄
+     （.design-number）は、枠を描く外側を label にして、単位の文字など枠の中のどこを押しても入力に移るようにする。
+     スライダー（input type=range）は要素そのものを押すので、要素を上下に高くし、同じだけの負の margin で並びを保つ
+     （溝とつまみは content-box の上下の中央に描かれるので、見た目は変わらない。.design-slider）。後ろに続く要素の下に
+     隠れないよう、position: relative にする */
+:where(
+    .sidebar-open,
+    .breadcrumb button,
+    .claude-toggle,
+    .backup-status,
+    .design-panel-toggle,
+    button.pdf-page-number,
+    .loading-screen button,
+    .agent-notice button,
+    .cite-pending-cancel,
+    .sidebar-header button,
+    .sidebar-action,
+    .dialog-buttons button,
+    .plot-kinds button,
+    .plot-link,
+    .design-panel button,
+    .design-gradient-bar,
+    .design-font-filter-field,
+    .style-palette button,
+    .text-format-toolbar button,
+    .pdf-search button,
+    .file-editor-header button,
+    .word-lookup-close,
+    .word-lookup-actions button,
+    .claude-panel button,
+    .claude-stops-track
+  ) {
+  position: relative;
+}
+
+:where(
+    .sidebar-open,
+    .breadcrumb button,
+    .claude-toggle,
+    .backup-status,
+    .design-panel-toggle,
+    button.pdf-page-number,
+    .loading-screen button,
+    .agent-notice button,
+    .cite-pending-cancel,
+    .sidebar-header button,
+    .sidebar-action,
+    .dialog-buttons button,
+    .plot-kinds button,
+    .plot-link,
+    .design-panel button,
+    .design-gradient-bar,
+    .design-font-filter-field,
+    .style-palette button,
+    .text-format-toolbar button,
+    .pdf-search button,
+    .file-editor-header button,
+    .word-lookup-close,
+    .word-lookup-actions button,
+    .claude-panel button,
+    .claude-stops-track
+  )::before {
+  content: '';
+  position: absolute;
+  /* top・bottom の % は入れ物（この要素）の高さ、left・right の % は幅に対して。上限の 22px は、大きさ 0 の要素を 44px にする量 */
+  top: max(calc(var(--target-reach-top, var(--target-reach-y, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+  bottom: max(calc(var(--target-reach-bottom, var(--target-reach-y, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+  left: max(calc(var(--target-reach-left, var(--target-reach-x, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+  right: max(calc(var(--target-reach-right, var(--target-reach-x, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+}
+
 /* 1 行に切って省略記号を付ける所（overflow: hidden）。行間を書体の既定（Noto Sans JP は 1.45）より狭くしたので（MAI-112）、
    欧文の下に出る字（g・p・y）の端が、行間 1.2 で 1.6px、1.3 で 0.9px ほど行の外に出て切れる。上下に 2px の余白をとって切れないようにし、
    負のマージンで、まわりの並びはもとのままにする */
@@ -270,6 +355,7 @@ body {
 .claude-tasks-header > span:nth-child(2),
 .claude-task-name,
 .claude-model-option-description,
+.claude-model-button > span,
 .claude-attachment span {
   padding-block: 2px;
   margin-block: -2px;
@@ -514,6 +600,9 @@ body {
 }
 
 .agent-notice button {
+  /* 当たり（MAI-113）：高さ 23px のボタンを、上下は知らせの余白（8px）まで、左右は文字との間（12px）の半分まで広げる（枠の 1px を足す） */
+  --target-reach-x: 7px;
+  --target-reach-y: 9px;
   padding: 2px 10px;
   border: 1px solid var(--color-border-on-dark);
   border-radius: var(--radius-small);
@@ -565,6 +654,10 @@ body {
 }
 
 .style-palette button {
+  /* 当たり（MAI-113）：ボタン（28px）と色（22px）は 4px の間で並ぶので、上下はその半分まで。左右は、整列の行（4px の間）では
+     その半分まで、1 列に並ぶ所（下の > button と色）ではパレットの内側の余白（6px）まで。枠の太さ（ボタンは 1px、色は 2px）を足して書く */
+  --target-reach-x: 3px;
+  --target-reach-y: 3px;
   min-width: 28px;
   height: 28px;
   padding: 0 6px;
@@ -574,6 +667,15 @@ body {
   color: var(--color-text);
   font: var(--font-control);
   cursor: pointer;
+}
+
+.style-palette > button {
+  --target-reach-x: 7px;
+}
+
+.style-palette button.swatch {
+  --target-reach-x: 8px;
+  --target-reach-y: 4px;
 }
 
 .style-palette button.active {
@@ -727,6 +829,8 @@ body {
   padding: 12px 12px 8px;
 }
 
+/* サイドバーの閉じるボタン（23×26px）の当たりは 44×44px（冒頭の「触れられる範囲」。MAI-113）。見出しの上・右・下の余白
+   （12・12・8px）と、下の行までの間に収まる */
 .sidebar-header button,
 .sidebar-open {
   border: 1px solid transparent;
@@ -805,6 +909,10 @@ body {
 
 .sidebar-action {
   flex-shrink: 0;
+  /* 当たり（MAI-113）：ボタンは高さ 23px、行（名前のボタン）は 25px で、行どうしは隙間なく並ぶ。上下は行の高さまで（1px）、
+     左右は並んだボタンの間（4px）の半分まで広げ、25px にする（どちらも枠の 1px を足して書く） */
+  --target-reach-x: 3px;
+  --target-reach-y: 2px;
   padding: 2px 6px;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
@@ -838,6 +946,8 @@ body {
 }
 
 .sidebar-open {
+  /* 当たり（MAI-113）：キャンバスに浮かぶボタンなので、上下は 44px まで。右はパンくずとの間（6px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 4px;
   background: var(--color-surface);
   border-color: var(--color-border);
 }
@@ -846,6 +956,9 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  /* 折り返したとき（狭い画面で深い所を開いたとき）の行の間。上下に広げた当たり（.breadcrumb button）が、上と下の行で重ならないように
+     （MAI-113。折り返さなければ見た目は変わらない） */
+  row-gap: 12px;
   padding: 5px 10px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -854,6 +967,10 @@ body {
 }
 
 .breadcrumb button {
+  /* 当たり（MAI-113）：名前のボタンは高さ 21px。上下は札の内側（余白 5px と枠 1px）まで広げて札の高さ（33px）にし、
+     左右は区切りの「›」の半分ほど（4px）まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 6px;
   padding: 2px 4px;
   border: none;
   border-radius: var(--radius-small);
@@ -988,7 +1105,8 @@ body {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
+  /* 行の間は、折り返したとき（狭い画面）に、44px に広げた上下の当たりが重ならない幅（MAI-113。折り返さなければ見た目は変わらない） */
+  gap: 14px 8px;
 }
 
 .dialog-buttons .dialog-cancel {
@@ -996,6 +1114,9 @@ body {
 }
 
 .dialog-buttons button {
+  /* 当たり（MAI-113）：高さ 31px のボタンを、上下に 44px まで（ダイアログの下の余白 20px と、本文との間 16px の中）。
+     左右は並んだボタンの間（8px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 5px;
   padding: 6px 12px;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
@@ -1095,6 +1216,9 @@ body {
 }
 
 .plot-kinds button {
+  /* 当たり（MAI-113）：種類のボタン（高さ 25px）は、縦にも横にも 4px の間で並ぶので、その半分ずつ広げる（枠の 1px を足す） */
+  --target-reach-x: 3px;
+  --target-reach-y: 3px;
   padding: 3px 8px;
   border: 1px solid var(--color-border-subtle);
   border-radius: 999px;
@@ -1125,6 +1249,9 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 値の列のチェックボックスは、行（label）ごと押せる。行の高さは文字の 20px で、2px の間で並んでいたので、24px に足りず、
+     隣の行と重ならずに広げる隙間もなかった。行を 24px にする（MAI-113。見た目は行の間が 4px 広がる） */
+  min-height: 24px;
 }
 
 .plot-columns label.text-column {
@@ -1157,6 +1284,8 @@ body {
 }
 
 .plot-link {
+  /* 当たり（MAI-113）：文字だけのボタン（高さ 17px）。上下は、まわりの欄との間（10px）の半分まで広げる */
+  --target-reach-y: 5px;
   align-self: flex-start;
   padding: 0;
   border: none;
@@ -1281,6 +1410,9 @@ body {
 
 /* ↑・↓・× は文字で描いたアイコン（もとはブラウザの既定のボタンの文字の 13.33px） */
 .pdf-search button {
+  /* 当たり（MAI-113）：上下は検索の帯の枠まで、左右は並んだボタンの間（4px）の半分まで */
+  --target-reach-x: 2px;
+  --target-reach-y: 5px;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -1334,7 +1466,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 10px;
+  /* 行の間は、折り返したとき（狭い画面）に、上下に広げたボタンの当たりが重ならない幅（MAI-113。もとは 6px。折り返さなければ
+     見た目は変わらない） */
+  gap: 16px 10px;
   flex-shrink: 0;
   padding: 8px 14px;
   border-bottom: 1px solid var(--color-border-subtle);
@@ -1362,6 +1496,10 @@ body {
 
 /* 部品の名前は折り返さない（収まらなければ、部品ごと次の行へ送る） */
 .file-editor-header button {
+  /* 当たり（MAI-113）：上下は見出しの帯の余白（8px）まで、左右は並んだ部品の間（10px）の半分まで（枠のあるボタンは、
+     外へ出る量が 1px 減る） */
+  --target-reach-x: 5px;
+  --target-reach-y: 8px;
   white-space: nowrap;
 }
 
@@ -1383,6 +1521,8 @@ body {
 }
 
 .file-editor-modes button {
+  /* 当たり（MAI-113）：表示の切り替えは隙間なく並ぶので、左右には広げない（上下は .file-editor-header button） */
+  --target-reach-x: 0px;
   padding: 4px 10px;
   border: none;
   background: var(--color-surface);
@@ -1672,6 +1812,8 @@ button.pdf-page-number:hover {
 }
 
 .backup-status {
+  /* 当たり（MAI-113）：キャンバスに浮かぶ札なので、上下は 44px まで。左右は並んだ札の間（6px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1809,6 +1951,9 @@ button.pdf-page-number:hover {
 
 .design-panel button.design-panel-tab,
 .design-panel button.design-panel-close {
+  /* 当たり（MAI-113）：30px のボタン（枠なし）を、上下は 44px（見出しの帯 48px の中）、左右は並んだボタンの間（4px）の半分まで広げる */
+  --target-reach-x: 2px;
+  --target-reach-y: 9px;
   width: 30px;
   height: 30px;
   padding: 0;
@@ -1836,6 +1981,13 @@ button.pdf-page-number:hover {
   color: var(--dp-text);
   font: var(--font-control);
   cursor: pointer;
+}
+
+/* パネルの中のボタンの当たり（MAI-113）。行どうし・並んだ部品どうしは 6px（文字の書式の行は 4px）の間で並ぶので、その半分ずつ
+   （上下 3px・左右 2px）広げる。ボタンには 1px の枠があるので、1px を足して書く。アイコンのボタン（28px）は 32×34px になる */
+.design-panel button {
+  --target-reach-x: 3px;
+  --target-reach-y: 4px;
 }
 
 .design-panel button:hover {
@@ -2006,7 +2158,11 @@ button.pdf-page-number:hover {
 }
 
 .design-slider:not(.design-hue-slider):not(.design-alpha-slider) {
-  height: 16px;
+  /* 当たり（MAI-113）：溝とつまみ（14px）を描く高さは 16px のまま、要素を上下に 11px ずつ高くし（行の高さ 32px と、行の間 6px の
+     半分まで）、負の margin で並びを保つ。溝は要素の上下の中央に描かれるので、見た目は変わらない */
+  position: relative;
+  height: 38px;
+  margin-block: -11px;
   appearance: none;
   background: transparent;
   cursor: pointer;
@@ -2152,14 +2308,19 @@ button.pdf-page-number:hover {
   border-radius: 50%;
   background: repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 8px 8px;
   box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
-  overflow: hidden;
   cursor: pointer;
+  /* 当たり（MAI-113）：見本（24px）には枠がないので、並んだ部品との間の半分（上下 3px・左右 2px）をそのまま書く。28×30px になる */
+  --target-reach-x: 2px;
+  --target-reach-y: 3px;
 }
 
+/* 色の地は、見本の丸に合わせて切る。もとは見本を overflow: hidden にして切っていたが、外へ広げた当たり（::before）も切れるので、
+   地だけを clip-path で切る（MAI-113。切り方は同じなので、見た目は変わらない） */
 .design-swatch > span {
   position: absolute;
   inset: 0;
   box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
+  clip-path: inset(0 round 50%);
 }
 
 /* 混在：斜めの縞 */
@@ -2263,6 +2424,8 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-paint-types button {
+  /* 当たり（MAI-113）：種類のボタンは隙間なく並ぶので、左右には広げない */
+  --target-reach-x: 0px;
   flex: 1;
   min-width: 0;
   padding: 0 2px;
@@ -2277,6 +2440,9 @@ button.pdf-page-number:hover {
 }
 
 .design-gradient-bar {
+  /* 当たり（MAI-113）：押すと止め色を足す帯（高さ 16px）。上下に 4px ずつ広げて 24px にする（止め色の印は帯の上に重なり、そちらが先に当たる） */
+  --target-reach-x: 0px;
+  --target-reach-y: 4px;
   position: relative;
   height: 16px;
   margin: 6px 8px 10px;
@@ -2295,6 +2461,10 @@ button.pdf-page-number:hover {
 }
 
 .design-panel button.design-gradient-stop {
+  /* 当たり（MAI-113）：14×22px の印を、左右は 24px まで、上下は種類のボタン・位置の欄との間（9px）のうち 6px まで広げる。
+     印どうしが 24px より近いと当たりが重なる（印そのものも重なりうる。選んでいる印が上） */
+  --target-reach-x: 5px;
+  --target-reach-y: 6px;
   position: absolute;
   top: 50%;
   min-width: 0;
@@ -2327,6 +2497,8 @@ button.pdf-page-number:hover {
 }
 
 .design-panel button.design-gradient-remove {
+  /* 当たり（MAI-113）：上の角度の欄との間が 2px なので、上下は 2px まで（26px。枠の 1px を足して書く） */
+  --target-reach-y: 3px;
   height: 22px;
 }
 
@@ -2344,6 +2516,9 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-image-modes button {
+  /* 当たり（MAI-113）：隙間なく並ぶので左右には広げず、上下は画像の欄の中の間（4px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 0px;
+  --target-reach-y: 3px;
   min-width: 0;
   padding: 0 2px;
   white-space: nowrap;
@@ -2355,6 +2530,8 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-image-actions button {
+  /* 当たり（MAI-113）：4px の間で並ぶので、その半分まで（枠の 1px を足す） */
+  --target-reach-y: 3px;
   flex: 1;
   min-width: 0;
   padding: 0 2px;
@@ -2435,6 +2612,12 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+/* 色相の行は、スポイト（22px）のないブラウザ（EyeDropper のない Firefox・Safari）でも 22px の高さにそろえる。色相の帯の上下に、
+   当たりを広げる場所をとるため（MAI-113。帯は行の中央。Firefox・Safari では、帯の上下の余白が 6px ずつ広がる） */
+.design-color-row:has(> .design-hue-slider) {
+  min-height: 22px;
+}
+
 .design-slider.design-hue-slider,
 .design-slider.design-alpha-slider {
   flex: 1;
@@ -2443,15 +2626,34 @@ button.pdf-page-number:hover {
   appearance: none;
 }
 
+/* 当たり（MAI-113）：色相と不透明度の帯（10px）は、要素そのものの地に描くので、上下の余白（padding）で要素を高くし、地は
+   content-box（10px の帯）にだけ塗る（background-origin・clip）。角丸は、帯の角が 5px の丸になるよう、縦の半径に余白の分を足す。
+   並びは負の margin で保つ。色相の帯は、上は色の四角まで（11px）、下は不透明度の帯との間（12px）の半分まで。
+   不透明度の帯は、上はその半分まで、下は次の見出しの文字（押せない）に 4px かかるまで（10px）。スポイト（.design-eyedropper）は
+   不透明度の帯の上に並ぶので、下へは広げない */
 .design-slider.design-hue-slider {
-  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+  position: relative;
+  box-sizing: border-box;
+  height: 27px;
+  padding-block: 11px 6px;
+  margin-block: -11px -6px;
+  border-radius: 5px / 16px 16px 11px 11px;
+  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000) content-box;
 }
 
 .design-slider.design-alpha-slider {
-  background: linear-gradient(to right, transparent, var(--alpha-color, var(--color-text))), repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 8px 8px;
+  position: relative;
+  box-sizing: border-box;
+  height: 26px;
+  padding-block: 6px 10px;
+  margin-block: -6px -10px;
+  border-radius: 5px / 11px 11px 15px 15px;
+  background: linear-gradient(to right, transparent, var(--alpha-color, var(--color-text))) content-box, repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 8px 8px content-box;
 }
 
 .design-panel button.design-eyedropper {
+  /* 当たり（MAI-113）：すぐ下に不透明度の帯（の当たり）が並ぶので、下へは広げない */
+  --target-reach-bottom: 0px;
   min-width: 0;
   flex: 0 0 24px;
   width: 24px;
@@ -2472,10 +2674,15 @@ button.pdf-page-number:hover {
 .design-color-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
+  /* 見本の間。もとは 3px で、18px の見本を隣と重ならずに 24px（WCAG 2.2 の最低限）へ広げる隙間がなかったので、6px にする
+     （MAI-113。見本の大きさは変えず、1 行に並ぶ数が 1 つ減る） */
+  gap: 6px;
 }
 
 .design-panel button.design-color-chip {
+  /* 当たり（MAI-113）：18px の見本を、間（6px）の半分ずつ広げて 24×24px にする */
+  --target-reach-x: 3px;
+  --target-reach-y: 3px;
   min-width: 0;
   position: relative;
   width: 18px;
@@ -2484,14 +2691,15 @@ button.pdf-page-number:hover {
   border: none;
   border-radius: var(--radius-small);
   background: repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 6px 6px;
-  overflow: hidden;
   cursor: pointer;
 }
 
+/* 色の地は角丸で切る（.design-swatch > span と同じく、見本は overflow: hidden にしない） */
 .design-color-chip > span {
   position: absolute;
   inset: 0;
   box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
+  clip-path: inset(0 round var(--radius-small));
 }
 
 .design-panel button.design-color-chip.selected {
@@ -2615,6 +2823,14 @@ button.pdf-page-number:hover {
   color: var(--color-text);
 }
 
+/* 絞り込みの欄（高さ 22px）を包む label。当たり（MAI-113）：入力欄には ::before を置けないので、label を上下に 2px ずつ広げ
+   （下の一覧との間 4px の半分）、26px にする。広げた所を押すと、欄にフォーカスが移る */
+.design-font-filter-field {
+  display: block;
+  --target-reach-x: 0px;
+  --target-reach-y: 2px;
+}
+
 .design-font-filter {
   box-sizing: border-box;
   width: 100%;
@@ -2683,6 +2899,8 @@ button.pdf-page-number:hover {
 }
 
 .design-panel button.design-font-local {
+  /* 当たり（MAI-113）：上の一覧との間（4px）の半分まで（枠の 1px を足す） */
+  --target-reach-y: 3px;
   color: var(--color-text-sub);
 }
 
@@ -2708,6 +2926,9 @@ button.pdf-page-number:hover {
 }
 
 .text-format-toolbar button {
+  /* 当たり（MAI-113）：上下はツールバーの枠まで（32px）、左右は並んだボタンの間（2px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 2px;
+  --target-reach-y: 5px;
   width: 26px;
   height: 24px;
   padding: 0;
@@ -2907,6 +3128,12 @@ button.pdf-page-number:hover {
 }
 
 .design-field-row[data-row='chart.shape'] .design-slider {
+  /* 当たり（MAI-113）：数字の下の段に置くので、上は段の間（6px）まで、下は次の行（名前・割合の切り替え）との間の半分（3px）まで。
+     上下の余白（padding）で広げ、溝は content-box（16px）の中央に描く */
+  box-sizing: border-box;
+  height: 25px;
+  padding-block: 6px 3px;
+  margin-block: -6px -3px;
   grid-column: 1 / -1;
   grid-row: 2;
 }
@@ -3034,6 +3261,9 @@ button.pdf-page-number:hover {
 }
 
 .cite-pending-cancel {
+  /* 当たり（MAI-113）：上下と右は札の余白（6px）まで、左は文字との間（8px）の半分まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 6px;
   padding: 0 4px;
   border: none;
   background: none;
@@ -3057,6 +3287,9 @@ button.pdf-page-number:hover {
 }
 
 .word-lookup-close {
+  /* 当たり（MAI-113）：吹き出しはスクロールするので、上と右は吹き出しの余白（10・12px）の中まで。左は語との間（8px）まで */
+  --target-reach-x: 8px;
+  --target-reach-y: 10px;
   padding: 0 4px;
   border: none;
   background: none;
@@ -3148,6 +3381,13 @@ button.pdf-page-number:hover {
   margin-right: auto;
 }
 
+/* ボタンの当たり（MAI-113）：パネルの中の部品は 6px の間で並ぶので、その半分ずつ広げる（枠の 1px を足して書く。高さ 25px の
+   ボタンは 31px）。場所ごとに、まわりの余白の分だけ広げる所は、それぞれの規則に書く */
+.claude-panel button {
+  --target-reach-x: 4px;
+  --target-reach-y: 4px;
+}
+
 .claude-panel button,
 .claude-thread-select {
   padding: 3px 8px;
@@ -3166,6 +3406,8 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel-header button {
+  /* 当たり（MAI-113）：上下は見出しの帯の余白（上 10px・下 8px）のうち 8px まで */
+  --target-reach-y: 8px;
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -3348,7 +3590,8 @@ button.pdf-page-number:hover {
 .claude-tasks {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  /* 行の間。行（文字の 18px）に並ぶ「止める」（文字だけのボタン）を、隣の行と重ならずに 24px へ広げるため、2px から広げる（MAI-113） */
+  gap: 6px;
   max-height: 30%;
   overflow-y: auto;
   padding: 6px 12px;
@@ -3395,6 +3638,10 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel .claude-link {
+  /* 当たり（MAI-113）：文字だけのボタン（高さ 17px。枠なし）を、上下に 3.5px ずつ広げて 24px にする（作業の一覧の行の間 6px の
+     半分と、行の中の余り）。左右は、並んだ部品との間の半分まで */
+  --target-reach-x: 3px;
+  --target-reach-y: 3.5px;
   padding: 0;
   border: none;
   background: transparent;
@@ -3442,12 +3689,15 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel .claude-attachment button {
+  /* 当たり（MAI-113）：入力の欄の先頭なので、上は欄の余白（10px）まで */
+  --target-reach-top: 10px;
   padding: 0 6px;
   border: none;
   background: transparent;
 }
 
 .claude-panel .claude-attach {
+  --target-reach-top: 10px;
   align-self: flex-start;
   border-style: dashed;
   background: transparent;
@@ -3472,6 +3722,12 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+/* 当たり（MAI-113）：送る・止める・モデルは欄の最後の行なので、下は欄の余白（12px）まで（モデルの欄の中のボタンは含めない） */
+.claude-compose-actions > button,
+.claude-model > .claude-model-button {
+  --target-reach-bottom: 12px;
+}
+
 .claude-panel .claude-danger {
   border-color: var(--color-error);
   background: var(--color-error);
@@ -3486,10 +3742,15 @@ button.pdf-page-number:hover {
 
 .claude-panel .claude-model-button {
   max-width: 200px;
+  color: var(--color-text-sub);
+}
+
+/* 長い名前は省略記号で切る。ボタンそのものを overflow: hidden にすると、外へ広げた当たり（::before）が切れるので、中の名前で切る（MAI-113） */
+.claude-model-button > span {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-text-sub);
 }
 
 /* 選ぶ欄：Model と Effort の 2 本のスライダー。「Model ›」で全部のバージョンの一覧に替わる */
@@ -3536,12 +3797,21 @@ button.pdf-page-number:hover {
 
 .claude-panel .claude-model-more,
 .claude-panel .claude-model-back {
+  /* 当たり（MAI-113）：右のスライダーとの間（8px）の半分まで。上は欄の余白（10px）まで。下は、「Model ›」は Effort の名前（押せない）
+     にかかるまで、「‹ Model」は下の一覧との間の半分まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 10px;
   padding: 0;
   border: none;
   border-radius: var(--radius-small);
   background: transparent;
   color: inherit;
   text-align: left;
+}
+
+/* 「‹ Model」のすぐ下は一覧（スクロールする）なので、下へは広げない（スクロールした項目の端を奪わないように） */
+.claude-panel .claude-model-back {
+  --target-reach-bottom: 0px;
 }
 
 .claude-panel .claude-model-more:hover,
@@ -3578,6 +3848,9 @@ button.pdf-page-number:hover {
 
 /* 段の中心は、両端からつまみの半分（17px）内側に等しく並べる（ModelPicker.tsx の KNOB_WIDTH） */
 .claude-stops-track {
+  /* 当たり（MAI-113）：上下は段の名前（押せない）と、2 本のスライダーの間（6px）の半分まで。左は名前のボタンとの間（8px）の半分まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 3px;
   position: relative;
   height: 24px;
   border-radius: 999px;
@@ -3616,6 +3889,8 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel .claude-model-reset {
+  /* 当たり（MAI-113）：文字だけのボタン（17px）。上は Effort の段の名前（押せない）、下は欄の余白（12px）の中まで */
+  --target-reach-y: 12px;
   align-self: flex-end;
   padding: 0;
   border: none;
@@ -3644,6 +3919,9 @@ button.pdf-page-number:hover {
 
 /* 名前と説明の 2 行なので、地の文字（Dns-14N-130） */
 .claude-panel .claude-model-option {
+  /* 当たり（MAI-113）：一覧の項目（26px）は隙間なく並ぶので、広げない */
+  --target-reach-x: 0px;
+  --target-reach-y: 0px;
   font: var(--font-ui);
   display: flex;
   flex-direction: column;
@@ -3695,6 +3973,8 @@ button.pdf-page-number:hover {
 
 /* 右上の「Claude」を開くボタン（.status-bar の中） */
 .claude-toggle {
+  /* 当たり（MAI-113）：.backup-status と同じ */
+  --target-reach-x: 4px;
   padding: 3px 10px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
