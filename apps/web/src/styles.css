@@ -10,6 +10,12 @@
   --color-text-sub: var(--color-neutral-solid-gray-600);
   /* 主な色やエラーの色で塗った所、暗い地の知らせの上の文字 */
   --color-text-on-fill: var(--color-neutral-white);
+  /* 入力欄のプレースホルダー（MAI-110）。Solid Gray-536（白の上で 4.5:1）。「混在」のように、値の代わりに状態を伝える
+     ものもあるので、文字と同じく 4.5:1 にする。もとはブラウザの既定の色 */
+  --color-text-placeholder: var(--color-neutral-solid-gray-536);
+  /* 押せない部品の文字（MAI-110）。DADS の無効の文字の色 Solid Gray-420（白の上で 3:1）。DADS も WCAG も、無効の部品には
+     4.5:1 を求めない。不透明度で薄くしているボタン（Claude のパネル・デザインパネルのアイコンなど）は、そのまま薄くする */
+  --color-text-disabled: var(--color-neutral-solid-gray-420);
 
   /* 主な色（選んでいる所の文字、リンク、主なボタン、スライダー）。DADS のキーカラー Key-900（Blue-900 #0017c1。白の上で 11:1）。
      もとは #2f6fed（デザインパネルは #326ce8、モデルの選択は #3b5bdb） */
@@ -28,8 +34,9 @@
   --color-surface: var(--color-neutral-white);
   /* 1 段沈んだ面（サイドバー・Claude のパネル・混在の印）。Solid Gray-50。もとは #f6f7f9・#f6f8fa・#f1f4f9 など */
   --color-surface-sub: var(--color-neutral-solid-gray-50);
-  /* デザインパネルの入力欄の地。Solid Gray-50。もとは #f5f6f8 */
-  --color-field: var(--color-neutral-solid-gray-50);
+  /* 入力欄の地。白（DADS の入力欄と同じ。Gray-50 の地に枠を付けると、DADS では無効の入力欄の見た目になる）。
+     もとはデザインパネルが #f5f6f8 の地だけで、枠がなかった（MAI-110） */
+  --color-field: var(--color-neutral-white);
   /* 押せる所に重ねたとき（ホバー）の地。黒の 5 %（Opacity Gray-50）。白の上でも Gray-50 の上でも 1 段暗くなるよう、
      透ける色にした。もとは #eef1f5・#e8ebef・#eef1f6 など */
   --color-hover: var(--color-neutral-opacity-gray-50);
@@ -42,34 +49,45 @@
   /* キャンバスの地（キャンバスは透けていて、この色が見える）。キャンバスに描く色と同じく、DADS に置き換えずに残す */
   --color-canvas: #fafbfc;
 
-  /* 線。部品（パネル・メニュー・入力欄・ボタン）の枠。Solid Gray-200。もとは #d9dde3 */
-  --color-border: var(--color-neutral-solid-gray-200);
-  /* 区切り線などの飾りの線。Solid Gray-100。もとは #eaedf1・#eceff3 */
-  --color-border-divider: var(--color-neutral-solid-gray-100);
+  /* 線（MAI-110）。DADS では、部品だと分かるのに要る境目は、まわりの地に対して 3:1 以上にする。影では足りないので、
+     浮いている要素（パネル・メニュー・ポップオーバー・札）には 3:1 の枠を付ける。
+     浮いている要素の枠は Solid Gray-500（キャンバスの地の上で 3.9:1、Gray-50 の上で 3.6:1、白の上で 4.0:1）。
+     Gray-420 は白の上でちょうど 3:1 で、キャンバスの地（#fafbfc）の上では 2.9:1 に下がるので、1 段濃くした。もとは #d9dde3（1.4:1） */
+  --color-border: var(--color-neutral-solid-gray-500);
+  /* 入力欄（文字を打つ欄・一覧から選ぶ欄）の枠。Solid Gray-600（DADS の入力欄と同じ。白の上で 5.7:1） */
+  --color-border-field: var(--color-neutral-solid-gray-600);
+  /* 3:1 を求めない線。区切り線・領域の境目（サイドバーや Claude のパネルの端）と、文字やアイコンで押せると分かる
+     ボタンの枠（WCAG でも、文字のあるボタンの枠は求めない）。Solid Gray-200。もとは #d9dde3・#eaedf1・#eceff3 */
+  --color-border-subtle: var(--color-neutral-solid-gray-200);
   /* スライダーの溝（値のぶんより先）。Solid Gray-200。もとはデザインパネルが #eaedf1、左のパレットのリングが黒の 14 % */
   --color-track: var(--color-neutral-solid-gray-200);
-  /* 押せる札に重ねたときの枠。Solid Gray-300。もとは #b6bcc5 */
-  --color-border-hover: var(--color-neutral-solid-gray-300);
+  /* 押せる札に重ねたときの枠。ふだんの枠（Gray-500）より濃い Solid Gray-700。もとは #b6bcc5 */
+  --color-border-hover: var(--color-neutral-solid-gray-700);
   /* モーダルのダイアログの枠（MAI-108）。Black */
   --color-border-modal: var(--color-neutral-black);
   /* 暗い地の知らせの中のボタンの枠。Solid Gray-420。もとは白の 50 % */
   --color-border-on-dark: var(--color-neutral-solid-gray-420);
 
-  /* エラー。文字と、危ない操作のボタンの地は Error-1（Red-800 #ec0000。白の上で 4.6:1）。もとは #cf222e。
-     エラーの札の淡い地は Red-50、枠は Red-200（もとは #fff5f5・#f5c2c7） */
+  /* エラー。白の上の文字と、危ない操作のボタンの地は Error-1（Red-800 #ec0000。白の上で 4.6:1）。もとは #cf222e。
+     淡い地（エラーの札の Red-50、Claude のパネルの Gray-50）の上の文字は、Error-1 だと 4.1:1 に下がるので Error-2
+     （Red-900 #ce0000。Red-50 の上で 5.1:1、Gray-50 の上で 5.2:1。MAI-110）。
+     エラーの札の淡い地は Red-50（もとは #fff5f5）。札はキャンバスの上に浮くので、枠は Error-1（キャンバスの地の上で 4.4:1。
+     もとは #f5c2c7 で 1.5:1） */
   --color-error: var(--color-semantic-error-1);
+  --color-error-strong: var(--color-semantic-error-2);
   --color-error-bg: var(--color-primitive-red-50);
-  --color-error-border: var(--color-primitive-red-200);
+  --color-error-border: var(--color-semantic-error-1);
   /* 成功（許可するボタンの地）。Success-2（Green-800 #197a4b。白い文字で 5.4:1）。もとは #1a7f37 */
   --color-success: var(--color-semantic-success-2);
   /* 警告。白の上の文字と目立たせる枠は Warning-Yellow-2（Yellow-900 #927200。白の上で 4.5:1）。もとは #9a6700。
-     淡い黄の地の上の文字は、地の上でも 4.5:1 を超えるよう 1 段濃い Yellow-1100（もとは #6b4b00・#7d5a00）。
+     淡い地（淡い黄の Yellow-50、Claude のパネルの Gray-50）の上の文字は、Warning-Yellow-2 だと 4.1〜4.2:1 に下がるので、
+     2 段濃い Yellow-1100（Yellow-50 の上で 6.4:1、Gray-50 の上で 5.7:1。もとは #6b4b00・#7d5a00）。
      淡い黄の地は Yellow-50（もとは #fff8c5・#fffaeb・#fff4d6）、その枠は Warning-Yellow-1（Yellow-700。もとは #d4a72c・#f0d58a） */
   --color-warning: var(--color-semantic-warning-yellow-2);
   --color-warning-strong: var(--color-primitive-yellow-1100);
   --color-warning-bg: var(--color-primitive-yellow-50);
   --color-warning-border: var(--color-semantic-warning-yellow-1);
-  /* 選んでいるフォントがない印の丸。Yellow-500。もとは #f59f00 */
+  /* 選んでいるフォントがない印の丸。Yellow-500。もとは #f59f00。中の「!」は本文の色（6.8:1。白だと 1.9:1。MAI-110） */
   --color-warning-mark: var(--color-primitive-yellow-500);
   /* 選んでいるフォントがないときの説明の文字。Warning-Orange-2（Orange-800 #c74700。白の上で 4.9:1）。もとは #b35c00 */
   --color-caution: var(--color-semantic-warning-orange-2);
@@ -118,7 +136,7 @@
   --dp-surface: var(--color-surface);
   --dp-text: var(--color-text);
   --dp-secondary: var(--color-text-sub);
-  --dp-line: var(--color-border-divider);
+  --dp-line: var(--color-border-subtle);
   --dp-field: var(--color-field);
   --dp-hover: var(--color-hover);
   --dp-accent: var(--color-accent);
@@ -152,6 +170,12 @@ body,
    :root の文字の大きさを変えると 1rem がずれる（13px だと --border-radius-8 が 6.5px になる）ため、1rem はブラウザの既定の 16px のままにする */
 body {
   font-size: 13px;
+}
+
+/* 入力欄のプレースホルダー（MAI-110）。Firefox は既定で薄くする（opacity）ので、1 に戻す */
+::placeholder {
+  color: var(--color-text-placeholder);
+  opacity: 1;
 }
 
 /* フォーカスの枠（MAI-109）。DADS の規定どおり、黒 4px の outline（要素から 2px 離す）と、その内側に黄 2px の box-shadow を重ねる。
@@ -303,7 +327,8 @@ body {
 
 .pie-item.active {
   background: var(--color-selected);
-  border-color: var(--color-selected-border);
+  /* キャンバスの上に浮くので、選んでいる項目の枠も 3:1 以上にする（MAI-110） */
+  border-color: var(--color-accent);
   color: var(--color-accent);
 }
 
@@ -363,7 +388,7 @@ body {
 .bench-result th,
 .bench-result td {
   padding: 4px 8px;
-  border-bottom: 1px solid var(--color-border-divider);
+  border-bottom: 1px solid var(--color-border-subtle);
   text-align: right;
   white-space: nowrap;
 }
@@ -497,7 +522,7 @@ body {
   padding: 0;
   border-radius: 50%;
   border: 2px solid var(--color-surface);
-  box-shadow: 0 0 0 1px var(--color-border);
+  box-shadow: 0 0 0 1px var(--color-border-subtle);
 }
 
 .style-palette button.swatch.active {
@@ -521,7 +546,7 @@ body {
   width: 20px;
   height: 1px;
   margin: 2px 0;
-  background: var(--color-border);
+  background: var(--color-border-subtle);
 }
 
 /* 整列・等間隔・間隔（MAI-54）。横に並べる行と、間隔の数字の入力 */
@@ -540,7 +565,7 @@ body {
   width: 52px;
   height: 24px;
   padding: 0 4px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-small);
   background: var(--color-surface);
   color: var(--color-text);
@@ -615,7 +640,7 @@ body {
 
 .style-palette .opacity-label.dragging {
   color: var(--color-accent);
-  border-color: var(--color-selected-border);
+  border-color: var(--color-accent);
 }
 
 /* ---- ワークスペース（MAI-29） ---- */
@@ -625,7 +650,7 @@ body {
   flex-shrink: 0;
   overflow-y: auto;
   background: var(--color-surface-sub);
-  border-right: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border-subtle);
   font-size: 13px;
 }
 
@@ -715,7 +740,7 @@ body {
 .sidebar-action {
   flex-shrink: 0;
   padding: 2px 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
@@ -847,7 +872,7 @@ body {
 .context-menu-separator {
   height: 1px;
   margin: 4px 6px;
-  background: var(--color-border);
+  background: var(--color-border-subtle);
 }
 
 /* モーダルのダイアログ（確認のダイアログ・グラフのダイアログ）。見た目は DADS のモーダルダイアログに合わせる（MAI-108）：
@@ -901,7 +926,7 @@ body {
 
 .dialog-buttons button {
   padding: 6px 12px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
@@ -974,7 +999,7 @@ body {
 .plot-field input,
 .plot-field select {
   padding: 4px 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-control);
   font: inherit;
   color: var(--color-text);
@@ -999,7 +1024,7 @@ body {
 
 .plot-kinds button {
   padding: 3px 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 999px;
   background: var(--color-surface);
   color: var(--color-text);
@@ -1021,7 +1046,7 @@ body {
   max-height: 140px;
   overflow-y: auto;
   padding: 4px 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
 }
 
@@ -1092,7 +1117,7 @@ body {
   width: 100%;
   max-height: 60vh;
   object-fit: contain;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
 }
 
@@ -1105,7 +1130,7 @@ body {
   align-items: center;
   justify-content: center;
   aspect-ratio: 16 / 10;
-  border: 1px dashed var(--color-border);
+  border: 1px dashed var(--color-border-subtle);
   border-radius: var(--radius-control);
   color: var(--color-text-sub);
 }
@@ -1173,7 +1198,7 @@ body {
 .pdf-search input {
   width: 220px;
   padding: 4px 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-control);
   font: inherit;
 }
@@ -1204,7 +1229,7 @@ body {
 }
 
 .pdf-search button:disabled {
-  color: var(--color-border);
+  color: var(--color-text-disabled);
   cursor: default;
 }
 
@@ -1242,7 +1267,7 @@ body {
   gap: 10px;
   flex-shrink: 0;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border-subtle);
   background: var(--color-surface-markdown);
 }
 
@@ -1272,7 +1297,7 @@ body {
 /* 角を丸めるのに overflow: hidden を使うと、ボタンのフォーカスの枠が切れて見えなくなるので、端のボタンの角を丸める（MAI-109） */
 .file-editor-modes {
   display: flex;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
 }
 
@@ -1286,7 +1311,7 @@ body {
 }
 
 .file-editor-modes button + button {
-  border-left: 1px solid var(--color-border);
+  border-left: 1px solid var(--color-border-subtle);
 }
 
 .file-editor-modes button:first-child {
@@ -1304,7 +1329,7 @@ body {
 
 .file-editor-quote {
   padding: 4px 10px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
@@ -1323,7 +1348,7 @@ body {
 
 .file-editor-vim {
   padding: 4px 10px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text-sub);
@@ -1340,7 +1365,7 @@ body {
 .file-editor-status {
   flex-shrink: 0;
   padding: 3px 14px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-border-subtle);
   background: var(--color-surface-markdown);
   color: var(--color-text-sub);
   font: 12px ui-monospace, monospace;
@@ -1379,7 +1404,7 @@ body {
 .file-editor-source {
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border-subtle);
   font-size: 15px;
 }
 
@@ -1470,7 +1495,7 @@ body {
 }
 
 .sync-status.offline {
-  color: var(--color-error);
+  color: var(--color-error-strong);
   border-color: var(--color-error-border);
   background: var(--color-error-bg);
 }
@@ -1518,7 +1543,7 @@ button.pdf-page-number:hover {
   height: 22px;
   margin: 0 3px;
   padding: 0 2px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-small);
   background: var(--color-surface);
   color: var(--color-text);
@@ -1557,7 +1582,7 @@ button.pdf-page-number:hover {
   background: var(--color-error-bg);
   border: 1px solid var(--color-error-border);
   border-radius: var(--radius-control);
-  color: var(--color-error);
+  color: var(--color-error-strong);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1583,8 +1608,9 @@ button.pdf-page-number:hover {
   pointer-events: auto;
 }
 
+/* 札はキャンバスの上に浮くので、枠は 3:1 を超える Warning-Yellow-2（Warning-Yellow-1 はキャンバスの地の上で 2.9:1。MAI-110） */
 .backup-status.stale {
-  border-color: var(--color-warning-border);
+  border-color: var(--color-warning);
   background: var(--color-warning-bg);
   color: var(--color-warning);
 }
@@ -1625,7 +1651,7 @@ button.pdf-page-number:hover {
 
 .loading-screen button {
   padding: 6px 14px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   font: inherit;
@@ -1661,7 +1687,7 @@ button.pdf-page-number:hover {
   overscroll-behavior: contain;
   background: var(--dp-surface);
   color: var(--dp-text);
-  border: 1px solid var(--dp-line);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-xlarge);
   box-shadow: var(--shadow-panel);
   font-size: 13px;
@@ -1760,6 +1786,7 @@ button.pdf-page-number:hover {
   width: 40px;
   height: 40px;
   padding: 0;
+  border-color: var(--color-border);
   border-radius: var(--radius-large);
   color: var(--dp-secondary);
   box-shadow: var(--shadow-panel);
@@ -1852,6 +1879,8 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
+/* 入力欄は Gray-600 の枠と白の地（DADS の入力欄。もとは枠がなく、灰色の地だけで 1.1:1。MAI-110）。
+   フォーカスのときは枠を主な色にする（.design-number:focus-within など） */
 .design-number {
   box-sizing: border-box;
   flex: 0 0 auto;
@@ -1859,7 +1888,7 @@ button.pdf-page-number:hover {
   align-items: center;
   width: 76px;
   height: var(--dp-control-height);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
 }
@@ -2280,7 +2309,7 @@ button.pdf-page-number:hover {
   height: 40px;
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-small);
   background: var(--color-surface-sub);
 }
@@ -2305,7 +2334,7 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 6px;
   padding: 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
 }
@@ -2405,7 +2434,7 @@ button.pdf-page-number:hover {
   box-sizing: border-box;
   flex: 1;
   height: var(--dp-control-height);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
 }
@@ -2426,7 +2455,7 @@ button.pdf-page-number:hover {
   width: 100%;
   height: var(--dp-control-height);
   padding: 0 30px 0 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   /* 下向きの山（lucide の chevron-down）。data: の画像の中では変数を使えないので、線の色は --color-text-sub（Solid Gray-600）の値を書く */
   background: var(--dp-field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
@@ -2452,7 +2481,8 @@ button.pdf-page-number:hover {
   width: 100%;
   height: var(--dp-control-height);
   padding: 0 8px;
-  border-color: transparent;
+  /* 一覧から選ぶ欄なので、入力欄と同じ枠（MAI-110） */
+  border-color: var(--color-border-field);
   background: var(--dp-field);
   text-align: left;
 }
@@ -2471,7 +2501,7 @@ button.pdf-page-number:hover {
   height: 14px;
   border-radius: 50%;
   background: var(--color-warning-mark);
-  color: var(--color-text-on-fill);
+  color: var(--color-text);
   font-size: 10px;
   font-weight: 700;
   line-height: 14px;
@@ -2524,7 +2554,7 @@ button.pdf-page-number:hover {
   min-width: 0;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-small);
   color: var(--color-text);
   font: inherit;
@@ -2644,7 +2674,7 @@ button.pdf-page-number:hover {
 .text-format-toolbar button.mixed,
 .design-panel button.mixed {
   background: var(--color-surface-sub);
-  border-color: var(--color-border);
+  border-color: var(--color-border-subtle);
   border-style: dashed;
 }
 
@@ -2673,7 +2703,7 @@ button.pdf-page-number:hover {
 .design-shadow {
   margin: 2px 0 8px;
   padding-top: 6px;
-  border-top: 1px dashed var(--color-border);
+  border-top: 1px dashed var(--color-border-subtle);
 }
 
 .design-shadow.hidden .design-corner-grid,
@@ -2722,7 +2752,7 @@ button.pdf-page-number:hover {
   box-sizing: border-box;
   width: 100%;
   padding: 6px 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
   color: var(--dp-text);
@@ -2772,7 +2802,7 @@ button.pdf-page-number:hover {
   min-width: 0;
   height: var(--dp-control-height);
   padding: 0 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
   color: var(--dp-text);
@@ -2831,11 +2861,12 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+/* オン・オフの切り替えは入力欄ではないので、枠を付けず、1 段沈んだ地にする（入力欄の地が白になったため。MAI-110） */
 .design-panel .design-switch-field button {
   width: 44px;
   height: var(--dp-control-height);
   border-color: transparent;
-  background: var(--dp-field);
+  background: var(--color-surface-sub);
   color: var(--dp-secondary);
 }
 
@@ -2854,7 +2885,7 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-chart-auto button {
-  border-color: var(--color-border);
+  border-color: var(--color-border-subtle);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -2892,7 +2923,7 @@ button.pdf-page-number:hover {
 
 .table-filter-input input {
   padding: 4px 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-small);
   font: inherit;
   font-size: 14px;
@@ -2996,7 +3027,7 @@ button.pdf-page-number:hover {
 
 .word-lookup-actions button {
   padding: 4px 10px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface-sub);
   font: inherit;
@@ -3028,7 +3059,7 @@ button.pdf-page-number:hover {
   flex-shrink: 0;
   min-height: 0;
   background: var(--color-surface-sub);
-  border-left: 1px solid var(--color-border);
+  border-left: 1px solid var(--color-border-subtle);
   font-size: 13px;
 }
 
@@ -3052,7 +3083,7 @@ button.pdf-page-number:hover {
   align-items: center;
   gap: 6px;
   padding: 10px 10px 8px 12px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .claude-panel-header strong {
@@ -3062,7 +3093,7 @@ button.pdf-page-number:hover {
 .claude-panel button,
 .claude-thread-select {
   padding: 3px 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
@@ -3074,6 +3105,7 @@ button.pdf-page-number:hover {
 .claude-thread-select {
   min-width: 0;
   max-width: 170px;
+  border-color: var(--color-border-field);
 }
 
 .claude-panel-header button {
@@ -3189,7 +3221,7 @@ button.pdf-page-number:hover {
 .claude-text th,
 .claude-text td {
   padding: 2px 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .claude-tool {
@@ -3212,7 +3244,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-tool.denied {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
   white-space: normal;
 }
 
@@ -3221,7 +3253,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-tool.task.failed {
-  color: var(--color-error);
+  color: var(--color-error-strong);
 }
 
 /* バックグラウンドの作業が終わって、Claude が自分で続けたジョブの見出し */
@@ -3243,7 +3275,7 @@ button.pdf-page-number:hover {
   max-height: 30%;
   overflow-y: auto;
   padding: 6px 12px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-border-subtle);
   color: var(--color-text-sub);
   font-size: 12px;
 }
@@ -3270,7 +3302,7 @@ button.pdf-page-number:hover {
 
 .claude-error {
   margin: 6px 0;
-  color: var(--color-error);
+  color: var(--color-error-strong);
   font-size: 12px;
   white-space: pre-wrap;
 }
@@ -3285,7 +3317,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-status.failed {
-  color: var(--color-error);
+  color: var(--color-error-strong);
 }
 
 .claude-panel .claude-link {
@@ -3298,7 +3330,7 @@ button.pdf-page-number:hover {
 .claude-spinner {
   width: 10px;
   height: 10px;
-  border: 2px solid var(--color-border);
+  border: 2px solid var(--color-border-subtle);
   border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: claude-spin 0.8s linear infinite;
@@ -3315,7 +3347,7 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .claude-attachment {
@@ -3353,7 +3385,7 @@ button.pdf-page-number:hover {
   resize: vertical;
   min-height: 56px;
   padding: 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-control);
   font: inherit;
   /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする */
@@ -3404,6 +3436,7 @@ button.pdf-page-number:hover {
   gap: 6px;
   width: 296px;
   padding: 10px 14px 12px;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-accent-soft);
   box-shadow: var(--shadow-menu);
@@ -3580,6 +3613,11 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
+/* 選んでいる項目の地（Key-200）の上では、弱い文字の色だと 4.0:1 に下がるので、本文の色にする（MAI-110） */
+.claude-model-option[aria-checked='true'] .claude-model-option-description {
+  color: var(--color-text);
+}
+
 .claude-model-note {
   margin: 0;
   color: var(--color-text-sub);
@@ -3697,12 +3735,12 @@ button.pdf-page-number:hover {
 }
 
 .claude-tool.ask {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
 .claude-tool.answer.denied,
 .claude-tool.answer.expired {
-  color: var(--color-warning);
+  color: var(--color-warning-strong);
 }
