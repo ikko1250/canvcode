@@ -79,6 +79,8 @@ import {
 const DRAG_THRESHOLD_PX = 3
 // 当たり判定の余裕（CSS ピクセル）
 export const HIT_MARGIN_PX = 4
+// 同じボタンをこの間（ミリ秒）にもう一度押しても、押したことにしない（ダブルクリックの 2 回目）
+const DOUBLE_PRESS_MS = 500
 
 export interface ToolPointer {
   screen: Vec
@@ -91,6 +93,8 @@ export interface ToolPointer {
   // 前のイベントからの間にまとめて届いた位置（ワールド座標、古い順。最後は world と同じ）。
   // 速く動かしたときも、フリーハンドの線を角張らせないために使う（MAI-27）
   coalesced?: Vec[]
+  // ブラウザが操作を取り消した（pointercancel。長押しでメニューが出たときなど）。離したのと同じに渡すが、ボタンは押さない
+  cancelled?: boolean
 }
 
 export interface ToolContext {
@@ -122,6 +126,10 @@ export interface ToolContext {
   moveToCanvas(ids: string[], canvasId: string): void
   // 画面に見えている範囲（ワールド座標）。吸い付きの候補を絞る（MAI-53）。ないときはすべてのノードが候補
   viewportBox?(): Box
+  // 押せるノード（ボタン。NodeTypeDef の pressable）を押した。渡さなければ、ボタンもほかのノードと同じくクリックで選ぶ
+  pressButton?(nodeId: string): void
+  // 今そのボタンを押せるか（Claude を使えないときに Claude に送るボタンは false）。false なら、ほかのノードと同じくクリックで選ぶ。既定は true
+  canPressButton?(nodeId: string): boolean
 }
 
 export type WordSelectionEvent = { phase: 'move' | 'end'; pageId: string; from: Vec; to: Vec; screen: Vec } | { phase: 'cancel' }
@@ -228,6 +236,8 @@ export interface Tool {
   onDoubleClick?(pointer: ToolPointer): void
   // 操作の途中なら取り消して true を返す
   cancel(): boolean
+  // 右クリック・長押しでメニューを出す前（押しかけたボタンを押さないようにする）
+  onContextMenu?(): void
   // 別のツールに切り替わるとき
   onExit?(): void
 }
@@ -251,6 +261,9 @@ function placeAt(editor: Editor, point: Vec): { parentId: string; local: Vec } {
 type SelectState =
   | { name: 'idle' }
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
+  // 選んでいない押せるノード（ボタン）の上を押した。離せば押したことにし、ドラッグすれば選んで動かす
+  // locked は固定したボタン（押せるが、ドラッグしても動かさず、範囲選択にする）
+  | { name: 'pointingButton'; start: ToolPointer; nodeId: string; locked: boolean }
   // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック。
   // excludeId は、Ctrl（⌘）を押して押したノード（塗りなしの図形の中の空白も含む）。範囲選択で選ばない
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string; excludeId?: string }
@@ -318,6 +331,8 @@ export class SelectTool implements Tool {
   readonly id = 'select' as const
   readonly cursor = 'default'
   private state: SelectState = { name: 'idle' }
+  // 最後にボタンを押した時刻（ダブルクリックの 2 回目で、同じボタンを重ねて押さない）
+  private lastPress: { id: string; time: number } | null = null
   // 離したあとも PDF の文字の読み込みが続く。次の操作まで、中止できるようにしておく。
   private hasWordSelection = false
   private readonly ctx: ToolContext
@@ -429,7 +444,11 @@ export class SelectTool implements Tool {
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
-    if (hit && (pointer.ctrlKey || pointer.metaKey)) {
+    // 選んでいないボタン（固定したものも）は、押しただけでは選ばない（離したら押す）。Shift・Ctrl（⌘）なら、ほかのノードと同じ
+    const button = pointer.shiftKey || pointer.ctrlKey || pointer.metaKey ? null : this.pressableAt(pointer.world, hit)
+    if (button) {
+      this.state = { name: 'pointingButton', start: pointer, nodeId: button.id, locked: button.locked }
+    } else if (hit && (pointer.ctrlKey || pointer.metaKey)) {
       // Ctrl（⌘）を押しながらなら、ノードの上からでも範囲選択にする。選択は離すまで変えない
       const nodeId = editor.selectableFor(hit.id)
       this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(selected), nodeId, excludeId: nodeId }
@@ -508,7 +527,8 @@ export class SelectTool implements Tool {
             : !hit && editor.citationsAt(pointer.world).length > 0
               ? 'pointer'
               : null
-        this.ctx.setCursor(cursor)
+        // 選んでいないボタンの上では指のカーソル（クリックで押せる）
+        this.ctx.setCursor(cursor ?? (this.pressableAt(pointer.world, hit) ? 'pointer' : null))
         // ホバーの表示も、クリックしたら選ばれるもの（group 全体など）に合わせる
         const hoveredId = hit ? this.selectableWithoutSideEffects(hit.id) : null
         if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
@@ -622,6 +642,21 @@ export class SelectTool implements Tool {
         this.onPointerMove(pointer)
         return
       }
+      case 'pointingButton': {
+        // ボタンをドラッグしたら、押さずに、選んで動かす（固定したボタンなら、何もない所からと同じく範囲選択）
+        if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
+        if (state.locked) {
+          this.state = { name: 'brushing', start: state.start, initial: new Set(editor.session.get().selectedIds), additive: false }
+          this.onPointerMove(pointer)
+          return
+        }
+        // 中に入っている group の外なら、group から出る（selectableFor。ふつうのクリックと同じ）
+        editor.setSelection([editor.selectableFor(state.nodeId)])
+        this.state = { name: 'pointingNode', start: state.start, nodeId: state.nodeId, wasSelected: false }
+        this.startTranslating(state.start)
+        this.onPointerMove(pointer)
+        return
+      }
       case 'pointingCanvas': {
         if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
         this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey, excludeId: state.excludeId }
@@ -677,7 +712,15 @@ export class SelectTool implements Tool {
     if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().gapGuides.length > 0) {
       editor.session.set({ gapGuides: [] })
     }
-    if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
+    if (state.name === 'pointingButton') {
+      // 動かさずに離した：ボタンを押す（消えていたら・取り消されたら何もしない）。ダブルクリックの 2 回目は押さない（同じ頼みを重ねない）
+      const now = Date.now()
+      const repeated = this.lastPress?.id === state.nodeId && now - this.lastPress.time < DOUBLE_PRESS_MS
+      if (editor.getNode(state.nodeId) && !repeated && !pointer.cancelled) {
+        this.lastPress = { id: state.nodeId, time: now }
+        this.ctx.pressButton?.(state.nodeId)
+      }
+    } else if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
       const next = new Set(editor.session.get().selectedIds)
       next.delete(state.nodeId)
@@ -806,6 +849,8 @@ export class SelectTool implements Tool {
     const editor = this.ctx.editor
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
+    // 選んでいないボタンのダブルクリックは、押したことになっている（文字の編集は、選んでから）
+    if (this.pressableAt(pointer.world, hit)) return
     if (!hit || editor.isContainer(hit, 'frame')) {
       createTextAt(this.ctx, pointer.world)
       return
@@ -831,6 +876,23 @@ export class SelectTool implements Tool {
   onExit(): void {
     this.cancel()
     this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null })
+  }
+
+  // 長押し（タッチ）でメニューが出たら、押しかけたボタンは押さない
+  onContextMenu(): void {
+    if (this.state.name === 'pointingButton') this.state = { name: 'idle' }
+  }
+
+  // 点にある、クリックで押せるノード（ボタン）で、選んでいないもの。hit はその点のふつうの当たり（固定したノードは当たらない）。
+  // 固定したボタンも押せるので、固定したものも含めていちばん手前のノードも見る（ほかのノードの上に固定したボタンなど）。
+  // group の中のもの（クリックで group を選ぶ）は除く
+  private pressableAt(world: Vec, hit: NodeRecord | null): NodeRecord | null {
+    const editor = this.ctx.editor
+    if (!this.ctx.pressButton) return null
+    const top = editor.hitTest(world, HIT_MARGIN_PX / editor.session.get().camera.zoom, { includeLocked: true })
+    const node = [top, hit].find((candidate) => candidate && editor.getType(candidate).pressable && (candidate === hit || candidate.locked))
+    if (!node || this.ctx.canPressButton?.(node.id) === false) return null
+    return this.selectableWithoutSideEffects(node.id) === node.id && !editor.session.get().selectedIds.has(node.id) ? node : null
   }
 
   private setHoveredSpacing(next: { axis: Axis; gapIndex: number } | null): void {
@@ -1382,14 +1444,62 @@ export class TextTool implements Tool {
   }
 }
 
-export class NoteTool implements Tool {
-  readonly id = 'note' as const
+// ボタン（押すと Claude に指示を送る）。クリックした位置を中心に作り、文字の編集に入る（付箋と同じ）
+export class ButtonTool implements Tool {
+  readonly id = 'button' as const
   readonly cursor = 'crosshair'
-  private creating: { tx: Transaction<WorkspaceRecord>; node: NodeRecord<NoteProps> } | null = null
+  private creating: { tx: Transaction<WorkspaceRecord>; node: NodeRecord } | null = null
   private readonly ctx: ToolContext
 
   constructor(ctx: ToolContext) {
     this.ctx = ctx
+  }
+
+  onPointerDown(pointer: ToolPointer): void {
+    if (pointer.button !== 0) return
+    const editor = this.ctx.editor
+    const { parentId, local } = placeAt(editor, pointer.world)
+    const tx = editor.begin('create button')
+    const draft = editor.makeNode('button', { x: 0, y: 0, parentId })
+    const { w, h } = editor.getType(draft).getBounds(draft)
+    const node = { ...draft, x: local.x - w / 2, y: local.y - h / 2 }
+    tx.put(node)
+    tx.flush()
+    this.creating = { tx, node }
+  }
+
+  // 編集モードには、手を離してから入る（NoteTool と同じ）
+  onPointerUp(): void {
+    const creating = this.creating
+    if (!creating) return
+    this.creating = null
+    this.ctx.setTool('select')
+    this.ctx.startEditing(creating.node.id, { tx: creating.tx, selectAll: true })
+  }
+
+  cancel(): boolean {
+    const creating = this.creating
+    if (!creating) return false
+    this.creating = null
+    creating.tx.cancel()
+    return true
+  }
+
+  onExit(): void {
+    this.cancel()
+  }
+}
+
+// 付箋を置く。aiNote は AI モードの付箋（meta.ai。Claude に聞く付箋）を置く
+export class NoteTool implements Tool {
+  readonly id: 'note' | 'aiNote'
+  readonly cursor = 'crosshair'
+  private creating: { tx: Transaction<WorkspaceRecord>; node: NodeRecord<NoteProps> } | null = null
+  private readonly ctx: ToolContext
+
+  constructor(ctx: ToolContext, id: 'note' | 'aiNote' = 'note') {
+    this.ctx = ctx
+    this.id = id
   }
 
   // クリックした位置を中心に付箋を作る
@@ -1399,7 +1509,8 @@ export class NoteTool implements Tool {
     const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin('create note')
     const draft = editor.makeNode('note', { x: 0, y: 0, parentId }) as NodeRecord<NoteProps>
-    const node = { ...draft, x: local.x - draft.props.w / 2, y: local.y - noteHeight(draft.props) / 2 }
+    const meta = this.id === 'aiNote' ? { ...draft.meta, ai: { contexts: [] } } : draft.meta
+    const node = { ...draft, meta, x: local.x - draft.props.w / 2, y: local.y - noteHeight(draft.props) / 2 }
     tx.put(node)
     tx.flush()
     this.creating = { tx, node }

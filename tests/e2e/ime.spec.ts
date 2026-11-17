@@ -140,7 +140,10 @@ test('canvas: C typed with the IME on does not open the Claude panel (MAI-91)', 
   await imeKey(cdp, 'c', 'KeyC')
   await page.waitForTimeout(100)
   await expect(page.locator('.claude-panel')).toHaveCount(0)
-  // IME を通らない c なら開く
+  await expect(page.locator('.answer-panel')).toHaveCount(0)
+  // IME を通らない c なら開く（付箋の答えのパネル。もう一度押すとチャット）
+  await page.keyboard.press('c')
+  await expect(page.locator('.answer-panel')).toBeFocused()
   await page.keyboard.press('c')
   await expect(page.locator('.claude-compose textarea')).toBeFocused()
 })

@@ -14,6 +14,7 @@ import { handleClaude } from './claude/http.ts'
 import { ClaudeJobs, claudeLimitsFromEnv } from './claude/jobs.ts'
 import { ClaudeStore } from './claude/store.ts'
 import { handleMemo, MemoWriter } from './claude/memo.ts'
+import { AnswerWriter, handleAnswer } from './claude/answer.ts'
 import { CitationWriter, handleCite } from './claude/cite.ts'
 import { handleLookup, WordLookup } from './claude/lookup.ts'
 import { ClaudeOnce } from './claude/once.ts'
@@ -28,7 +29,7 @@ import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
 import { RefImageStore } from './refImages.ts'
 import { STORAGE_SWEEP_INTERVAL_MS, sweepStorage } from './storageCleanup.ts'
-import { handleRefs } from './refs.ts'
+import { handleRefs, resolveReference } from './refs.ts'
 import { cleanupSlidesV1, describeSlidesV1Cleanup } from './slidesV1Cleanup.ts'
 import { SyncHub } from './sync.ts'
 import { RenderBroker } from './renders.ts'
@@ -49,6 +50,8 @@ import { ThumbnailStore } from './thumbnails.ts'
 //   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - PDF の上で選んだ語を調べる（/api/claude/lookup。claude/lookup.ts。MAI-99）。Claude を 1 回だけ動かす共通の仕組み（claude/once.ts）を使う。
 //   モデルは既定で Haiku（CANVCODE_LOOKUP_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
+// - キャンバスの AI：付箋で聞き、段落ごとの付箋と書き直すためのボタンをまとめたフレームで答える（/api/claude/answer。claude/answer.ts）。
+//   同じ claude/once.ts を使う。モデルは画面が送ったもの（Claude のパネルで最後に選んだもの）か、既定で Sonnet（CANVCODE_ANSWER_MODEL で変える）
 // - アイテム（PDF・リンクカード・Markdown のカード）の APA の引用を作る（/api/claude/cite。claude/cite.ts。MAI-98）。同じ claude/once.ts を使い、
 //   Web で項目を確かめさせる。モデルは既定で Sonnet（CANVCODE_CITE_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
@@ -140,6 +143,19 @@ const memo = process.env.CANVCODE_CLAUDE === '0' ? null : new MemoWriter(process
 const once = process.env.CANVCODE_CLAUDE === '0' ? null : new ClaudeOnce()
 const lookup = once ? new WordLookup({ once, ...(process.env.CANVCODE_LOOKUP_MODEL ? { model: process.env.CANVCODE_LOOKUP_MODEL } : {}) }) : null
 // APA の引用（claude/cite.ts）。同じ once を使い、同時に動かせる数の上限を語を調べるのと分け合う。既定は Sonnet
+// キャンバスの AI：付箋で聞き、付箋で答える（claude/answer.ts）。同じ once を使う。既定は Sonnet（画面がモデルを送らなければ。CANVCODE_ANSWER_MODEL で変える）
+// 付箋で聞く（キャンバスの AI）。添えたキャンバスの一部は、MCP の resolve_reference と同じ中身にして渡す（画像は渡さない）
+const answer = once
+  ? new AnswerWriter({
+      once,
+      resolveRef: async (refId) => {
+        const ref = records.getRef(refId)
+        return ref ? resolveReference(ref, { records, files, dataDir: DATA_DIR }) : null
+      },
+      ...(process.env.CANVCODE_ANSWER_MODEL ? { model: process.env.CANVCODE_ANSWER_MODEL } : {}),
+      ...(process.env.CANVCODE_ANSWER_WEB === '0' ? { web: false } : {}),
+    })
+  : null
 const cite = once
   ? new CitationWriter({ once, deps: { records, files, dataDir: DATA_DIR }, ...(process.env.CANVCODE_CITE_MODEL ? { model: process.env.CANVCODE_CITE_MODEL } : {}) })
   : null
@@ -239,6 +255,7 @@ const server = createServer(async (req, res) => {
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (handleMemo(req, res, url.pathname, memo)) return
   if (handleLookup(req, res, url.pathname, lookup)) return
+  if (handleAnswer(req, res, url.pathname, answer)) return
   if (handleCite(req, res, url.pathname, cite)) return
   if (handleClaude(req, res, url.pathname, claude)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return

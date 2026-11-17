@@ -20,6 +20,10 @@ export type ToolId =
   | 'text'
   | 'title'
   | 'note'
+  // AI 付箋（AI モードの付箋を置く。付箋の下に、モデル・添えるもの・送信が出る）
+  | 'aiNote'
+  // ボタン（押すと Claude に指示を送る。キャンバスの AI）
+  | 'button'
   | 'frame'
   | 'draw'
   | 'eraser'

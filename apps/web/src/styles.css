@@ -2789,6 +2789,114 @@ button.pdf-page-number:hover {
   cursor: pointer;
 }
 
+/* AI モードの付箋（Claude に聞く付箋）の下の欄。1 段目にモデル・「＋ 選んでいる所」・送信、2 段目から添えたもの */
+.ai-note-controls {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  box-sizing: border-box;
+  padding: 5px 6px;
+  border: 1px solid #e6d78a;
+  border-radius: 8px;
+  background: #fffdf2;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.ai-note-controls button {
+  padding: 3px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-note-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-note-contexts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-note-context {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 1px 2px 1px 8px;
+  border-radius: 999px;
+  background: #e8eefc;
+  color: #1f4b99;
+}
+
+.ai-note-context-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-note-controls .ai-note-context button {
+  padding: 0 5px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.ai-note-controls .ai-note-attach {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+/* 送信は 1 段目の右端 */
+.ai-note-controls .ai-note-send {
+  margin-left: auto;
+  border-color: #3b5bdb;
+  background: #3b5bdb;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 下に開くモデルの欄（AI モードの付箋の下の欄） */
+.claude-model-popover.claude-model-popover-down {
+  top: calc(100% + 6px);
+  right: auto;
+  bottom: auto;
+  left: 0;
+}
+
+/* ボタンのホバーの説明（「ひとつ前の回答に戻る」など）。ボタンの下に出す */
+.button-tooltip {
+  position: absolute;
+  z-index: 6;
+  max-width: 320px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(31, 35, 40, 0.92);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
 .word-lookup-head {
   display: flex;
   align-items: flex-start;
@@ -2855,9 +2963,10 @@ button.pdf-page-number:hover {
   display: none;
 }
 
-/* Claude に頼むパネル（claude/ClaudePanel.tsx）。キャンバスの右に並べる（右上のデザインパネルと重ならない）。
-   狭い画面（スマホ）では、画面いっぱいに重ねる */
-.claude-panel {
+/* Claude のチャット（claude/ClaudePanel.tsx）と、付箋の答えのパネル（claude/AnswerPanel.tsx）。どちらもキャンバスの右に並べる
+   （右上のデザインパネルと重ならない。同時に見えるのは片方だけで、もう片方は hidden で隠す）。狭い画面（スマホ）では、画面いっぱいに重ねる */
+.claude-panel,
+.answer-panel {
   display: flex;
   flex-direction: column;
   width: 380px;
@@ -2868,13 +2977,20 @@ button.pdf-page-number:hover {
   font-size: 13px;
 }
 
+.claude-panel[hidden],
+.answer-panel[hidden] {
+  display: none;
+}
+
 /* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない */
-.claude-panel:focus {
+.claude-panel:focus,
+.answer-panel:focus {
   outline: none;
 }
 
 @media (max-width: 720px) {
-  .claude-panel {
+  .claude-panel,
+  .answer-panel {
     position: fixed;
     inset: 0;
     z-index: 30;
@@ -2896,6 +3012,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel button,
+.answer-panel button,
 .claude-thread-select {
   padding: 3px 8px;
   border: 1px solid var(--panel-border);
@@ -2917,12 +3034,13 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
-.claude-panel button:disabled {
+.claude-panel button:disabled,
+.answer-panel button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.claude-panel .claude-close {
+:is(.claude-panel, .answer-panel) .claude-close {
   border-color: transparent;
   background: transparent;
   font-size: 16px;
@@ -2937,10 +3055,195 @@ button.pdf-page-number:hover {
   padding: 12px;
 }
 
+/* チャットから付箋の答えに戻る（キャンバスでだけ出す） */
+.claude-panel .claude-back {
+  padding: 3px 6px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.claude-panel .claude-back:hover {
+  border-color: var(--panel-border);
+  background: #fff;
+}
+
 .claude-hint {
   margin: 0;
   color: var(--muted);
   line-height: 1.6;
+}
+
+.answer-panel-empty {
+  padding: 12px;
+}
+
+/* 付箋で聞いた答え（キャンバスの AI）の記録。回答中・回答終了の行と、畳んだ「過去の答え」。
+   パネルいっぱいに並べ、考えている中身を見ている間は上の 40% に縮める */
+.answer-strip {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+}
+
+.answer-panel.viewing .answer-strip {
+  flex: none;
+  max-height: 40%;
+  border-bottom: 1px solid var(--panel-border);
+  background: #fbfaf4;
+}
+
+.answer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.answer-panel .answer-row-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+
+.answer-panel .answer-row-main:hover,
+.answer-row-viewing .answer-row-main {
+  border-color: var(--panel-border);
+  background: #fff;
+}
+
+.answer-row-status {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.answer-row-running .answer-row-status {
+  color: #3b5bdb;
+}
+
+.answer-row-done .answer-row-status {
+  color: #2b8a3e;
+}
+
+.answer-row-failed .answer-row-status,
+.answer-row-cancelled .answer-row-status {
+  color: var(--muted);
+}
+
+.answer-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-row-time {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.answer-past summary {
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.answer-past-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.answer-panel .answer-past-clear {
+  margin-top: 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+/* Claude の考えている中身だけを見る（一覧の下） */
+.answer-thinking-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 12px;
+}
+
+.answer-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.answer-thinking-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-thinking-error {
+  margin: 0 0 8px;
+  color: #c92a2a;
+  font-size: 12px;
+}
+
+.answer-thinking {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+  border-radius: 6px;
+  background: #f6f8fa;
+  color: #424a53;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* 段落の中の改行は残す。段落と調べている行の間は、margin でそろえる */
+.answer-thinking p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.answer-thinking > :not(:first-child) {
+  margin-top: 8px;
+}
+
+.answer-thinking-empty {
+  color: var(--muted);
+}
+
+/* 調べている語・読んでいるページ（続けて並んだものは、間を空けずに並べる） */
+.answer-thinking-tool {
+  padding-left: 8px;
+  border-left: 2px solid #c5d3f6;
+  color: #3b5bdb;
+  font-size: 11px;
 }
 
 .claude-job + .claude-job {
@@ -3221,7 +3524,7 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
-.claude-panel .claude-model-button {
+:is(.claude-panel, .ai-note-controls) .claude-model-button {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3272,8 +3575,8 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
-.claude-panel .claude-model-more,
-.claude-panel .claude-model-back {
+:is(.claude-panel, .ai-note-controls) .claude-model-more,
+:is(.claude-panel, .ai-note-controls) .claude-model-back {
   padding: 0;
   border: none;
   border-radius: 4px;
@@ -3283,8 +3586,8 @@ button.pdf-page-number:hover {
   text-align: left;
 }
 
-.claude-panel .claude-model-more:hover,
-.claude-panel .claude-model-back:hover {
+:is(.claude-panel, .ai-note-controls) .claude-model-more:hover,
+:is(.claude-panel, .ai-note-controls) .claude-model-back:hover {
   color: var(--model-line);
 }
 
@@ -3356,7 +3659,7 @@ button.pdf-page-number:hover {
   transition: left 120ms ease;
 }
 
-.claude-panel .claude-model-reset {
+:is(.claude-panel, .ai-note-controls) .claude-model-reset {
   align-self: flex-end;
   padding: 0;
   border: none;
@@ -3381,7 +3684,7 @@ button.pdf-page-number:hover {
   border-top: 1px solid rgba(59, 91, 219, 0.2);
 }
 
-.claude-panel .claude-model-option {
+:is(.claude-panel, .ai-note-controls) .claude-model-option {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -3394,11 +3697,11 @@ button.pdf-page-number:hover {
   text-align: left;
 }
 
-.claude-panel .claude-model-option:hover {
+:is(.claude-panel, .ai-note-controls) .claude-model-option:hover {
   background: rgba(59, 91, 219, 0.08);
 }
 
-.claude-panel .claude-model-option[aria-checked='true'] {
+:is(.claude-panel, .ai-note-controls) .claude-model-option[aria-checked='true'] {
   background: rgba(59, 91, 219, 0.16);
 }
 
@@ -3545,3 +3848,47 @@ button.pdf-page-number:hover {
 .claude-tool.answer.expired {
   color: #9a6700;
 }
+
+/* ボタン（押すと Claude に指示を送る）の、出す文字と押したときの指示（design/ButtonSection.tsx） */
+.design-button-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.design-button-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--dp-secondary);
+}
+
+.design-button-field input,
+.design-button-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius);
+  background: var(--dp-field);
+  color: var(--dp-text);
+  font: inherit;
+}
+
+.design-button-field textarea {
+  resize: vertical;
+}
+
+.design-button-field input:focus,
+.design-button-field textarea:focus {
+  outline: none;
+  border-color: var(--dp-accent);
+}
+
+.design-button-hint {
+  margin: 0;
+  color: var(--dp-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+

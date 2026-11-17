@@ -15,7 +15,9 @@ import {
 import { ModelPicker } from './ModelPicker.tsx'
 import { jobSettingLabel, loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } from './modelChoice.ts'
 
-// 画面から Claude Code に頼むパネル（キャンバスの右に並べる）。
+// 画面から Claude Code に頼むチャット（キャンバスの右に並べる）。
+// - キャンバスでは、右上の「Claude」と C で開くのは付箋の答えのパネル（AnswerPanel）で、チャットはその「チャット」で開く（左上の「←」で戻る）。
+//   「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、チャットを直接開く。付箋の答えは、ここには出さない
 // - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新規」で切る）。会話はサーバーの SQLite に残り、
 //   上の一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
@@ -47,16 +49,20 @@ interface Props {
   focusRequest: number
   // 入力欄に入れておく頼み方の下書き（n が変わるたびに入れ直す。「グラフを作る」の「Claude におまかせ」）
   draft?: { text: string; n: number } | null
-  // パネルが見えている置き場所（MAI-102。App がパネルの DOM をキャンバスの右と全画面のエディタの右半分の間で移す）。
-  // 変わったら、会話の欄と入力欄のスクロールを戻す（DOM を移すと先頭に戻り、scroll イベントも来ないため）
+  // パネルが見えている置き場所（MAI-102。App がパネルの DOM をキャンバスの右と全画面のエディタの右半分の間で移す。隠しているなら null）。
+  // 変わったら、会話の欄と入力欄のスクロールを戻す（DOM を移したり隠したりすると先頭に戻り、scroll イベントも来ないため）
   placement?: Element | null
+  // 隠しているか（付箋の答えのパネルを見せている間。閉じずに隠すので、書きかけの文と選んでいた会話が残る）
+  hidden?: boolean
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
+  // 付箋の答えのパネルに戻る（キャンバスでだけ渡す。全画面のエディタでは、チャットだけを出す）
+  onShowAnswers?(): void
 }
 
 export function ClaudePanel(props: Props) {
-  const { client, canvasId, attachment, focusRequest, draft, placement, onAttachSelection, onClearAttachment, onClose } = props
+  const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, onAttachSelection, onClearAttachment, onClose, onShowAnswers } = props
   const state = useClaudeState(client)
   const { threads } = state
   // 選んだ会話。null は新しい会話
@@ -76,7 +82,10 @@ export function ClaudePanel(props: Props) {
 
   useEffect(() => client.connect(), [client])
   useEffect(() => void client.loadModels(), [client, state.availability])
-  useEffect(() => inputRef.current?.focus({ preventScroll: true }), [focusRequest])
+  // 隠している間に頼まれたら、見せたときにフォーカスする（付箋の答えのパネルから「チャット」で移ったとき）
+  useEffect(() => {
+    if (!hidden) inputRef.current?.focus({ preventScroll: true })
+  }, [focusRequest, hidden])
   // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）。
   // 閉じていたパネルは下書きと一緒に開く（初めから下書きがある）ので、null から比べて、開いたときも入れる
   const [seenDraft, setSeenDraft] = useState<typeof draft>(null)
@@ -229,9 +238,14 @@ export function ClaudePanel(props: Props) {
   }
 
   return (
-    <aside className="claude-panel" aria-label="Claude" tabIndex={-1} onKeyDown={onPanelKeyDown} {...{ [OWN_KEYS_ATTRIBUTE]: '' }}>
+    <aside className="claude-panel" aria-label="Claude のチャット" hidden={hidden} tabIndex={-1} onKeyDown={onPanelKeyDown} {...{ [OWN_KEYS_ATTRIBUTE]: '' }}>
       <div className="claude-panel-header">
-        <strong>Claude</strong>
+        {onShowAnswers && (
+          <button type="button" className="claude-back" onClick={onShowAnswers} title="付箋の答えに戻る" aria-label="付箋の答えに戻る">
+            ←
+          </button>
+        )}
+        <strong>チャット</strong>
         <select
           className="claude-thread-select"
           value={threadId ?? ''}

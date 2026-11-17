@@ -4,10 +4,10 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 // パネルの中のキー（Delete・矢印・Ctrl+A・Esc）は、キャンバスのショートカットに渡らない。
 // バックグラウンドの作業が並び、1 つずつ・まるごと止められる。
 // 画面で許可を待っている問い合わせが並び、JSON で答えられ、閉じたパネルの Claude のボタンに印が出る。
-// C で開く（MAI-91）
+// 右上の「Claude」と C で開くのは付箋の答えのパネルで、チャットはその「チャット →」（か、もう一度 C）で開く（MAI-91）
 
 // claude は、会話 t1 に足すもの（バックグラウンドの作業・待っている問い合わせ・ジョブ）。events は /api/claude/events の差し替え。
-// open が false なら、パネルを開かずに返す（C で開くのを確かめる）
+// open が true なら、右上の「Claude」で付箋の答えのパネルを開き、「チャット →」でチャットに移って返す。false なら、パネルを開かずに返す（C で開くのを確かめる）
 async function openApp(
   page: Page,
   claude: { tasks?: object[]; permissions?: object[]; jobs?: object[]; events?: Parameters<Page['route']>[1] } = {},
@@ -40,7 +40,7 @@ async function openApp(
   await page.mouse.click(rect.x + 140, rect.y + 140)
   await expect.poll(() => selectedIds(page)).toHaveLength(1)
   if (open) {
-    await page.locator('.claude-toggle').click()
+    await openChat(page)
     await expect(page.locator('.claude-text').first()).toHaveText('Answer from Claude')
   } else {
     // Claude を使える（会話の一覧を読めた）と、右上のボタンが出る
@@ -55,6 +55,17 @@ async function openApp(
 }
 
 const panel = (page: Page) => page.locator('.claude-panel')
+const answerPanel = (page: Page) => page.locator('.answer-panel')
+
+// 右上の「Claude」で付箋の答えのパネルを開き、「チャット →」でチャットに移る
+async function openChat(page: Page) {
+  await page.locator('.claude-toggle').click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(panel(page)).toBeHidden()
+  await answerPanel(page).getByRole('button', { name: 'チャット →' }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(answerPanel(page)).toBeHidden()
+}
 const promptBox = (page: Page) => page.locator('.claude-compose textarea')
 // 押したキーの処理と描き直しが済むのを待つ（開かないことを確かめる前に）
 const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
@@ -338,11 +349,17 @@ test('shows how each question ended in the job, and one left unanswered when the
   await expect(page.locator('.claude-toggle')).not.toHaveClass(/waiting/)
 })
 
-test('C on the canvas opens the panel and focuses the empty prompt box (MAI-91)', async ({ page }) => {
+test('C on the canvas opens the answers panel, and C again opens the chat with the empty prompt box focused (MAI-91)', async ({ page }) => {
   await openApp(page, {}, { open: false })
   await expect(panel(page)).toHaveCount(0)
+  await expect(answerPanel(page)).toHaveCount(0)
+  await page.keyboard.press('c')
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(answerPanel(page)).toBeFocused()
+  await expect(panel(page)).toBeHidden()
   await page.keyboard.press('c')
   await expect(panel(page)).toBeVisible()
+  await expect(answerPanel(page)).toBeHidden()
   await expect(promptBox(page)).toBeFocused()
   // 押した c は入力欄に入らない。選んでいる所は添えない（添えるのは Ctrl+Alt+Enter）
   await expect(promptBox(page)).toHaveValue('')
@@ -363,11 +380,19 @@ test('C with the panel open moves the focus back to the prompt box and keeps wha
   await expect(promptBox(page)).toHaveValue('途中まで書いた')
 })
 
-test('holding C opens the panel without typing c into the prompt box (MAI-91)', async ({ page }) => {
+test('holding C opens the answers panel only, and the chat opened by the next C gets no c typed (MAI-91)', async ({ page }) => {
   await openApp(page, {}, { open: false })
   await page.keyboard.down('c')
+  await expect(answerPanel(page)).toBeFocused()
+  // キーリピート（repeat の keydown）では、チャットに移らない
+  await page.keyboard.down('c')
+  await page.keyboard.down('c')
+  await page.keyboard.up('c')
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(panel(page)).toBeHidden()
+  // 離してから押すとチャットに移る。押し続けても、キーリピート（フォーカスを移した入力欄に届く）は入らない
+  await page.keyboard.down('c')
   await expect(promptBox(page)).toBeFocused()
-  // キーリピート（repeat の keydown）は、フォーカスを移した入力欄に届く
   await page.keyboard.down('c')
   await page.keyboard.down('c')
   await page.keyboard.up('c')
@@ -395,6 +420,7 @@ test('C with Ctrl, Meta or Shift does not open the panel (MAI-91)', async ({ pag
   await page.keyboard.press('Shift+C')
   await settle(page)
   await expect(panel(page)).toHaveCount(0)
+  await expect(answerPanel(page)).toHaveCount(0)
 })
 
 test('C is typed as a letter while editing a note or a card, without opening the panel (MAI-91)', async ({ page }) => {
@@ -567,7 +593,7 @@ test('restores the model and effort of a thread when it is opened again (MAI-106
   await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [t1, t2] } }))
   await page.route('**/api/claude/threads/t2', (route) => route.fulfill({ json: { jobs: [] } }))
   await page.reload()
-  await page.locator('.claude-toggle').click()
+  await openChat(page)
   await expect(page.locator('.claude-thread-select option', { hasText: 'older' })).toHaveCount(1)
   await page.locator('.claude-thread-select').selectOption('t2')
   await expect(page.locator('.claude-model-button')).toHaveText('Opus 4.6 · Low')
@@ -721,4 +747,75 @@ test('keeps the scroll of the conversation, and the keys of the panel, when the 
   await openFileEditor(page)
   await expect(panel(page)).toBeVisible()
   expect(await panelOnTop(page)).toBe(true)
+})
+
+test('the Claude button opens the answers panel, and the chat is one more step (it keeps what was written)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: { refId: 'ref:TEST000001' } }))
+  // 右上の「Claude」では、付箋の答えのパネルだけ（まだ答えがなければ、聞き方を書く）
+  await page.locator('.claude-toggle').click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(answerPanel(page)).toContainText('付箋で聞いた答えは、まだありません')
+  await expect(panel(page)).toBeHidden()
+  const viewport = page.viewportSize()!
+  const box = (await answerPanel(page).boundingBox())!
+  expect(Math.abs(box.x + box.width - viewport.width)).toBeLessThan(2)
+
+  // 「チャット →」でチャット。「←」で付箋の答えに戻っても、書きかけの文は残る
+  await answerPanel(page).getByRole('button', { name: 'チャット →' }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(promptBox(page)).toBeFocused()
+  await promptBox(page).fill('書きかけ')
+  await panel(page).getByRole('button', { name: '付箋の答えに戻る' }).click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(answerPanel(page)).toBeFocused()
+  await expect(panel(page)).toBeHidden()
+  await answerPanel(page).getByRole('button', { name: 'チャット →' }).click()
+  await expect(promptBox(page)).toBeFocused()
+  await expect(promptBox(page)).toHaveValue('書きかけ')
+
+  // 右上の「Claude」で閉じ、もう一度押すと、また付箋の答えから
+  await page.locator('.claude-toggle').click()
+  await expect(panel(page)).toHaveCount(0)
+  await expect(answerPanel(page)).toHaveCount(0)
+  await page.locator('.claude-toggle').click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(panel(page)).toBeHidden()
+  // 付箋の答えのパネルの Esc で閉じる
+  await page.keyboard.press('Escape')
+  await expect(answerPanel(page)).toHaveCount(0)
+
+  // 選んでいる所を添えて頼む（Ctrl+Alt+Enter）と、チャットを直接開く
+  await page.keyboard.press('ControlOrMeta+Alt+Enter')
+  await expect(panel(page)).toBeVisible()
+  await expect(answerPanel(page)).toBeHidden()
+  await expect(page.locator('.claude-attachment')).toBeVisible()
+})
+
+test('the file editor shows the chat directly, without the answers panel (MAI-102)', async ({ page }) => {
+  await openApp(page, {}, { open: false })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  // キャンバスで付箋の答えを開いたままエディタを開いても、右半分には出さない（プレビューのまま）
+  await page.locator('.claude-toggle').click()
+  await expect(answerPanel(page)).toBeVisible()
+  await openFileEditor(page)
+  await expect(answerPanel(page)).toBeHidden()
+  await expect(panel(page)).toBeHidden()
+  await expect(page.locator('.file-editor-preview')).toBeVisible()
+
+  // 表示の「Claude」は、チャットを直接出す（付箋の答えに戻る「←」はない）
+  await editorView(page, 'Claude').click()
+  await expect(panel(page)).toBeVisible()
+  expect(await panelOnTop(page)).toBe(true)
+  await expect(promptBox(page)).toBeFocused()
+  await expect(panel(page).getByRole('button', { name: '付箋の答えに戻る' })).toHaveCount(0)
+  await expect(answerPanel(page)).toBeHidden()
+
+  // エディタを閉じると、チャットのままキャンバスの右に戻り、「←」で付箋の答えに戻れる
+  await page.locator('.file-editor-close').click()
+  await expect(page.locator('.file-editor')).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
+  await panel(page).getByRole('button', { name: '付箋の答えに戻る' }).click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(panel(page)).toBeHidden()
 })

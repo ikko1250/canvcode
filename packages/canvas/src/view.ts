@@ -100,6 +100,7 @@ import {
   HIT_MARGIN_PX,
   HandTool,
   NoteTool,
+  ButtonTool,
   PortalTool,
   SelectTool,
   TextTool,
@@ -147,6 +148,10 @@ export interface CanvasViewOptions {
   onOpenCitations?: (anchorIds: string[], point: { clientX: number; clientY: number }) => void
   // 引用ノートの出典へ移る（出典の帯の Ctrl（⌘）+クリック）
   onOpenSource?: (anchorId: string) => void
+  // ボタン（押せるノード）を押した。渡さなければ、ボタンもほかのノードと同じくクリックで選ぶ
+  onPressButton?: (nodeId: string) => void
+  // 今そのボタンを押せるか（Claude を使えないときに Claude に送るボタンは false。そのときは、クリックで選ぶ）。既定は押せる
+  canPressButton?: (nodeId: string) => boolean
   // 旧データ（.ricbackup）がドロップされた（MAI-36）
   onImportBackup?: (file: File) => void
   // 「単語を調べる」で、PDF のページの上の語をなぞって離した（MAI-99）。呼び出し側が調べて、吹き出しで見せる。
@@ -219,7 +224,8 @@ export class CanvasView {
   readonly root: HTMLDivElement
   // 編集モードのノードの DOM を置くレイヤー（MAI-9。段階 4 以降で使う）
   readonly editingLayer: HTMLDivElement
-  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf'>>
+  private readonly options: Required<Omit<CanvasViewOptions, 'assets' | 'files' | 'pdf' | 'onPressButton' | 'canPressButton'>> &
+    Pick<CanvasViewOptions, 'onPressButton' | 'canPressButton'>
   // 引用の出典（MAI-33）
   private readonly citations: CitationResolver
   // 「出典へ」で移ってきた範囲（しばらく強調して見せる）
@@ -333,6 +339,8 @@ export class CanvasView {
       onQuote: options.onQuote ?? (() => {}),
       onOpenCitations: options.onOpenCitations ?? (() => {}),
       onOpenSource: options.onOpenSource ?? (() => {}),
+      ...(options.onPressButton ? { onPressButton: options.onPressButton } : {}),
+      ...(options.canPressButton ? { canPressButton: options.canPressButton } : {}),
       onImportBackup: options.onImportBackup ?? (() => {}),
       onWordLookup: options.onWordLookup ?? (() => {}),
     }
@@ -620,6 +628,8 @@ export class CanvasView {
         this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
       },
       moveToCanvas: (ids, canvasId) => void this.moveToCanvas(ids, canvasId, { confirm: true }),
+      ...(this.options.onPressButton ? { pressButton: this.options.onPressButton } : {}),
+      ...(this.options.canPressButton ? { canPressButton: this.options.canPressButton } : {}),
       // 画面に見えている範囲（ワールド座標。吸い付きの候補を絞る。MAI-53）
       viewportBox: () => {
         const camera = this.editor.session.get().camera
@@ -638,6 +648,8 @@ export class CanvasView {
       ['text', new TextTool(toolContext)],
       ['title', new TextTool(toolContext, 'title')],
       ['note', new NoteTool(toolContext)],
+      ['aiNote', new NoteTool(toolContext, 'aiNote')],
+      ['button', new ButtonTool(toolContext)],
       ['frame', new FrameTool(toolContext)],
       ['draw', new DrawTool(toolContext)],
       ['eraser', new EraserTool(toolContext)],
@@ -1863,6 +1875,8 @@ export class CanvasView {
 
   private onContextMenu(e: MouseEvent): void {
     e.preventDefault()
+    // 長押しでメニューが出るときは、押しかけたボタンを押さない
+    this.tool.onContextMenu?.()
     if (this.textEditor.editingId) return
     const editor = this.editor
     const pointer = this.toPointer(e)
@@ -2146,6 +2160,7 @@ export class CanvasView {
       altKey: e.altKey,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
+      ...(e.type === 'pointercancel' ? { cancelled: true } : {}),
     }
   }
 

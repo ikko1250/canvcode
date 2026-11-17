@@ -1055,7 +1055,8 @@ export class TextEditor {
   private onKeyDown(e: KeyboardEvent): void {
     // IME で変換している間の Esc・Enter は、変換の操作なので編集を終えない
     if (isImeEvent(e)) return
-    if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+    // 1 行の文字（ボタン）は、Enter だけでも編集を終える
+    if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey || this.currentSpec()?.singleLine))) {
       e.preventDefault()
       e.stopPropagation()
       this.finish()

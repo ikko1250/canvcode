@@ -194,12 +194,16 @@ export interface NodeTypeDef<P extends object> {
   citation?(node: NodeRecord<P>): string | null
   // ローカル座標の点にあるリンク（Ctrl（⌘）+クリックで開く。MAI-21）
   linkAt?(node: NodeRecord<P>, point: Vec): string | null
+  // クリックで押せる型（ボタン）。選択ツールは、選んでいないこのノードをクリックしたら、選ぶ代わりに押したことにする
+  // （ドラッグなら、選んで動かす。選んでいれば、ほかのノードと同じくクリックで選び、ダブルクリックで文字を編集する）
+  pressable?: boolean
   // 子を持てる型（MAI-25）。group は大きさを子から計算し、frame は子を枠で切り抜いて描く。
   // layout は子を並べ直すための入れ物（スライド v2 の slide-layout）。自分は選べず、ノードを落とす先にもならない。
   // 中の子は、group と違って直接選べる（祖先の frame の直下の子と同じ扱い）
   container?: ContainerKind
   // props の中に持っているノードの id（slide-layout の slots など）を map で写し替えた props。
-  // 複製・貼り付けで id を振り直すときに通す。map で引けない id（一緒に写さなかったノード）は外す
+  // 複製・貼り付けで id を振り直すときに通す。map で引けない id（一緒に写さなかったノード）は、ふつうは外す
+  // （ボタンの質問の付箋のように、写さなかった元のノードを指したままにする型もある）
   remapIds?(node: NodeRecord<P>, map: (id: string) => string | undefined): P
   // 子が出ていったときの新しい props（slide-layout は slots から外す）。定義しなければ props は変えない
   releaseChild?(node: NodeRecord<P>, childId: string): P
@@ -225,6 +229,8 @@ export interface TextEditSpec<P> {
   }
   // 空のまま編集を終えたら、ノードを消すか（テキストは消し、付箋や図形のラベルは残す）
   deleteIfEmpty: boolean
+  // 1 行の文字（ボタンの文字）。Enter で改行せずに編集を終える
+  singleLine?: boolean
 }
 
 export type AnyNodeTypeDef = NodeTypeDef<any>
