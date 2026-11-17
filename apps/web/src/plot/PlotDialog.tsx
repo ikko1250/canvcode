@@ -176,7 +176,9 @@ export function PlotDialog(props: PlotDialogProps) {
         </h2>
         <div className="plot-dialog-body">
           <div className="plot-dialog-form">
-            <label className="plot-field">
+            {/* label にしない：label の中の最初のボタン（折れ線）が label の入力になり、「種類」の文字やボタンの間を押すと、
+                折れ線を押したことになっていた（MAI-113） */}
+            <div className="plot-field">
               <span>種類</span>
               <div className="plot-kinds" role="radiogroup" aria-label="種類">
                 {PLOT_KINDS.map((kind) => (
@@ -193,7 +195,7 @@ export function PlotDialog(props: PlotDialogProps) {
                   </button>
                 ))}
               </div>
-            </label>
+            </div>
             <label className="plot-field">
               <span>{current?.kind === 'pie' ? 'ラベルの列' : '横の軸'}</span>
               <select

@@ -141,7 +141,8 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
             onEnd={(commit) => editor.end(commit)}
           />
         )}
-        <span className="design-number">
+        {/* 欄の形（枠）は外側。label にして、単位の文字など欄の中のどこを押しても入力に移る（MAI-113） */}
+        <label className="design-number">
           <input
             type="text"
             inputMode="decimal"
@@ -154,7 +155,7 @@ export function NumberField(props: FieldProps<number> & { control: NumberControl
             onKeyDown={onKeyDown}
           />
           {control.unit && <span className="design-unit">{control.unit}</span>}
-        </span>
+        </label>
         {extra}
       </div>
     </div>

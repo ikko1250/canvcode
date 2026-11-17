@@ -85,7 +85,8 @@ export function ModelPicker(props: { catalog: ModelCatalog | undefined; setting:
         onClick={() => (open ? close() : setOpen(true))}
         title="モデルと effort を選ぶ（次に送るときから、この会話で使う）"
       >
-        {settingLabel(catalog, setting)}
+        {/* 長い名前は中の span で切る（ボタンを overflow: hidden にすると、外へ広げた当たりが切れる。MAI-113） */}
+        <span>{settingLabel(catalog, setting)}</span>
       </button>
       {open && (
         <div className="claude-model-popover" role="dialog" aria-label="モデルと effort">
