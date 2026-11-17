@@ -11,6 +11,7 @@ import {
   insertRichText,
   insertText,
   parsePayload,
+  pastedSvg,
   pastedUrl,
   payloadText,
   payloadToHtml,
@@ -216,6 +217,18 @@ describe('pasting from outside', () => {
     expect(pastedUrl('https://')).toBeNull()
   })
 
+  // SVG のコード（Figma の「SVG としてコピー」など）は画像にする（MAI-116）
+  it('treats text that is a single SVG document as an SVG image', () => {
+    const svg = '<svg width="24" height="24" viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>'
+    expect(pastedSvg(`  ${svg}\n`)).toBe(svg)
+    expect(pastedSvg(`<?xml version="1.0" encoding="UTF-8"?>\n<!-- Generator: x -->\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x.dtd">\n${svg}`)).toContain(svg)
+    expect(pastedSvg(`<svg\n  xmlns="http://www.w3.org/2000/svg">\n</svg>`)).not.toBeNull()
+    expect(pastedSvg(`see ${svg}`)).toBeNull()
+    expect(pastedSvg(`${svg} and more`)).toBeNull()
+    expect(pastedSvg('<svgx></svgx>')).toBeNull()
+    expect(pastedSvg('<p>text</p>')).toBeNull()
+  })
+
   it('places a loading link card centred on the point, and copies it as its URL', () => {
     const { editor } = setup()
     const id = insertLinkCard(editor, 'https://example.com/page', { x: 100, y: 50 })
@@ -282,6 +295,17 @@ describe('image variants', () => {
     expect(pickImageVariant(asset, 2000)).toBe(4000)
     // 縮小版がない小さな画像は、いつも原本
     expect(pickImageVariant({ ...asset, width: 200, height: 100, variants: [] }, 50)).toBe(200)
+  })
+
+  // SVG は縮小版を作らず、要る大きさを 2 倍ずつの段階に丸めて描き直す（MAI-116）
+  it('picks the size to draw an SVG at, in steps of two from 32 to 4096 pixels', () => {
+    const svg = { ...asset, mime: 'image/svg+xml', width: 24, height: 24, variants: [] }
+    expect(pickImageVariant(svg, 1)).toBe(32)
+    expect(pickImageVariant(svg, 24)).toBe(32)
+    expect(pickImageVariant(svg, 33)).toBe(64)
+    expect(pickImageVariant(svg, 384)).toBe(512)
+    expect(pickImageVariant(svg, 4096)).toBe(4096)
+    expect(pickImageVariant(svg, 100_000)).toBe(4096)
   })
 })
 

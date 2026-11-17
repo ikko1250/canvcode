@@ -1,5 +1,5 @@
-import { assetIdFromHash, type AssetRecord } from '@canvcode/core'
-import { IMAGE_VARIANT_SIZES, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
+import { assetIdFromHash, MAX_SVG_BYTES, sanitizeSvg, SVG_MIME, type AssetRecord } from '@canvcode/core'
+import { IMAGE_VARIANT_SIZES, isSvgAsset, PDF_POINT_SCALE, scaledSize, type AssetResolver, type RasterImage } from '@canvcode/nodes'
 import type { PdfTextItem } from './quotes.ts'
 import type { PdfSearchResponse } from './pdfSearch.ts'
 import { indexedDbPdfPageBackend, pdfPageKey, PdfPageStore } from './pdfPageStore.ts'
@@ -13,6 +13,8 @@ import { sha256HexSync } from './sha256.ts'
 // - PDF のページは、サーバーが前もって作った画像（長辺 256px のシートと 1024px のページごと。Issue #26）があれば、それも出す
 //   （pdfPreviewLevels・loadPdfPreview）。PDF.js で描いた level 1 以上の画像は、読んでいたページの分をブラウザに置いておき
 //   （rememberPdfPage・pdfPageStore.ts）、次に同じ解像度を頼まれたら PDF を開かずにそれを返す
+// - SVG（MAI-116）は、取り込むときにブラウザで消毒し（@canvcode/core の sanitizeSvg）、消毒したものを Asset にする（ハッシュもその中身のもの）。
+//   縮小版は作らず、頼まれた大きさ（pickSvgSize）でそのつど描く（rasterizeSvg）。読んだ SVG の文字は MAX_SVG_SOURCES 個まで持っておく
 
 export interface AssetManagerOptions {
   // API の場所（既定は /api/assets）
@@ -23,7 +25,11 @@ export interface AssetManagerOptions {
   pdf?: PdfService
   // 最後に見た PDF のページの画像を置いておく先。既定は IndexedDB（使えなければ置かない）。null なら置かない
   pageStore?: PdfPageStore | null
+  // SVG を width×height 画素の画像に描く。既定は rasterizeSvg（テストで差し替える）
+  rasterizeSvg?: SvgRasterizer
 }
+
+export type SvgRasterizer = (svg: string, width: number, height: number) => Promise<CanvasImageSource>
 
 // PDF のページの、サーバーが前もって作った画像の一覧（GET /api/assets/<ハッシュ>/preview。apps/server/src/pdfPreview.ts）
 export interface PdfPreviewManifest {
@@ -86,12 +92,21 @@ interface PdfPreviewState {
   loading: Promise<void> | null
 }
 
-// 取り込める画像の種類。SVG は中にスクリプトを持てるので、初版では受け付けない
-export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp']
+// 取り込める画像の種類。SVG は中にスクリプトを持てるので、取り込むときに消毒する（MAI-116。@canvcode/core の svg.ts）。
+// キャンバスでは Image として描くので中のスクリプトは動かず、原本を直接開かれても、サーバーが CSP の sandbox で動かさない
+export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp', SVG_MIME]
 
-export function isSupportedImage(file: Blob): boolean {
-  return IMAGE_MIME_TYPES.includes(file.type)
+// SVG のファイルか（種類が分からなくても、名前が .svg なら SVG とみなす）
+export function isSvgFile(file: Blob & { name?: string }): boolean {
+  return file.type === SVG_MIME || (!file.type && /\.svg$/i.test(file.name ?? ''))
 }
+
+export function isSupportedImage(file: Blob & { name?: string }): boolean {
+  return IMAGE_MIME_TYPES.includes(file.type) || isSvgFile(file)
+}
+
+// 読んでおく SVG の文字の数（描き直すたびにサーバーから読まないように。アイコンは 1 つ 1 KB ほど）
+const MAX_SVG_SOURCES = 32
 
 // ファイルのカード（attachment。MAI-100）に置けるファイルの大きさの上限（サーバーの AssetStore の MAX_ORIGINAL_BYTES と同じ）
 export const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024
@@ -104,6 +119,7 @@ const ORIGINAL_EXTENSIONS: Record<string, string> = {
   'image/webp': 'webp',
   'image/avif': 'avif',
   'image/bmp': 'bmp',
+  [SVG_MIME]: 'svg',
 }
 
 // 画像の Asset を Markdown から指す画像のリンク。原本はワークスペースの .canvcode/assets/ にあるので、
@@ -132,11 +148,15 @@ export class AssetManager implements AssetResolver {
   private readonly pageStore: PdfPageStore | null
   // このタブでブラウザに置いた（置いてあると分かった）ページの画像のキー。同じものを 2 度書かない
   private readonly storedPages = new Set<string>()
+  // 読んだ SVG の文字（Asset の id → 文字。最近使った順）
+  private readonly svgSources = new Map<string, Promise<string>>()
+  private readonly rasterizeSvg: SvgRasterizer
 
   constructor(options: AssetManagerOptions = {}) {
     this.baseUrl = options.baseUrl ?? '/api/assets'
     this.notify = options.notify ?? ((message) => console.warn(message))
     this.pdf = options.pdf ?? null
+    this.rasterizeSvg = options.rasterizeSvg ?? rasterizeSvg
     if (options.pageStore !== undefined) {
       this.pageStore = options.pageStore
     } else {
@@ -368,9 +388,10 @@ export class AssetManager implements AssetResolver {
   }
 
   // 画像の Asset（PDF を除く）。新しく取り込んだもの・あとで登録したものほど後ろ（画像の塗りを選ぶ一覧。MAI-83）。
-  // ファイルのカードの原本（MAI-100）の SVG・TIFF などは、画像として描けないので入れない
+  // ファイルのカードの原本（MAI-100）の TIFF などは、画像として描けないので入れない。ファイルのカードとして置いた SVG
+  // （消毒していない。大きさは 0×0）も入れない
   images(): AssetRecord[] {
-    return [...this.records.values()].filter((record) => IMAGE_MIME_TYPES.includes(record.mime))
+    return [...this.records.values()].filter((record) => IMAGE_MIME_TYPES.includes(record.mime) && !(isSvgAsset(record) && !(record.width > 0 && record.height > 0)))
   }
 
   // アップロードが済むまで待つ（済んでいれば、すぐに返る。失敗しても投げない）。ファイルのカードを変換する前に（MAI-100）
@@ -392,8 +413,8 @@ export class AssetManager implements AssetResolver {
   }
 
   // 手元に持っているもの（メモリーのベンチマーク用。MAI-67）
-  get stats(): { records: number; pdfDocuments: number; localAssets: number; uploads: number } {
-    return { records: this.records.size, pdfDocuments: this.pdfDocuments.size, localAssets: this.local.size, uploads: this.uploads.size }
+  get stats(): { records: number; pdfDocuments: number; localAssets: number; uploads: number; svgSources: number } {
+    return { records: this.records.size, pdfDocuments: this.pdfDocuments.size, localAssets: this.local.size, uploads: this.uploads.size, svgSources: this.svgSources.size }
   }
 
   // すべてのアップロードが終わるまで待つ（テスト用）
@@ -401,9 +422,10 @@ export class AssetManager implements AssetResolver {
     await Promise.allSettled([...this.uploads.values()])
   }
 
-  // 画像のファイルを取り込む。縮小版を作ってレコードを登録し、裏でアップロードを始める
-  async importImage(file: Blob): Promise<AssetRecord> {
+  // 画像のファイルを取り込む。縮小版を作ってレコードを登録し、裏でアップロードを始める。SVG は importSvg
+  async importImage(file: Blob & { name?: string }): Promise<AssetRecord> {
     if (!isSupportedImage(file)) throw new Error(`Unsupported image type: ${file.type || 'unknown'}`)
+    if (isSvgFile(file)) return this.importSvg(file)
     const hash = await sha256Hex(file)
     const id = assetIdFromHash(hash)
     const existing = this.records.get(id)
@@ -424,6 +446,31 @@ export class AssetManager implements AssetResolver {
       bitmap.close()
     }
     const record: AssetRecord = { typeName: 'asset', id, mime: file.type, size: file.size, hash, width, height, variants }
+    this.addImage(record, blobs)
+    return record
+  }
+
+  // SVG を消毒して取り込む（MAI-116）。Asset は消毒したもので、大きさは SVG の width・height（なければ viewBox）。
+  // 縮小版は作らない。描けない SVG（消毒では分からない壊れ方）を置かないよう、先に小さく描いてみる
+  private async importSvg(file: Blob): Promise<AssetRecord> {
+    if (file.size > MAX_SVG_BYTES) throw new Error(`SVG too large: ${file.size}`)
+    const { svg, width, height } = sanitizeSvg(await file.text())
+    const blob = new Blob([svg], { type: SVG_MIME })
+    const hash = await sha256Hex(blob)
+    const id = assetIdFromHash(hash)
+    const existing = this.records.get(id)
+    if (existing) return existing
+    const probe = scaledSize(width, height, IMAGE_VARIANT_SIZES[0], true)
+    closeImage(await this.rasterizeSvg(svg, probe.width, probe.height))
+    const record: AssetRecord = { typeName: 'asset', id, mime: SVG_MIME, size: blob.size, hash, width, height, variants: [] }
+    this.rememberSvg(id, Promise.resolve(svg))
+    this.addImage(record, new Map([[Math.max(width, height), blob]]))
+    return record
+  }
+
+  // 取り込んだ画像のレコードを登録し、裏でアップロードを始める。済むまでは手元の blobs（長辺 → Blob）から読む
+  private addImage(record: AssetRecord, blobs: Map<number, Blob>): void {
+    const id = record.id
     this.records.set(id, record)
     this.local.set(id, blobs)
     const upload = this.upload(record, blobs)
@@ -436,7 +483,6 @@ export class AssetManager implements AssetResolver {
       })
       .finally(() => this.uploads.delete(id))
     this.uploads.set(id, upload)
-    return record
   }
 
   // 画像・PDF のほかの種類のファイルを、ファイルのカード（attachment。MAI-100）の原本として取り込み、裏でアップロードを始める。
@@ -480,14 +526,53 @@ export class AssetManager implements AssetResolver {
   async load(assetId: string, size: number): Promise<RasterImage> {
     const record = this.records.get(assetId)
     if (!record) throw new Error(`Unknown asset: ${assetId}`)
+    if (isSvgAsset(record)) return this.loadSvg(record, size)
     const blob = this.local.get(assetId)?.get(size) ?? (await this.fetchBlob(record, size))
     const image = await createImageBitmap(blob)
     return { image, width: image.width, height: image.height, level: size }
   }
 
+  // SVG を、長辺 size 画素に描く（原本より大きくも描く。縮小版はない）
+  private async loadSvg(record: AssetRecord, size: number): Promise<RasterImage> {
+    const { width, height } = scaledSize(Math.max(record.width, 1), Math.max(record.height, 1), size, true)
+    const image = await this.rasterizeSvg(await this.svgSource(record), width, height)
+    return { image, width, height, level: size }
+  }
+
+  // SVG の文字。アップロードが済むまでは手元の Blob から、済んだらサーバーから読む。最近使った MAX_SVG_SOURCES 個まで持っておく
+  private svgSource(record: AssetRecord): Promise<string> {
+    const kept = this.svgSources.get(record.id)
+    if (kept) {
+      this.rememberSvg(record.id, kept)
+      return kept
+    }
+    const local = this.local.get(record.id)?.values().next().value
+    const loading = local
+      ? local.text()
+      : fetch(`${this.baseUrl}/${record.hash}`).then((response) => {
+          if (!response.ok) throw new Error(`Failed to load asset ${record.id}: ${response.status}`)
+          return response.text()
+        })
+    loading.catch(() => {
+      if (this.svgSources.get(record.id) === loading) this.svgSources.delete(record.id)
+    })
+    this.rememberSvg(record.id, loading)
+    return loading
+  }
+
+  private rememberSvg(assetId: string, source: Promise<string>): void {
+    this.svgSources.delete(assetId)
+    this.svgSources.set(assetId, source)
+    for (const key of this.svgSources.keys()) {
+      if (this.svgSources.size <= MAX_SVG_SOURCES) break
+      this.svgSources.delete(key)
+    }
+  }
+
+  // 原本か縮小版の URL。SVG は縮小版がないので、いつも原本
   url(record: AssetRecord, size: number): string {
     const original = Math.max(record.width, record.height)
-    return size >= original ? `${this.baseUrl}/${record.hash}` : `${this.baseUrl}/${record.hash}/${size}`
+    return size >= original || isSvgAsset(record) ? `${this.baseUrl}/${record.hash}` : `${this.baseUrl}/${record.hash}/${size}`
   }
 
   private async fetchBlob(record: AssetRecord, size: number): Promise<Blob> {
@@ -552,6 +637,31 @@ async function encodeImage(raster: RasterImage): Promise<Blob | null> {
   }
   const canvas = drawScaled(raster.image, raster.width, raster.height)
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', STORED_PAGE_QUALITY))
+}
+
+// SVG（消毒したもの）を width×height 画素の画像にする。Image として読むので、中のスクリプトは動かない。
+// Chrome は SVG の Blob を createImageBitmap に渡せないので、Image で読んで Canvas に描く。描き先の大きさで描き直されるので、
+// 原本より大きくしてもぼやけない。blob: の URL だと Canvas を汚染するブラウザがあるので、data: の URL で読む（Markdown のカードと同じ）
+export async function rasterizeSvg(svg: string, width: number, height: number): Promise<CanvasImageSource> {
+  const image = new Image()
+  image.decoding = 'async'
+  image.src = `data:${SVG_MIME};charset=utf-8,${encodeURIComponent(svg)}`
+  await image.decode()
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const canvas = new OffscreenCanvas(width, height)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Canvas2D is not available')
+    ctx.drawImage(image, 0, 0, width, height)
+    return canvas.transferToImageBitmap()
+  }
+  const canvas = drawScaled(image, width, height)
+  const bitmap = await createImageBitmap(canvas)
+  canvas.width = canvas.height = 0
+  return bitmap
+}
+
+function closeImage(image: CanvasImageSource): void {
+  if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) image.close()
 }
 
 export async function sha256Hex(blob: Blob): Promise<string> {

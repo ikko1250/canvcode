@@ -1,6 +1,7 @@
 import {
   createId,
   indicesBetween,
+  MAX_SVG_BYTES,
   unionBoxes,
   type AssetRecord,
   type BindingRecord,
@@ -369,6 +370,14 @@ export function pastedUrl(text: string): string | null {
   } catch {
     return null
   }
+}
+
+// 貼り付けた文字列が、まるごと 1 つの SVG（Figma の「SVG としてコピー」など）なら、その文字列。画像として取り込む（MAI-116）。
+// 前に XML の宣言・コメント・DOCTYPE があってもよい。文の中の SVG・ほかの文字が続くものは null
+export function pastedSvg(text: string): string | null {
+  const trimmed = text.trim()
+  if (trimmed.length > MAX_SVG_BYTES || !trimmed.startsWith('<') || !trimmed.endsWith('</svg>')) return null
+  return /^(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE[^>[]*(?:\[[\s\S]*?\])?\s*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg[\s>][\s\S]*<\/svg>$/.test(trimmed) ? trimmed : null
 }
 
 // リンクのカードを、center を中心に置く。タイトルなどは、あとから linkPreview.ts が書き込む
