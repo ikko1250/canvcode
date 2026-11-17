@@ -151,19 +151,22 @@ export function FontField(props: { label: string; icon?: DesignIcon; value: Shar
             onKeyDown={onKeyDown}
           >
             <div className="design-font-popup-header">{label}</div>
-            <input
-              ref={filterRef}
-              type="text"
-              className="design-font-filter"
-              aria-label={`${label}を絞り込む`}
-              placeholder="フォントを探す"
-              spellCheck={false}
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value)
-                setActive(0)
-              }}
-            />
+            {/* 欄（高さ 22px）を label で包み、label の当たりを上下に広げる（MAI-113） */}
+            <label className="design-font-filter-field">
+              <input
+                ref={filterRef}
+                type="text"
+                className="design-font-filter"
+                aria-label={`${label}を絞り込む`}
+                placeholder="フォントを探す"
+                spellCheck={false}
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value)
+                  setActive(0)
+                }}
+              />
+            </label>
             <div ref={listRef} className="design-font-list" role="listbox" aria-label={label}>
               {options.length === 0 && <div className="design-font-empty">見つかりません</div>}
               {options.map((option, index) => (

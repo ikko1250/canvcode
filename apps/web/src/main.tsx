@@ -1,6 +1,9 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Root } from './Root.tsx'
+// デジタル庁デザインシステム（DADS）のデザイントークン（MAI-111）。:root に色・影・角丸などの変数を置くだけで、
+// 見た目は変えない。styles.css がこの変数を指すので、先に読み込む
+import '@digital-go-jp/design-tokens/dist/tokens.css'
 import './styles.css'
 // テキスト・付箋・図形で選べる同梱の日本語フォント（MAI-75。packages/nodes の BUNDLED_FONTS と同じもの）。
 // @font-face を宣言するだけで、使うまで（文字の範囲ごとのファイルも）読み込まない。

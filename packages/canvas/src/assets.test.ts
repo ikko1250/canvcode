@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AssetManager, assetMarkdownImage, type PdfDocument, type PdfService } from './assets.ts'
+import { AssetManager, assetMarkdownImage, isSupportedImage, sha256Hex, type PdfDocument, type PdfService } from './assets.ts'
 import { MemoryPdfPageBackend, PdfPageStore } from './pdfPageStore.ts'
 
 // 開いている PDF の数を抑える（MAI-66）
@@ -245,6 +245,7 @@ describe('assetMarkdownImage', () => {
     expect(assetMarkdownImage(asset('image/png'))).toBe('![](/.canvcode/assets/ab12.png)')
     expect(assetMarkdownImage(asset('image/jpeg'))).toBe('![](/.canvcode/assets/ab12.jpg)')
     expect(assetMarkdownImage(asset('image/webp'))).toBe('![](/.canvcode/assets/ab12.webp)')
+    expect(assetMarkdownImage(asset('image/svg+xml'))).toBe('![](/.canvcode/assets/ab12.svg)')
   })
 
   it('returns null for a PDF', () => {
@@ -278,10 +279,81 @@ describe('AssetManager files of any kind', () => {
     expect(odd.mime).toBe('application/octet-stream')
     await assets.whenUploaded(odd.id)
     expect(posts[1].headers).toMatchObject({ 'x-canvcode-file-ext': '' })
-    // SVG はファイルのカードには置けるが、画像の塗りには使えない
+    // ファイルのカードとして置いた SVG（消毒していない。大きさは 0×0）は、画像の塗りには使えない
     const svg = await assets.importFile(new File(['<svg/>'], 'a.svg', { type: 'image/svg+xml' }))
     assets.register({ typeName: 'asset', id: 'asset:png', mime: 'image/png', size: 1, hash: 'png', width: 1, height: 1, variants: [] })
-    expect(assets.images().map((a) => a.id)).toEqual(['asset:png'])
+    // 大きさを持たない古い画像（段階 11-1 より前）は、今までどおり出す
+    assets.register({ typeName: 'asset', id: 'asset:old', mime: 'image/jpeg', size: 1, hash: 'old', width: 0, height: 0, variants: [] })
+    expect(assets.images().map((a) => a.id)).toEqual(['asset:png', 'asset:old'])
     expect(svg.mime).toBe('image/svg+xml')
+  })
+})
+
+// SVG の画像（MAI-116）：消毒したものを Asset にし、縮小版は作らず、頼まれた大きさで描く
+describe('AssetManager SVG images', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const SOURCE =
+    '<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="48px" onload="alert(1)"><script>alert(2)</script><path d="M0-480h960"/></svg>'
+  const CLEAN = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="24" viewBox="0 -960 960 960"><path d="M0-480h960"/></svg>'
+
+  function setup() {
+    const requests: { url: string; method: string; headers: Record<string, string>; body: unknown }[] = []
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      requests.push({ url, method: init.method ?? 'GET', headers: (init.headers ?? {}) as Record<string, string>, body: init.body })
+      return init.method === 'POST' ? new Response('{}', { status: 200 }) : new Response(CLEAN, { status: 200, headers: { 'content-type': 'image/svg+xml' } })
+    })
+    const drawn: { svg: string; width: number; height: number }[] = []
+    const assets = new AssetManager({
+      baseUrl: '/api/assets',
+      pageStore: null,
+      rasterizeSvg: async (svg, width, height) => {
+        drawn.push({ svg, width, height })
+        return { width, height } as unknown as CanvasImageSource
+      },
+    })
+    return { assets, requests, drawn }
+  }
+
+  it('accepts SVG files by their type, or by the name when the type is unknown', () => {
+    expect(isSupportedImage(new File(['<svg/>'], 'a.svg', { type: 'image/svg+xml' }))).toBe(true)
+    expect(isSupportedImage(new File(['<svg/>'], 'icon.SVG'))).toBe(true)
+    expect(isSupportedImage(new File(['<svg/>'], 'icon.txt'))).toBe(false)
+  })
+
+  it('imports the sanitized SVG with its size, uploads it once without variants, and lists it as an image', async () => {
+    const { assets, requests, drawn } = setup()
+    const record = await assets.importImage(new File([SOURCE], 'icon.svg', { type: 'image/svg+xml' }))
+    expect(record).toMatchObject({ mime: 'image/svg+xml', size: CLEAN.length, width: 48, height: 24, variants: [] })
+    expect(record.hash).toBe(await sha256Hex(new Blob([CLEAN])))
+    // 描けるかを、先に小さく描いて確かめる
+    expect(drawn).toEqual([{ svg: CLEAN, width: 256, height: 128 }])
+    await assets.whenUploaded(record.id)
+    expect(requests).toHaveLength(1)
+    expect(requests[0].headers).toMatchObject({ 'content-type': 'image/svg+xml', 'x-canvcode-sha256': record.hash, 'x-canvcode-width': '48', 'x-canvcode-height': '24' })
+    expect(await (requests[0].body as Blob).text()).toBe(CLEAN)
+    expect(assets.images().map((a) => a.id)).toEqual([record.id])
+    expect(assets.url(record, 256)).toBe(`/api/assets/${record.hash}`)
+    // 同じ中身（消毒すると同じになるもの）は 1 つにまとまる
+    expect(await assets.importImage(new File([CLEAN], 'other.svg', { type: 'image/svg+xml' }))).toBe(record)
+  })
+
+  it('draws an SVG at the requested long side, larger than its own size, reading it from the server once', async () => {
+    const { assets, requests, drawn } = setup()
+    assets.register({ typeName: 'asset', id: 'asset:s', mime: 'image/svg+xml', size: CLEAN.length, hash: 's', width: 48, height: 24, variants: [] })
+    const raster = await assets.load('asset:s', 1024)
+    expect(raster).toMatchObject({ width: 1024, height: 512, level: 1024 })
+    expect((await assets.load('asset:s', 64)).height).toBe(32)
+    expect(drawn.map(({ width, height }) => [width, height])).toEqual([[1024, 512], [64, 32]])
+    expect(drawn[0].svg).toBe(CLEAN)
+    expect(requests.map((r) => `${r.method} ${r.url}`)).toEqual(['GET /api/assets/s'])
+    expect(assets.stats.svgSources).toBe(1)
+  })
+
+  it('refuses an SVG it cannot read', async () => {
+    const { assets, requests } = setup()
+    await expect(assets.importImage(new File(['<svg><g></svg>'], 'broken.svg', { type: 'image/svg+xml' }))).rejects.toThrow()
+    await expect(assets.importImage(new File(['<html/>'], 'page.svg', { type: 'image/svg+xml' }))).rejects.toThrow()
+    expect(requests).toEqual([])
   })
 })

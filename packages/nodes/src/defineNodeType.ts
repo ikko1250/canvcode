@@ -1,5 +1,5 @@
 import type { AssetRecord, Box, NodeRecord, Vec } from '@canvcode/core'
-import type { TextStyle } from './text/layout.ts'
+import type { TextStyle, VerticalAlign } from './text/layout.ts'
 import type { TextParagraph } from './text/richText.ts'
 
 // ノードの型の定義（MAI-9）。基本図形も Portal や Markdown カードも、同じ形で定義する。
@@ -215,7 +215,8 @@ export interface TextEditSpec<P> {
   // 文字を置く箱（ローカル座標）。autoWidth のときは、幅は文字に合わせて伸びる
   box: Box
   autoWidth: boolean
-  verticalAlign: 'top' | 'middle'
+  // 箱の中の縦の揃え（Canvas の描画と同じ位置に置く。図形の文字は上・上下の中央・下を選べる。MAI-115）
+  verticalAlign: VerticalAlign
   // 文字を変えたときの新しい props
   update(text: string): P
   // 範囲ごとに書式を持てる型（テキスト・付箋。MAI-74）。ない型（図形のラベルなど）は、プレーンテキストとして編集する

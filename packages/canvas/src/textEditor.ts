@@ -1,5 +1,6 @@
 import { multiply, transformOf, type NodeRecord, type WorkspaceRecord, type Transaction } from '@canvcode/core'
 import {
+  alignedTextTop,
   applyRunFormat,
   baseFormatOf,
   cleanFormat,
@@ -304,22 +305,21 @@ export class TextEditor {
     // 幅が伸びるテキストの余白は右に付くので、中央揃え・右揃えでは Canvas の描画と同じ位置に文字が来るよう、その分だけ左へずらす（MAI-50）
     const slack = Math.max(0, width - spec.box.w)
     const offsetX = spec.style.align === 'center' ? -slack / 2 : spec.style.align === 'right' ? -slack : 0
+    // 縦の揃え（上・上下の中央・下。MAI-115）：Canvas の描画と同じ文字の上端（alignedTextTop。箱の上端からの距離）。
+    // 箱に収まる文字は、上の余白でその分だけ下げる。箱からあふれる文字（上下の中央・下揃え）は、要素ごと上へずらす
+    // （Canvas と同じく上にはみ出す。編集を始めても文字の位置が動かない）
+    const top = alignedTextTop({ y: 0, h: spec.box.h }, layout.height, spec.verticalAlign)
+    const padding = Math.max(0, top)
+    const shift = Math.min(0, top)
     // ノードのローカル座標（文字の箱の左上）→ 画面の CSS ピクセル
-    const local = multiply(entry.worldMatrix, transformOf(spec.box.x + offsetX, spec.box.y, 0))
+    const local = multiply(entry.worldMatrix, transformOf(spec.box.x + offsetX, spec.box.y + shift, 0))
     const z = camera.zoom
     const transform = `matrix(${local.a * z}, ${local.b * z}, ${local.c * z}, ${local.d * z}, ${(local.e - camera.x) * z}, ${(local.f - camera.y) * z})`
     element.style.transform = transform
     element.style.width = `${width}px`
-    let padding = 0
-    if (spec.verticalAlign === 'middle') {
-      // 上下の中央に置く：上の余白で文字の高さの分だけずらす
-      padding = Math.max(0, (spec.box.h - layout.height) / 2)
-      element.style.paddingTop = `${padding}px`
-      element.style.height = `${Math.max(layout.height, spec.box.h - padding)}px`
-    } else {
-      element.style.paddingTop = '0'
-      element.style.height = `${Math.max(layout.height, spec.autoWidth ? 0 : spec.box.h)}px`
-    }
+    element.style.paddingTop = padding > 0 ? `${padding}px` : '0'
+    if (spec.verticalAlign === 'top') element.style.height = `${Math.max(layout.height, spec.autoWidth ? 0 : spec.box.h)}px`
+    else element.style.height = `${Math.max(layout.height, spec.box.h - padding)}px`
     // 下線・取り消し線（MAI-79）。文字は要素の幅の中でそろうので、その幅で Canvas と同じ線を出す
     session.decorations.style.transform = transform
     const lines = textDecorations(layout, spec.style, { x: 0, y: padding, w: width, h: layout.height }, 'top')

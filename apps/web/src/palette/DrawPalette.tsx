@@ -103,7 +103,6 @@ const RING_RADIUS = 21
 const RING_WIDTH = 5
 const HIT_WIDTH = 14
 const KNOB_RADIUS = 5.5
-const TRACK_COLOR = 'rgba(0, 0, 0, 0.14)'
 // 上下の色を離す量。リングの見た目の外側 + 少しの隙間が、色のアイコンの枠より外に出るぶん
 const RING_CLEARANCE = Math.ceil(RING_RADIUS + RING_WIDTH / 2 + 3 - SWATCH_SIZE / 2)
 
@@ -194,16 +193,17 @@ function OpacityRing(props: {
     >
       {/* 当たり判定用の太い透明な弧 */}
       <path d={arcPath(startAngle, endAngle)} fill="none" stroke="transparent" strokeWidth={HIT_WIDTH} pointerEvents="stroke" />
-      <path d={arcPath(startAngle, endAngle)} fill="none" stroke={TRACK_COLOR} strokeWidth={RING_WIDTH} strokeLinecap="round" pointerEvents="none" />
+      {/* 溝と印の色は styles.css（.opacity-ring-track など）。値のぶんの弧とつまみの縁は、選んでいる色 */}
+      <path className="opacity-ring-track" d={arcPath(startAngle, endAngle)} fill="none" strokeWidth={RING_WIDTH} strokeLinecap="round" pointerEvents="none" />
       {opacity > 0 && (
         <path d={arcPath(startAngle, valueAngle)} fill="none" stroke={color} strokeWidth={RING_WIDTH} strokeLinecap="round" pointerEvents="none" />
       )}
       {/* 吸い付き先の印 */}
       {DRAW_OPACITY_STOPS.map((stop) => {
         const p = polar(drawOpacityToAngle(stop))
-        return <circle key={stop} cx={p.x} cy={p.y} r={1.3} fill="#ffffff" pointerEvents="none" />
+        return <circle key={stop} className="opacity-ring-stop" cx={p.x} cy={p.y} r={1.3} pointerEvents="none" />
       })}
-      <circle cx={knob.x} cy={knob.y} r={KNOB_RADIUS} fill="#ffffff" stroke={color} strokeWidth={2} pointerEvents="none" />
+      <circle className="opacity-ring-knob" cx={knob.x} cy={knob.y} r={KNOB_RADIUS} stroke={color} strokeWidth={2} pointerEvents="none" />
     </svg>
   )
 }

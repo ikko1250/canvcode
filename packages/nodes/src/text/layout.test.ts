@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   TEXT_FONT_SIZES,
+  alignedTextTop,
   breakUnits,
   convertLineHeight,
   baseFormatOf,
@@ -8,6 +9,7 @@ import {
   cssLetterSpacing,
   cssLineHeight,
   decorationThickness,
+  drawTextBars,
   drawTextLayout,
   layoutRichText,
   layoutText,
@@ -455,6 +457,54 @@ describe('bold, italic, underline and strikethrough', () => {
     drawTextLayout(ctx as unknown as CanvasRenderingContext2D, layout, style, box, 'top')
     expect(rects.length).toBe(2)
     expect(rects.every((r) => r[4] === '#00f' && r[2] > 10)).toBe(true)
+    setNativeLetterSpacingForTest(undefined)
+  })
+})
+
+// 縦の揃え（MAI-115）。上・上下の中央・下。テキスト・付箋（上）・矢印のラベル（中央）は今までどおり
+describe('vertical align (MAI-115)', () => {
+  const box = { x: 0, y: 10, w: 100, h: 60 }
+
+  it('puts the top of the text at the top, the middle or the bottom of the box', () => {
+    expect(alignedTextTop(box, 20, 'top')).toBe(10)
+    expect(alignedTextTop(box, 20, 'middle')).toBe(30)
+    expect(alignedTextTop(box, 20, 'bottom')).toBe(50)
+    // 箱より高い文字は、中央なら上下に、下揃えなら上にはみ出す
+    expect(alignedTextTop(box, 80, 'top')).toBe(10)
+    expect(alignedTextTop(box, 80, 'middle')).toBe(0)
+    expect(alignedTextTop(box, 80, 'bottom')).toBe(-10)
+  })
+
+  it('draws the text, its lines and the bars at the same place for each vertical align', () => {
+    // 2 行（行の高さ 15px）の文字。1 行目に下線
+    const layout = layoutRichText([{ runs: [{ text: 'ab', format: { underline: true } }] }, { runs: [{ text: 'cd' }] }], style, null)
+    expect(layout.height).toBe(30)
+    const texts: number[] = []
+    const rects: number[] = []
+    const ctx = {
+      font: '',
+      fillStyle: '',
+      fillText(_text: string, _x: number, y: number) {
+        texts.push(y)
+      },
+      fillRect(_x: number, y: number) {
+        rects.push(y)
+      },
+    }
+    setNativeLetterSpacingForTest(false)
+    for (const [align, top] of [['top', 10], ['middle', 25], ['bottom', 40]] as const) {
+      texts.length = 0
+      rects.length = 0
+      drawTextLayout(ctx as unknown as CanvasRenderingContext2D, layout, style, box, align)
+      expect(texts).toEqual([top + layout.lines[0].baseline, top + layout.lines[1].top + layout.lines[1].baseline])
+      const [underline] = textDecorations(layout, style, box, align)
+      expect(underline.y).toBeCloseTo(top + layout.lines[0].baseline + 10 * UNDERLINE_OFFSET_EM)
+      expect(rects).toEqual([underline.y])
+      // ズームアウトの帯も同じ位置（行の真ん中）
+      rects.length = 0
+      drawTextBars(ctx as unknown as CanvasRenderingContext2D, layout, style, box, align)
+      expect(rects).toEqual([top + 7.5 - 3, top + 15 + 7.5 - 3])
+    }
     setNativeLetterSpacingForTest(undefined)
   })
 })
