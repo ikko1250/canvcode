@@ -40,13 +40,14 @@ body,
    枠を出さない所（:not の中）：
    - キャンバスの面（.canvas-container > div[tabindex]）。キーを受けるためにフォーカスを持つが、枠を出すと画面全体を囲んでしまう
    - キーをキャンバスに渡さないため、または Esc を受けるために、プログラムからフォーカスするだけの入れ物（tabIndex={-1}）。
-     Claude のパネル（.claude-panel）と、グラフを作るダイアログ（.plot-dialog）
+     Claude のパネル（.claude-panel）と、モーダルのダイアログの本体（.dialog。確認のダイアログとグラフを作るダイアログ。
+     本文を押したときにフォーカスを外へ逃がさないためと、グラフのダイアログが開いたときに受けるだけ。MAI-108）
    - キャンバスの上で文字を編集する DOM（.canvcode-text-editor。packages/canvas/src/textEditor.ts）。描いた文字と重ねるので、
      枠を出すと文字の位置に枠が浮く。編集中であることは、キャンバスの側で見せる
    - CodeMirror の本文（.cm-content）。カードの上のエディタと全画面のエディタ。CodeMirror が自分でフォーカスの見た目を持つ
    - デザインパネルの数字の欄の中の入力（.design-number > input）。欄の形は外側の .design-number なので、枠はそちらに出す */
 :focus-visible:not(
-    :where(.canvas-container > div[tabindex], .claude-panel, .plot-dialog, .canvcode-text-editor, .cm-content, .design-number > input)
+    :where(.canvas-container > div[tabindex], .claude-panel, .dialog, .canvcode-text-editor, .cm-content, .design-number > input)
   ),
 .design-number:has(> input:focus-visible) {
   outline: 4px solid var(--focus-ring-outer) !important;
