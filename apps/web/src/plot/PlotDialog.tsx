@@ -1,13 +1,15 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { OWN_KEYS_ATTRIBUTE } from '@canvcode/canvas'
 import { defaultPlotSpec, PLOT_KIND_LABELS, PLOT_KINDS, plotTable, plotUsesX, type PlotSpec, type PlotTable } from '@canvcode/nodes'
 import { fetchPlotStyles, renderPlot, type PlotStyle, type RenderedPlot } from './plotClient.ts'
+import { useModalDialog } from '../workspace/useModalDialog.ts'
 
 // CSV からグラフを作る・作り方を変えるダイアログ（plot.ts）。
 // - 種類・横の軸の列・値の列・スタイル（style.py）・タイトル・軸の名前・凡例・大きさを選ぶと、少し待ってサーバーが描いたプレビューを出す
 // - 「置く」（作り方を変えるときは「描き直す」）で、描いた PNG を画像のノードにする（どこに置くかは呼んだ側が決める）
 // - 「Claude におまかせ」で、表を添えて Claude のパネルを開き、列と種類とスタイルを選ばせる
 // - 中のキー入力はキャンバスに渡さない（data-own-keys）。Esc でやめる
+// - モーダルとして扱う（Tab で外へ出ない・閉じたら開く前のフォーカスへ戻す。useModalDialog）
 
 const PREVIEW_DELAY_MS = 400
 
@@ -56,6 +58,8 @@ export function PlotDialog(props: PlotDialogProps) {
   const [error, setError] = useState<string | null>(null)
   const [placing, setPlacing] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
+  // 見出し（aria-labelledby）の id
+  const id = useId()
 
   // 表とスタイルを読む。読めたら、新しく作るときは既定の作り方を決める
   useEffect(() => {
@@ -116,19 +120,15 @@ export function PlotDialog(props: PlotDialogProps) {
     if (preview) URL.revokeObjectURL(preview.url)
   }, [preview])
 
-  // 表示される前に Esc を受ける（キャンバスまで届かないように）
-  useLayoutEffect(() => {
-    rootRef.current?.focus({ preventScroll: true })
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.isComposing) {
-        e.preventDefault()
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose])
+  // 開いたらダイアログ自体にフォーカスを移し、表示される前から Esc を受ける（キャンバスまで届かないように）
+  useModalDialog(rootRef, {
+    onKeyDown: (e) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      onClose()
+    },
+  })
 
   const update = (change: Partial<PlotSpec>) => setSpec((s) => (s ?? defaults ? { ...(s ?? defaults)!, ...change } : null))
   const toggleY = (index: number) => {
@@ -162,14 +162,17 @@ export function PlotDialog(props: PlotDialogProps) {
         ref={rootRef}
         className="dialog plot-dialog"
         role="dialog"
-        aria-label="グラフを作る"
+        aria-modal="true"
+        aria-labelledby={`${id}-title ${id}-file`}
         tabIndex={-1}
         {...{ [OWN_KEYS_ATTRIBUTE]: '' }}
         onPointerDown={(e) => e.stopPropagation()}
       >
         <h2>
-          {initial ? 'グラフを編集' : 'グラフを作る'}
-          <span className="plot-dialog-file">{props.title}</span>
+          <span id={`${id}-title`}>{initial ? 'グラフを編集' : 'グラフを作る'}</span>
+          <span id={`${id}-file`} className="plot-dialog-file">
+            {props.title}
+          </span>
         </h2>
         <div className="plot-dialog-body">
           <div className="plot-dialog-form">
@@ -328,15 +331,16 @@ export function PlotDialog(props: PlotDialogProps) {
             )}
           </div>
         </div>
+        {/* 「やめる」は左端、決める側は右寄せで、主な「置く」を右端に（DADS のボタンの並べ方。MAI-108） */}
         <div className="dialog-buttons">
+          <button type="button" className="dialog-cancel" onClick={onClose}>
+            やめる
+          </button>
           {props.onAskClaude && (
             <button type="button" className="plot-claude" onClick={props.onAskClaude} title="表を添えて Claude のパネルを開き、列・種類・スタイルを選んでもらう">
               Claude におまかせ…
             </button>
           )}
-          <button type="button" onClick={onClose}>
-            やめる
-          </button>
           <button type="button" className="primary" disabled={!current || current.y.length === 0 || placing || !styles?.length} onClick={() => void place()}>
             {placing ? '置いています…' : initial ? '描き直す' : '置く'}
           </button>
