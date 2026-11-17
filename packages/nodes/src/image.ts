@@ -1,9 +1,10 @@
-import type { AssetRecord, NodeRecord } from '@canvcode/core'
+import { SVG_MIME, type AssetRecord, type NodeRecord } from '@canvcode/core'
 import { defineNodeType, type RasterImage, type RenderInfo } from './defineNodeType.ts'
 import type { PlotSpec } from './plot.ts'
 
 // 画像（MAI-7 の `image`、MAI-26）。実体は Asset にあり、ノードは assetId で参照する。
 // 倍率に応じて、縮小版（長辺 256px・1024px）と原本を切り替えて描く（MAI-14）。
+// SVG（MAI-116）は縮小版を作らず、要る大きさ（長辺を 2 倍ずつの段階に丸めたもの）で描き直す（pickSvgSize）。
 export interface ImageProps {
   assetId: string
   w: number
@@ -20,9 +21,26 @@ export type ImageNode = NodeRecord<ImageProps>
 // 縮小版の長辺（画素）。画像を取り込むときに、この大きさでブラウザが作る
 export const IMAGE_VARIANT_SIZES = [256, 1024] as const
 
+// SVG を描く長辺の段階（画素）。SVG_MIN_SIDE から 2 倍ずつ、SVG_MAX_SIDE まで。段階をまたいだときだけ描き直す。
+// 上限は、1 枚が 4096×4096（64 MB）を超えないように（それより大きく見せるときは、引き伸ばして描く）
+export const SVG_MIN_SIDE = 32
+export const SVG_MAX_SIDE = 4096
+
+export function isSvgAsset(asset: Pick<AssetRecord, 'mime'>): boolean {
+  return asset.mime === SVG_MIME
+}
+
+// 画面上で longSidePx 画素の長辺が要るときに描く SVG の長辺
+export function pickSvgSize(longSidePx: number): number {
+  let size = SVG_MIN_SIDE
+  while (size < longSidePx && size < SVG_MAX_SIDE) size *= 2
+  return size
+}
+
 // 画面上で longSidePx 画素の長辺が要るときに読む版の長辺。
-// 足りる縮小版のうち最も小さいもの、なければ原本
+// 足りる縮小版のうち最も小さいもの、なければ原本。SVG は、描く大きさ（pickSvgSize）
 export function pickImageVariant(asset: AssetRecord, longSidePx: number): number {
+  if (isSvgAsset(asset)) return pickSvgSize(longSidePx)
   const original = Math.max(asset.width, asset.height)
   for (const size of [...asset.variants].sort((a, b) => a - b)) {
     if (size < original && size >= longSidePx) return size
@@ -30,9 +48,9 @@ export function pickImageVariant(asset: AssetRecord, longSidePx: number): number
   return original
 }
 
-// 長辺 size 画素に縮めたときの大きさ
-export function scaledSize(width: number, height: number, size: number): { width: number; height: number } {
-  const s = Math.min(1, size / Math.max(width, height))
+// 長辺 size 画素に縮めたときの大きさ。enlarge なら、size より小さい画像は大きくする（SVG を描き直すとき）
+export function scaledSize(width: number, height: number, size: number, enlarge = false): { width: number; height: number } {
+  const s = enlarge ? size / Math.max(width, height) : Math.min(1, size / Math.max(width, height))
   return { width: Math.max(1, Math.round(width * s)), height: Math.max(1, Math.round(height * s)) }
 }
 

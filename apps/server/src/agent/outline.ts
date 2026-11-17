@@ -847,7 +847,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
 - draw: freehand stroke (color, size; points are not returned)
-- image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
+- image: a picture the user pasted or dropped, a bitmap (PNG, JPEG, …) or an SVG such as an icon, which stays sharp when zoomed (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
 - frame: named container that clips its children (name, w, h)
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
