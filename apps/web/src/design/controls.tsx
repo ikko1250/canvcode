@@ -564,9 +564,11 @@ function toggleState(value: SharedValue<boolean> | null): boolean | 'mixed' {
 
 // ---- 一覧から選ぶ（MAI-78） ----
 
-// 混在しているときは「混在」を選べない見出しとして出す。選んだらキャンバス（編集中の文字）にフォーカスを戻す
-export function SelectField(props: FieldProps<string> & { options: readonly SelectOption[] }) {
-  const { label, icon, value, editor, options, onDone } = props
+// 混在しているときは「混在」を選べない見出しとして出す。値が一覧にないときも、otherLabel（なければ値）を選べない見出しとして出す。
+// 選んだらキャンバス（編集中の文字）にフォーカスを戻す
+export function SelectField(props: FieldProps<string> & { options: readonly SelectOption[]; otherLabel?: string }) {
+  const { label, icon, value, editor, options, otherLabel, onDone } = props
+  const other = value.kind === 'same' && !options.some((option) => option.value === value.value) ? value.value : null
   const groups: { name: string | undefined; options: SelectOption[] }[] = []
   for (const option of options) {
     const last = groups.at(-1)
@@ -602,6 +604,11 @@ export function SelectField(props: FieldProps<string> & { options: readonly Sele
           {value.kind === 'mixed' && (
             <option value="" disabled>
               {MIXED_LABEL}
+            </option>
+          )}
+          {other !== null && (
+            <option value={other} disabled>
+              {otherLabel ?? other}
             </option>
           )}
           {groups.map((group, i) =>

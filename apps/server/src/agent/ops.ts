@@ -15,7 +15,7 @@ import {
   type Vec,
   type WorkspaceRecord,
 } from '@canvcode/core'
-import { adjustOf, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, hasNodeRichFormatting, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, richTextTargetOfType, SHORTCUT_CARD_HEIGHT, withRichTextMarkdown, slotsOf, solidPaint, toFill, toGeoLabelPadding, VERTICAL_ALIGNS, type ArrowheadKind, type GeoLabelSides, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp, type VerticalAlign } from '@canvcode/nodes'
+import { adjustOf, applyTextStyle, FILTER_OP_LABELS, filterNeedsValue, GEO_SHAPES, hasNodeRichFormatting, LINK_CARD_DEFAULT_WIDTH, normalizeCrop, PLOT_NODE_SCALE, PORTAL_DEFAULT_SIZE, richTextFromPlain, richTextTargetOfType, SHORTCUT_CARD_HEIGHT, withRichTextMarkdown, slotsOf, solidPaint, TEXT_STYLE_NAMES, textStylePreset, toFill, toGeoLabelPadding, VERTICAL_ALIGNS, type ArrowheadKind, type GeoLabelSides, type ImageCrop, type PlotSpec, type SlideLayoutKind, type SlideRatio, type TableFilter, type TableFilterOp, type VerticalAlign } from '@canvcode/nodes'
 import { alignBoxes, distributeBoxes, spaceBoxes, type ArrangeBox, type Move } from '@canvcode/canvas/arrange'
 import { makeBinding } from '@canvcode/canvas/bindings'
 import { anchorPoint, fitScale, scaleNodeProps, SCALE_ANCHORS, type ScaleAnchor } from '@canvcode/canvas/scale'
@@ -159,6 +159,8 @@ const style = {
   // 矢じり（arrow。connect の heads と同じ）
   heads: z.enum(HEADS).optional(),
   fontSize: finite.positive().optional(),
+  // DADS のテキストスタイルの名前（MAI-114。Std-17N-170 など）。テキスト・付箋・図形の文字の大きさ・太さ・行間・字間をまとめて当てる
+  textStyle: z.enum(TEXT_STYLE_NAMES as [string, ...string[]]).optional(),
   align: z.enum(['left', 'center', 'right']).optional(),
   shape: z.enum(GEO_SHAPES as [string, ...string[]]).optional(),
   name: z.string().optional(),
@@ -1277,14 +1279,15 @@ class EditRun {
   }
 
   // create に既定を当てる（型によらない parent、card の既定（カードの型すべて）、型の既定、op の順に上書き）。
-  // 同じものの別名（text と label・name、付箋の color と fill、file と path）は、op にどちらかがあれば既定の両方を使わない
+  // 同じものの別名（text と label・name、付箋の color と fill、file と path、大きさを決める fontSize と textStyle）は、
+  // op にどちらかがあれば既定の両方を使わない
   private withDefaults<T extends { type: string }>(op: T): T {
     const card = op.type === 'card' || op.type.endsWith('-card') ? this.defaults.get('card') : undefined
     const typed = op.type === 'card' ? undefined : this.defaults.get(op.type)
     const all = this.defaults.get('*')
     if (!all && !card && !typed) return op
     const merged: Record<string, unknown> = { ...all, ...card, ...typed }
-    const aliases: string[][] = [['text', 'label', 'md'], ['text', 'name'], ['file', 'path'], ...(op.type === 'note' ? [['color', 'fill']] : [])]
+    const aliases: string[][] = [['text', 'label', 'md'], ['text', 'name'], ['file', 'path'], ['fontSize', 'textStyle'], ...(op.type === 'note' ? [['color', 'fill']] : [])]
     const given = op as Record<string, unknown>
     for (const names of aliases) {
       if (names.some((name) => given[name] !== undefined)) for (const name of names) delete merged[name]
@@ -1464,6 +1467,7 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
   const dash = take<string>('dash')
   const heads = take<string>('heads')
   const fontSize = take<number>('fontSize')
+  const textStyle = take<string>('textStyle')
   const align = take<string>('align')
   const shape = take<string>('shape')
   const cornerRadius = take<number>('cornerRadius')
@@ -1572,6 +1576,14 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
         set('h', h, 'h')
       }
       break
+  }
+  // DADS のテキストスタイル（MAI-114）。デザインパネルでノード全体に当てたときと同じく、大きさ・太さ（Mono はフォントも）を
+  // ノードの既定にして範囲ごとの値を外し、行間・字間をノードに入れる。大きさはスタイルが決めるので、一緒には書けない
+  const styleTarget = textStyle === undefined ? undefined : richTextTargetOfType(type)
+  if (textStyle !== undefined && styleTarget) {
+    if (fontSize !== undefined) throw new EditError('give either fontSize or textStyle (the style sets the size)')
+    Object.assign(props, applyTextStyle(styleTarget, props, textStylePreset(textStyle)!))
+    accepted.add('textStyle')
   }
   // 書式付きの文字（テキスト・付箋・図形）。大きさ・色などを当てたあとの既定に対して読む（既定と同じ値は持たない）
   const target = md === undefined ? undefined : richTextTargetOfType(type)

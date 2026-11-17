@@ -47,8 +47,9 @@ export type FieldControl =
   | { kind: 'font' }
   // 行の高さ（MAI-76。値は LineHeight。倍率と px を切り替えられる。controls.tsx の LineHeightField）
   | { kind: 'lineHeight' }
-  // 一覧から 1 つ選ぶ（MAI-78。リストの記号・番号の形）。group の同じ選択肢は見出しの下にまとめる
-  | { kind: 'select'; options: readonly SelectOption[] }
+  // 一覧から 1 つ選ぶ（MAI-78。リストの記号・番号の形）。group の同じ選択肢は見出しの下にまとめる。
+  // otherLabel は、値が一覧にないときに出す名前（DADS のテキストスタイルのどれでもない「カスタム」。MAI-114）
+  | { kind: 'select'; options: readonly SelectOption[]; otherLabel?: string }
   // オン・オフのボタン（MAI-79。太字・斜体・下線・取り消し線。値は boolean）。
   // group の同じ項目が続けば、パネルでは 1 行（group の名前の見出し）にボタンを並べる
   | { kind: 'toggle'; title: string; icon: ComponentType; group: string }
