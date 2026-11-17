@@ -12,6 +12,9 @@
     sans-serif;
   font-size: 13px;
   color: var(--text);
+  /* フォーカスの枠の色（MAI-109）。DADS のフォーカスカラー（Black と Yellow-300）。MAI-111 で DADS のトークンに置き換える */
+  --focus-ring-outer: #000000;
+  --focus-ring-inner: #ffd43d;
 }
 
 html,
@@ -21,6 +24,34 @@ body,
   height: 100%;
   overflow: hidden;
   background: #fafbfc;
+}
+
+/* フォーカスの枠（MAI-109）。DADS の規定どおり、黒 4px の outline（要素から 2px 離す）と、その内側に黄 2px の box-shadow を重ねる。
+   DADS では「いかなる場合も変更してはいけない」ので、ここ 1 か所で決め、ほかの規則（フォーカスで枠の色を変える指定や、
+   ボタンの影など）に負けないよう !important にする。
+   - 出すのは :focus-visible のとき。キーボードで移ったときと、文字を打つ欄にフォーカスしたとき。マウスで押したボタンには出ない
+   - DADS の実装例は border-radius: 4px も指定するが、ここでは指定しない。丸い色の見本などの形が、フォーカスで変わってしまうため
+     （outline と box-shadow は、要素の角丸に沿う）。テキストのボタンの背景を黄にする指定（DADS の任意の指定）も入れない。
+     色の見本は背景が色そのもので、切り替えのボタンは背景で選んでいるかを見せるため
+   - フォーカスの間は、要素の影（box-shadow）は黄の枠に置き換わる。影で中身を描いている要素は、--focus-ring-shadow に
+     自分の影を足して残す（.claude-stops-track）
+   - 枠は要素の外へ 6px 出る。スクロールする一覧や overflow: hidden の入れ物の端で切れる所は、入れ物の内側に 6px の余白をとる
+     （.plot-dialog-form、.design-image-list、.claude-model-list、.file-editor-modes）
+   枠を出さない所（:not の中）：
+   - キャンバスの面（.canvas-container > div[tabindex]）。キーを受けるためにフォーカスを持つが、枠を出すと画面全体を囲んでしまう
+   - キーをキャンバスに渡さないため、または Esc を受けるために、プログラムからフォーカスするだけの入れ物（tabIndex={-1}）。
+     Claude のパネル（.claude-panel）と、グラフを作るダイアログ（.plot-dialog）
+   - キャンバスの上で文字を編集する DOM（.canvcode-text-editor。packages/canvas/src/textEditor.ts）。描いた文字と重ねるので、
+     枠を出すと文字の位置に枠が浮く。編集中であることは、キャンバスの側で見せる
+   - CodeMirror の本文（.cm-content）。カードの上のエディタと全画面のエディタ。CodeMirror が自分でフォーカスの見た目を持つ
+   - デザインパネルの数字の欄の中の入力（.design-number > input）。欄の形は外側の .design-number なので、枠はそちらに出す */
+:focus-visible:not(
+    :where(.canvas-container > div[tabindex], .claude-panel, .plot-dialog, .canvcode-text-editor, .cm-content, .design-number > input)
+  ),
+.design-number:has(> input:focus-visible) {
+  outline: 4px solid var(--focus-ring-outer) !important;
+  outline-offset: 2px !important;
+  box-shadow: var(--focus-ring-shadow, 0 0 0 2px var(--focus-ring-inner)) !important;
 }
 
 .app {
@@ -391,7 +422,6 @@ body,
 }
 
 .style-palette input.gap:focus {
-  outline: none;
   border-color: var(--accent);
 }
 
@@ -771,6 +801,9 @@ body,
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
+  /* 欄のフォーカスの枠（外へ 6px）がスクロールの端で切れないよう、内側に 6px の余白をとり、負のマージンで位置を戻す（MAI-109） */
+  padding: 6px;
+  margin: -6px;
 }
 
 .plot-field {
@@ -942,14 +975,19 @@ body,
 }
 
 @media (max-width: 720px) {
+  /* 狭い画面では本体がスクロールするので、フォーカスの枠の余白は本体にとる（MAI-109。下の余白は 14px のまま） */
   .plot-dialog-body {
     flex-direction: column-reverse;
     overflow-y: auto;
+    padding: 6px;
+    margin: -6px -6px 8px;
   }
 
   .plot-dialog-form {
     flex: none;
     overflow: visible;
+    padding: 0;
+    margin: 0;
   }
 }
 
@@ -963,7 +1001,6 @@ body,
   border-radius: 8px 8px 0 0;
   background: #ffffff;
   color: var(--text);
-  outline: none;
 }
 
 /* ---- PDF の単語検索（試作） ---- */
@@ -990,7 +1027,6 @@ body,
   border: 1px solid var(--panel-border);
   border-radius: 6px;
   font: inherit;
-  outline: none;
 }
 
 .pdf-search input:focus {
@@ -1084,11 +1120,11 @@ body,
   font: 12px ui-monospace, monospace;
 }
 
+/* 角を丸めるのに overflow: hidden を使うと、ボタンのフォーカスの枠が切れて見えなくなるので、端のボタンの角を丸める（MAI-109） */
 .file-editor-modes {
   display: flex;
   border: 1px solid var(--panel-border);
   border-radius: 6px;
-  overflow: hidden;
 }
 
 .file-editor-modes button {
@@ -1102,6 +1138,14 @@ body,
 
 .file-editor-modes button + button {
   border-left: 1px solid var(--panel-border);
+}
+
+.file-editor-modes button:first-child {
+  border-radius: 5px 0 0 5px;
+}
+
+.file-editor-modes button:last-child {
+  border-radius: 0 5px 5px 0;
 }
 
 .file-editor-modes button.active {
@@ -1333,7 +1377,6 @@ button.pdf-page-number:hover {
   /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする（Claude の入力欄と同じ） */
   font-size: 16px;
   text-align: center;
-  outline: none;
 }
 
 @media (pointer: fine) {
@@ -1689,7 +1732,6 @@ button.pdf-page-number:hover {
 
 .design-number:focus-within,
 .design-hex:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -1710,6 +1752,7 @@ button.pdf-page-number:hover {
   width: 0;
   padding-right: 4px;
   text-align: right;
+  /* フォーカスの枠は、欄の形をした外側の .design-number に出す（MAI-109。冒頭の :focus-visible） */
   outline: none;
 }
 
@@ -1767,11 +1810,6 @@ button.pdf-page-number:hover {
   border: none;
   border-radius: 50%;
   background: var(--dp-accent);
-}
-
-.design-slider:focus-visible {
-  outline: 2px solid var(--dp-selected);
-  outline-offset: 2px;
 }
 
 /* 値が混在しているときは、つまみの位置に意味がないので薄くする */
@@ -1864,10 +1902,6 @@ button.pdf-page-number:hover {
   font-size: 12px;
   appearance: none;
   cursor: pointer;
-}
-
-.design-unit-select:focus-visible {
-  outline: 2px solid var(--dp-selected);
 }
 
 /* 色の見本（MAI-81）。押すとカラーピッカーを開く。不透明度のある色が分かるよう、市松模様の上に色を重ねる */
@@ -2101,6 +2135,9 @@ button.pdf-page-number:hover {
   gap: 4px;
   max-height: 140px;
   overflow-y: auto;
+  /* 画像のボタンのフォーカスの枠（外へ 6px）がスクロールの端で切れないよう、内側に 6px の余白をとり、負のマージンで位置を戻す（MAI-109） */
+  padding: 6px;
+  margin: -6px;
 }
 
 .design-panel button.design-image-chip {
@@ -2145,11 +2182,6 @@ button.pdf-page-number:hover {
   background-image: linear-gradient(to top, #000000, transparent), linear-gradient(to right, #ffffff, transparent);
   cursor: crosshair;
   touch-action: none;
-  outline: none;
-}
-
-.design-color-square:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .design-color-thumb {
@@ -2268,7 +2300,6 @@ button.pdf-page-number:hover {
 }
 
 .design-select:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -2364,7 +2395,6 @@ button.pdf-page-number:hover {
 }
 
 .design-font-filter:focus {
-  outline: none;
   border-color: var(--accent);
 }
 
@@ -2565,7 +2595,6 @@ button.pdf-page-number:hover {
 }
 
 .design-chart-paste-text:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -2621,7 +2650,6 @@ button.pdf-page-number:hover {
 }
 
 .design-chart-cell:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -2868,7 +2896,7 @@ button.pdf-page-number:hover {
   font-size: 13px;
 }
 
-/* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない */
+/* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない（冒頭の :focus-visible でも、枠を出さない所にしている） */
 .claude-panel:focus {
   outline: none;
 }
@@ -3323,11 +3351,8 @@ button.pdf-page-number:hover {
   box-shadow: inset 0 0 0 2px var(--model-line);
   cursor: pointer;
   touch-action: none;
-}
-
-.claude-stops-track:focus-visible {
-  outline: 2px solid var(--model-line);
-  outline-offset: 2px;
+  /* 内側の線は溝の形なので、フォーカスの枠（黄の box-shadow）に置き換えずに残す（MAI-109。冒頭の :focus-visible） */
+  --focus-ring-shadow: inset 0 0 0 2px var(--model-line), 0 0 0 2px var(--focus-ring-inner);
 }
 
 .claude-stops-track[aria-disabled='true'] {
@@ -3372,6 +3397,9 @@ button.pdf-page-number:hover {
   gap: 4px;
   max-height: 300px;
   overflow-y: auto;
+  /* 項目のフォーカスの枠（外へ 6px）がスクロールの端で切れないよう、内側に 6px の余白をとり、負のマージンで位置を戻す（MAI-109） */
+  padding: 6px;
+  margin: -6px;
 }
 
 .claude-model-group {
