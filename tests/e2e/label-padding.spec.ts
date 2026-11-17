@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 // 図形の文字の余白と縦の揃え（MAI-115）：デザインパネルの「文字」のタブで、縦の揃え（上・上下中央・下）と
 // 余白（四方まとめて・辺ごと）を変えると props が変わり、1 回の変更が Undo 1 回で戻ること。
@@ -62,6 +62,15 @@ async function openTextTab(page: Page) {
   await expect(labelBox(page)).toBeVisible()
 }
 
+// 数字の欄に値を打って Enter で確定する。fill ではなく実際にキーを打つ（Firefox では、fill のあとの Enter で値が確定しない。
+// 手で打てば確定するので、Playwright の fill の入れ方の違い。ほかの spec の数字の欄にも同じことが起きる）
+async function typeNumber(page: Page, input: Locator, value: string) {
+  await input.click()
+  await page.keyboard.press('ControlOrMeta+a')
+  await page.keyboard.type(value)
+  await page.keyboard.press('Enter')
+}
+
 test('changes the vertical align of a shape label from the panel, each one undo step', async ({ page }) => {
   await openApp(page)
   await clickWorld(page, 220, 180)
@@ -92,8 +101,7 @@ test('changes the padding of all sides or of each side, each one undo step', asy
   await expect(padding).toHaveValue('8')
 
   // 四方まとめて（DADS の入力欄の上下 12）
-  await padding.fill('12')
-  await padding.press('Enter')
+  await typeNumber(page, padding, '12')
   await expect(padding).toHaveValue('12')
   expect((await propsOf(page, 'node:a')).labelPadding).toBe(12)
 
@@ -102,10 +110,8 @@ test('changes the padding of all sides or of each side, each one undo step', asy
   const left = labelBox(page).getByRole('textbox', { name: '左', exact: true })
   const right = labelBox(page).getByRole('textbox', { name: '右', exact: true })
   await expect(labelBox(page).getByRole('textbox', { name: '上', exact: true })).toHaveValue('12')
-  await left.fill('16')
-  await left.press('Enter')
-  await right.fill('16')
-  await right.press('Enter')
+  await typeNumber(page, left, '16')
+  await typeNumber(page, right, '16')
   expect((await propsOf(page, 'node:a')).labelPadding).toEqual({ top: 12, right: 16, bottom: 12, left: 16 })
   // 辺の値が違うので、まとめた入力は「混在」
   await expect(padding).toHaveValue('')
@@ -153,8 +159,7 @@ test('shows mixed values for shapes with different padding and vertical align, a
   await align.getByRole('button', { name: '下揃え' }).click()
   expect((await propsOf(page, 'node:a')).labelVerticalAlign).toBe('bottom')
   expect((await propsOf(page, 'node:b')).labelVerticalAlign).toBe('bottom')
-  await padding.fill('16')
-  await padding.press('Enter')
+  await typeNumber(page, padding, '16')
   expect((await propsOf(page, 'node:a')).labelPadding).toBe(16)
   expect((await propsOf(page, 'node:b')).labelPadding).toBe(16)
   await expect(padding).toHaveValue('16')
