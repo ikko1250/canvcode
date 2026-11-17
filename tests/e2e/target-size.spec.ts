@@ -113,7 +113,10 @@ interface Target {
   overlaps: string[]
 }
 
-// root の中の押せるもの（self なら root そのもの）の当たりを測る。スクロールの外に（一部でも）出ているものは数えない
+// root の中の押せるもの（self なら root そのもの）の当たりを測る。スクロールの外に（一部でも）出ているものは数えない。
+// スクロールする入れ物では、見えている枠だけでなく、広げた当たり（::before）が端で切れているものも数えない（スクロールの位置しだいで、
+// 端にある部品の当たりは、部品が見えていても切れる。たとえば e2e の画面（Desktop Chrome の 1280×720）では、デザインパネルが
+// スクロールし、カラーピッカーの行が、パネルの下の端にちょうど接する）
 async function measureTargets(root: Locator, self = false): Promise<Target[]> {
   return root.evaluate((rootEl, { selector, self }) => {
     const describe = (e: Element) => {
@@ -123,19 +126,6 @@ async function measureTargets(root: Locator, self = false): Promise<Target[]> {
     const ownerOf = (hit: Element | null): Element | null => {
       const target = hit?.closest(selector) ?? null
       return target instanceof HTMLLabelElement ? target.control : target
-    }
-    const clipped = (e: Element) => {
-      const r = e.getBoundingClientRect()
-      let position = getComputedStyle(e).position
-      for (let n = e.parentElement; n && position !== 'fixed'; n = n.parentElement) {
-        const style = getComputedStyle(n)
-        const skip = position === 'absolute' && style.position === 'static'
-        if (!skip) position = style.position
-        if (skip || (style.overflowX === 'visible' && style.overflowY === 'visible')) continue
-        const b = n.getBoundingClientRect()
-        if (r.left < b.left - 1 || r.right > b.right + 1 || r.top < b.top - 1 || r.bottom > b.bottom + 1) return true
-      }
-      return false
     }
     const areaOf = (e: Element, r: DOMRect) => {
       const area = { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
@@ -148,6 +138,26 @@ async function measureTargets(root: Locator, self = false): Promise<Target[]> {
         right: Math.max(area.right, r.right - parseFloat(style.borderRightWidth) - parseFloat(before.right)),
         bottom: Math.max(area.bottom, r.bottom - parseFloat(style.borderBottomWidth) - parseFloat(before.bottom)),
       }
+    }
+    // 中身を切る入れ物（要素の入れ物の並びの上にあるもの。position: fixed の要素はその上で切られず、absolute の要素は、位置を
+    // 決めていない入れ物には切られない）の見える範囲（枠の内側）から、一部でも出ているか。スクロールできる入れ物では当たりの範囲で、
+    // スクロールしない入れ物では見えている枠で調べる（スクロールしない入れ物で当たりが切れていれば、当たりが足りないと出る）
+    const clipped = (e: Element) => {
+      const r = e.getBoundingClientRect()
+      const area = areaOf(e, r)
+      let position = getComputedStyle(e).position
+      for (let n = e.parentElement; n && position !== 'fixed'; n = n.parentElement) {
+        const style = getComputedStyle(n)
+        const skip = position === 'absolute' && style.position === 'static'
+        if (!skip) position = style.position
+        if (skip || (style.overflowX === 'visible' && style.overflowY === 'visible')) continue
+        const b = n.getBoundingClientRect()
+        const view = { left: b.left + n.clientLeft, top: b.top + n.clientTop, right: b.left + n.clientLeft + n.clientWidth, bottom: b.top + n.clientTop + n.clientHeight }
+        const scrolls = n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1
+        const box = scrolls ? area : r
+        if (box.left < view.left - 0.5 || box.right > view.right + 0.5 || box.top < view.top - 0.5 || box.bottom > view.bottom + 0.5) return true
+      }
+      return false
     }
     const elements = (self ? [rootEl] : [...rootEl.querySelectorAll(selector)]).filter((e) => {
       if (e instanceof HTMLLabelElement) return false
@@ -242,15 +252,23 @@ test('buttons, sliders and swatches in the main places have targets of 24×24 or
   await panel.locator('[data-section="fill"] .design-swatch').click()
   await expect(page.locator('.design-color-popup')).toBeVisible()
   expect(await targetProblems(page.locator('.design-color-popup'))).toEqual([])
+  // パネルの下の端より下にある色見本（DADS のテンプレート。MAI-114）は、スクロールして見えるようにしてから測る
+  await page.locator('.design-color-popup .design-color-group').last().scrollIntoViewIfNeeded()
+  expect(await targetProblems(page.locator('.design-color-popup'))).toEqual([])
+  // 文字のタブ（いちばん上にテキストスタイルの一覧。MAI-114）
+  await panel.evaluate((e) => e.scrollTo({ top: 0 }))
   await panel.getByRole('tab', { name: '文字' }).click()
   await expect(panel.locator('[data-section="text"]')).toBeVisible()
   expect(await targetProblems(panel)).toEqual([])
+  await expect(panel.getByRole('combobox', { name: 'テキストスタイル（DADS）' })).toBeVisible()
   // グラデーション（止め色の印・帯・消すボタン）
   await panel.getByRole('tab', { name: '図形' }).click()
   await clickWorld(page, 320, 180)
   await expect(panel.locator('[data-section="fill"] .design-paint-kind')).toBeVisible()
   await panel.locator('[data-section="fill"] .design-paint-kind').click()
   await expect(page.locator('.design-color-popup .design-gradient')).toBeVisible()
+  expect(await targetProblems(page.locator('.design-color-popup'))).toEqual([])
+  await page.locator('.design-color-popup .design-color-group').last().scrollIntoViewIfNeeded()
   expect(await targetProblems(page.locator('.design-color-popup'))).toEqual([])
   await canvasRoot(page).focus()
   await page.keyboard.press('Escape')
@@ -318,25 +336,33 @@ test('floating buttons and dialog buttons reach 44px', async ({ page }) => {
 test('pressing just outside a small button presses it, not its neighbor', async ({ page }) => {
   const { stops } = await openApp(page)
 
-  // 色の見本（18px）：右隣との間（6px）の、自分に近い側を押すと、その色になる。見本はテンプレートの並び（押しても変わらない）。
-  // 押すと「このキャンバスで使った色」が増えて並びが下へずれることがあるので、押す前に位置を読み直す
+  // 色の見本（18px）：右隣との間（6px）の、自分に近い側を押すと、その色になる。見本は「テンプレート：キャンバス」の並び
+  // （押しても変わらない。2 行ある）。パネルの下の端より下にあることがあるので、見えるようにスクロールする。押すと
+  // 「このキャンバスで使った色」が増えて並びが下へずれることがあるので、押す前に位置を読み直す
   await clickWorld(page, 160, 180)
   const panel = page.getByTestId('design-panel')
   const hex = panel.locator('[data-section="fill"] input.design-hex')
   await panel.locator('[data-section="fill"] .design-swatch').click()
-  const chip = (i: number) => page.locator('.design-color-popup .design-color-group').last().locator('.design-color-chip').nth(i)
-  const [firstColor, secondColor] = [await chip(0).getAttribute('data-color'), await chip(1).getAttribute('data-color')]
-  expect(firstColor).not.toBe(secondColor)
-  let first = (await chip(0).boundingBox())!
-  const second = (await chip(1).boundingBox())!
+  const group = page.locator('.design-color-popup').getByRole('group', { name: 'テンプレート：キャンバス', exact: true })
+  const chip = (i: number) => group.locator('.design-color-chip').nth(i)
+  const boxOf = async (i: number) => {
+    await group.scrollIntoViewIfNeeded()
+    return (await chip(i).boundingBox())!
+  }
+  const [firstColor, secondColor, belowColor] = [await chip(0).getAttribute('data-color'), await chip(1).getAttribute('data-color'), await chip(10).getAttribute('data-color')]
+  expect(new Set([firstColor, secondColor, belowColor]).size).toBe(3)
+  let first = await boxOf(0)
+  const second = await boxOf(1)
   expect(second.x - (first.x + first.width)).toBeCloseTo(6, 0)
   await page.mouse.click(first.x + first.width + 2, first.y + first.height / 2)
   await expect(hex).toHaveValue(firstColor!)
-  const next = (await chip(1).boundingBox())!
+  const next = await boxOf(1)
   await page.mouse.click(next.x - 2, next.y + next.height / 2)
   await expect(hex).toHaveValue(secondColor!)
-  // 見本の下（行の間）を押しても、その見本
-  first = (await chip(0).boundingBox())!
+  // 見本の下（下の行の見本との間）の、自分に近い側を押しても、その見本
+  first = await boxOf(0)
+  const below = await boxOf(10)
+  expect(below.y - (first.y + first.height)).toBeCloseTo(6, 0)
   await page.mouse.click(first.x + first.width / 2, first.y + first.height + 2)
   await expect(hex).toHaveValue(firstColor!)
   await canvasRoot(page).focus()

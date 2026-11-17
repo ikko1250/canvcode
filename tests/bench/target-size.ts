@@ -32,10 +32,14 @@ const { values: args } = parseArgs({
     compare: { type: 'string' },
     // 場所の名前の一部で絞る（カンマ区切り）
     only: { type: 'string' },
+    // 画面の大きさ（幅x高さ）。e2e と同じにするなら 1280x720（playwright.config.ts の Desktop Chrome・Firefox）
+    viewport: { type: 'string', default: '1440x900' },
   },
 })
 
-const VIEWPORT = { width: 1440, height: 900 }
+const [VIEWPORT_WIDTH, VIEWPORT_HEIGHT] = args.viewport!.split('x').map(Number)
+if (!(VIEWPORT_WIDTH > 0 && VIEWPORT_HEIGHT > 0)) throw new Error(`--viewport は 幅x高さ で書く：${args.viewport}`)
+const VIEWPORT = { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT }
 
 // 押せるもの。label は、その入力の当たりとして数える（label を押すと入力を押したことになる）
 const TARGET_SELECTOR = [
@@ -616,10 +620,12 @@ function measureInPage({ roots, selector, exclude }: { roots: string[]; selector
     for (let n: Element | null = e; n && n.parentElement; n = n.parentElement) path.unshift([...n.parentElement.children].indexOf(n))
     return path
   }
-  // スクロールする（中身を切る）入れ物の外に、一部でも出ているか（一覧の端で切れている項目は、当たりも切れるので数えない）
+  // スクロールする（中身を切る）入れ物の外に、一部でも出ているか（一覧の端で切れている項目は、当たりも切れるので数えない）。
   // 中身を切るのは、要素の入れ物（containing block）の並びの上にある入れ物だけ。position: fixed の要素はその上で切られず、
-  // absolute の要素は、位置を決めていない入れ物には切られない
-  const scrolledOut = (e: Element) => {
+  // absolute の要素は、位置を決めていない入れ物には切られない。比べるのは入れ物の枠の内側。スクロールできる入れ物では、
+  // 広げた当たり（area）が端で切れているものも数えない（スクロールの位置しだいで、部品が見えていても当たりは切れる）。
+  // スクロールしない入れ物では見えている枠で調べる（そこで当たりが切れていれば、当たりが足りないと出る）。e2e と同じ決まり
+  const scrolledOut = (e: Element, area: Box) => {
     const r = e.getBoundingClientRect()
     let position = getComputedStyle(e).position
     for (let n = e.parentElement; n && position !== 'fixed'; n = n.parentElement) {
@@ -628,7 +634,10 @@ function measureInPage({ roots, selector, exclude }: { roots: string[]; selector
       if (!skip) position = style.position
       if (skip || (style.overflowX === 'visible' && style.overflowY === 'visible')) continue
       const b = n.getBoundingClientRect()
-      if (r.left < b.left - 1 || r.right > b.right + 1 || r.top < b.top - 1 || r.bottom > b.bottom + 1) return true
+      const view = { left: b.left + n.clientLeft, top: b.top + n.clientTop, right: b.left + n.clientLeft + n.clientWidth, bottom: b.top + n.clientTop + n.clientHeight }
+      const scrolls = n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1
+      const box = scrolls ? area : r
+      if (box.left < view.left - 0.5 || box.right > view.right + 0.5 || box.top < view.top - 0.5 || box.bottom > view.bottom + 0.5) return true
     }
     return false
   }
@@ -667,7 +676,7 @@ function measureInPage({ roots, selector, exclude }: { roots: string[]; selector
     const disabled = (el as HTMLButtonElement).disabled === true || el.getAttribute('aria-disabled') === 'true'
     const visible = { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
     if (!origin) {
-      const out = scrolledOut(el)
+      const out = scrolledOut(el, area)
       results.push({ name: describe(el), visible, hit: null, covered: out ? null : describe(document.elementFromPoint(cx, cy) ?? document.body), stolenBy: [], disabled, scrolledOut: out, area, path })
       continue
     }
@@ -709,7 +718,7 @@ function measureInPage({ roots, selector, exclude }: { roots: string[]; selector
       covered: null,
       stolenBy: [...stolen].map(([other, n]) => ({ name: describe(other), ratio: n / Math.max(points, 1) })),
       disabled,
-      scrolledOut: scrolledOut(el),
+      scrolledOut: scrolledOut(el, area),
       area,
       path,
     })
