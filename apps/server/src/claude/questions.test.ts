@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AnswerWriter, handleAnswer } from './answer.ts'
 import { ClaudeOnce, type OnceQuery } from './once.ts'
 import { RecordStore } from '../records.ts'
-import { KEPT_QUESTION_THINKING, RunningQuestions, answeredNotesOf, handleQuestions, parseQuestionSource, type QuestionChange } from './questions.ts'
+import { KEPT_QUESTION_THINKING, RunningQuestions, answeredNotesOf, handleQuestions, parseQuestionSource, type AnsweredNotes, type QuestionChange } from './questions.ts'
+import { ClaudeStore } from './store.ts'
 
 // 付箋で聞いている、動いている質問（サーバーのメモリに持ち、すべてのタブに流す）
 
@@ -18,7 +19,7 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 
-const source = { noteId: 'node:q1', canvasId: 'canvas:c1', label: 'コンテキストとは？' }
+const source = { kind: 'note' as const, noteId: 'node:q1', canvasId: 'canvas:c1', label: 'コンテキストとは？' }
 
 function watch(questions: RunningQuestions): QuestionChange[] {
   const changes: QuestionChange[] = []
@@ -93,7 +94,7 @@ describe('RunningQuestions', () => {
 describe('parseQuestionSource', () => {
   it('reads the note, the canvas and the label (one line, cut, or a default)', () => {
     expect(parseQuestionSource(undefined)).toBeUndefined()
-    expect(parseQuestionSource({ noteId: 'node:a', canvasId: 'canvas:b', label: ' 一行目\n 二行目 ' })).toEqual({ noteId: 'node:a', canvasId: 'canvas:b', label: '一行目 二行目' })
+    expect(parseQuestionSource({ noteId: 'node:a', canvasId: 'canvas:b', label: ' 一行目\n 二行目 ' })).toEqual({ kind: 'note', noteId: 'node:a', canvasId: 'canvas:b', label: '一行目 二行目' })
     expect(parseQuestionSource({ noteId: 'node:a', canvasId: 'canvas:b' })!.label).toBe('（質問）')
     expect(Array.from(parseQuestionSource({ noteId: 'node:a', canvasId: 'canvas:b', label: 'あ'.repeat(100) })!.label)).toHaveLength(60)
   })
@@ -101,17 +102,23 @@ describe('parseQuestionSource', () => {
   it('rejects broken ids', () => {
     expect(() => parseQuestionSource({ noteId: 'canvas:a', canvasId: 'canvas:b' })).toThrow(expect.objectContaining({ status: 400 }))
     expect(() => parseQuestionSource({ noteId: 'node:a', canvasId: 'node:b' })).toThrow(expect.objectContaining({ status: 400 }))
+    // 会話の質問（新しい会話から聞いたら threadId はない）
+    const threadId = '00000000-0000-4000-8000-000000000001'
+    expect(parseQuestionSource({ kind: 'chat', threadId, label: ' 一行目\n二行目' })).toEqual({ kind: 'chat', threadId, label: '一行目 二行目' })
+    expect(parseQuestionSource({ kind: 'chat' })).toEqual({ kind: 'chat', label: '（質問）' })
+    expect(() => parseQuestionSource({ kind: 'chat', threadId: 'not-a-thread' })).toThrow(expect.objectContaining({ status: 400 }))
+    expect(() => parseQuestionSource({ kind: 'other', noteId: 'node:a', canvasId: 'canvas:b' })).toThrow(expect.objectContaining({ status: 400 }))
     expect(() => parseQuestionSource('node:a')).toThrow(expect.objectContaining({ status: 400 }))
   })
 })
 
-// 答えを書く仕組みと、動いている質問の API を立てる
-async function start(questions: RunningQuestions | null, run?: OnceQuery): Promise<string> {
+// 答えを書く仕組みと、動いている質問の API を立てる（chat は会話の質問の置き場所、answered は答えを持つ付箋の一覧）
+async function start(questions: RunningQuestions | null, run?: OnceQuery, chat: ClaudeStore | null = null, answered: AnsweredNotes | null = null): Promise<string> {
   const writer = run ? new AnswerWriter({ once: new ClaudeOnce({ run }) }) : null
   const server: Server = createServer((req, res) => {
     const path = new URL(req.url!, 'http://x').pathname
-    if (handleAnswer(req, res, path, writer, questions)) return
-    if (handleQuestions(req, res, path, questions)) return
+    if (handleAnswer(req, res, path, writer, questions, chat)) return
+    if (handleQuestions(req, res, path, questions, answered, chat)) return
     res.writeHead(404)
     res.end()
   })
@@ -225,6 +232,74 @@ describe('the answer stream and the running questions', () => {
     expect(questions.list()).toEqual([])
   })
 
+  it('asks from the chat: keeps it in claude.db, writes the answer there and ends it as done without placing; mixes it into the list and gives it by id (claude-chat-tab-plan 7)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-chat-questions-'))
+    const store = new ClaudeStore(dir)
+    cleanups.push(() => {
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    })
+    const threadId = '00000000-0000-4000-8000-000000000001'
+    store.insertJob({ id: threadId, threadId, prompt: '付箋UIのレビュー', status: 'done', createdAt: 1, eventCount: 0, events: [] })
+    const notes: AnsweredNotes = {
+      list: () => [{ kind: 'note', noteId: 'node:n', canvasId: 'canvas:c', canvasTitle: 'C', question: '付箋の質問', model: 'opus', answeredAt: 1 }],
+      detail: () => null,
+    }
+    let open: () => void = () => {}
+    const gate = new Promise<void>((resolve) => (open = resolve))
+    const questions = new RunningQuestions()
+    const changes = watch(questions)
+    const base = await start(questions, gated(gate), store, notes)
+    const previous = [{ question: '付箋UIのレビュー', answer: '直すところは 3 つ' }]
+    const response = ask(base, { question: 'コンテキストとは？', previous, source: { kind: 'chat', threadId, label: 'コンテキストとは？' } })
+    await vi.waitFor(() => expect(questions.list()).toHaveLength(1))
+    const id = questions.list()[0]!.id
+    expect(questions.list()[0]).toMatchObject({ kind: 'chat', threadId, label: 'コンテキストとは？', status: 'running' })
+    // 答えを作っている間も、会話の質問として残っている
+    expect(store.threadQuestions(threadId)).toEqual([expect.objectContaining({ id, question: 'コンテキストとは？', previous, status: 'running', model: 'sonnet', effort: 'medium' })])
+    open()
+    expect((await lines(await response)).at(-1)).toMatchObject({ type: 'answer', answer: { body: '答え' } })
+    // 答えを表に書いてから done で終える（placing はない）
+    expect(questions.list()).toEqual([])
+    expect(changes.at(-1)).toEqual({ type: 'question-done', id, status: 'done' })
+    expect(store.question(id)).toMatchObject({ status: 'done', body: '答え', model: 'claude-opus-5-5', answeredAt: expect.any(Number) })
+    // 一覧には、付箋の答えと答えた時刻の順に混ぜる（Canvas で絞ったときは出さない）
+    const list = (await (await fetch(`${base}/api/claude/questions`)).json()) as { questions: Record<string, unknown>[] }
+    expect(list.questions).toEqual([
+      { kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', model: 'claude-opus-5-5', effort: 'medium', answeredAt: expect.any(Number) },
+      expect.objectContaining({ kind: 'note', noteId: 'node:n' }),
+    ])
+    const here = (await (await fetch(`${base}/api/claude/questions?canvasId=canvas:c`)).json()) as { questions: Record<string, unknown>[] }
+    expect(here.questions.map((item) => item.kind)).toEqual(['note'])
+    // 1 つを読む
+    const one = await fetch(`${base}/api/claude/questions/chat/${id}`)
+    expect(await one.json()).toMatchObject({ kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', previous, body: '答え', status: 'done' })
+    expect((await fetch(`${base}/api/claude/questions/chat/00000000-0000-4000-8000-0000000000ff`)).status).toBe(404)
+    // 消した会話には足さない
+    store.deleteThread(threadId)
+    expect((await ask(base, { question: 'q', source: { kind: 'chat', threadId, label: 'q' } })).status).toBe(404)
+  })
+
+  it('a question from the chat that fails or is stopped is kept as failed or cancelled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-chat-questions-'))
+    const store = new ClaudeStore(dir)
+    cleanups.push(() => {
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    })
+    const questions = new RunningQuestions()
+    const base = await start(questions, gated(new Promise(() => {})), store)
+    // 新しい会話から聞いたもの（threadId がない）
+    const response = ask(base, { question: '会話の外', source: { kind: 'chat', label: '会話の外' } })
+    await vi.waitFor(() => expect(questions.list()).toHaveLength(1))
+    const id = questions.list()[0]!.id
+    expect(store.question(id)).toMatchObject({ status: 'running' })
+    expect(store.question(id)).not.toHaveProperty('threadId')
+    expect((await fetch(`${base}/api/claude/questions/${id}/cancel`, { method: 'POST' })).status).toBe(204)
+    expect((await lines(await response)).at(-1)).toMatchObject({ type: 'error', status: 499 })
+    expect(store.question(id)).toMatchObject({ status: 'cancelled' })
+  })
+
   it('another tab can stop it: Claude stops, the asking screen gets a 499 line, and it ends as cancelled', async () => {
     const questions = new RunningQuestions()
     const changes = watch(questions)
@@ -317,8 +392,8 @@ describe('answered notes (the past answers of the question tab)', () => {
     const { records, root } = workspace()
     const answered = answeredNotesOf(records)
     expect(answered.list()).toEqual([
-      { noteId: 'node:b', canvasId: 'canvas:lab', canvasTitle: '研究ノート', question: 'Rust で速くなる？', model: 'claude-opus-5-5', effort: 'high', answeredAt: 3 },
-      { noteId: 'node:a', canvasId: root, canvasTitle: expect.any(String), question: 'コンテキストとは？', model: 'claude-opus-5-5', effort: 'high', answeredAt: 2 },
+      { kind: 'note', noteId: 'node:b', canvasId: 'canvas:lab', canvasTitle: '研究ノート', question: 'Rust で速くなる？', model: 'claude-opus-5-5', effort: 'high', answeredAt: 3 },
+      { kind: 'note', noteId: 'node:a', canvasId: root, canvasTitle: expect.any(String), question: 'コンテキストとは？', model: 'claude-opus-5-5', effort: 'high', answeredAt: 2 },
     ])
     expect(answered.list('canvas:lab').map((item) => item.noteId)).toEqual(['node:b'])
   })

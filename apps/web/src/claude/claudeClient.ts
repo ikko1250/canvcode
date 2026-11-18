@@ -12,6 +12,8 @@ import { useSyncExternalStore } from 'react'
 // - 選べるモデルと effort（MAI-106）は、パネルを開いたときに GET /api/claude/models で 1 回だけ読む（読めなければ、次に開いたときに読み直す）
 // - 付箋で聞いている、動いている質問（サーバーの claude/questions.ts）も、同じ SSE で受ける（ほかのタブ・端末で頼んだものも）。
 //   終わった質問は、終わり方を少しだけ覚える（finishedQuestions。頼んだ画面が、ほかのタブで止められたと知るため）
+// - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）は、会話を読むときに一緒に読む（chatQuestions）。
+//   動いているものは付箋の質問と同じく SSE で受け（kind: 'chat'）、終わったら、その会話の質問を読み直す
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -62,6 +64,40 @@ export interface PendingPermission {
   expiresAt: number
 }
 
+// 会話に取り込んだ、付箋で聞いた質問と答え（サーバーの claude/jobs.ts の ImportedQuestion と同じ形）。会話の質問のときは questionId
+export interface ImportedQuestion {
+  // 質問の 1 行目
+  label: string
+  question: string
+  // 答えの本文（Markdown）
+  answer: string
+  noteId?: string
+  canvasId?: string
+  questionId?: string
+}
+
+// 会話の質問（サーバーの claude/store.ts の ChatQuestion と同じ形）
+export interface ChatQuestion {
+  id: string
+  threadId?: string
+  question: string
+  // 添えた前の答え
+  previous: { question: string; answer: string }[]
+  body?: string
+  model?: string
+  effort?: string
+  status: 'running' | 'done' | 'failed' | 'cancelled'
+  error?: string
+  createdAt: number
+  answeredAt?: number
+}
+
+// 会話の質問 1 つ（GET /api/claude/questions/chat/<id>）
+export interface ChatQuestionDetail extends ChatQuestion {
+  kind: 'chat'
+  threadTitle?: string
+}
+
 export interface ClaudeJob {
   id: string
   threadId: string
@@ -79,6 +115,8 @@ export interface ClaudeJob {
   // 頼んだモデルと effort（なければ既定。MAI-106）
   model?: string
   effort?: Effort
+  // 取り込んだ付箋の質問と答え
+  imports?: ImportedQuestion[]
   eventCount: number
   events: JobEvent[]
 }
@@ -91,11 +129,14 @@ export interface BackgroundTask {
 }
 
 // 付箋で聞いている、動いている質問（サーバーの claude/questions.ts の RunningQuestion と同じ形）。
-// running：答えを作っている。placing：答えを頼んだ画面に渡し、付箋に書くのを待っている
+// running：答えを作っている。placing：答えを頼んだ画面に渡し、付箋に書くのを待っている。
+// kind が 'chat' なら会話の質問（noteId・canvasId はなく、会話から聞いたなら threadId）。kind のないものは付箋の質問（前のサーバー）
 export interface RunningQuestion {
   id: string
-  noteId: string
-  canvasId: string
+  kind?: 'note' | 'chat'
+  noteId?: string
+  canvasId?: string
+  threadId?: string
   // 質問の 1 行目
   label: string
   model?: string
@@ -112,6 +153,7 @@ export type QuestionStatus = 'done' | 'failed' | 'cancelled'
 
 // 答えを持つ付箋（質問のタブの「過去の回答」。サーバーの claude/questions.ts の AnsweredNote と同じ形）
 export interface AnsweredNote {
+  kind?: 'note'
   noteId: string
   canvasId: string
   canvasTitle: string
@@ -121,6 +163,20 @@ export interface AnsweredNote {
   effort?: string
   answeredAt: number
 }
+
+// 答えた会話の質問（質問のタブの「過去の回答」。サーバーの claude/questions.ts の AnsweredChatQuestion と同じ形）
+export interface AnsweredChatQuestion {
+  kind: 'chat'
+  id: string
+  threadId?: string
+  threadTitle?: string
+  question: string
+  model: string
+  effort?: string
+  answeredAt: number
+}
+
+export type AnsweredItem = AnsweredNote | AnsweredChatQuestion
 
 // 1 つの付箋の答え（ai は付箋の meta.ai。related は、まだある関連する付箋と、その 1 行目）
 export interface AnsweredNoteDetail extends AnsweredNote {
@@ -160,6 +216,8 @@ export interface StartRequest {
   threadId?: string
   model?: string
   effort?: Effort
+  // 取り込む付箋の質問と答え（1 つまで）
+  imports?: ImportedQuestion[]
 }
 
 // 'checking'：確かめている。'off'：サーバーで切ってある。'on'：使える
@@ -179,6 +237,8 @@ export interface ClaudeState {
   questions: readonly RunningQuestion[]
   // 終わった質問の終わり方（新しいものから KEPT_FINISHED_QUESTIONS 個）
   finishedQuestions: ReadonlyMap<string, QuestionStatus>
+  // 読んだ会話の、会話の質問（id → 中身）
+  chatQuestions: ReadonlyMap<string, ChatQuestion>
 }
 
 // 覚えておく、終わった質問の数と、動いている質問の考えている中身の長さ（サーバーと同じ）
@@ -226,6 +286,7 @@ export function applyStreamMessage(state: ClaudeState, message: StreamMessage): 
         threads: state.threads.filter((t) => t.threadId !== message.threadId),
         jobs: new Map([...state.jobs].filter(([, job]) => job.threadId !== message.threadId)),
         loaded,
+        chatQuestions: new Map([...state.chatQuestions].filter(([, question]) => question.threadId !== message.threadId)),
       },
     }
   }
@@ -256,6 +317,29 @@ export function jobsOfThread(state: ClaudeState, threadId: string): ClaudeJob[] 
   return [...state.jobs.values()].filter((job) => job.threadId === threadId).sort((a, b) => a.createdAt - b.createdAt)
 }
 
+// 会話の質問（聞いた順）。答えを作っているもの（SSE で届いた、まだ読み直していないもの）も、答えを作っている質問として入れる
+export function questionsOfThread(state: ClaudeState, threadId: string): ChatQuestion[] {
+  const stored = [...state.chatQuestions.values()].filter((question) => question.threadId === threadId)
+  const known = new Set(stored.map((question) => question.id))
+  const running = state.questions.flatMap((question): ChatQuestion[] =>
+    question.kind === 'chat' && question.threadId === threadId && !known.has(question.id)
+      ? [{ id: question.id, threadId, question: question.label, previous: [], status: 'running', createdAt: question.startedAt }]
+      : [],
+  )
+  // 読み直す前に終わったと届いたもの（question-done）は、答えを作っている印を外す
+  const live = new Set(state.questions.map((question) => question.id))
+  return [...stored.map((question) => (question.status === 'running' && !live.has(question.id) && state.finishedQuestions.has(question.id) ? { ...question, status: state.finishedQuestions.get(question.id)! } : question)), ...running].sort(
+    (a, b) => a.createdAt - b.createdAt,
+  )
+}
+
+// 会話の質問を、読んだもので置き換える（その会話のものだけ）
+function withQuestions(current: ReadonlyMap<string, ChatQuestion>, threadId: string, questions: readonly ChatQuestion[]): Map<string, ChatQuestion> {
+  const next = new Map([...current].filter(([, question]) => question.threadId !== threadId))
+  for (const question of questions) next.set(question.id, question)
+  return next
+}
+
 function sortThreads(threads: ThreadSummary[]): ThreadSummary[] {
   return threads.sort((a, b) => b.updatedAt - a.updatedAt)
 }
@@ -276,7 +360,15 @@ const MODELS_RETRY_MS = 60_000
 
 export class ClaudeClient {
   // useSyncExternalStore に渡すので、変わったときだけ作り直す
-  private snapshot: ClaudeState = { availability: 'checking', threads: [], jobs: new Map(), loaded: new Set(), questions: [], finishedQuestions: new Map() }
+  private snapshot: ClaudeState = {
+    availability: 'checking',
+    threads: [],
+    jobs: new Map(),
+    loaded: new Set(),
+    questions: [],
+    finishedQuestions: new Map(),
+    chatQuestions: new Map(),
+  }
   private source: EventSource | null = null
   private recheck: number | null = null
   private readonly loading = new Set<string>()
@@ -309,9 +401,12 @@ export class ClaudeClient {
       } catch {
         return
       }
+      // 会話の質問が終わったら、その会話の質問を読み直す（答えはサーバーの claude.db にある）
+      const ended = message.type === 'question-done' ? this.snapshot.questions.find((question) => question.id === message.id) : undefined
       const { state, missing } = applyStreamMessage(this.snapshot, message)
       this.set(state)
       if (missing) void this.refetch(missing)
+      if (ended?.kind === 'chat' && ended.threadId && this.snapshot.loaded.has(ended.threadId)) void this.reloadQuestions(ended.threadId)
     }
     this.source = source
   }
@@ -323,19 +418,39 @@ export class ClaudeClient {
     try {
       const res = await fetch(`${BASE}/threads/${threadId}`)
       if (!res.ok) return
-      const { jobs } = (await res.json()) as { jobs: ClaudeJob[] }
+      const { jobs, questions = [] } = (await res.json()) as { jobs: ClaudeJob[]; questions?: ChatQuestion[] }
       const next = new Map(this.snapshot.jobs)
       for (const job of jobs) {
         // SSE で先に届いた分（読んでいる間に足された出来事）があれば、そちらを残す
         const current = next.get(job.id)
         if (!current || current.events.length <= job.events.length) next.set(job.id, job)
       }
-      this.set({ ...this.snapshot, jobs: next, loaded: new Set(this.snapshot.loaded).add(threadId) })
+      this.set({ ...this.snapshot, jobs: next, loaded: new Set(this.snapshot.loaded).add(threadId), chatQuestions: withQuestions(this.snapshot.chatQuestions, threadId, questions) })
     } catch (error) {
       console.warn('Failed to load a Claude thread', error)
     } finally {
       this.loading.delete(threadId)
     }
+  }
+
+  // 会話の質問を読み直す（会話の質問が終わったとき）
+  async reloadQuestions(threadId: string): Promise<void> {
+    try {
+      const res = await fetch(`${BASE}/threads/${threadId}`)
+      if (!res.ok) return
+      const { questions = [] } = (await res.json()) as { questions?: ChatQuestion[] }
+      this.set({ ...this.snapshot, chatQuestions: withQuestions(this.snapshot.chatQuestions, threadId, questions) })
+    } catch (error) {
+      console.warn('Failed to load the questions of a Claude thread', error)
+    }
+  }
+
+  // 会話の質問 1 つ。なければ null
+  async chatQuestion(id: string): Promise<ChatQuestionDetail | null> {
+    const res = await fetch(`${BASE}/questions/chat/${encodeURIComponent(id)}`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as ChatQuestionDetail
   }
 
   // 選べるモデルと effort を読む（読んであれば何もしない。MAI-106）
@@ -419,11 +534,11 @@ export class ClaudeClient {
     }
   }
 
-  // 答えを持つ付箋の一覧（新しいものから）。canvasId を渡せば、その Canvas のものだけ
-  async answeredNotes(canvasId?: string): Promise<AnsweredNote[]> {
+  // 答えを持つ付箋と、答えた会話の質問の一覧（新しいものから）。canvasId を渡せば、その Canvas の付箋のものだけ
+  async answeredNotes(canvasId?: string): Promise<AnsweredItem[]> {
     const res = await fetch(`${BASE}/questions${canvasId ? `?canvasId=${encodeURIComponent(canvasId)}` : ''}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return ((await res.json()) as { questions: AnsweredNote[] }).questions
+    return ((await res.json()) as { questions: AnsweredItem[] }).questions
   }
 
   // 1 つの付箋の答え。なければ null

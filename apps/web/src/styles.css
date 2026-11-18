@@ -4347,6 +4347,121 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
+/* 別枠の質問（会話には入れていない）のカード。点線の枠で、会話のジョブと見分ける */
+.claude-side-question {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  transition: background-color 0.4s, box-shadow 0.4s;
+}
+
+.claude-side-question.highlighted {
+  background: var(--color-selected);
+  box-shadow: 0 0 0 4px var(--color-selected);
+}
+
+.claude-side-question-head {
+  color: var(--color-text-sub);
+}
+
+.claude-side-question-text {
+  font-weight: var(--font-weight-700);
+  overflow-wrap: anywhere;
+}
+
+.claude-side-question-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--color-text-sub);
+}
+
+.claude-side-question-foot .claude-link {
+  --target-reach-y: 4px;
+}
+
+.claude-side-question-end.failed {
+  color: var(--color-error-strong);
+  overflow-wrap: anywhere;
+}
+
+/* 取り込んだ付箋の質問のカード（そのジョブの頼んだ文の上） */
+.claude-import-card {
+  display: flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 8px;
+  max-width: 85%;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+  padding: 4px 10px;
+  border: 1px dashed var(--color-selected-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  color: var(--color-text-sub);
+}
+
+.claude-import-card-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.claude-import-card .claude-link {
+  --target-reach-y: 4px;
+  flex: none;
+}
+
+/* 答えの「会話で続ける」のメニュー（いまの会話に入れる・新しい会話にする） */
+.answer-view-chat-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
+}
+
+.answer-view-actions .answer-view-chat-menu button {
+  --target-reach-x: 6px;
+  --target-reach-top: 2px;
+  --target-reach-bottom: 2px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.answer-view-actions .answer-view-chat-menu button:hover,
+.answer-view-actions .answer-view-chat-menu button:focus {
+  background: var(--color-hover);
+}
+
+.answer-view-chat-menu button > span {
+  display: block;
+  padding-block: 2px;
+  margin-block: -2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* バックグラウンドの作業（「⚙ 動作中の作業 N件 ▾」の 1 行。押すと一覧） */
 .claude-tasks {
   display: flex;

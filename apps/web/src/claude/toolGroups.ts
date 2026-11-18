@@ -147,3 +147,33 @@ export function answerOfEvents(events: readonly JobEvent[]): string {
     .filter(Boolean)
     .join('\n\n')
 }
+
+const TOOL_LABELS: Record<string, string> = {
+  Read: 'ファイルを読む',
+  Write: 'ファイルを書く',
+  Edit: 'ファイルを直す',
+  Glob: 'ファイルを探す',
+  Grep: '中身を探す',
+  WebSearch: 'Web を検索',
+  WebFetch: 'Web のページを読む',
+  Agent: 'サブエージェントに任せる',
+  Skill: 'スキルを使う',
+  list_documents: '文書の一覧',
+  read_document: '文書を読む',
+  create_document: '文書を作る',
+  update_document: '文書を書き換える',
+  edit_document: '文書を直す',
+  resolve_reference: '選んだ場所を読む',
+  get_canvas_format: 'Canvas の書き方を読む',
+  list_canvases: 'Canvas の一覧',
+  read_canvas: 'Canvas を読む',
+  read_nodes: 'ノードを読む',
+  edit_canvas: 'Canvas を編集',
+  undo_canvas_edit: '編集を取り消す',
+}
+
+// ツールの名前（1 行ずつ開いたときと、許可のカードに出す）
+export function toolLabel(name: string): string {
+  const short = shortToolName(name)
+  return TOOL_LABELS[short] ?? short
+}

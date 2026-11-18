@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { OWN_KEYS_ATTRIBUTE } from '@canvcode/canvas'
-import { ChatComposer } from './ChatComposer.tsx'
+import { OWN_KEYS_ATTRIBUTE, firstLine } from '@canvcode/canvas'
+import { AnswerError, requestAnswer, type AnswerRequest } from './answer.ts'
+import { ChatComposer, type ComposeMode } from './ChatComposer.tsx'
 import { ChatHeader } from './ChatHeader.tsx'
-import { ChatLog, toolLabel } from './ChatLog.tsx'
-import { jobsOfThread, useClaudeState, type BackgroundTask, type ClaudeClient, type ClaudeJob, type PendingPermission } from './claudeClient.ts'
+import { ChatLog } from './ChatLog.tsx'
+import {
+  jobsOfThread,
+  questionsOfThread,
+  useClaudeState,
+  type BackgroundTask,
+  type ClaudeClient,
+  type ClaudeJob,
+  type ImportedQuestion,
+  type PendingPermission,
+} from './claudeClient.ts'
 import { loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } from './modelChoice.ts'
+import { answerOfEvents, toolLabel } from './toolGroups.ts'
 
 // 画面から Claude Code に頼むチャット（キャンバスの右に並べる）。
 // - キャンバスでは、右上の「質問」と C で開くのは質問のタブ（QuestionPanel）で、会話（このチャット）は上の「会話｜質問」のタブで行き来する。
@@ -25,6 +36,11 @@ import { loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } f
 //   新しい会話は、ブラウザに覚えた最後に選んだ値から始める。答えの右に、頼んだモデルと effort の札を出す
 // - 答えの「📌 付箋に切り出す」（キャンバスでだけ）：その答えを添えた AI 付箋を、いま開いている Canvas に置く（onCutToNote。会話には何も足さない）。
 //   付箋の札の ↗ で戻ってきたら（reveal）、その会話を選び、そのジョブまでスクロールして、少しのあいだ色を付ける
+// - 付箋の質問を取り込む（答えの「会話で続ける」。importRequest）：入力欄の上に「付箋の質問を取り込みます『質問』 ×」の札を置く。
+//   取り込むだけでは Claude を動かさず、次に送る文と一緒に渡す（imports）。取り込めるのは 1 度に 1 つ。会話の欄には、そのジョブの頼んだ文の上にカードを出す
+// - 入力欄の「会話｜質問」（キャンバスでだけ）：「質問」で送ると、その 1 つだけ会話に入れずに聞く（POST /api/claude/answer。前の答えとして、
+//   会話の最後の終わったジョブを添える）。送ったら「会話」に戻す。会話の欄には、聞いた時刻の位置に「別枠の質問」の点線のカードを出し、
+//   「答えを見る →」で質問のタブを開く（onOpenQuestion）
 
 // 添える場所。refId が null の間は保存している
 export interface ClaudeAttachment {
@@ -43,10 +59,18 @@ export interface ChatAnswerCut {
   answer: string
 }
 
-// 会話のそのジョブへ戻る（付箋の会話の札の ↗）。n が変わるたびに戻る
+// 付箋の質問を取り込む（答えの「会話で続ける」）。newThread なら新しい会話にする。n が変わるたびに取り込む
+export interface ChatImportRequest {
+  item: ImportedQuestion
+  newThread: boolean
+  n: number
+}
+
+// 会話のそのジョブ（会話の質問なら、そのカード）へ戻る（付箋の会話の札の ↗・質問のタブの「↗ 会話へ移動」）。n が変わるたびに戻る
 export interface ChatReveal {
   threadId: string
-  jobId: string
+  jobId?: string
+  questionId?: string
   n: number
 }
 
@@ -78,10 +102,19 @@ interface Props {
   onCutToNote?(cut: ChatAnswerCut): void
   // 会話のそのジョブへ戻る
   reveal?: ChatReveal | null
+  // 付箋の質問を取り込む
+  importRequest?: ChatImportRequest | null
+  // 見ている会話が変わった（答えの「会話で続ける」に、いまの会話の題を出すため）
+  onThreadChange?(thread: { threadId: string; title: string } | null): void
+  // 会話の欄のカードの ↗：取り込んだ付箋の質問へ（キャンバスでだけ渡す）
+  onOpenImport?(item: ImportedQuestion): void
+  // 別枠の質問の「答えを見る →」：質問のタブで開く（キャンバスでだけ渡す。渡したときだけ、入力欄に「会話｜質問」を出す）
+  onOpenQuestion?(id: string): void
 }
 
 export function ClaudePanel(props: Props) {
   const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, onAttachSelection, onClearAttachment, onClose, tabs, onCutToNote, reveal } = props
+  const { importRequest, onThreadChange, onOpenImport, onOpenQuestion } = props
   const state = useClaudeState(client)
   const { threads } = state
   // 選んだ会話。null は新しい会話
@@ -94,8 +127,9 @@ export function ClaudePanel(props: Props) {
   const [error, setError] = useState<string | null>(null)
   // 「全部止める」を 1 回押した会話（もう 1 回押すと止める）
   const [confirmStop, setConfirmStop] = useState<string | null>(null)
-  // 色を付けているジョブ（会話の札の ↗ で戻ったとき）
-  const [highlight, setHighlight] = useState<string | null>(null)
+  // 送り方（「会話｜質問」）と、次に送る文と一緒に取り込む付箋の質問
+  const [mode, setMode] = useState<ComposeMode>('chat')
+  const [pendingImport, setPendingImport] = useState<ImportedQuestion | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -112,6 +146,16 @@ export function ClaudePanel(props: Props) {
     setSeenDraft(draft)
     if (draft) setPrompt(draft.text)
   }
+  // 付箋の質問を取り込む（答えの「会話で続ける」）。新しい会話にするなら会話を外す。送るのは、次に文を書いて送ったとき
+  const [seenImport, setSeenImport] = useState<typeof importRequest>(null)
+  if (importRequest !== seenImport) {
+    setSeenImport(importRequest)
+    if (importRequest) {
+      if (importRequest.newThread) setThreadId(null)
+      setPendingImport(importRequest.item)
+      setMode('chat')
+    }
+  }
   // 会話のそのジョブへ戻る（付箋の会話の札の ↗）。会話を選び、読んだあとでスクロールする（下の useEffect）
   const [seenReveal, setSeenReveal] = useState<typeof reveal>(null)
   const [revealing, setRevealing] = useState<ChatReveal | null>(null)
@@ -126,6 +170,10 @@ export function ClaudePanel(props: Props) {
   // 見ている会話。選んだ会話が消されていれば、新しい会話
   const thread = threads.find((t) => t.threadId === chosenId)
   const threadId = thread ? thread.threadId : null
+  const threadTitle = thread?.title ?? null
+  useEffect(() => {
+    onThreadChange?.(threadId && threadTitle !== null ? { threadId, title: threadTitle } : null)
+  }, [onThreadChange, threadId, threadTitle])
   // 次に送るときのモデルと effort（MAI-106）。会話を替えたら、その会話の値（新しい会話ならブラウザに覚えた値）にする
   const [setting, setSetting] = useState<ModelSetting>(() => (thread ? settingOf(thread) : loadSetting()))
   const [settingFor, setSettingFor] = useState<string | null>(threadId)
@@ -148,6 +196,8 @@ export function ClaudePanel(props: Props) {
     [state, threadId],
   )
   const running = jobs.find((job) => job.status === 'running')
+  // 会話の質問（会話に入れずに聞いたもの）。会話の欄に、聞いた時刻の位置で混ぜる
+  const sideQuestions = useMemo(() => (threadId ? questionsOfThread(state, threadId) : []), [state, threadId])
   const tasks = thread?.tasks ?? NO_TASKS
   const permissions = thread?.permissions ?? NO_PERMISSIONS
   // 答えを書いているか、バックグラウンドの作業か、許可を待っている問い合わせがある（消せない）
@@ -159,7 +209,7 @@ export function ClaudePanel(props: Props) {
     const found = state.threads.find((t) => t.threadId === threadId)?.permissions ?? []
     return { ids: new Set(found.map((p) => p.id)), jobs: new Set(found.flatMap((p) => (p.jobId ? [p.jobId] : []))) }
   }, [state, threadId])
-  const eventTotal = jobs.reduce((n, job) => n + job.events.length, 0)
+  const eventTotal = jobs.reduce((n, job) => n + job.events.length, 0) + sideQuestions.length
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
   const stick = useRef(true)
@@ -186,26 +236,29 @@ export function ClaudePanel(props: Props) {
     return () => observer.disconnect()
   }, [])
   // 戻ったジョブまでスクロールし、少しのあいだ色を付ける（会話を読み終えて、ジョブが出てから）
-  const revealJob = revealing && revealing.threadId === threadId ? jobs.find((job) => job.id === revealing.jobId) : undefined
+  const revealId =
+    revealing && revealing.threadId === threadId
+      ? revealing.jobId
+        ? jobs.find((job) => job.id === revealing.jobId)?.id
+        : revealing.questionId
+          ? sideQuestions.find((question) => question.id === revealing.questionId)?.id
+          : undefined
+      : undefined
   const revealLoaded = !!threadId && state.loaded.has(threadId)
+  // 会話を読み終えても、そのジョブ（質問）がない（会話を消した・別の端末で消した）。ジョブも質問も指していなければ、会話を選ぶだけ
+  if (revealing && revealing.threadId === threadId && !revealId && (revealLoaded || (!revealing.jobId && !revealing.questionId))) setRevealing(null)
+  // 戻った所まで、出てから 1 回だけスクロールする（n で見分ける）。色は DOM の class で付け、HIGHLIGHT_MS で外す（描き直しても残る）
+  const revealed = useRef<number | null>(null)
   useEffect(() => {
-    if (!revealing || revealing.threadId !== threadId || hidden) return
-    if (!revealJob) {
-      // 会話を読み終えても、そのジョブがない（会話を消した・別の端末で消した）
-      if (revealLoaded) setRevealing(null)
-      return
-    }
-    setRevealing(null)
+    if (!revealing || revealing.threadId !== threadId || hidden || !revealId || revealed.current === revealing.n) return
+    revealed.current = revealing.n
     stick.current = false
-    const el = logRef.current?.querySelector<HTMLElement>(`[data-job-id="${CSS.escape(revealJob.id)}"]`)
-    el?.scrollIntoView({ block: 'start' })
-    setHighlight(revealJob.id)
-  }, [revealing, revealJob, revealLoaded, threadId, hidden])
-  useEffect(() => {
-    if (!highlight) return
-    const timer = window.setTimeout(() => setHighlight(null), HIGHLIGHT_MS)
-    return () => window.clearTimeout(timer)
-  }, [highlight])
+    const el = logRef.current?.querySelector<HTMLElement>(`[data-job-id="${CSS.escape(revealId)}"], [data-question-id="${CSS.escape(revealId)}"]`)
+    if (!el) return
+    el.scrollIntoView({ block: 'start' })
+    el.classList.add('highlighted')
+    window.setTimeout(() => el.classList.remove('highlighted'), HIGHLIGHT_MS)
+  }, [revealing, revealId, threadId, hidden])
 
   const fail = (e: unknown) => setError(e instanceof Error ? e.message : String(e))
 
@@ -217,6 +270,7 @@ export function ClaudePanel(props: Props) {
   }
 
   const send = () => {
+    if (mode === 'question') return ask()
     const text = prompt.trim()
     if (!text || sending || running || attachment?.refId === null) return
     setSending(true)
@@ -228,15 +282,57 @@ export function ClaudePanel(props: Props) {
         ...(attachment?.refId ? { refId: attachment.refId, refLabel: attachment.label } : {}),
         ...(thread ? { threadId: thread.threadId } : {}),
         ...settingOf(setting),
+        ...(pendingImport ? { imports: [pendingImport] } : {}),
       })
       .then((job) => {
         setPrompt('')
         setThreadId(job.threadId)
+        setPendingImport(null)
         stick.current = true
         onClearAttachment()
       })
       .catch(fail)
       .finally(() => setSending(false))
+  }
+
+  // 入力欄の「質問」：その 1 つだけ、会話に入れずに聞く。前の答えとして、会話の最後の終わったジョブ（頼んだ文と答え）を添え、
+  // 添えた所は refs にする。答えはサーバーが claude.db に書き、会話の欄（会話を選んでいれば）と質問のタブに出る。
+  // サーバーが受けたら（start）入力欄を空けて「会話」に戻す。受ける前の誤りは、入力欄の下に出す
+  const ask = () => {
+    const text = prompt.trim()
+    if (!text || sending || attachment?.refId === null) return
+    const last = [...jobs].reverse().find((job) => job.status === 'done' && answerOfEvents(job.events))
+    const request: AnswerRequest = {
+      question: text,
+      ...(last ? { previous: [{ question: last.prompt, answer: answerOfEvents(last.events) }] } : {}),
+      ...(attachment?.refId ? { refs: [{ label: attachment.label, refId: attachment.refId }] } : {}),
+      source: { kind: 'chat', ...(thread ? { threadId: thread.threadId } : {}), label: firstLine(text) },
+    }
+    setSending(true)
+    setError(null)
+    let started = false
+    const askedIn = thread?.threadId
+    requestAnswer(request, settingOf(setting), {
+      onStart: () => {
+        started = true
+        setSending(false)
+        setPrompt('')
+        setMode('chat')
+        stick.current = true
+        onClearAttachment()
+      },
+    })
+      // 答えが届いたら、会話の質問を読み直す（SSE の question-done でも読み直すが、つながっていなくても出るように）
+      .then(() => {
+        if (askedIn) void client.reloadQuestions(askedIn)
+      })
+      .catch((e: unknown) => {
+        if (askedIn && started) void client.reloadQuestions(askedIn)
+      // 始まってからの誤り（答えられなかった・やめた）は、会話の欄のカードと質問のタブに出る
+      if (started || (e instanceof AnswerError && e.status === 499)) return
+      setSending(false)
+      fail(e)
+    })
   }
 
   const remove = (id: string) => {
@@ -343,9 +439,12 @@ export function ClaudePanel(props: Props) {
           catalog={state.models}
           askingJobs={waiting.jobs}
           pendingIds={waiting.ids}
-          highlight={highlight}
           onCancel={(job) => void client.cancel(job.id).catch(fail)}
           {...(onCutToNote ? { onCutToNote: cutToNote } : {})}
+          questions={sideQuestions}
+          onStopQuestion={(id) => void client.cancelQuestion(id).catch(fail)}
+          {...(onOpenQuestion ? { onOpenQuestion } : {})}
+          {...(onOpenImport ? { onOpenImport } : {})}
         />
       </div>
 
@@ -358,12 +457,15 @@ export function ClaudePanel(props: Props) {
       <ChatComposer
         inputRef={inputRef}
         prompt={prompt}
-        placeholder={thread ? '続けて頼む…' : 'Claude に頼む…'}
+        placeholder={mode === 'question' ? 'この 1 つだけ、会話に入れずに聞く…' : thread ? '続けて頼む…' : 'Claude に頼む…'}
         attachment={attachment}
-        mode="chat"
+        importLabel={pendingImport?.label ?? null}
+        onClearImport={() => setPendingImport(null)}
+        mode={mode}
+        {...(onOpenQuestion ? { onMode: setMode } : {})}
         catalog={state.models}
         setting={setting}
-        canSend={!!prompt.trim() && !sending && !running && attachment?.refId !== null}
+        canSend={!!prompt.trim() && !sending && (mode === 'question' || !running) && attachment?.refId !== null}
         error={error}
         onPrompt={setPrompt}
         onKeyDown={onKeyDown}

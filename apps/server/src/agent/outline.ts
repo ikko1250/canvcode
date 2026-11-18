@@ -552,7 +552,10 @@ function aiDetail(ai: { answer?: unknown; contexts?: unknown }): Record<string, 
     if (typeof context !== 'object' || context === null) return []
     const { kind, label, noteId, canvasId, threadId, jobId } = context as Record<string, unknown>
     if (kind === 'answer') return [{ kind, label, noteId, canvasId }]
-    if (kind === 'chat') return [{ kind, label, threadId, jobId }]
+    if (kind === 'chat') {
+      const { questionId } = context as Record<string, unknown>
+      return [{ kind, label, ...(threadId !== undefined ? { threadId } : {}), ...(jobId !== undefined ? { jobId } : {}), ...(questionId !== undefined ? { questionId } : {}) }]
+    }
     if (kind === 'canvas') return [{ kind, label }]
     return []
   })
@@ -894,7 +897,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - text, note and geo text can be formatted (bold, colours, sizes, fonts, lists); read_nodes gives that as md (see Formatted text)
 - note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
-- AI note ("AI 付箋"): a note the user asks Claude with; the outline marks it ai, or ai:answered when it holds Claude's answer. The answer is not on the canvas: the user opens it from the blue triangle at the note's top right. read_nodes gives ai.answer (body = the answer in Markdown, related = ids of related notes, model, effort, question = the question it answered, answeredAt) and ai.contexts (what is attached: kind answer = the previous answer it continues (noteId, canvasId), kind canvas = a place on the canvas)
+- AI note ("AI 付箋"): a note the user asks Claude with; the outline marks it ai, or ai:answered when it holds Claude's answer. The answer is not on the canvas: the user opens it from the blue triangle at the note's top right. read_nodes gives ai.answer (body = the answer in Markdown, related = ids of related notes, model, effort, question = the question it answered, answeredAt) and ai.contexts (what is attached: kind answer = the previous answer it continues (noteId, canvasId), kind chat = an answer cut out from the chat panel (threadId, jobId; or questionId for a question asked from the chat without adding it to the conversation), kind canvas = a place on the canvas)
 - geo: shape, one of rect, ellipse, triangle, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius, labelPadding, labelVerticalAlign). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - labelPadding (geo): px between the shape's box (a block arrow's shaft) and its text, a number for all sides or {top,right,bottom,left}; omitted = 8. labelVerticalAlign: top | middle | bottom of the padded box; omitted = middle
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly

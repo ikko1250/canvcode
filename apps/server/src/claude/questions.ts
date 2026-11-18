@@ -4,6 +4,7 @@ import { plainTextOf, richTextFromMarkdown, type TextParagraph } from '@canvcode
 import type { RecordStore, StoredRecord } from '../records.ts'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
+import type { ChatQuestion, ClaudeStore } from './store.ts'
 
 // 付箋で聞いている、動いている質問（docs/canvas-answer-panel-plan.md の 2.3）。
 // - 付箋で聞く答え（claude/answer.ts）を NDJSON で頼むとき、どの付箋の質問か（source）を添えると、ここに載る。
@@ -24,6 +25,10 @@ import { JobError } from './jobs.ts'
 //   GET /api/claude/questions?canvasId=…：答えを持つ付箋（答えた時刻の新しいものから ANSWERED_LIMIT 件。ゴミ箱の中の Canvas のものは除く）。
 //   { questions: AnsweredNote[] }。canvasId を省けば、すべての Canvas
 //   GET /api/claude/questions/<付箋の id>：その付箋の meta.ai（答えと添えたもの）と、関連する付箋の名前。なければ 404
+// - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）：source が { kind: 'chat', threadId?, label }。
+//   付箋がないので、サーバーが答えを claude.db（表 questions）に書いてから done で終える（placing はない）。
+//   一覧（GET /api/claude/questions）には、付箋の答えと答えた時刻の順に混ぜて返す（1 件に kind: 'note' | 'chat'。canvasId で絞ったときは出さない）。
+//   GET /api/claude/questions/chat/<id>：会話の質問 1 つ（{ kind: 'chat', ...ChatQuestion, threadTitle? }）。なければ 404
 
 // 答えを画面に渡してから、付箋に書いたと知らせが来るまで待つ時間（ミリ秒）
 export const PLACING_TIMEOUT_MS = 10 * 60_000
@@ -35,15 +40,13 @@ const MAX_LABEL_LENGTH = 60
 export type QuestionStep = 'read' | 'search' | 'write'
 export type QuestionStatus = 'done' | 'failed' | 'cancelled'
 
-// どの付箋の質問か（画面が送る）
-export interface QuestionSource {
-  noteId: string
-  canvasId: string
-  // 質問の 1 行目
-  label: string
-}
+// どの付箋の質問か・どの会話の質問か（画面が送る。label は質問の 1 行目）。kind のないものは付箋の質問（前の画面が送るもの）
+export type QuestionSource =
+  | { kind: 'note'; noteId: string; canvasId: string; label: string }
+  // 会話の質問（新しい会話から聞いたら threadId はない）
+  | { kind: 'chat'; threadId?: string; label: string }
 
-export interface RunningQuestion extends QuestionSource {
+export type RunningQuestion = QuestionSource & {
   id: string
   model?: string
   effort?: string
@@ -92,7 +95,7 @@ export class RunningQuestions {
   // 始まった。abort は、止めるときに呼ぶ（Claude を止める）。id を返す
   start(source: QuestionSource, setting: { model?: string; effort?: string }, abort: () => void): string {
     const id = randomUUID()
-    const question: RunningQuestion = {
+    const question = {
       id,
       ...source,
       ...(setting.model ? { model: setting.model } : {}),
@@ -102,7 +105,7 @@ export class RunningQuestions {
       searched: false,
       thinking: '',
       startedAt: Date.now(),
-    }
+    } as RunningQuestion
     this.entries.set(id, { question, abort, timer: null })
     this.emitQuestion(question)
     return id
@@ -162,14 +165,19 @@ export class RunningQuestions {
   }
 }
 
-// 画面が送った source（どの付箋の質問か）。なければ undefined。形が合わなければ 400
+// 画面が送った source（どの付箋の質問か・どの会話の質問か）。なければ undefined。形が合わなければ 400
 export function parseQuestionSource(value: unknown): QuestionSource | undefined {
   if (value === undefined) return undefined
-  const { noteId, canvasId, label } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>
+  const { kind, noteId, canvasId, threadId, label } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>
+  const text = (typeof label === 'string' ? Array.from(label.replace(/\s+/g, ' ').trim()).slice(0, MAX_LABEL_LENGTH).join('') : '') || '（質問）'
+  if (kind === 'chat') {
+    if (threadId !== undefined && (typeof threadId !== 'string' || !/^[0-9a-f-]{36}$/.test(threadId))) throw new JobError(400, 'invalid source')
+    return { kind: 'chat', ...(threadId !== undefined ? { threadId } : {}), label: text }
+  }
+  if (kind !== undefined && kind !== 'note') throw new JobError(400, 'invalid source')
   if (typeof noteId !== 'string' || !/^node:[A-Za-z0-9_-]{1,64}$/.test(noteId)) throw new JobError(400, 'invalid source')
   if (typeof canvasId !== 'string' || !/^canvas:[A-Za-z0-9_-]{1,64}$/.test(canvasId)) throw new JobError(400, 'invalid source')
-  const text = typeof label === 'string' ? Array.from(label.replace(/\s+/g, ' ').trim()).slice(0, MAX_LABEL_LENGTH).join('') : ''
-  return { noteId, canvasId, label: text || '（質問）' }
+  return { kind: 'note', noteId, canvasId, label: text }
 }
 
 // 答えを持つ付箋の一覧で返す数と、名前（質問・関連する付箋の 1 行目）の長さ
@@ -178,6 +186,7 @@ const RELATED_LABEL_LENGTH = 30
 
 // 答えを持つ付箋（一覧の 1 行）
 export interface AnsweredNote {
+  kind: 'note'
   noteId: string
   canvasId: string
   canvasTitle: string
@@ -200,12 +209,45 @@ export interface AnsweredNotes {
   detail(noteId: string): AnsweredNoteDetail | null
 }
 
+// 答えた会話の質問（一覧の 1 行）
+export interface AnsweredChatQuestion {
+  kind: 'chat'
+  id: string
+  threadId?: string
+  // 会話の題（会話がなければ、ない）
+  threadTitle?: string
+  // 質問の 1 行目
+  question: string
+  model: string
+  effort?: string
+  answeredAt: number
+}
+
+// 会話の質問の置き場所（claude/store.ts）
+export type ChatQuestionStore = Pick<ClaudeStore, 'insertQuestion' | 'finishQuestion' | 'question' | 'answeredQuestions' | 'thread'>
+
+// 答えた会話の質問の一覧の 1 行
+export function answeredChatQuestion(store: Pick<ClaudeStore, 'thread'>, question: ChatQuestion): AnsweredChatQuestion {
+  const title = question.threadId ? store.thread(question.threadId)?.title : undefined
+  return {
+    kind: 'chat',
+    id: question.id,
+    ...(question.threadId ? { threadId: question.threadId } : {}),
+    ...(title ? { threadTitle: title } : {}),
+    question: firstLine(question.question, MAX_LABEL_LENGTH, true),
+    model: question.model ?? '',
+    ...(question.effort ? { effort: question.effort } : {}),
+    answeredAt: question.answeredAt ?? question.createdAt,
+  }
+}
+
 // ワークスペースのレコードから読む
 export function answeredNotesOf(records: Pick<RecordStore, 'answeredNotes' | 'get' | 'canvasOf'>): AnsweredNotes {
   const row = (record: StoredRecord, canvasId: string, canvasTitle: string): AnsweredNote | null => {
     const answer = aiOf(record)?.answer as Record<string, unknown> | undefined
     if (!answer || typeof answer.question !== 'string') return null
     return {
+      kind: 'note',
       noteId: record.id,
       canvasId,
       canvasTitle,
@@ -255,15 +297,31 @@ function firstLine(text: string, length: number, plain = false): string {
 
 const QUESTION_PATH = /^\/api\/claude\/questions\/([0-9a-f-]{36})\/(cancel|finish)$/
 const ANSWERED_PATH = /^\/api\/claude\/questions\/((?:node(?::|%3A))[A-Za-z0-9_-]{1,64})$/i
+const CHAT_PATH = /^\/api\/claude\/questions\/chat\/([0-9a-f-]{36})$/
 
+// chat は会話の質問の置き場所（渡さなければ、会話の質問は一覧に出さない）
 export function handleQuestions(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
   questions: RunningQuestions | null,
   answered: AnsweredNotes | null = null,
+  chat: ChatQuestionStore | null = null,
 ): boolean {
   if (!questions) return false
+  const chatMatch = CHAT_PATH.exec(path)
+  if (chatMatch) {
+    if (!chat) return false
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return true
+    }
+    const found = chat.question(chatMatch[1]!)
+    const title = found?.threadId ? chat.thread(found.threadId)?.title : undefined
+    if (found) sendJson(res, 200, { kind: 'chat', ...found, ...(title ? { threadTitle: title } : {}) })
+    else sendJson(res, 404, { error: 'question not found' })
+    return true
+  }
   if (path === '/api/claude/questions' || ANSWERED_PATH.test(path)) {
     if (!answered) return false
     if (req.method !== 'GET') {
@@ -271,8 +329,11 @@ export function handleQuestions(
       return true
     }
     if (path === '/api/claude/questions') {
-      const canvasId = new URL(req.url ?? '/', 'http://x').searchParams.get('canvasId') ?? undefined
-      sendJson(res, 200, { questions: answered.list(canvasId || undefined) })
+      const canvasId = new URL(req.url ?? '/', 'http://x').searchParams.get('canvasId') || undefined
+      // 会話の質問は Canvas を持たないので、Canvas で絞ったときは出さない
+      const chats = chat && !canvasId ? chat.answeredQuestions(ANSWERED_LIMIT).map((question) => answeredChatQuestion(chat, question)) : []
+      const list = [...answered.list(canvasId), ...chats].sort((a, b) => b.answeredAt - a.answeredAt).slice(0, ANSWERED_LIMIT)
+      sendJson(res, 200, { questions: list })
       return true
     }
     const detail = answered.detail(decodeURIComponent(ANSWERED_PATH.exec(path)![1]!))

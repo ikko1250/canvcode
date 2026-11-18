@@ -971,3 +971,129 @@ test('cuts an answer of the chat into an AI note, sends the chat answer with it,
   await expect(page.locator('.claude-job[data-job-id="j1"]')).toHaveClass(/highlighted/)
   await expect(page.locator('.claude-job[data-job-id="j1"]')).not.toHaveClass(/highlighted/, { timeout: 5000 })
 })
+
+// openApp で置いた付箋を、答えを持つ AI 付箋にする。付箋の id を返す
+async function answerTheNote(page: Page, question: string, body: string) {
+  return page.evaluate(
+    ({ question, body }) => {
+      const editor = (window as any).canvcode.editor
+      const id = editor.index.allIds().find((id: string) => editor.getNode(id)?.type === 'note')
+      editor.transact('answer', (tx: any) => {
+        const node = editor.getNode(id)
+        tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [], answer: { body, related: [], model: 'claude-sonnet-5-5', question, answeredAt: Date.now() } } } })
+      })
+      return id as string
+    },
+    { question, body },
+  )
+}
+
+test('continues a question asked with a note in the chat: the chip waits above the prompt box and goes with the next prompt (claude-chat-tab-plan 6)', async ({ page }) => {
+  await openApp(page)
+  const noteId = await answerTheNote(page, 'コンテキストとは？', '答えの本文')
+  const sent: Record<string, unknown>[] = []
+  await page.route('**/api/claude/jobs', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    sent.push(body)
+    const job = { id: 'j2', threadId: 't1', prompt: body.prompt, imports: body.imports, status: 'done', createdAt: Date.now(), eventCount: 1, events: [{ kind: 'text', text: 'わかりました' }] }
+    await route.fulfill({ status: 201, json: { job } })
+  })
+
+  // 質問のタブで答えを開き、「会話で続ける」→「いまの会話『hello』に入れる」
+  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await answerPanel(page).locator('.question-row-main', { hasText: 'コンテキストとは？' }).click()
+  await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
+  const menu = answerPanel(page).getByRole('menu')
+  await expect(menu.getByRole('menuitem')).toHaveText(['いまの会話『hello』に入れる', '新しい会話にする'])
+  // Esc はメニューだけを閉じる
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await expect(answerPanel(page)).toBeVisible()
+  await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
+  await menu.getByRole('menuitem', { name: 'いまの会話『hello』に入れる' }).click()
+
+  // 会話のタブに移り、入力欄の上に札を置いて、入力欄にフォーカスする（取り込むだけでは送らない）
+  await expect(panel(page)).toBeVisible()
+  await expect(page.locator('.claude-import-chip')).toHaveText(/付箋の質問を取り込みます「コンテキストとは？」/)
+  await expect(promptBox(page)).toBeFocused()
+  await expect(page.locator('.claude-send')).toBeDisabled()
+  expect(sent).toEqual([])
+
+  // 次に送る文と一緒に渡す。頼んだ文（吹き出し）はユーザーが書いた文だけで、その上にカードが出る
+  await page.keyboard.type('もっと詳しく')
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect.poll(() => sent.length).toBe(1)
+  expect(sent[0]).toMatchObject({
+    prompt: 'もっと詳しく',
+    threadId: 't1',
+    imports: [{ label: 'コンテキストとは？', question: 'コンテキストとは？', answer: '答えの本文', noteId, canvasId: 'canvas:input-test' }],
+  })
+  await expect(page.locator('.claude-import-chip')).toHaveCount(0)
+  const card = page.locator('.claude-job[data-job-id="j2"] .claude-import-card')
+  await expect(card).toContainText('付箋の質問を取り込みました「コンテキストとは？」とその答え')
+  await expect(page.locator('.claude-job[data-job-id="j2"] .claude-prompt-text')).toHaveText('もっと詳しく')
+
+  // カードの ↗ で、付箋の横に答えを開く
+  await card.getByRole('button', { name: '↗ 付箋へ' }).click()
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  await expect(page.locator('.answer-popover')).toContainText('答えの本文')
+})
+
+test('asks one question from the prompt box without adding it to the chat, and shows it as a card and in the questions tab (claude-chat-tab-plan 7)', async ({ page }) => {
+  await openApp(page)
+  const id = '00000000-0000-4000-8000-0000000000a1'
+  const asked: Record<string, unknown>[] = []
+  const now = Date.now()
+  const stored = { id, threadId: 't1', question: 'コンテキストとは？', previous: [{ question: 'question', answer: 'Answer from Claude' }], body: '**会話の外**の答え', model: 'claude-sonnet-5-5', effort: 'medium', status: 'done', createdAt: now + 1000, answeredAt: now + 2000 }
+  let answered = false
+  await page.route('**/api/claude/answer', (route) => {
+    asked.push(route.request().postDataJSON() as Record<string, unknown>)
+    answered = true
+    const lines = [{ type: 'start', id }, { type: 'answer', answer: { body: stored.body, related: [], model: stored.model } }]
+    return route.fulfill({ body: lines.map((line) => JSON.stringify(line)).join('\n') + '\n', contentType: 'application/x-ndjson' })
+  })
+  await page.route('**/api/claude/threads/t1', (route) =>
+    route.fulfill({ json: { jobs: [{ id: 'j1', threadId: 't1', prompt: 'question', status: 'done', createdAt: now, eventCount: 1, events: [{ kind: 'text', text: 'Answer from Claude' }] }], questions: answered ? [stored] : [] } }),
+  )
+  await page.route(`**/api/claude/questions/chat/${id}`, (route) => route.fulfill({ json: { kind: 'chat', threadTitle: 'hello', ...stored } }))
+  await page.route('**/api/claude/questions?*', (route) => route.fulfill({ json: { questions: [] } }))
+  await page.route('**/api/claude/questions', (route) =>
+    route.fulfill({ json: { questions: answered ? [{ kind: 'chat', id, threadId: 't1', threadTitle: 'hello', question: 'コンテキストとは？', model: stored.model, effort: 'medium', answeredAt: stored.answeredAt }] : [] } }),
+  )
+
+  // 「質問」にすると、入力欄の言い方が変わる
+  const mode = page.getByRole('radiogroup', { name: '送り方' })
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  await mode.getByRole('radio', { name: '質問' }).click()
+  await expect(promptBox(page)).toHaveAttribute('placeholder', 'この 1 つだけ、会話に入れずに聞く…')
+  await promptBox(page).fill('コンテキストとは？')
+  await page.getByRole('button', { name: '送る' }).click()
+
+  // 付箋で聞くのと同じ API に、会話の最後の答えを前の答えとして添えて頼む。送ったら「会話」に戻す
+  await expect.poll(() => asked.length).toBe(1)
+  expect(asked[0]).toMatchObject({ question: 'コンテキストとは？', previous: [{ question: 'question', answer: 'Answer from Claude' }], source: { kind: 'chat', threadId: 't1', label: 'コンテキストとは？' } })
+  expect(asked[0]).not.toHaveProperty('candidates')
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  await expect(promptBox(page)).toHaveValue('')
+
+  // 会話の欄に、点線のカードが出る（会話のジョブは増えない）
+  const card = page.locator(`.claude-side-question[data-question-id="${id}"]`)
+  await expect(card).toContainText('別枠の質問（会話には入れていない）')
+  await expect(card).toContainText('「コンテキストとは？」')
+  await expect(page.locator('.claude-prompt')).toHaveCount(1)
+
+  // 「答えを見る →」で質問のタブを開き、その答えを出す
+  await card.getByRole('button', { name: '答えを見る →' }).click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(answerPanel(page).locator('.question-detail-title')).toHaveText('「コンテキストとは？」')
+  await expect(answerPanel(page).locator('.question-detail-meta')).toContainText('会話『hello』')
+  await expect(answerPanel(page).locator('.answer-view-body strong')).toHaveText('会話の外')
+  // 一覧にも、会話の質問として出る
+  await answerPanel(page).getByRole('button', { name: '← 一覧' }).click()
+  await expect(answerPanel(page).locator('.question-row.chat')).toContainText('会話『hello』')
+  await answerPanel(page).locator('.question-row.chat .question-row-main').click()
+  // 「↗ 会話へ移動」で、会話のタブのそのカードへ戻る
+  await answerPanel(page).getByRole('button', { name: '↗ 会話へ移動' }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(card).toHaveClass(/highlighted/)
+})

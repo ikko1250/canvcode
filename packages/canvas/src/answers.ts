@@ -53,11 +53,12 @@ export interface AiAnswer {
 
 // AI 付箋に添えるもの。answer は前の答え（続き。turns は「続けて聞く」を押したときの写し）、
 // canvas は選んだ所（送るときに ref にする。ref は 3 日で消えるので、範囲を持っておく）、
-// chat は会話の答え（会話のタブの「付箋に切り出す」。turns は、切り出したときの頼んだ文と答えの写し。docs/claude-chat-tab-plan.md の 5）
+// chat は会話の答え（会話のタブの「付箋に切り出す」。turns は、切り出したときの頼んだ文と答えの写し。docs/claude-chat-tab-plan.md の 5）。
+// 会話の質問（会話に入れずに聞いたもの）の「続けて聞く」も chat にする（jobId の代わりに questionId。会話の外で聞いたものは threadId もない）
 export type AiContext =
   | { kind: 'answer'; noteId: string; canvasId: string; label: string; turns: PreviousTurn[] }
   | { kind: 'canvas'; label: string; target: CanvasRefTarget }
-  | { kind: 'chat'; threadId: string; jobId: string; label: string; turns: PreviousTurn[] }
+  | { kind: 'chat'; threadId?: string; jobId?: string; questionId?: string; label: string; turns: PreviousTurn[] }
 
 export interface AiNoteMeta {
   contexts: AiContext[]
@@ -165,15 +166,26 @@ export function previousTurnsOf(meta: AiNoteMeta | null): PreviousTurn[] {
   return chat.length > 0 && answer.length > 0 ? fitTurns([...chat, ...answer]) : chat.length > 0 ? chat : answer
 }
 
-// 会話の答えの札（会話のタブの「付箋に切り出す」）。title は会話の題、question と answer は頼んだ文と答え（Markdown）。
-// 名前は「会話『題』の答え」、写しは FOLLOW_UP_LENGTH に収める
-export function chatContext(chat: { threadId: string; jobId: string; title: string; question: string; answer: string }): Extract<AiContext, { kind: 'chat' }> {
+// 会話の答えの札（会話のタブの「付箋に切り出す」・会話の質問の「続けて聞く」）。title は会話の題、question と answer は頼んだ文と答え（Markdown）、
+// previous はその前の質問と答え（会話の質問に添えた前の答え）。名前は「会話『題』の答え」（会話がなければ「『質問』の答え」）、
+// 写しは FOLLOW_UP_TURNS 個・FOLLOW_UP_LENGTH 文字に収める
+export function chatContext(chat: {
+  threadId?: string
+  jobId?: string
+  questionId?: string
+  title?: string
+  question: string
+  answer: string
+  previous?: readonly PreviousTurn[]
+}): Extract<AiContext, { kind: 'chat' }> {
+  const title = chat.title?.replace(/\s+/g, ' ').trim()
   return {
     kind: 'chat',
-    threadId: chat.threadId,
-    jobId: chat.jobId,
-    label: `会話『${clip(chat.title.replace(/\s+/g, ' ').trim(), CHAT_TITLE_LENGTH)}』の答え`,
-    turns: fitTurns([{ question: chat.question, answer: chat.answer }]),
+    ...(chat.threadId ? { threadId: chat.threadId } : {}),
+    ...(chat.jobId ? { jobId: chat.jobId } : {}),
+    ...(chat.questionId ? { questionId: chat.questionId } : {}),
+    label: title ? `会話『${clip(title, CHAT_TITLE_LENGTH)}』の答え` : `「${firstLine(chat.question, CONTEXT_LABEL_LENGTH)}」の答え`,
+    turns: fitTurns([...(chat.previous ?? []), { question: chat.question, answer: chat.answer }]),
   }
 }
 
@@ -338,8 +350,9 @@ function contextOf(value: unknown): AiContext[] {
     const turns = turnsOf(context.turns)
     return [{ kind: 'answer', noteId: context.noteId, canvasId: context.canvasId, label, turns }]
   }
-  if (context.kind === 'chat' && typeof context.threadId === 'string' && typeof context.jobId === 'string') {
-    return [{ kind: 'chat', threadId: context.threadId, jobId: context.jobId, label, turns: turnsOf(context.turns) }]
+  if (context.kind === 'chat') {
+    const id = (key: string) => (typeof context[key] === 'string' ? { [key]: context[key] as string } : {})
+    return [{ kind: 'chat', ...id('threadId'), ...id('jobId'), ...id('questionId'), label, turns: turnsOf(context.turns) }]
   }
   return []
 }

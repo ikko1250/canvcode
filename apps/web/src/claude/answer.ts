@@ -15,8 +15,8 @@ export interface AnswerRequest {
   refs?: { label: string; refId: string }[]
   // 関連する付箋の候補（質問の付箋の近くの付箋）
   candidates?: { id: string; text: string }[]
-  // どの付箋の質問か（label は質問の 1 行目）
-  source?: { noteId: string; canvasId: string; label: string }
+  // どの付箋の質問か・どの会話の質問か（label は質問の 1 行目。会話の質問は、会話を選んでいなければ threadId がない）
+  source?: { noteId: string; canvasId: string; label: string } | { kind: 'chat'; threadId?: string; label: string }
 }
 
 export interface AnswerResult {

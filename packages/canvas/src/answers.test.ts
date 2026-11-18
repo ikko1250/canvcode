@@ -192,11 +192,23 @@ describe('follow-up contexts', () => {
     expect(long.turns[0]!.question.length + long.turns[0]!.answer.length).toBeLessThanOrEqual(FOLLOW_UP_LENGTH)
     // 付箋の meta から読み、送るときの前の答えにする
     const meta = aiNoteMeta(note(new Editor(), 'コンテキストとは？', { x: 0, y: 0 }, { meta: { ai: { contexts: [context, { kind: 'chat', threadId: 1 }] } } }))
-    expect(meta!.contexts).toEqual([context])
+    // 形の合わない id は落とす（写しがあれば、札としては読む）
+    expect(meta!.contexts).toEqual([context, { kind: 'chat', label: '', turns: [] }])
     expect(previousTurnsOf(meta)).toEqual(context.turns)
     // その付箋で「続けて聞く」と、会話の答えの写しを引き継ぐ
     const asked = { ...meta!, answer: answer('答え', 'コンテキストとは？') }
     expect(followUpContext('node:me', 'canvas:me', asked)!.turns).toEqual([...context.turns, { question: 'コンテキストとは？', answer: '答え' }])
+  })
+
+  it('makes a chat context for a question asked from the chat, with its earlier answer, even outside a thread', () => {
+    const previous = [{ question: '前の依頼', answer: '前の答え' }]
+    expect(chatContext({ questionId: 'q1', question: '**コンテキスト**とは？', answer: '答え', previous })).toEqual({
+      kind: 'chat',
+      questionId: 'q1',
+      label: '「コンテキストとは？」の答え',
+      turns: [...previous, { question: '**コンテキスト**とは？', answer: '答え' }],
+    })
+    expect(chatContext({ threadId: 't1', questionId: 'q1', title: '題', question: 'Q', answer: 'A' }).label).toBe('会話『題』の答え')
   })
 
   it('names the context by the first line of the question, without formatting', () => {

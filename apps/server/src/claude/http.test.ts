@@ -107,7 +107,7 @@ describe('/api/claude', () => {
   it('streams the running questions of the sticky notes: all of them in the snapshot (with the thinking), then their changes', async () => {
     const questions = new RunningQuestions()
     const base = await setup(makeJobs(), questions)
-    const first = questions.start({ noteId: 'node:a', canvasId: 'canvas:c', label: 'コンテキストとは？' }, { model: 'opus', effort: 'high' }, () => {})
+    const first = questions.start({ kind: 'note', noteId: 'node:a', canvasId: 'canvas:c', label: 'コンテキストとは？' }, { model: 'opus', effort: 'high' }, () => {})
     questions.thinking(first, 'まず')
     // つないで（SSE が質問の変化を受け始めて）から変える（snapshot が先に届く）
     const subscribe = questions.subscribe.bind(questions)
@@ -251,5 +251,30 @@ describe('parseStart', () => {
     expect(() => parseStart({ prompt: 'x', model: 'opus; rm -rf /' })).toThrow(/invalid model/)
     expect(() => parseStart({ prompt: 'x', model: '--model' })).toThrow(/invalid model/)
     expect(() => parseStart({ prompt: 'x', effort: 'extreme' })).toThrow(/invalid effort/)
+  })
+
+  it('takes the name of the attached place only with a ref, as one line cut to 40 characters (claude-chat-tab-plan 8)', () => {
+    expect(parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', refLabel: ' 授業_2026秋\n の範囲 ' })).toEqual({ prompt: 'x', refId: 'ref:Ab12Cd34Ef', refLabel: '授業_2026秋 の範囲' })
+    expect(parseStart({ prompt: 'x', refLabel: '名前だけ' })).toEqual({ prompt: 'x' })
+    expect(parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', refLabel: 'あ'.repeat(50) }).refLabel).toBe(`${'あ'.repeat(39)}…`)
+    expect(() => parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', refLabel: 1 })).toThrow(/refLabel/)
+  })
+
+  it('takes one imported question and answer, and refuses more, malformed ones or too long ones (claude-chat-tab-plan 6)', () => {
+    const item = { label: ' コンテキスト\nとは？ ', question: ' コンテキストとは？ ', answer: ' 答え ', noteId: 'node:n1', canvasId: 'canvas:c1' }
+    expect(parseStart({ prompt: 'x', imports: [item] })).toEqual({
+      prompt: 'x',
+      imports: [{ label: 'コンテキスト とは？', question: 'コンテキストとは？', answer: '答え', noteId: 'node:n1', canvasId: 'canvas:c1' }],
+    })
+    const chat = { label: 'q', question: 'q', answer: 'a', questionId: '00000000-0000-4000-8000-000000000001' }
+    expect(parseStart({ prompt: 'x', imports: [chat] }).imports).toEqual([chat])
+    expect(parseStart({ prompt: 'x', imports: [] })).toEqual({ prompt: 'x' })
+    expect(() => parseStart({ prompt: 'x', imports: [item, item] })).toThrow(/imports/)
+    expect(() => parseStart({ prompt: 'x', imports: [{ ...item, answer: '' }] })).toThrow(/imports/)
+    expect(() => parseStart({ prompt: 'x', imports: [{ ...item, noteId: 'canvas:x' }] })).toThrow(/imports/)
+    expect(() => parseStart({ prompt: 'x', imports: [{ ...item, questionId: '../x' }] })).toThrow(/imports/)
+    // 答えは付箋の答えの上限（12000 文字）まで。頼んだ文の上限とは別に数える
+    expect(parseStart({ prompt: 'x', imports: [{ ...item, answer: 'あ'.repeat(12_000) }] }).imports![0]!.answer).toHaveLength(12_000)
+    expect(() => parseStart({ prompt: 'x', imports: [{ ...item, answer: 'あ'.repeat(12_001) }] })).toThrow(/長すぎます/)
   })
 })

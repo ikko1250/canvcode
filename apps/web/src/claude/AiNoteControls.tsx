@@ -34,8 +34,8 @@ export function AiNoteControls(props: {
   onSend(noteId: string): void
   // 前の答えの札の ↗：元の付箋へ移る
   onOpenContext(canvasId: string, noteId: string): void
-  // 会話の答えの札の ↗：会話のそのジョブへ戻る（Claude を使えないときは渡さない）
-  onOpenChat?(threadId: string, jobId: string): void
+  // 会話の答えの札の ↗：会話のそのジョブ（会話の質問なら、そのカード）へ戻る（Claude を使えないときは渡さない）
+  onOpenChat?(target: { threadId: string; jobId?: string; questionId?: string }): void
   canvasTitle(canvasId: string): string
   notify(message: string): void
 }) {
@@ -121,8 +121,14 @@ export function AiNoteControls(props: {
             {chat?.kind === 'chat' && (
               <div className="ai-note-chip chat" title="会話の答えを踏まえて答えます（会話には何も足しません）">
                 <span className="ai-note-chip-label">💬 {chat.label}</span>
-                {onOpenChat && (
-                  <button type="button" onClick={() => onOpenChat(chat.threadId, chat.jobId)} title="会話のこの答えへ戻る">
+                {onOpenChat && chat.threadId && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenChat({ threadId: chat.threadId!, ...(chat.jobId ? { jobId: chat.jobId } : {}), ...(chat.questionId ? { questionId: chat.questionId } : {}) })
+                    }
+                    title="会話のこの答えへ戻る"
+                  >
                     ↗ 会話へ
                   </button>
                 )}
@@ -304,7 +310,7 @@ function selectionContext(editor: Editor, view: CanvasView, noteId: string): AiC
 
 function sameContext(a: AiContext, b: AiContext): boolean {
   if (a.kind === 'answer' && b.kind === 'answer') return a.noteId === b.noteId
-  if (a.kind === 'chat' && b.kind === 'chat') return a.jobId === b.jobId
+  if (a.kind === 'chat' && b.kind === 'chat') return a.jobId === b.jobId && a.questionId === b.questionId
   if (a.kind !== 'canvas' || b.kind !== 'canvas') return false
   const ids = (context: typeof a) => context.target.nodes.map((node) => node.id).sort().join(',')
   return ids(a) === ids(b) && JSON.stringify(a.target.rect) === JSON.stringify(b.target.rect)

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { firstLine } from '@canvcode/canvas'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
-import type { ClaudeJob, JobEvent, ModelCatalog, PermissionAnswer } from './claudeClient.ts'
+import type { ChatQuestion, ClaudeJob, ImportedQuestion, JobEvent, ModelCatalog, PermissionAnswer } from './claudeClient.ts'
 import { settingLabel, settingOf } from './modelChoice.ts'
-import { answerOfEvents, groupEvents, groupLabel, runningText, shortToolName, type ToolGroup } from './toolGroups.ts'
+import { answerOfEvents, groupEvents, groupLabel, runningText, toolLabel, type ToolGroup } from './toolGroups.ts'
 
 // 会話の欄（docs/claude-chat-tab-plan.md の 2）。ジョブごとに、頼んだ文の吹き出しと、Claude の答え。
 // - 頼んだ文は右寄せの吹き出し。添えた所は「📍 名前」の札（前のジョブで名前がなければ ref の id）。
@@ -12,7 +13,9 @@ import { answerOfEvents, groupEvents, groupLabel, runningText, shortToolName, ty
 // - 動いている間は、最後のツールから「キャンバスを編集しています…」のように出し、横に「止める」
 // - 答え（そのジョブの文章をつないだもの）にマウスを乗せると、下に「📌 付箋に切り出す」「コピー」と、右にモデルの札
 //   （かかった時間と費用はツールチップ）。タッチの端末では、初めから出す。失敗・止めたときは 1 行で出す
-// - before は、ジョブの頼んだ文の上に入れるもの（付箋から取り込んだ質問のカード）。between は、ジョブの間に入れるもの（別枠の質問のカード）
+// - 付箋から取り込んだ質問（imports）は、そのジョブの頼んだ文の上に「付箋の質問を取り込みました『質問』とその答え ↗ 付箋へ」のカード
+// - 会話の質問（会話に入れずに聞いたもの）は、聞いた時刻の位置に点線のカード「別枠の質問（会話には入れていない）『質問』 答えを見る →」
+//   （答えを作っている間は「答えを作っています…」と「止める」）
 
 export interface ChatLogProps {
   jobs: readonly ClaudeJob[]
@@ -20,33 +23,104 @@ export interface ChatLogProps {
   // 画面で許可を待っているジョブと、待っている問い合わせの id
   askingJobs: ReadonlySet<string>
   pendingIds: ReadonlySet<string>
-  // 少しのあいだ色を付けるジョブ（会話の札の ↗ で戻ったとき）
-  highlight: string | null
   onCancel(job: ClaudeJob): void
   // 付箋に切り出す（全画面のエディタでは渡さない）
   onCutToNote?(job: ClaudeJob, answer: string): void
-  // ジョブの頼んだ文の上に入れるもの
-  before?(job: ClaudeJob): ReactNode
+  // 会話の質問（聞いた順）と、そのカードの操作
+  questions?: readonly ChatQuestion[]
+  onStopQuestion?(id: string): void
+  // 「答えを見る →」：質問のタブで開く（全画面のエディタでは渡さない）
+  onOpenQuestion?(id: string): void
+  // 取り込んだ質問のカードの ↗（全画面のエディタでは渡さない）
+  onOpenImport?(item: ImportedQuestion): void
 }
 
 export function ChatLog(props: ChatLogProps) {
-  const { jobs, catalog, askingJobs, pendingIds, highlight, onCancel, onCutToNote, before } = props
+  const { jobs, catalog, askingJobs, pendingIds, onCancel, onCutToNote, questions = [], onStopQuestion, onOpenQuestion, onOpenImport } = props
+  // ジョブと会話の質問を、時刻の順に並べる（同じ時刻ならジョブを先に）
+  const items = useMemo(
+    () =>
+      [...jobs.map((job) => ({ at: job.createdAt, job })), ...questions.map((question) => ({ at: question.createdAt, question }))].sort(
+        (a, b) => a.at - b.at || ('job' in a ? -1 : 1) - ('job' in b ? -1 : 1),
+      ),
+    [jobs, questions],
+  )
   return (
     <>
-      {jobs.map((job) => (
-        <JobView
-          key={job.id}
-          job={job}
-          catalog={catalog}
-          asking={askingJobs.has(job.id)}
-          pendingIds={pendingIds}
-          highlighted={highlight === job.id}
-          onCancel={() => onCancel(job)}
-          {...(onCutToNote ? { onCutToNote: (answer: string) => onCutToNote(job, answer) } : {})}
-          before={before?.(job)}
-        />
-      ))}
+      {items.map((item) =>
+        'job' in item ? (
+          <JobView
+            key={item.job.id}
+            job={item.job}
+            catalog={catalog}
+            asking={askingJobs.has(item.job.id)}
+            pendingIds={pendingIds}
+            onCancel={() => onCancel(item.job)}
+            {...(onCutToNote ? { onCutToNote: (answer: string) => onCutToNote(item.job, answer) } : {})}
+            {...(onOpenImport ? { onOpenImport } : {})}
+          />
+        ) : (
+          <SideQuestionCard
+            key={item.question.id}
+            question={item.question}
+            {...(onStopQuestion ? { onStop: () => onStopQuestion(item.question.id) } : {})}
+            {...(onOpenQuestion ? { onOpen: () => onOpenQuestion(item.question.id) } : {})}
+          />
+        ),
+      )}
     </>
+  )
+}
+
+// 別枠の質問（会話には入れていない）のカード
+function SideQuestionCard(props: { question: ChatQuestion; onStop?(): void; onOpen?(): void }) {
+  const { question, onStop, onOpen } = props
+  return (
+    <div className={`claude-side-question ${question.status}`} data-question-id={question.id}>
+      <div className="claude-side-question-head">別枠の質問（会話には入れていない）</div>
+      <div className="claude-side-question-text">「{firstLine(question.question, 60)}」</div>
+      <div className="claude-side-question-foot">
+        {question.status === 'running' ? (
+          <>
+            <span className="claude-spinner" aria-hidden="true" />
+            <span>答えを作っています…</span>
+            {onStop && (
+              <button type="button" className="claude-link" onClick={onStop}>
+                止める
+              </button>
+            )}
+          </>
+        ) : question.status === 'done' ? (
+          onOpen && (
+            <button type="button" className="claude-link" onClick={onOpen} title="質問のタブで、この答えを見る">
+              答えを見る →
+            </button>
+          )
+        ) : (
+          <span className={`claude-side-question-end ${question.status}`}>
+            {question.status === 'cancelled' ? 'やめました' : `答えられませんでした${question.error ? `：${question.error}` : ''}`}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// 取り込んだ付箋の質問（会話の質問）のカード
+function ImportCard(props: { item: ImportedQuestion; onOpen?(): void }) {
+  const { item, onOpen } = props
+  const chat = !!item.questionId
+  return (
+    <div className="claude-import-card">
+      <span className="claude-import-card-text">
+        {chat ? '別枠の質問を取り込みました' : '付箋の質問を取り込みました'}「{item.label}」とその答え
+      </span>
+      {onOpen && (
+        <button type="button" className="claude-link" onClick={onOpen} title={chat ? '質問のタブで、この答えを見る' : 'その Canvas に移って、付箋の横に答えを開く'}>
+          ↗ {chat ? '質問へ' : '付箋へ'}
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -55,12 +129,11 @@ function JobView(props: {
   catalog: ModelCatalog | undefined
   asking: boolean
   pendingIds: ReadonlySet<string>
-  highlighted: boolean
   onCancel(): void
   onCutToNote?(answer: string): void
-  before?: ReactNode
+  onOpenImport?(item: ImportedQuestion): void
 }) {
-  const { job, catalog, asking, pendingIds, highlighted, onCancel, onCutToNote, before } = props
+  const { job, catalog, asking, pendingIds, onCancel, onCutToNote, onOpenImport } = props
   const running = job.status === 'running'
   const items = useMemo(() => groupEvents(job.events, running), [job.events, running])
   const answer = useMemo(() => answerOfEvents(job.events), [job.events])
@@ -69,8 +142,8 @@ function JobView(props: {
   // 答えのないまま、ジョブもプロセスも終わった（サーバーが落ちたなど）
   const lost = (event: JobEvent) => event.kind === 'ask' && !running && !answered.has(event.id) && !pendingIds.has(event.id)
   return (
-    <div className={`claude-job${highlighted ? ' highlighted' : ''}`} data-job-id={job.id}>
-      {before}
+    <div className="claude-job" data-job-id={job.id}>
+      {job.imports?.map((item, i) => <ImportCard key={i} item={item} {...(onOpenImport ? { onOpen: () => onOpenImport(item) } : {})} />)}
       {job.origin === 'background' ? (
         <div className="claude-wake">{job.prompt}。Claude が続けました</div>
       ) : (
@@ -199,7 +272,7 @@ function AnswerActions(props: { job: ClaudeJob; answer: string; catalog: ModelCa
 }
 
 // かかった時間と費用（「3.2 秒・$0.05」）
-export function costText(job: Pick<ClaudeJob, 'durationMs' | 'costUsd'>): string {
+function costText(job: Pick<ClaudeJob, 'durationMs' | 'costUsd'>): string {
   const parts: string[] = []
   if (job.durationMs !== undefined) parts.push(`${(job.durationMs / 1000).toFixed(1)} 秒`)
   if (job.costUsd !== undefined && job.costUsd > 0) parts.push(`$${job.costUsd.toFixed(2)}`)
@@ -236,35 +309,6 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  Read: 'ファイルを読む',
-  Write: 'ファイルを書く',
-  Edit: 'ファイルを直す',
-  Glob: 'ファイルを探す',
-  Grep: '中身を探す',
-  WebSearch: 'Web を検索',
-  WebFetch: 'Web のページを読む',
-  Agent: 'サブエージェントに任せる',
-  Skill: 'スキルを使う',
-  list_documents: '文書の一覧',
-  read_document: '文書を読む',
-  create_document: '文書を作る',
-  update_document: '文書を書き換える',
-  edit_document: '文書を直す',
-  resolve_reference: '選んだ場所を読む',
-  get_canvas_format: 'Canvas の書き方を読む',
-  list_canvases: 'Canvas の一覧',
-  read_canvas: 'Canvas を読む',
-  read_nodes: 'ノードを読む',
-  edit_canvas: 'Canvas を編集',
-  undo_canvas_edit: '編集を取り消す',
-}
-
-export function toolLabel(name: string): string {
-  const short = shortToolName(name)
-  return TOOL_LABELS[short] ?? short
-}
-
 const TASK_TEXT = { started: 'バックグラウンドで始めました', completed: '終わりました', failed: '失敗しました', stopped: '止めました' }
 
 const ANSWER_TEXT: Record<PermissionAnswer, string> = {
@@ -274,7 +318,7 @@ const ANSWER_TEXT: Record<PermissionAnswer, string> = {
   cancelled: '止めたので取り消しました',
 }
 
-export function truncate(text: string, max: number): string {
+function truncate(text: string, max: number): string {
   const line = text.replace(/\s+/g, ' ')
   return line.length > max ? `${line.slice(0, max)}…` : line
 }
