@@ -11,7 +11,9 @@ import { useNodesVersion } from './useNodesVersion.ts'
 //   POPOVER_MAX_HEIGHT まで。本文は中でスクロール）。キャンバスの端からはみ出さない
 // - 上に「回答」とモデルの札。その下は AnswerView（本文・関連する付箋・「続けて聞く」「Canvasに残す」。答えを作っている間は進み具合）
 // - 閉じる：同じ三角をもう一度押す（App）・Esc・パネルの外のキャンバスを押す（左ボタン。付箋の下の欄の上は除く）・付箋が消えた
-// - 開いたらパネルにフォーカスする。フォーカスがある間は、付箋の下の欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない
+// - 開いたらパネルにフォーカスする。フォーカスがある間は、付箋の下の欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない。
+//   フォーカスがその欄へ移ったときは、フォーカスがあるままとする（欄のボタンを押すとフォーカスが移るので、そこで欄を消すと押せない）。
+//   欄からほかへ移ったら、欄のほうが知らせる（AiNoteControls の onFocusLeave）
 
 export const POPOVER_WIDTH = 360
 export const POPOVER_MAX_HEIGHT = 480
@@ -118,7 +120,9 @@ export function AnswerPopover(props: {
       onPointerDown={(e) => e.stopPropagation()}
       onFocus={() => onFocusChange(true)}
       onBlur={(e) => {
-        if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) onFocusChange(false)
+        const next = e.relatedTarget
+        if (next instanceof Element && (e.currentTarget.contains(next) || next.closest('.ai-note-controls'))) return
+        onFocusChange(false)
       }}
       {...{ [OWN_KEYS_ATTRIBUTE]: '' }}
     >

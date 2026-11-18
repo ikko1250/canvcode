@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, type RefObject } from 'react'
 import {
+  MAX_AI_PLACES,
   aiNoteMeta,
   answerCandidates,
   firstLine,
@@ -122,6 +123,8 @@ export function useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvas
       const setting: ModelSetting = { ...loadSetting(), ...(meta?.model ? { model: meta.model } : {}), ...(meta?.effort ? { effort: meta.effort as Effort } : {}) }
       const previous = previousTurnsOf(meta)
       const places = meta?.contexts.flatMap((context) => (context.kind === 'canvas' ? [context] : [])) ?? []
+      // 欄では MAX_AI_PLACES か所までしか添えられないが、前から添えてあったものは多いことがある（送るとサーバーが 400 で断る）
+      if (places.length > MAX_AI_PLACES) return notify(`添えた所が多すぎます（${MAX_AI_PLACES} か所まで）。付箋の下の欄の添えた数を押し、× で外してください`)
       const candidates = answerCandidates(editor, asked.questionIds)
       const job: AnsweringJob = {
         key: Date.now() + Math.random(),

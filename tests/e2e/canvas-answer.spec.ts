@@ -327,6 +327,28 @@ test('「続けて聞く」で、元の付箋の下に札付きの AI 付箋を�
   await expect.poll(() => selection(page)).toEqual([noteId])
 })
 
+test('編集の途中（トランザクションが開いている）なら、「続けて聞く」は断り、パネルを閉じない', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
+  const before = await nodeTypes(page)
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  // ドラッグの途中や、文字の編集をよそへ預けているときのように、トランザクションを開いておく
+  await page.evaluate(() => ((window as any).openTx = (window as any).canvcode.editor.begin('ドラッグ')))
+  await page.locator('.answer-view-continue').click()
+  await expect(page.getByText('編集を終えてから押してください')).toBeVisible()
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  expect(await nodeTypes(page)).toEqual(before)
+  expect(errors).toEqual([])
+  // 編集を終えたら押せる
+  await page.evaluate(() => (window as any).openTx.cancel())
+  await page.locator('.answer-view-continue').click()
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  expect(errors).toEqual([])
+})
+
 test('付箋の下の欄は、AI 付箋を選んでいるときだけ出す。アイコンを押して、ほかのノードをクリックすると添える', async ({ page }) => {
   const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
   const otherId = await addNote(page, '添える付箋', { x: 700, y: 300 })
@@ -353,6 +375,82 @@ test('付箋の下の欄は、AI 付箋を選んでいるときだけ出す。�
   // 何もない所をクリックすると、欄は消える
   await page.mouse.click(note.x - 150, note.y + 350)
   await expect(page.locator('.ai-note-controls')).toHaveCount(0)
+})
+
+test('角の三角で開いたとき（付箋は選ばない）も、付箋の下の欄のボタンを押せる。欄からほかへフォーカスが移ったら欄を消す', async ({ page }) => {
+  const sent: any[] = []
+  const noteId = await openApp(page, async (route) => {
+    sent.push(route.request().postDataJSON())
+    await route.fulfill({ json: { ...ANSWER, body: '二度目の答え' } })
+  })
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
+  const corner = await cornerOf(page, noteId)
+  const popover = page.locator('.answer-popover')
+  const controls = page.locator('.ai-note-controls')
+  await page.mouse.click(corner.x, corner.y)
+  await expect(popover).toBeFocused()
+  expect(await selection(page)).toEqual([])
+  // モデルの札：押すとフォーカスが欄へ移るが、欄は消えずに、モデルを選ぶ欄が開く。Esc で閉じる
+  await controls.locator('.claude-model-button').click()
+  await expect(controls.locator('.claude-model-popover')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(controls.locator('.claude-model-popover')).toHaveCount(0)
+  await expect(popover).toBeVisible()
+  // 欄からパネルへ戻っても、欄は出たまま
+  await popover.locator('.answer-popover-head').click()
+  await expect(popover).toBeFocused()
+  await expect(controls).toBeVisible()
+  // 欄からほか（キャンバス）へフォーカスが移ったら、欄を消す（パネルは開いたまま）
+  await controls.locator('.claude-model-button').focus()
+  await page.locator('.canvas-container > div[tabindex]').focus()
+  await expect(controls).toHaveCount(0)
+  await expect(popover).toBeVisible()
+
+  // 送信：もう一度聞いて、答えを書き直す
+  await popover.focus()
+  await controls.locator('.ai-note-send').click()
+  await expect.poll(() => answerOf(page, noteId)).toMatchObject({ body: '二度目の答え' })
+  expect(sent).toHaveLength(1)
+
+  // 添える所を選ぶ：押すと選ぶ状態になる
+  await page.mouse.click(corner.x - 400, corner.y + 200)
+  await expect(popover).toHaveCount(0)
+  await again(page)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(popover).toBeFocused()
+  await controls.locator('.ai-note-attach').click()
+  await expect(controls.locator('.ai-note-picking')).toBeVisible()
+})
+
+test('付箋に添えられる所は 5 か所まで。それより多く添えてある付箋は、送らずにわけを出す', async ({ page }) => {
+  const sent: any[] = []
+  const noteId = await openApp(page, async (route) => {
+    sent.push(route.request().postDataJSON())
+    await route.fulfill({ json: ANSWER })
+  })
+  const place = (i: number) => ({ kind: 'canvas', label: `範囲 ${i}`, target: { kind: 'canvas', canvasId: 'canvas:input-test', rect: { x: i * 10, y: 0, w: 5, h: 5 }, nodes: [] } })
+  const giveContexts = (count: number) =>
+    page.evaluate(
+      ({ id, contexts }) => {
+        const editor = (window as any).canvcode.editor
+        const node = editor.getNode(id)
+        editor.transact('ai', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts } } }))
+      },
+      { id: noteId, contexts: Array.from({ length: count }, (_, i) => place(i)) },
+    )
+  // 5 か所添えてあれば、もう添えられない（選ぶ状態にしない）
+  await giveContexts(5)
+  const note = await centerOf(page, noteId)
+  await page.mouse.click(note.x, note.y)
+  await expect(page.locator('.ai-note-attach-count')).toHaveText('5')
+  await page.locator('.ai-note-attach').click()
+  await expect(page.getByText('添えられる所は 5 か所までです')).toBeVisible()
+  await expect(page.locator('.ai-note-picking')).toHaveCount(0)
+  // 前から 6 か所添えてあった付箋は、送らずにわけを出す
+  await giveContexts(6)
+  await page.locator('.ai-note-send').click()
+  await expect(page.getByText('添えた所が多すぎます（5 か所まで）')).toBeVisible()
+  expect(sent).toEqual([])
 })
 
 test('答えを作っている間は、三角のパネルに進み具合と「やめる」を出し、やめられる', async ({ page }) => {

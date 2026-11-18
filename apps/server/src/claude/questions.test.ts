@@ -301,6 +301,28 @@ describe('the answer stream and the running questions', () => {
     expect(store.question(id)).toMatchObject({ status: 'cancelled' })
   })
 
+  it('a question from the chat leaves the running list even when claude.db cannot take its answer or its failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-chat-questions-'))
+    const store = new ClaudeStore(dir)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    cleanups.push(() => {
+      errors.mockRestore()
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    })
+    // 書き始めは書けるが、終わりは書けない（claude.db がふさがっている）
+    vi.spyOn(store, 'finishQuestion').mockImplementation(() => {
+      throw new Error('database is locked')
+    })
+    const questions = new RunningQuestions()
+    const changes = watch(questions)
+    const base = await start(questions, gated(Promise.resolve()), store)
+    const response = ask(base, { question: 'q', source: { kind: 'chat', label: 'q' } })
+    expect((await lines(await response)).at(-1)).toMatchObject({ type: 'error', status: 500, error: 'database is locked' })
+    expect(questions.list()).toEqual([])
+    expect(changes.at(-1)).toMatchObject({ type: 'question-done', status: 'failed', error: 'database is locked' })
+  })
+
   it('stops the questions asked from a thread when the thread is deleted, leaving the others', async () => {
     const questions = new RunningQuestions()
     const aborts: string[] = []

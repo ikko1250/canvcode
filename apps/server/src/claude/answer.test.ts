@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { MAX_AI_PLACES } from '@canvcode/canvas'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   ANSWER_MAX_TURNS_WITH_WEB,
@@ -293,6 +294,8 @@ describe('parseAnswerRequest', () => {
     expect(status({ question: 'q', previous: [{ question: 'q', title: 't', paragraphs: ['p'] }] })).toBe(400)
     expect(status({ question: 'q', refs: [{ label: 'x', refId: 'nope' }] })).toBe(400)
     expect(status({ question: 'q', refs: Array.from({ length: MAX_REFS + 1 }, () => ({ refId: 'ref:AAAAAAAAAA' })) })).toBe(400)
+    // 画面が付箋に添えさせる所の数（MAX_AI_PLACES）は、すべて受け付ける
+    expect(MAX_AI_PLACES).toBe(MAX_REFS)
     expect(status({ question: 'q', candidates: [{ id: 'canvas:x', text: 't' }] })).toBe(400)
     expect(status({ question: 'q', candidates: [{ id: 'node:x', text: 1 }] })).toBe(400)
     expect(status({ question: 'q', candidates: Array.from({ length: MAX_CANDIDATES + 1 }, (_, i) => ({ id: `node:n${i}`, text: 't' })) })).toBe(400)

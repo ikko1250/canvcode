@@ -535,8 +535,15 @@ async function stream(
     const status = error instanceof JobError ? error.status : 500
     const message = error instanceof Error ? error.message : String(error)
     send({ type: 'error', status, error: message })
-    // 499 は、やめた（頼んだ画面が切った・ほかのタブで止めた）
-    if (row) chat!.finishQuestion(row, { status: status === 499 ? 'cancelled' : 'failed', ...(status === 499 ? {} : { error: message }), answeredAt: Date.now() })
+    // 499 は、やめた（頼んだ画面が切った・ほかのタブで止めた）。
+    // 表に書けなくても（claude.db が使えない。答えを書けずにここへ来たときも）、動いている質問の一覧からは必ず外す
+    if (row) {
+      try {
+        chat!.finishQuestion(row, { status: status === 499 ? 'cancelled' : 'failed', ...(status === 499 ? {} : { error: message }), answeredAt: Date.now() })
+      } catch (failure) {
+        console.error('could not record the end of a chat question', failure)
+      }
+    }
     if (id) questions!.end(id, status === 499 ? 'cancelled' : 'failed', status === 499 ? undefined : message)
   } finally {
     res.end()

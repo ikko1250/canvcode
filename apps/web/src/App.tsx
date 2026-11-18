@@ -1093,7 +1093,7 @@ export function App(props: { initial: InitialRecords }) {
   )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
   const { answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvasTitle })
-  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルにフォーカスがあるか（付箋の下の欄を出す）。
+  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネル（か、パネルから移ったその付箋の下の欄）にフォーカスがあるか（付箋の下の欄を出す）。
   // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
   const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
   const [answerFocused, setAnswerFocused] = useState(false)
@@ -1134,6 +1134,8 @@ export function App(props: { initial: InitialRecords }) {
       const editor = view.editor
       const context = followUpContext(noteId, editor.canvasId, aiNoteMeta(editor.getNode(noteId)))
       if (!context) return notify('この付箋には、まだ答えがありません')
+      // 編集の途中（文字の編集をよそへ預けている・ドラッグの途中）なら、begin が投げるので押せない（パネルは閉じない）
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
       closeAnswer()
       const tx = editor.begin('続けて聞く')
       const placed = placeFollowUpNote(editor, tx, noteId, context)
@@ -1186,6 +1188,7 @@ export function App(props: { initial: InitialRecords }) {
       if (sourceCanvasId === editor.canvasId && editor.getNode(noteId)) return continueAnswer(noteId)
       const context = followUpContext(noteId, sourceCanvasId, meta)
       if (!context) return notify('この付箋には、まだ答えがありません')
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
       const tx = editor.begin('続けて聞く')
       const placed = placeFollowUpAt(editor, tx, viewCenter(view), context)
       tx.flush()
@@ -2662,6 +2665,7 @@ export function App(props: { initial: InitialRecords }) {
             claude={claude}
             busy={session.answeringIds}
             focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
+            onFocusLeave={() => setAnswerFocused(false)}
             onSend={(noteId) => void askWithNotes([noteId])}
             onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
             onOpenChat={openChatAnswer}
