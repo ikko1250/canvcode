@@ -1527,13 +1527,6 @@ function applyStyle(type: string, base: Record<string, unknown>, input: StyleInp
       set('w', w, 'w')
       set('h', h, 'h')
       break
-    // ボタン（キャンバスの AI）：出す文字と地の色。押したときの指示（prompt）は props で変える
-    case 'button':
-      if (text !== undefined && label !== undefined) throw new EditError('give either text or label')
-      if (color !== undefined && fill !== undefined) throw new EditError('give either color or fill for a button (both are the background)')
-      set('label', text ?? label, text !== undefined ? 'text' : 'label')
-      set('color', color ?? fill, color !== undefined ? 'color' : 'fill')
-      break
     // スライドの大きさは比率から決まる（w / h は持たない）
     case 'slide':
       if (text !== undefined && name !== undefined) throw new EditError('give either text or name')

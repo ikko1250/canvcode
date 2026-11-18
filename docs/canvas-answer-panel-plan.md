@@ -287,7 +287,7 @@ type AiContext =
 - `answers.ts`：`placeAnswer`・`replaceAnswer`・`restoreAnswerVersion`・`answerContent`・`buttonTarget`・`answerQuestionIds`・版・`layoutAnswer`・フレームの `placeFollowUp`・`previousTurns`（写しに替える）
 - ボタンの型：`packages/nodes/src/button.ts`・`ButtonTool`・`design/ButtonSection.tsx`・パイメニューの「文字 › ボタン」・右クリックの「ボタンを押す」・`pressable` と `pressableAt`（ほかに使う型がなければ）
 - MCP：`agent/outline.ts`・`agent/ops.ts` のボタン、`get_canvas_format` の button の説明
-- 本番のワークスペースに `button` のノードが残っていたら、`slidesV1Cleanup.ts` と同じく、サーバーの起動時に消す（先に `workspace.db` の写しを作る。AI の編集の記録からも消す）。答えのフレームの中の付箋は残す（ふつうの付箋として）
+- 本番のワークスペースに `button` のノードが残っていたら、`slidesV1Cleanup.ts` と同じく、サーバーの起動時に消す（`buttonCleanup.ts`。先に `workspace.db` の写しを作る。AI の編集の記録からも消す）。答えのフレームの中の付箋は残す（ふつうの付箋として）
 - テスト：`answers.test.ts`・`buttonPress.test.ts`・`button.test.ts`・`canvas-answer.spec.ts` のフレームの部分
 - 残すもの：`questionOf`・`questionText`・`aiNoteMeta`・`setAiNote`・`waitUntilIdle`・`readingOrder`・`putArrow`
 
@@ -322,7 +322,7 @@ type AiContext =
 3. 角の三角（`aiCorner.ts`・オーバーレイ・`SelectTool`・`session`）（済み）
 4. 付箋のまわり：付箋の横のパネル・上と下の欄・聞く流れ（済み）
 5. 右のパネル：タブと質問のタブ（一覧・答え・この場で続けて聞く）、`GET /api/claude/questions`（済み）
-6. ボタンの型を消す
+6. ボタンの型を消す（済み）
 7. README の「付箋で聞く」の節と、MCP の説明
 
 1〜4 で付箋のまわりが動き、5 で一覧が入る。6 は消すだけなので分ける。

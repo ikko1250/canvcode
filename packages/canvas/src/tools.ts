@@ -129,10 +129,6 @@ export interface ToolContext {
   viewportBox?(): Box
   // 付箋の角の三角（答えを見るボタン。aiCorner.ts）を押した
   openAnswer?(noteId: string): void
-  // 押せるノード（ボタン。NodeTypeDef の pressable）を押した。渡さなければ、ボタンもほかのノードと同じくクリックで選ぶ
-  pressButton?(nodeId: string): void
-  // 今そのボタンを押せるか（Claude を使えないときに Claude に送るボタンは false）。false なら、ほかのノードと同じくクリックで選ぶ。既定は true
-  canPressButton?(nodeId: string): boolean
 }
 
 export type WordSelectionEvent = { phase: 'move' | 'end'; pageId: string; from: Vec; to: Vec; screen: Vec } | { phase: 'cancel' }
@@ -266,7 +262,6 @@ type SelectState =
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
   // 選んでいない押せるノード（ボタン）の上を押した。離せば押したことにし、ドラッグすれば選んで動かす
   // locked は固定したボタン（押せるが、ドラッグしても動かさず、範囲選択にする）
-  | { name: 'pointingButton'; start: ToolPointer; nodeId: string; locked: boolean }
   // 付箋の角の三角を押した（離したら答えのパネルを開く。動かしても何もしない）
   | { name: 'pointingAiCorner'; start: ToolPointer; noteId: string }
   // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック。
@@ -455,11 +450,7 @@ export class SelectTool implements Tool {
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
-    // 選んでいないボタン（固定したものも）は、押しただけでは選ばない（離したら押す）。Shift・Ctrl（⌘）なら、ほかのノードと同じ
-    const button = pointer.shiftKey || pointer.ctrlKey || pointer.metaKey ? null : this.pressableAt(pointer.world, hit)
-    if (button) {
-      this.state = { name: 'pointingButton', start: pointer, nodeId: button.id, locked: button.locked }
-    } else if (hit && (pointer.ctrlKey || pointer.metaKey)) {
+    if (hit && (pointer.ctrlKey || pointer.metaKey)) {
       // Ctrl（⌘）を押しながらなら、ノードの上からでも範囲選択にする。選択は離すまで変えない
       const nodeId = editor.selectableFor(hit.id)
       this.state = { name: 'pointingCanvas', start: pointer, initial: new Set(selected), nodeId, excludeId: nodeId }
@@ -551,8 +542,7 @@ export class SelectTool implements Tool {
             : !hit && editor.citationsAt(pointer.world).length > 0
               ? 'pointer'
               : null
-        // 選んでいないボタンの上では指のカーソル（クリックで押せる）
-        this.ctx.setCursor(cursor ?? (this.pressableAt(pointer.world, hit) ? 'pointer' : null))
+        this.ctx.setCursor(cursor)
         // ホバーの表示も、クリックしたら選ばれるもの（group 全体など）に合わせる
         const hoveredId = hit ? this.selectableWithoutSideEffects(hit.id) : null
         if (hoveredId !== editor.session.get().hoveredId) editor.session.set({ hoveredId })
@@ -668,21 +658,6 @@ export class SelectTool implements Tool {
       }
       case 'pointingAiCorner':
         return
-      case 'pointingButton': {
-        // ボタンをドラッグしたら、押さずに、選んで動かす（固定したボタンなら、何もない所からと同じく範囲選択）
-        if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
-        if (state.locked) {
-          this.state = { name: 'brushing', start: state.start, initial: new Set(editor.session.get().selectedIds), additive: false }
-          this.onPointerMove(pointer)
-          return
-        }
-        // 中に入っている group の外なら、group から出る（selectableFor。ふつうのクリックと同じ）
-        editor.setSelection([editor.selectableFor(state.nodeId)])
-        this.state = { name: 'pointingNode', start: state.start, nodeId: state.nodeId, wasSelected: false }
-        this.startTranslating(state.start)
-        this.onPointerMove(pointer)
-        return
-      }
       case 'pointingCanvas': {
         if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
         this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey, excludeId: state.excludeId }
@@ -745,14 +720,6 @@ export class SelectTool implements Tool {
       if (editor.getNode(state.noteId) && !repeated && !pointer.cancelled && dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) {
         this.lastPress = { id: state.noteId, time: now }
         this.ctx.openAnswer?.(state.noteId)
-      }
-    } else if (state.name === 'pointingButton') {
-      // 動かさずに離した：ボタンを押す（消えていたら・取り消されたら何もしない）。ダブルクリックの 2 回目は押さない（同じ頼みを重ねない）
-      const now = Date.now()
-      const repeated = this.lastPress?.id === state.nodeId && now - this.lastPress.time < DOUBLE_PRESS_MS
-      if (editor.getNode(state.nodeId) && !repeated && !pointer.cancelled) {
-        this.lastPress = { id: state.nodeId, time: now }
-        this.ctx.pressButton?.(state.nodeId)
       }
     } else if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
@@ -883,8 +850,6 @@ export class SelectTool implements Tool {
     const editor = this.ctx.editor
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
-    // 選んでいないボタンのダブルクリックは、押したことになっている（文字の編集は、選んでから）
-    if (this.pressableAt(pointer.world, hit)) return
     // 付箋の角の三角のダブルクリックは、三角を押したことになっている（文字の編集は、三角の外で）
     if (hitAiCorner(editor, pointer.world)) return
     if (!hit || editor.isContainer(hit, 'frame')) {
@@ -914,21 +879,9 @@ export class SelectTool implements Tool {
     this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null, hoveredAiCorner: null })
   }
 
-  // 長押し（タッチ）でメニューが出たら、押しかけたボタン・三角は押さない
+  // 長押し（タッチ）でメニューが出たら、押しかけた三角は押さない
   onContextMenu(): void {
-    if (this.state.name === 'pointingButton' || this.state.name === 'pointingAiCorner') this.state = { name: 'idle' }
-  }
-
-  // 点にある、クリックで押せるノード（ボタン）で、選んでいないもの。hit はその点のふつうの当たり（固定したノードは当たらない）。
-  // 固定したボタンも押せるので、固定したものも含めていちばん手前のノードも見る（ほかのノードの上に固定したボタンなど）。
-  // group の中のもの（クリックで group を選ぶ）は除く
-  private pressableAt(world: Vec, hit: NodeRecord | null): NodeRecord | null {
-    const editor = this.ctx.editor
-    if (!this.ctx.pressButton) return null
-    const top = editor.hitTest(world, HIT_MARGIN_PX / editor.session.get().camera.zoom, { includeLocked: true })
-    const node = [top, hit].find((candidate) => candidate && editor.getType(candidate).pressable && (candidate === hit || candidate.locked))
-    if (!node || this.ctx.canPressButton?.(node.id) === false) return null
-    return this.selectableWithoutSideEffects(node.id) === node.id && !editor.session.get().selectedIds.has(node.id) ? node : null
+    if (this.state.name === 'pointingAiCorner') this.state = { name: 'idle' }
   }
 
   private setHoveredAiCorner(next: string | null): void {
@@ -1469,52 +1422,6 @@ export class TextTool implements Tool {
     this.creating = null
     this.ctx.setTool('select')
     this.ctx.startEditing(creating.node.id, { tx: creating.tx })
-  }
-
-  cancel(): boolean {
-    const creating = this.creating
-    if (!creating) return false
-    this.creating = null
-    creating.tx.cancel()
-    return true
-  }
-
-  onExit(): void {
-    this.cancel()
-  }
-}
-
-// ボタン（押すと Claude に指示を送る）。クリックした位置を中心に作り、文字の編集に入る（付箋と同じ）
-export class ButtonTool implements Tool {
-  readonly id = 'button' as const
-  readonly cursor = 'crosshair'
-  private creating: { tx: Transaction<WorkspaceRecord>; node: NodeRecord } | null = null
-  private readonly ctx: ToolContext
-
-  constructor(ctx: ToolContext) {
-    this.ctx = ctx
-  }
-
-  onPointerDown(pointer: ToolPointer): void {
-    if (pointer.button !== 0) return
-    const editor = this.ctx.editor
-    const { parentId, local } = placeAt(editor, pointer.world)
-    const tx = editor.begin('create button')
-    const draft = editor.makeNode('button', { x: 0, y: 0, parentId })
-    const { w, h } = editor.getType(draft).getBounds(draft)
-    const node = { ...draft, x: local.x - w / 2, y: local.y - h / 2 }
-    tx.put(node)
-    tx.flush()
-    this.creating = { tx, node }
-  }
-
-  // 編集モードには、手を離してから入る（NoteTool と同じ）
-  onPointerUp(): void {
-    const creating = this.creating
-    if (!creating) return
-    this.creating = null
-    this.ctx.setTool('select')
-    this.ctx.startEditing(creating.node.id, { tx: creating.tx, selectAll: true })
   }
 
   cancel(): boolean {

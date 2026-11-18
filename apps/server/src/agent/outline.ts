@@ -1,8 +1,6 @@
 import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
 import {
   ATTACHMENT_HEIGHT,
-  buttonSize,
-  buttonType,
   formatFileSize,
   hasNodeRichFormatting,
   noteHeight,
@@ -10,7 +8,6 @@ import {
   richTextMarkdownOf,
   richTextTargetOfType,
   slideSize,
-  type ButtonProps,
   type NoteProps,
   type SlideRatio,
 } from '@canvcode/nodes'
@@ -239,9 +236,6 @@ function localBox(item: Item): { box: Box; estimated: boolean } {
       if (!Number.isFinite(h) || h === num(p.h)) return { box: { x: 0, y: 0, w: num(p.w), h: num(p.h) }, estimated: false }
       return { box: { x: 0, y: 0, w: num(p.w), h }, estimated: true }
     }
-    // ボタン（キャンバスの AI）の大きさは文字から決める（文字の幅が概算なので estimated）
-    case 'button':
-      return { box: { x: 0, y: 0, ...buttonSize({ ...buttonType.defaultProps(), ...p } as ButtonProps) }, estimated: true }
     // スライドは大きさを props に持たず、縦横比から決める
     case 'slide':
       return { box: { x: 0, y: 0, ...slideSize(p.ratio as SlideRatio) }, estimated: false }
@@ -481,9 +475,6 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
       return str(p.title)
     case 'attachment':
       return str(p.name)
-    // 「＋」と版の帯（action）は、何をするボタンかを書く（帯は文字を持たない）
-    case 'button':
-      return str(p.label) || str(p.tooltip)
     case 'chart':
       return describeChart(p).rows.map((row) => row.label).join(', ')
     case 'portal':
@@ -502,8 +493,6 @@ function lineText(item: Item, recordOf: (id: string) => StoredRecord | undefined
 
 function searchText(item: Item, recordOf: (id: string) => StoredRecord | undefined): string {
   if (item.type === 'quote-card') return `${lineText(item, recordOf)}\n${String(item.props.memo ?? '')}`
-  // ボタンは、押したときの指示でも探せる
-  if (item.type === 'button') return `${lineText(item, recordOf)}\n${String(item.props.prompt ?? '')}`
   return lineText(item, recordOf)
 }
 
@@ -578,10 +567,6 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       copy('fontSize', 'fontFamily', 'color', 'align')
       if (type === 'text') copy('autoWidth')
       if (type === 'note') copy('sizing')
-      break
-    // ボタン：出す文字と、押したときに Claude に送る指示
-    case 'button':
-      copy('label', 'prompt', 'color', 'sizing', 'hint', 'questionIds', 'action', 'version', 'h', 'tooltip')
       break
     case 'geo': {
       copy('shape', 'label')
@@ -841,7 +826,7 @@ export function canvasFormatGuide(options: { editable?: boolean } = {}): string 
 - World coordinates: x grows right, y grows down, 1 unit = 1 CSS px at 100% zoom. Rotation is in degrees, clockwise.
 - Nodes inside a group or frame store positions relative to the parent; the tools always report world coordinates.
 - x,y is the world position of the top-left corner of the node's own (unrotated) box; WxH is its size. rot= is the node's rotation in world space.
-- Sizes marked ~ are estimates: the server cannot measure text (text, notes whose height follows the text, button, quote-card, link-card), and the height of a markdown-card or code-card that fits its content is only measured in the browser. To stack such cards, give them a fixed h, or leave room.
+- Sizes marked ~ are estimates: the server cannot measure text (text, notes whose height follows the text, quote-card, link-card), and the height of a markdown-card or code-card that fits its content is only measured in the browser. To stack such cards, give them a fixed h, or leave room.
 
 ## read_canvas outline
 First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revision> nodes=<total> [bounds=<x>,<y>,<W>x<H> (around all top-level nodes)] [matched=<after filters>] shown=<lines> [next=<cursor>]
@@ -873,7 +858,6 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - draw: freehand stroke (color, size; points are not returned)
 - image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
 - frame: named container that clips its children (name, w, h)
-- button: a button the user clicks to send an instruction to Claude (label = the text shown, prompt = the instruction sent; empty prompt sends the label, color = background). Its width follows the label (sizing auto) or is w (sizing fixed, after a resize); its height follows the label. A button inside a frame rewrites that frame's answer notes when pressed (the canvas AI: a question note is answered by a frame with an assumptions note, one note per paragraph, and hint buttons; hint = true marks the buttons the AI placed, questionIds = the question notes). The answer frame is placed below the question with an arrow from it. Buttons with an action do not ask Claude: action "ask-left" / "ask-right" (the ＋ at both ends of the button row) puts a follow-up question note beside the answer, action "version" (the thin bars under the buttons, one per earlier version of the answer; h = fixed height, tooltip = what it does) switches the answer back to that version. update can set its label (text or label) and color; set prompt through props
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
 - markdown-card / code-card: a document file on the canvas

@@ -116,7 +116,6 @@ import { arrowPivot, sameValue, type SharedValue } from '@canvcode/canvas'
 import { propField, registerDesignSection, type DesignField, type DesignSection, type FieldControl, type SegmentOption, type SelectOption } from './registry.ts'
 import { SlideLayoutAdjustSection } from './SlideLayoutAdjustSection.tsx'
 import { ImageCropSection } from './ImageCropSection.tsx'
-import { ButtonSection } from './ButtonSection.tsx'
 import { ArrowDirectionSection } from './ArrowDirectionSection.tsx'
 import { slideLayoutAdjustTarget } from './slideLayoutAdjustTarget.ts'
 
@@ -1064,8 +1063,6 @@ export const builtinDesignSections: DesignSection[] = [
   { id: 'shape', title: '形', order: 50, hideTitle: true, fields: [geoShapeField, arrowShaftField, arrowHeadLengthField, arrowHeadWidthField, chevronDepthField] },
   // 角丸は形のすぐ下に、区切り線なしで続ける
   { id: 'corner', title: '角丸', order: 60, hideTitle: true, joinPrevious: true, fields: [cornerRadiusField] },
-  // ボタン（押すと Claude に指示を送る）の、出す文字と押したときの指示
-  { id: 'button', title: 'ボタン', order: 30, fields: [], appliesTo: (node) => node.type === 'button', Component: ButtonSection },
   // 画像ノードの切り抜き（トリミング）
   { id: 'image-crop', title: '切り抜き', order: 90, fields: [], appliesTo: (node) => node.type === 'image', Component: ImageCropSection },
   { id: 'fill', title: '塗り', order: 100, hideTitle: true, fields: [fillField] },

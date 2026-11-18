@@ -29,7 +29,6 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   note: '付箋',
   // AI モードの付箋（Claude に聞く付箋）
   aiNote: 'AI 付箋',
-  button: 'ボタン',
   frame: 'フレーム',
   draw: 'フリーハンド',
   eraser: '消しゴム',
@@ -373,7 +372,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
             tool('arrow'),
           ],
         },
-        group('文字', ['text', 'title', 'note', 'aiNote', 'button']),
+        group('文字', ['text', 'title', 'note', 'aiNote']),
         {
           label: 'Portal',
           items: [

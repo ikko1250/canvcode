@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { sameValue, sharedOf, sharedValue, type Editor, type SharedValue, type TextEditor, type TextSelection } from '@canvcode/canvas'
+import { sameValue, sharedOf, sharedValue, type Editor, type SharedValue, type TextSelection } from '@canvcode/canvas'
 import type { TextRange } from '@canvcode/nodes'
 import type { ComponentType } from 'react'
 
@@ -100,8 +100,6 @@ export interface DesignField<T = unknown> {
 export interface DesignSectionProps {
   nodes: readonly NodeRecord[]
   editor: Editor
-  // キャンバスの上の文字の編集（編集中は、ほかのトランザクションを開けない。セクションが値を変える前に終えるのに使う）
-  textEditor?: TextEditor | null
 }
 
 export interface DesignSection {

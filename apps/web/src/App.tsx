@@ -2604,20 +2604,6 @@ export function App(props: { initial: InitialRecords }) {
             )
           })()}
 
-        {(() => {
-          // ボタンのホバーの説明（「＋」・版の帯）。ボタンの下に出す
-          const hovered = session.hoveredId ? editor.getNode(session.hoveredId) : undefined
-          const tooltip = hovered?.type === 'button' ? (hovered.props as { tooltip?: string }).tooltip : undefined
-          const box = tooltip ? editor.index.get(hovered!.id)?.worldBounds : undefined
-          if (!tooltip || !box) return null
-          const { camera } = session
-          return (
-            <div className="button-tooltip" role="tooltip" style={{ left: (box.x - camera.x) * camera.zoom, top: (box.y + box.h - camera.y) * camera.zoom + 6 }}>
-              {tooltip}
-            </div>
-          )
-        })()}
-
         {citing.map((job) => {
           // 引用を作っている間の印（置く所＝アイテムの右下に出す。カメラに付いて動く）
           const box = job.canvasId === canvasId ? editor.index.get(job.nodeId)?.worldBounds : undefined

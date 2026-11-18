@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { ArrowUpRight, Boxes, ChartPie, Frame, Group, Image, MousePointerClick, PenLine, Shapes, StickyNote, Type, X } from 'lucide-react'
+import { ArrowUpRight, Boxes, ChartPie, Frame, Group, Image, PenLine, Shapes, StickyNote, Type, X } from 'lucide-react'
 import type { NodeRecord } from '@canvcode/core'
 import {
   KEEP_TEXT_EDITING_ATTRIBUTE,
@@ -207,7 +207,7 @@ export function DesignPanel(props: {
     <section key={section.id} className={section.joinPrevious ? 'design-section joined' : 'design-section'} data-section={section.id}>
       {!section.hideTitle && <h3>{section.title}</h3>}
       {fieldRows(fields).map(rowView)}
-      {showComponent && section.Component && <section.Component nodes={nodes} editor={editor} textEditor={textEditor} />}
+      {showComponent && section.Component && <section.Component nodes={nodes} editor={editor} />}
     </section>
   )
 
@@ -420,7 +420,6 @@ const TYPE_LABELS: Record<string, string> = {
   draw: 'フリーハンド',
   image: '画像',
   chart: 'グラフ',
-  button: 'ボタン',
 }
 
 function typeLabel(node: NodeRecord | undefined): string {
@@ -437,7 +436,6 @@ const TYPE_ICONS: Record<string, DesignIcon> = {
   chart: ChartPie,
   group: Group,
   frame: Frame,
-  button: MousePointerClick,
 }
 
 // 見出し・タブ・閉じるボタンのアイコン

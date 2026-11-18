@@ -32,6 +32,7 @@ import { RefImageStore } from './refImages.ts'
 import { STORAGE_SWEEP_INTERVAL_MS, sweepStorage } from './storageCleanup.ts'
 import { handleRefs, resolveReference } from './refs.ts'
 import { cleanupSlidesV1, describeSlidesV1Cleanup } from './slidesV1Cleanup.ts'
+import { cleanupButtons, describeButtonCleanup } from './buttonCleanup.ts'
 import { SyncHub } from './sync.ts'
 import { RenderBroker } from './renders.ts'
 import { ThumbnailStore } from './thumbnails.ts'
@@ -94,6 +95,13 @@ try {
   if (cleaned) console.log(describeSlidesV1Cleanup(cleaned))
 } catch (error) {
   console.error('v1 のスライドを片付けられませんでした', error)
+}
+// 付箋で答えるフレームのボタン（button の型）を片付ける（docs/canvas-answer-panel-plan.md の 8）。失敗してもサーバーは止めない
+try {
+  const cleaned = cleanupButtons(records)
+  if (cleaned) console.log(describeButtonCleanup(cleaned))
+} catch (error) {
+  console.error('付箋で答えるフレームのボタンを片付けられませんでした', error)
 }
 const refImages = new RefImageStore(DATA_DIR)
 // 3 日経った ref を消す（MAI-65）。起動したときと、そのあと 1 時間ごと

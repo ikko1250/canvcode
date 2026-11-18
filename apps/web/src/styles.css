@@ -3145,20 +3145,6 @@ button.pdf-page-number:hover {
   left: 0;
 }
 
-/* ボタンのホバーの説明（「ひとつ前の回答に戻る」など）。ボタンの下に出す */
-.button-tooltip {
-  position: absolute;
-  z-index: 6;
-  max-width: 320px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(31, 35, 40, 0.92);
-  color: #fff;
-  font-size: 12px;
-  line-height: 1.4;
-  pointer-events: none;
-}
-
 .word-lookup-head {
   display: flex;
   align-items: flex-start;
@@ -3961,49 +3947,6 @@ button.pdf-page-number:hover {
 .claude-tool.answer.denied,
 .claude-tool.answer.expired {
   color: #9a6700;
-}
-
-/* ボタン（押すと Claude に指示を送る）の、出す文字と押したときの指示（design/ButtonSection.tsx） */
-.design-button-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.design-button-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--dp-secondary);
-}
-
-.design-button-field input,
-.design-button-field textarea {
-  box-sizing: border-box;
-  width: 100%;
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--dp-radius);
-  background: var(--dp-field);
-  color: var(--dp-text);
-  font: inherit;
-}
-
-.design-button-field textarea {
-  resize: vertical;
-}
-
-.design-button-field input:focus,
-.design-button-field textarea:focus {
-  outline: none;
-  border-color: var(--dp-accent);
-}
-
-.design-button-hint {
-  margin: 0;
-  color: var(--dp-secondary);
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 /* 右のパネルの上の「会話｜質問」のタブ（claude/ClaudeTabs.tsx） */

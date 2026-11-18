@@ -147,8 +147,6 @@ export interface DescribedNode {
   deleted?: true
   text?: string
   label?: string
-  // ボタンの、押したときに Claude に送る指示
-  prompt?: string
   name?: string
   // スライド（スライド v2）の縦横比と、書き出しから外しているか
   ratio?: string
@@ -394,10 +392,6 @@ async function describeNode(
     }
     case 'arrow':
       out.label = str('label')
-      break
-    case 'button':
-      out.label = str('label')
-      out.prompt = str('prompt')
       break
     case 'chart':
       out.chart = describeChart(props)
