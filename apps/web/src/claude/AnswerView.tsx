@@ -48,7 +48,7 @@ export function AnswerView(props: {
               <div className="answer-view-related-title">関連する付箋</div>
               {related.map((note) => (
                 <button key={note.id} type="button" className="answer-view-related-note" onClick={() => onRelated(note.id)} title="この付箋へ移る">
-                  ↗ {note.label}
+                  <span>↗ {note.label}</span>
                 </button>
               ))}
             </div>
