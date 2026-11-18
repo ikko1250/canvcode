@@ -1063,43 +1063,31 @@ export function App(props: { initial: InitialRecords }) {
     [notify],
   )
 
-  // キャンバスの AI（付箋で聞き、付箋で答える。claude/useCanvasAnswers.ts）。頼んだものは answerLog に記録し、付箋の答えのパネル（AnswerPanel）に出す
+  // キャンバスの AI（付箋で聞き、答えは付箋に持たせる。claude/useCanvasAnswers.ts）。頼んだものは answerLog に記録し、付箋の答えのパネル（AnswerPanel）に出す
   const [answerLog] = useState(() => new AnswerLog())
-  // 答えを置く Canvas の Editor。待っている間に、取っておく数（MAX_EDITORS）を超えて捨てられていても、読み込んであれば作り直す
+  // 答えを書く Canvas の Editor。待っている間に、取っておく数（MAX_EDITORS）を超えて捨てられていても、読み込んであれば作り直す
   const answerEditor = useCallback(
     (canvasId: string) => editors.get(canvasId) ?? (sync.isLoaded(canvasId) && workspace.getCanvas(canvasId) ? getEditor(canvasId) : undefined),
     [editors, sync, workspace, getEditor],
   )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
-  const {
-    answering,
-    ask: askWithNotes,
-    pressButton,
-    canPressButton,
-  } = useCanvasAnswers({ viewRef, claude, log: answerLog, notify, answerEditor, canvasTitle })
+  const { answering, ask: askWithNotes } = useCanvasAnswers({ viewRef, log: answerLog, notify, answerEditor, canvasTitle })
   const answerEntries = useSyncExternalStore(answerLog.subscribe, answerLog.getSnapshot)
-  // 付箋の答えのパネルの「答えへ移る」：答えの Canvas に移り、フレームを見せる
+  // 付箋の答えのパネルの「答えへ移る」：答えの Canvas に移り、答えを書いた付箋を見せる
   const jumpToAnswer = useCallback(
     async (entry: AnswerLogEntry) => {
-      if (!entry.frameId) return
-      if (!workspace.getCanvas(entry.canvasId)) return notify('答えを置いた Canvas はもうありません')
+      if (!entry.noteId) return
+      if (!workspace.getCanvas(entry.canvasId)) return notify('答えを書いた付箋の Canvas はもうありません')
       await navigate(entry.canvasId)
       const view = viewRef.current
       if (!view || view.editor.canvasId !== entry.canvasId) return
-      if (!view.editor.getNode(entry.frameId)) return notify('答えのフレームはもうありません（消したか、Undo で戻しました）')
-      await view.focusNode(entry.frameId)
+      if (!view.editor.getNode(entry.noteId)) return notify('答えを書いた付箋はもうありません（消したか、Undo で戻しました）')
+      await view.focusNode(entry.noteId)
     },
     [workspace, navigate, notify],
   )
-  // 答えを書いている付箋・フレーム（AI モードの付箋の欄を隠す）
+  // 答えを書いている付箋（AI モードの付箋の欄を隠す）
   const answeringBusy = useMemo(() => new Set(answering.flatMap((job) => job.busy)), [answering])
-  // キャンバスの画面（下の useEffect で一度だけ作る）から呼ぶ
-  const pressButtonRef = useRef(pressButton)
-  const canPressButtonRef = useRef(canPressButton)
-  useLayoutEffect(() => {
-    pressButtonRef.current = pressButton
-    canPressButtonRef.current = canPressButton
-  }, [pressButton, canPressButton])
 
   // APA の引用を置く（MAI-98）：アイテム（PDF の Portal・PDF のページ・リンクカード・Markdown のカード）の引用を、Claude（既定は Sonnet）に
   // Web で確かめながら作ってもらい、アイテムの右下にテキストとして置く（Undo 1 回で消える）。待っている間は、置く所に「作っています」を出す
@@ -1285,21 +1273,17 @@ export function App(props: { initial: InitialRecords }) {
           })
         }
       }
-      // 付箋を質問にして、Claude に付箋で答えてもらう（選んでいるのが付箋だけで、どれかに文字があるとき）。
+      // 付箋を質問にして、Claude に聞く（選んでいるのが付箋だけで、どれかに文字があるとき）。答えは付箋に書く。
       // 付箋 1 枚なら、AI モード（付箋の下に、モデル・添えるもの・送信を出す）にする・やめる
       if (claude.state.availability === 'on' && selected.length > 0 && selected.every((node) => node.type === 'note')) {
         const askable = questionOf(editor, selected.map((node) => node.id)) !== null
-        if (askable) items.push({ label: 'Claude に聞く（付箋で答える）', onSelect: () => void askWithNotes(selected.map((node) => node.id)) })
+        if (askable) items.push({ label: 'Claude に聞く', onSelect: () => void askWithNotes(selected.map((node) => node.id)) })
         if (single) {
           const ai = aiNoteMeta(single)
-          items.push({ label: ai ? 'AI モードをやめる' : 'AI モードにする（Claude に聞く付箋）', onSelect: () => void setAiNote(editor, single.id, ai ? null : { contexts: [] }) })
+          const label = ai ? (ai.answer ? 'AI モードをやめる（答えも消す）' : 'AI モードをやめる') : 'AI モードにする（Claude に聞く付箋）'
+          items.push({ label, onSelect: () => void setAiNote(editor, single.id, ai ? null : { contexts: [] }) })
         }
         if (askable && !single) items.push('separator')
-      }
-      // ボタン：押す（クリックと同じ）
-      if (single?.type === 'button' && canPressButton(single.id)) {
-        items.push({ label: 'ボタンを押す', shortcut: 'クリック', onSelect: () => void pressButton(single.id) })
-        items.push('separator')
       }
       // 付箋の高さ：文字に合わせる／固定する。文字があれば、箇条書きのメモにする（Claude）
       if (single?.type === 'note') {
@@ -1560,7 +1544,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo, citeNode, askWithNotes, pressButton, canPressButton],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo, citeNode, askWithNotes],
   )
 
 
@@ -1581,9 +1565,6 @@ export function App(props: { initial: InitialRecords }) {
         if (items.length > 0) setMenu({ x: clientX, y: clientY, items })
       },
       onOpenSource: (anchorId) => void openSource(anchorId),
-      onPressButton: (nodeId) => void pressButtonRef.current(nodeId),
-      // Claude を使えないときは、ボタンもクリックで選ぶ（押しても何もできないので）
-      canPressButton: (nodeId) => canPressButtonRef.current(nodeId),
       onImportBackup: (file) => importBackupRef.current(file),
       onWordLookup: (request) => startWordLookupRef.current(request),
       onContextMenu: ({ clientX, clientY }) => {

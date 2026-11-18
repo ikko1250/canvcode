@@ -194,12 +194,13 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJob
   })
 }
 
-export async function readJson(req: IncomingMessage): Promise<unknown> {
+// 本文を JSON として読む。maxBytes を超えたら 413（既定は MAX_BODY。付箋で聞く答えは、前の答えと関連する付箋の候補を送るので大きくする）
+export async function readJson(req: IncomingMessage, maxBytes = MAX_BODY): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     size += (chunk as Buffer).length
-    if (size > MAX_BODY) throw new JobError(413, 'request body too large')
+    if (size > maxBytes) throw new JobError(413, 'request body too large')
     chunks.push(chunk as Buffer)
   }
   try {

@@ -36,8 +36,8 @@ export function AnswerStrip(props: {
         </span>
         <span className="answer-row-time">{timeLabel(entry.startedAt, timeWithDate)}</span>
       </button>
-      {entry.status === 'done' && entry.frameId && (
-        <button type="button" className="answer-row-jump" onClick={() => onJump(entry)} title="答えのフレームへ移る">
+      {entry.status === 'done' && entry.noteId && (
+        <button type="button" className="answer-row-jump" onClick={() => onJump(entry)} title="答えを書いた付箋へ移る">
           答えへ移る
         </button>
       )}
@@ -79,7 +79,7 @@ export function AnswerThinking(props: { entry: AnswerLogEntry; onBack(): void; o
         <span className="answer-thinking-title">
           {statusLabel(entry)}：{entry.label}
         </span>
-        {entry.status === 'done' && entry.frameId && (
+        {entry.status === 'done' && entry.noteId && (
           <button type="button" onClick={() => onJump(entry)}>
             答えへ移る
           </button>

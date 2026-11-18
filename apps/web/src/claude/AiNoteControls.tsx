@@ -62,7 +62,7 @@ export function AiNoteControls(props: {
         }
         const addSelection = () => {
           const context = selectionContext(editor, view, node.id)
-          if (!context) return notify('添えたいもの（付箋・画像・PDF・答えのフレームなど）を選んでから押してください')
+          if (!context) return notify('添えたいもの（付箋・画像・PDF など）を選んでから押してください')
           if (meta.contexts.some((known) => sameContext(known, context))) return notify('もう添えてあります')
           update({ contexts: [...meta.contexts, context] }, 'Claude に添えるものを足す')
         }
@@ -152,13 +152,9 @@ function useAiNotes(editor: Editor): NodeRecord[] {
   }, [editor, version])
 }
 
-// 今選んでいるもの（付箋自身は除く）。答えのフレームを 1 つだけ選んでいれば、その答え（続きの質問として前の答えを渡す）
+// 今選んでいるもの（付箋自身は除く）
 function selectionContext(editor: Editor, view: CanvasView, noteId: string): AiContext | null {
   const selected = [...editor.session.get().selectedIds].filter((id) => id !== noteId)
-  if (selected.length === 1) {
-    const node = editor.getNode(selected[0]!)
-    if (node?.type === 'frame' && node.meta?.answer) return { kind: 'answer', frameId: node.id, label: (node.props as { name?: string }).name || '答え' }
-  }
   const target = view.canvasReference()
   if (!target) return null
   const nodes = target.nodes.filter((node) => node.id !== noteId)
@@ -167,7 +163,7 @@ function selectionContext(editor: Editor, view: CanvasView, noteId: string): AiC
 }
 
 function sameContext(a: AiContext, b: AiContext): boolean {
-  if (a.kind === 'answer' && b.kind === 'answer') return a.frameId === b.frameId
+  if (a.kind === 'answer' && b.kind === 'answer') return a.noteId === b.noteId
   if (a.kind !== 'canvas' || b.kind !== 'canvas') return false
   const ids = (context: typeof a) => context.target.nodes.map((node) => node.id).sort().join(',')
   return ids(a) === ids(b) && JSON.stringify(a.target.rect) === JSON.stringify(b.target.rect)

@@ -50,8 +50,9 @@ import { ThumbnailStore } from './thumbnails.ts'
 //   モデルは既定で Sonnet（CANVCODE_MEMO_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - PDF の上で選んだ語を調べる（/api/claude/lookup。claude/lookup.ts。MAI-99）。Claude を 1 回だけ動かす共通の仕組み（claude/once.ts）を使う。
 //   モデルは既定で Haiku（CANVCODE_LOOKUP_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
-// - キャンバスの AI：付箋で聞き、段落ごとの付箋と書き直すためのボタンをまとめたフレームで答える（/api/claude/answer。claude/answer.ts）。
-//   同じ claude/once.ts を使う。モデルは画面が送ったもの（Claude のパネルで最後に選んだもの）か、既定で Sonnet（CANVCODE_ANSWER_MODEL で変える）
+// - キャンバスの AI：付箋で聞き、答えの本文（Markdown）と関連する付箋を返す。画面が答えを付箋に持たせ、付箋の横のパネルに出す
+//   （/api/claude/answer。claude/answer.ts）。同じ claude/once.ts を使う。モデルは画面が送ったもの（AI 付箋の欄か Claude のパネルで最後に選んだもの）か、
+//   既定で Sonnet（CANVCODE_ANSWER_MODEL で変える）
 // - アイテム（PDF・リンクカード・Markdown のカード）の APA の引用を作る（/api/claude/cite。claude/cite.ts。MAI-98）。同じ claude/once.ts を使い、
 //   Web で項目を確かめさせる。モデルは既定で Sonnet（CANVCODE_CITE_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py

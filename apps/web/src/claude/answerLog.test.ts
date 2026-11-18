@@ -21,12 +21,12 @@ describe('AnswerLog', () => {
     expect(log.getSnapshot()[0]).toMatchObject({ id, status: 'running', thinking: 'まず質問を読む。' })
     // 回答中のものは残さない
     expect(storage.data.size).toBe(0)
-    log.finish(id, { status: 'done', frameId: 'node:f' })
-    expect(log.getSnapshot()[0]).toMatchObject({ status: 'done', frameId: 'node:f' })
+    log.finish(id, { status: 'done', noteId: 'node:f' })
+    expect(log.getSnapshot()[0]).toMatchObject({ status: 'done', noteId: 'node:f' })
     expect(changes).toHaveBeenCalledTimes(4)
 
     // 開き直すと、終わったものが戻る
-    expect(new AnswerLog(storage).getSnapshot()).toEqual([expect.objectContaining({ id, status: 'done', thinking: 'まず質問を読む。', frameId: 'node:f' })])
+    expect(new AnswerLog(storage).getSnapshot()).toEqual([expect.objectContaining({ id, status: 'done', thinking: 'まず質問を読む。', noteId: 'node:f' })])
   })
 
   it('keeps at most KEPT_ANSWERS finished answers, cuts long thinking, and clears only the finished ones', () => {
@@ -73,7 +73,7 @@ describe('thinkingBlocks', () => {
 describe('requestAnswer', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  const answer = { title: '題', assumptions: ['前提'], paragraphs: ['段落'], hints: [{ label: '短く', prompt: '短くする' }], model: 'claude-sonnet-5-5' }
+  const answer = { body: '### 題\n本文', related: ['node:a', 3], model: 'claude-sonnet-5-5' }
 
   // 行を 1 つずつ流す NDJSON の答え（行の途中で切れて届くこともある）
   function ndjson(chunks: string[]): Response {
@@ -87,15 +87,21 @@ describe('requestAnswer', () => {
     return new Response(body, { status: 200, headers: { 'content-type': 'application/x-ndjson; charset=utf-8' } })
   }
 
-  it('asks for NDJSON, passes the thinking as it comes, and returns the answer', async () => {
+  it('asks for NDJSON, passes the steps and the thinking as they come, and returns the answer', async () => {
     const fetch = vi.fn(async () =>
-      ndjson([`{"type":"thinking","text":"まず"}\n{"type":"thi`, `nking","text":"考える。"}\n`, `${JSON.stringify({ type: 'answer', answer })}\n`]),
+      ndjson([
+        `{"type":"step","step":"read"}\n{"type":"thinking","text":"まず"}\n{"type":"thi`,
+        `nking","text":"考える。"}\n{"type":"step","step":"write"}\n{"type":"step","step":"nope"}\n`,
+        `${JSON.stringify({ type: 'answer', answer })}\n`,
+      ]),
     )
     vi.stubGlobal('fetch', fetch)
     const thoughts: string[] = []
-    const result = await requestAnswer({ question: 'q' }, { model: 'opus' }, { onThinking: (text) => thoughts.push(text) })
+    const steps: string[] = []
+    const result = await requestAnswer({ question: 'q' }, { model: 'opus' }, { onThinking: (text) => thoughts.push(text), onStep: (step) => steps.push(step) })
     expect(thoughts).toEqual(['まず', '考える。'])
-    expect(result).toEqual({ title: '題', assumptions: ['前提'], paragraphs: ['段落'], hints: [{ label: '短く', prompt: '短くする' }] })
+    expect(steps).toEqual(['read', 'write'])
+    expect(result).toEqual({ body: '### 題\n本文', related: ['node:a'], model: 'claude-sonnet-5-5' })
     const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.headers).toMatchObject({ accept: 'application/x-ndjson' })
     expect(JSON.parse(init.body as string)).toEqual({ question: 'q', model: 'opus' })

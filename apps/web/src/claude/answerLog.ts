@@ -14,8 +14,8 @@ export interface AnswerLogEntry {
   thinking: string
   startedAt: number
   finishedAt?: number
-  // 置いた（書き直した）答えのフレーム
-  frameId?: string
+  // 答えを書いた付箋
+  noteId?: string
   error?: string
 }
 
@@ -44,7 +44,7 @@ export class AnswerLog {
   // 新しいものから
   getSnapshot = (): readonly AnswerLogEntry[] => this.entries
 
-  start(entry: Pick<AnswerLogEntry, 'canvasId' | 'kind' | 'label'> & { frameId?: string }): string {
+  start(entry: Pick<AnswerLogEntry, 'canvasId' | 'kind' | 'label'> & { noteId?: string }): string {
     const id = `answer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     this.entries = [{ id, ...entry, status: 'running', thinking: '', startedAt: Date.now() }, ...this.entries]
     this.notify()
@@ -56,7 +56,7 @@ export class AnswerLog {
     this.update(id, (entry) => ({ ...entry, thinking: entry.thinking + text }))
   }
 
-  finish(id: string, result: { status: 'done' | 'failed' | 'cancelled'; frameId?: string; error?: string }): void {
+  finish(id: string, result: { status: 'done' | 'failed' | 'cancelled'; noteId?: string; error?: string }): void {
     this.update(id, (entry) => ({ ...entry, ...result, finishedAt: Date.now() }))
     this.save()
   }
