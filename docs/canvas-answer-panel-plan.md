@@ -189,7 +189,7 @@ type AiContext =
 - 当たり判定：右上の角から `max(三角の大きさ, 24 / zoom)` の四角。ただし付箋の `min(w, h) / 2` を超えない（縮小しても付箋そのものは選べるように）
 - ホバー：1.25 倍で描き、カーソルを指にする
 - 点滅：答えを作っている間、不透明度を 0.35〜1 の間で 1.2 秒ごとに行き来させる。`view.ts` の `frameCallbacks` で、作っている付箋がある間だけオーバーレイを描き直す
-- 簡略描画（`detail: 'rough'`）のときは描かず、当たりもない
+- 付箋が画面で 16px（`AI_CORNER_MIN_NOTE_PX`）より小さく見えるときは描かず、当たりもない
 - 新しいファイル `aiCorner.ts`：三角の箱・当たり箱の計算と、オーバーレイに描く関数
 - `session.ts` に足す
   - `answeringIds: ReadonlySet<string>`：答えを作っている付箋（画面が、サーバーの動いている質問のうち、この Canvas のものから立てる。ほかのタブで頼んだものも点滅する）
@@ -319,7 +319,7 @@ type AiContext =
 
 1. サーバーの答えの形と、`answers.ts` の答えの持ち方（`setAiAnswer`・続きの札・置く関数）。答えのフレームの部分を消す（済み）
 2. 動いている質問（サーバーの `questions.ts` の動いている分・SSE・`claudeClient.ts` の `questions`）（済み）
-3. 角の三角（`aiCorner.ts`・オーバーレイ・`SelectTool`・`session`）
+3. 角の三角（`aiCorner.ts`・オーバーレイ・`SelectTool`・`session`）（済み）
 4. 付箋のまわり：付箋の横のパネル・上と下の欄・聞く流れ
 5. 右のパネル：タブと質問のタブ（一覧・答え・この場で続けて聞く）、`GET /api/claude/questions`
 6. ボタンの型を消す

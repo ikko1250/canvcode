@@ -72,6 +72,10 @@ export interface SessionState {
   cropEditing: CropEditing | null
   // 角丸のハンドルを出している図形（MAI-84）。角丸を持てる図形を 1 つだけ選び、ポインタがその上にあるとき（cornerHandles.ts）
   cornerHandlesId: string | null
+  // 答えを作っている付箋（画面が、動いている質問から立てる）。角の三角を点滅させる（aiCorner.ts）
+  answeringIds: ReadonlySet<string>
+  // マウスを乗せている角の三角の付箋
+  hoveredAiCorner: string | null
 }
 
 export interface DrawStyle {
@@ -117,6 +121,8 @@ export class Session {
       paintEditing: null,
       cropEditing: null,
       cornerHandlesId: null,
+      answeringIds: new Set(),
+      hoveredAiCorner: null,
       ...initial,
     }
   }

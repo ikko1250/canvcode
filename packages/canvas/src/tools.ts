@@ -1,3 +1,4 @@
+import { hitAiCorner } from './aiCorner.ts'
 import {
   applyMat,
   boxFromPoints,
@@ -126,6 +127,8 @@ export interface ToolContext {
   moveToCanvas(ids: string[], canvasId: string): void
   // 画面に見えている範囲（ワールド座標）。吸い付きの候補を絞る（MAI-53）。ないときはすべてのノードが候補
   viewportBox?(): Box
+  // 付箋の角の三角（答えを見るボタン。aiCorner.ts）を押した
+  openAnswer?(noteId: string): void
   // 押せるノード（ボタン。NodeTypeDef の pressable）を押した。渡さなければ、ボタンもほかのノードと同じくクリックで選ぶ
   pressButton?(nodeId: string): void
   // 今そのボタンを押せるか（Claude を使えないときに Claude に送るボタンは false）。false なら、ほかのノードと同じくクリックで選ぶ。既定は true
@@ -264,6 +267,8 @@ type SelectState =
   // 選んでいない押せるノード（ボタン）の上を押した。離せば押したことにし、ドラッグすれば選んで動かす
   // locked は固定したボタン（押せるが、ドラッグしても動かさず、範囲選択にする）
   | { name: 'pointingButton'; start: ToolPointer; nodeId: string; locked: boolean }
+  // 付箋の角の三角を押した（離したら答えのパネルを開く。動かしても何もしない）
+  | { name: 'pointingAiCorner'; start: ToolPointer; noteId: string }
   // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック。
   // excludeId は、Ctrl（⌘）を押して押したノード（塗りなしの図形の中の空白も含む）。範囲選択で選ばない
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string; excludeId?: string }
@@ -441,6 +446,12 @@ export class SelectTool implements Tool {
       this.startSpacing(spacingHit, pointer)
       return
     }
+    // 付箋の角の三角（答えを見るボタン）。ノードより先に調べる（付箋を選ばずに、答えのパネルを開く）
+    const aiCorner = hitAiCorner(editor, pointer.world)
+    if (aiCorner) {
+      this.state = { name: 'pointingAiCorner', start: pointer, noteId: aiCorner }
+      return
+    }
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
@@ -486,6 +497,7 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(cropHandleCursor(cropHit.hit, cropHit.handles.window.frame.rotation))
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         const gradientHit = hitGradientHandle(editor, pointer.screen)
@@ -493,12 +505,14 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(gradientHit.hit.handle === 'line' ? 'copy' : 'pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen) || hitBlockArrowHandle(editor, pointer.screen)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         const handleHit = this.hitSelectionHandle(pointer)
@@ -506,6 +520,7 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(this.cursorFor(handleHit.hit, handleHit.selection))
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         const spacingHit = hitSpacingHandle(editor, pointer)
@@ -513,9 +528,18 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(spacingHit.axis === 'x' ? 'col-resize' : 'row-resize')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing({ axis: spacingHit.axis, gapIndex: spacingHit.gapIndex })
+          this.setHoveredAiCorner(null)
           return
         }
         this.setHoveredSpacing(null)
+        // 付箋の角の三角の上では指のカーソル。三角を少し大きく描く
+        const aiCorner = hitAiCorner(editor, pointer.world)
+        this.setHoveredAiCorner(aiCorner)
+        if (aiCorner) {
+          this.ctx.setCursor('pointer')
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          return
+        }
         const zoom = editor.session.get().camera.zoom
         const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
         // 引用の範囲を選ぶ前は十字、調べる語をなぞる前は文字を選ぶカーソル（MAI-99）、
@@ -642,6 +666,8 @@ export class SelectTool implements Tool {
         this.onPointerMove(pointer)
         return
       }
+      case 'pointingAiCorner':
+        return
       case 'pointingButton': {
         // ボタンをドラッグしたら、押さずに、選んで動かす（固定したボタンなら、何もない所からと同じく範囲選択）
         if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
@@ -712,7 +738,15 @@ export class SelectTool implements Tool {
     if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().gapGuides.length > 0) {
       editor.session.set({ gapGuides: [] })
     }
-    if (state.name === 'pointingButton') {
+    if (state.name === 'pointingAiCorner') {
+      // 離した：答えのパネルを開く（閉じる）。ダブルクリックの 2 回目は押さない（開いてすぐ閉じないように）。動かしていたら何もしない
+      const now = Date.now()
+      const repeated = this.lastPress?.id === state.noteId && now - this.lastPress.time < DOUBLE_PRESS_MS
+      if (editor.getNode(state.noteId) && !repeated && !pointer.cancelled && dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) {
+        this.lastPress = { id: state.noteId, time: now }
+        this.ctx.openAnswer?.(state.noteId)
+      }
+    } else if (state.name === 'pointingButton') {
       // 動かさずに離した：ボタンを押す（消えていたら・取り消されたら何もしない）。ダブルクリックの 2 回目は押さない（同じ頼みを重ねない）
       const now = Date.now()
       const repeated = this.lastPress?.id === state.nodeId && now - this.lastPress.time < DOUBLE_PRESS_MS
@@ -851,6 +885,8 @@ export class SelectTool implements Tool {
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     // 選んでいないボタンのダブルクリックは、押したことになっている（文字の編集は、選んでから）
     if (this.pressableAt(pointer.world, hit)) return
+    // 付箋の角の三角のダブルクリックは、三角を押したことになっている（文字の編集は、三角の外で）
+    if (hitAiCorner(editor, pointer.world)) return
     if (!hit || editor.isContainer(hit, 'frame')) {
       createTextAt(this.ctx, pointer.world)
       return
@@ -875,12 +911,12 @@ export class SelectTool implements Tool {
 
   onExit(): void {
     this.cancel()
-    this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null })
+    this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null, hoveredAiCorner: null })
   }
 
-  // 長押し（タッチ）でメニューが出たら、押しかけたボタンは押さない
+  // 長押し（タッチ）でメニューが出たら、押しかけたボタン・三角は押さない
   onContextMenu(): void {
-    if (this.state.name === 'pointingButton') this.state = { name: 'idle' }
+    if (this.state.name === 'pointingButton' || this.state.name === 'pointingAiCorner') this.state = { name: 'idle' }
   }
 
   // 点にある、クリックで押せるノード（ボタン）で、選んでいないもの。hit はその点のふつうの当たり（固定したノードは当たらない）。
@@ -893,6 +929,10 @@ export class SelectTool implements Tool {
     const node = [top, hit].find((candidate) => candidate && editor.getType(candidate).pressable && (candidate === hit || candidate.locked))
     if (!node || this.ctx.canPressButton?.(node.id) === false) return null
     return this.selectableWithoutSideEffects(node.id) === node.id && !editor.session.get().selectedIds.has(node.id) ? node : null
+  }
+
+  private setHoveredAiCorner(next: string | null): void {
+    if (this.ctx.editor.session.get().hoveredAiCorner !== next) this.ctx.editor.session.set({ hoveredAiCorner: next })
   }
 
   private setHoveredSpacing(next: { axis: Axis; gapIndex: number } | null): void {

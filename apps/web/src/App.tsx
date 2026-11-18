@@ -1088,6 +1088,17 @@ export function App(props: { initial: InitialRecords }) {
   )
   // 答えを書いている付箋（AI モードの付箋の欄を隠す）
   const answeringBusy = useMemo(() => new Set(answering.flatMap((job) => job.busy)), [answering])
+  // 付箋の角の三角を点滅させる付箋（この画面で頼んでいるものと、サーバーが流す動いている質問。ほかのタブで頼んだものも）。
+  // Canvas ごとの Editor の session に立てる（Canvas を移ったら、移った先の Editor に）
+  const answeringQuestions = claudeState.questions
+  useEffect(() => {
+    const ids = new Set([
+      ...answering.flatMap((job) => (job.canvasId === editor.canvasId ? job.anchorIds.slice(0, 1) : [])),
+      ...answeringQuestions.flatMap((question) => (question.canvasId === editor.canvasId ? [question.noteId] : [])),
+    ])
+    const current = editor.session.get().answeringIds
+    if (ids.size !== current.size || [...ids].some((id) => !current.has(id))) editor.session.set({ answeringIds: ids })
+  }, [editor, answering, answeringQuestions])
 
   // APA の引用を置く（MAI-98）：アイテム（PDF の Portal・PDF のページ・リンクカード・Markdown のカード）の引用を、Claude（既定は Sonnet）に
   // Web で確かめながら作ってもらい、アイテムの右下にテキストとして置く（Undo 1 回で消える）。待っている間は、置く所に「作っています」を出す

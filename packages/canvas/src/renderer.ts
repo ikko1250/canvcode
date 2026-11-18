@@ -1,4 +1,5 @@
 import { expandBox, viewportBounds, type Box, type Camera, type Mat, type NodeRecord } from '@canvcode/core'
+import { drawAiCorners, type AiCornerState } from './aiCorner.ts'
 import {
   arrowPolyline,
   HIDDEN_SLIDE_OPACITY,
@@ -309,6 +310,8 @@ export interface OverlayState {
   // 間隔のハンドル（MAI-54）：ホバー中の隙間と、ドラッグ中の間隔
   hoveredSpacing?: { axis: Axis; gapIndex: number } | null
   spacingDrag?: { axis: Axis; gap: number } | null
+  // 付箋の角の三角（答えを見るボタン。aiCorner.ts）
+  aiCorners?: AiCornerState
 }
 
 export function drawOverlay(
@@ -325,6 +328,8 @@ export function drawOverlay(
 
   // 文字があふれているセル（スライド v2）。選択の枠より下に描く。PDF に出す画像には描かない
   if (!view.print) drawSlideOverflows(ctx, editor, view)
+  // 付箋の角の三角（答えを見るボタン）。選択の枠とハンドルより下に描く
+  if (state.aiCorners) drawAiCorners(ctx, editor, view, state.aiCorners)
 
   ctx.lineWidth = 1.5 * view.dpr
   ctx.strokeStyle = SELECTION_COLOR
