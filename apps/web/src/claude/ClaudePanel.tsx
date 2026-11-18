@@ -36,7 +36,7 @@ import { answerOfEvents, toolLabel } from './toolGroups.ts'
 //   新しい会話は、ブラウザに覚えた最後に選んだ値から始める。答えの右に、頼んだモデルと effort の札を出す
 // - 答えの「📌 付箋に切り出す」（キャンバスでだけ）：その答えを添えた AI 付箋を、いま開いている Canvas に置く（onCutToNote。会話には何も足さない）。
 //   付箋の札の ↗ で戻ってきたら（reveal）、その会話を選び、そのジョブまでスクロールして、少しのあいだ色を付ける
-// - 付箋の質問を取り込む（答えの「会話で続ける」。importRequest）：入力欄の上に「付箋の質問を取り込みます『質問』 ×」の札を置く。
+// - 付箋の質問を取り込む（答えの「会話で続ける」。importRequest）：入力欄の上に「付箋の質問を取り込みます「質問」 ×」の札を置く。
 //   取り込むだけでは Claude を動かさず、次に送る文と一緒に渡す（imports）。取り込めるのは 1 度に 1 つ。会話の欄には、そのジョブの頼んだ文の上にカードを出す
 // - 入力欄の「会話｜質問」（キャンバスでだけ）：「質問」で送ると、その 1 つだけ会話に入れずに聞く（POST /api/claude/answer。前の答えとして、
 //   会話の最後の終わったジョブを添える）。送ったら「会話」に戻す。会話の欄には、聞いた時刻の位置に「別枠の質問」の点線のカードを出し、
@@ -502,6 +502,7 @@ function PermissionList(props: {
   }, [])
   return (
     <div className="claude-permissions" role="region" aria-label={`許可を待っています（${permissions.length}）`}>
+      {permissions.length > 1 && <div className="claude-permissions-count">許可を待っています（{permissions.length}）</div>}
       {permissions.map((permission) => (
         <div key={permission.id} className="claude-permission">
           <div className="claude-permission-title">

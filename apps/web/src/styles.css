@@ -3299,13 +3299,18 @@ button.pdf-page-number:hover {
   box-sizing: border-box;
   color: var(--color-text);
   font: var(--font-control);
+  /* 枠で囲まないので、ボタン・札のない所はキャンバスに通す（下の付箋を押せるように） */
+  pointer-events: none;
+}
+
+.ai-note-controls :is(button, .ai-note-context, .ai-note-picking, .claude-model-popover) {
+  pointer-events: auto;
 }
 
 .ai-note-controls button {
-  /* 当たり（MAI-113）：欄の中の部品は 6px の間で並ぶので、その半分ずつ広げる（枠の 1px を足して書く）。
-     上下は欄の余白（6px）まで */
+  /* 当たり（MAI-113）：部品は 6px の間で並ぶので、その半分ずつ広げる（枠の 1px を足して書く）。上下も、付箋との間・段の間（6px）の半分まで */
   --target-reach-x: 4px;
-  --target-reach-y: 7px;
+  --target-reach-y: 4px;
   padding: 3px 8px;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
@@ -3368,7 +3373,8 @@ button.pdf-page-number:hover {
   align-items: center;
   justify-content: center;
   padding: 3px 6px;
-  border-color: var(--color-selected-border);
+  /* キャンバスの上に浮かぶので、枠は 3:1（MAI-110） */
+  border-color: var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-accent-soft);
   color: var(--color-text-sub);
@@ -3383,8 +3389,8 @@ button.pdf-page-number:hover {
 
 .ai-note-controls .ai-note-attach-count {
   min-width: 24px;
-  padding: 3px 6px;
-  border: none;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
   border-radius: 999px;
   background: var(--color-accent-soft);
   color: var(--color-accent);
@@ -3394,6 +3400,7 @@ button.pdf-page-number:hover {
 .ai-note-picking {
   overflow: hidden;
   padding: 2px 8px;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-accent);
@@ -3416,14 +3423,14 @@ button.pdf-page-number:hover {
 }
 
 .ai-note-controls .claude-model-button {
-  border-color: var(--color-selected-border);
+  border-color: var(--color-border);
   border-radius: 999px;
   background: var(--color-accent-soft);
   color: var(--color-text-sub);
   font: var(--font-control);
 }
 
-/* 送信（紙飛行機）は 1 段目の右端 */
+/* 送信（➤）は 1 段目の右端 */
 .ai-note-controls .ai-note-send {
   display: inline-flex;
   align-items: center;
@@ -3473,7 +3480,6 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
-/* 会話の答えの札（会話のタブの「付箋に切り出す」）。白の地で、前の答えの札と見分ける */
 /* 上の札の当たりは、下の札の手前まで（札の間 6px の半分と、余白・枠） */
 .ai-note-chip:not(:last-child) button {
   --target-reach-bottom: 6px;
@@ -4069,7 +4075,8 @@ button.pdf-page-number:hover {
 :is(.claude-panel, .question-panel) .claude-close {
   border-color: transparent;
   background: transparent;
-  font: var(--font-icon);
+  color: var(--color-text-sub);
+  font: var(--font-icon-large);
 }
 
 .claude-log {
@@ -4503,15 +4510,16 @@ button.pdf-page-number:hover {
   max-height: 30%;
   overflow-y: auto;
   margin: 0 12px 8px;
-  padding: 4px 10px;
+  /* スクロールするので、中のフォーカスの枠（6px）が切れないよう、余白を 6px とる */
+  padding: 6px 10px;
   border-radius: var(--radius-panel);
   background: var(--color-accent-soft);
   color: var(--color-accent);
 }
 
 .claude-panel .claude-tasks-toggle {
-  /* 当たり（MAI-113）：上下は帯の余白（4px）まで */
-  --target-reach-y: 4px;
+  /* 当たり（MAI-113）：上下は帯の余白（6px）まで */
+  --target-reach-y: 6px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4553,6 +4561,7 @@ button.pdf-page-number:hover {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  color: var(--color-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4613,14 +4622,18 @@ button.pdf-page-number:hover {
   gap: 6px;
   margin: 0 12px calc(12px + env(safe-area-inset-bottom));
   padding: 8px 10px;
-  border: 1px solid var(--color-accent);
+  /* 入力欄なので、枠は入力欄の色（DADS。Gray-600） */
+  border: 1px solid var(--color-border-field);
   border-radius: var(--radius-large);
   background: var(--color-surface);
 }
 
-/* 「質問」で送るときは、入力欄の枠を主な色にする（会話に入らないことが分かるように） */
-.claude-compose.question textarea {
-  border-color: var(--color-accent);
+/* 「質問」で送るときは、入力欄の枠を主な色の 2px の枠にし、地を淡くする（会話に入らないことが分かるように。
+   枠が 1px 太るぶん、余白を 1px 減らして中身を動かさない。フォーカスの枠の box-shadow に消されないよう、border で描く） */
+.claude-compose.question {
+  padding: 7px 9px;
+  border: 2px solid var(--color-accent);
+  background: var(--color-accent-soft);
 }
 
 /* 入力欄の上の札（添えた所・取り込む付箋の質問） */
@@ -4738,6 +4751,7 @@ button.pdf-page-number:hover {
   border-color: var(--color-border-subtle);
   background: var(--color-surface);
   color: var(--color-text);
+  font-weight: var(--font-weight-700);
 }
 
 /* 送る（➤）。主な色の丸いボタン */
@@ -5042,6 +5056,12 @@ button.pdf-page-number:hover {
   margin: 0 12px 8px;
 }
 
+/* 許可を待っているものが 2 つ以上のときの数（1 つのときは出さない） */
+.claude-permissions-count {
+  color: var(--color-warning-strong);
+  font-weight: var(--font-weight-700);
+}
+
 .claude-permission {
   display: flex;
   flex-direction: column;
@@ -5141,6 +5161,7 @@ button.pdf-page-number:hover {
   border-color: var(--color-border-subtle);
   background: var(--color-surface);
   color: var(--color-text);
+  font-weight: var(--font-weight-700);
 }
 
 .claude-tab-count,
@@ -5170,8 +5191,8 @@ button.pdf-page-number:hover {
 
 .question-panel .question-filter select {
   appearance: none;
-  padding: 4px 30px 4px 14px;
-  border: none;
+  padding: 3px 30px 3px 14px;
+  border: 1px solid var(--color-accent);
   border-radius: 999px;
   background: var(--color-accent-soft);
   color: var(--color-accent);
@@ -5208,6 +5229,10 @@ button.pdf-page-number:hover {
   padding-right: 8px;
   border: 1px solid var(--color-selected-border);
   background: var(--color-accent-soft);
+}
+
+.question-row.running:hover {
+  border-color: var(--color-accent);
 }
 
 .question-panel .question-row-main {
@@ -5277,10 +5302,6 @@ button.pdf-page-number:hover {
   color: var(--color-text-sub);
 }
 
-.question-row-steps {
-  color: var(--color-text-sub);
-}
-
 .question-step.done {
   color: var(--color-text-sub);
 }
@@ -5291,7 +5312,7 @@ button.pdf-page-number:hover {
 }
 
 .question-step.todo {
-  color: var(--color-text-disabled);
+  color: var(--color-text-sub);
 }
 
 .question-panel .question-row-stop {

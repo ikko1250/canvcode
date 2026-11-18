@@ -153,6 +153,30 @@ test('keys pressed in the panel do not reach the canvas shortcuts', async ({ pag
   expect(await textSelection(page)).toMatch(/^question\s+Answer from Claude\s/)
 })
 
+test('the focus ring of the prompt box goes around the whole composer card, and 質問 mode thickens its border (claude-chat-tab-plan 4)', async ({ page }) => {
+  await openApp(page)
+  const ring = (selector: string) =>
+    page.locator(selector).evaluate((el) => {
+      const style = getComputedStyle(el)
+      return { outline: `${style.outlineStyle} ${style.outlineWidth}`, border: `${style.borderTopWidth} ${style.borderTopColor}` }
+    })
+  await promptBox(page).click()
+  // 文の欄そのものには出さず、札・ボタンと一緒に囲む外側に、DADS のフォーカスの枠を出す
+  expect((await ring('.claude-compose textarea')).outline).toMatch(/^none /)
+  expect((await ring('.claude-compose')).outline).toBe('solid 4px')
+  const chat = await ring('.claude-compose')
+  // 「質問」にすると、枠が主な色の 2px になる（会話に入らないことが分かるように）
+  await page.getByRole('radio', { name: '質問' }).click()
+  await promptBox(page).click()
+  const question = await ring('.claude-compose')
+  expect(chat.border).toMatch(/^1px /)
+  expect(question.border).toMatch(/^2px /)
+  expect(question.border).not.toBe(chat.border.replace(/^1px/, '2px'))
+  // フォーカスを外すと、枠は消える
+  await page.locator('.claude-log').click({ position: { x: 5, y: 5 } })
+  expect((await ring('.claude-compose')).outline).toMatch(/^none /)
+})
+
 test('arrow keys move the caret in the prompt box without moving the canvas node', async ({ page }) => {
   await openApp(page)
   const [id] = await selectedIds(page)

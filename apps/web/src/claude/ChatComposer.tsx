@@ -4,7 +4,7 @@ import { ModelPicker } from './ModelPicker.tsx'
 import type { ModelSetting } from './modelChoice.ts'
 
 // 会話のタブの入力欄（docs/claude-chat-tab-plan.md の 4）。
-// - 上に札：添えた所（「📍 名前 ×」）と、取り込む付箋の質問（「付箋の質問を取り込みます『質問』 ×」）
+// - 上に札：添えた所（「📍 名前 ×」）と、取り込む付箋の質問（「付箋の質問を取り込みます「質問」 ×」）
 // - 文の欄。Enter は改行、Ctrl（⌘）+Enter で送る（呼ぶ側の onKeyDown）
 // - 下の並び：📎（選んでいる所を添える）、「会話｜質問」の切り替え（質問は、その 1 つだけ会話に入れずに聞く。キャンバスでだけ出す）、
 //   モデルの札、➤（送る）

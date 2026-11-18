@@ -247,7 +247,7 @@ describe('AI notes (the canvas AI)', () => {
             ai: {
               contexts: [
                 { kind: 'answer', noteId: 'node:prev', canvasId: 'canvas:x', label: '前', turns: [{ question: 'Q', answer: 'A' }] },
-                { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『整理』の答え', turns: [{ question: '整理して', answer: '整理しました' }] },
+                { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「整理」の答え', turns: [{ question: '整理して', answer: '整理しました' }] },
                 { kind: 'canvas', label: '範囲', target },
               ],
               answer,
@@ -269,7 +269,7 @@ describe('AI notes (the canvas AI)', () => {
       answer,
       contexts: [
         { kind: 'answer', label: '前', noteId: 'node:prev', canvasId: 'canvas:x' },
-        { kind: 'chat', label: '会話『整理』の答え', threadId: 't1', jobId: 'j1' },
+        { kind: 'chat', label: '会話「整理」の答え', threadId: 't1', jobId: 'j1' },
         { kind: 'canvas', label: '範囲' },
       ],
     })
