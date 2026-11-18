@@ -4,6 +4,7 @@ import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRe
 import {
   CanvasView,
   aiNoteMeta,
+  chatContext,
   followUpContext,
   placeAnswerText,
   placeFollowUpAt,
@@ -79,7 +80,7 @@ import { DesignPanel } from './design/DesignPanel.tsx'
 import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
-import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
+import { ClaudePanel, type ChatAnswerCut, type ChatReveal, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeTabs } from './claude/ClaudeTabs.tsx'
 import { QuestionPanel } from './claude/QuestionPanel.tsx'
 import { SeenAnswers } from './claude/seenAnswers.ts'
@@ -1193,6 +1194,28 @@ export function App(props: { initial: InitialRecords }) {
     },
     [keepAnswer, notify],
   )
+  // 会話の答えを付箋に切り出す（会話のタブの「📌 付箋に切り出す」。docs/claude-chat-tab-plan.md の 5）：いま開いている Canvas の画面の真ん中に、
+  // 会話の札（kind: 'chat'。頼んだ文と答えの写し）を添えた AI 付箋を置き、文字の編集を始める（置くことと書いた文字で Undo 1 回）。会話には何も足さない
+  const cutChatAnswer = useCallback(
+    (cut: ChatAnswerCut) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const tx = editor.begin('会話の答えを付箋に切り出す')
+      const placed = placeFollowUpAt(editor, tx, viewCenter(view), chatContext(cut))
+      tx.flush()
+      view.textEditor.start(placed, { tx })
+    },
+    [notify],
+  )
+  // 会話の札の ↗：会話のタブを開き、その会話を選んで、そのジョブまでスクロールして色を付ける（ClaudePanel の reveal）
+  const [chatReveal, setChatReveal] = useState<ChatReveal | null>(null)
+  const openChatAnswer = useCallback((threadId: string, jobId: string) => {
+    setClaudeView('chat')
+    setEditorClaudeHidden(false)
+    setChatReveal({ threadId, jobId, n: Date.now() })
+  }, [])
   const openAnswerRef = useRef(openAnswer)
   useLayoutEffect(() => {
     openAnswerRef.current = openAnswer
@@ -2569,6 +2592,7 @@ export function App(props: { initial: InitialRecords }) {
             focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
             onSend={(noteId) => void askWithNotes([noteId])}
             onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
+            onOpenChat={openChatAnswer}
             canvasTitle={canvasTitle}
             notify={notify}
           />
@@ -2761,8 +2785,9 @@ export function App(props: { initial: InitialRecords }) {
               // 全画面のエディタでは、選んでいる行を添える
               onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
               onClearAttachment={() => setClaudeAttachment(null)}
-              // 全画面のエディタでは、チャットだけを出す（質問のタブに移るのは、キャンバスでだけ）
-              {...(claudeInEditor ? {} : { tabs: claudeTabs('chat') })}
+              // 全画面のエディタでは、チャットだけを出す（質問のタブに移るのは、キャンバスでだけ。付箋に切り出すのも、キャンバスでだけ）
+              {...(claudeInEditor ? {} : { tabs: claudeTabs('chat'), onCutToNote: cutChatAnswer })}
+              reveal={chatReveal}
               onClose={closeClaude}
             />
           </>,

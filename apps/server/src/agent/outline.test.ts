@@ -243,7 +243,16 @@ describe('AI notes (the canvas AI)', () => {
     records.apply(
       [
         node('node:asked', 'note', root, 'a1', text('コンテキストとは？'), {
-          meta: { ai: { contexts: [{ kind: 'answer', noteId: 'node:prev', canvasId: 'canvas:x', label: '前', turns: [{ question: 'Q', answer: 'A' }] }, { kind: 'canvas', label: '範囲', target }], answer } },
+          meta: {
+            ai: {
+              contexts: [
+                { kind: 'answer', noteId: 'node:prev', canvasId: 'canvas:x', label: '前', turns: [{ question: 'Q', answer: 'A' }] },
+                { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『整理』の答え', turns: [{ question: '整理して', answer: '整理しました' }] },
+                { kind: 'canvas', label: '範囲', target },
+              ],
+              answer,
+            },
+          },
         }),
         node('node:waiting', 'note', root, 'a2', text('まだ聞いていない'), { y: 100, meta: { ai: { contexts: [] } } }),
         node('node:plain', 'note', root, 'a3', text('ふつうの付箋'), { y: 200 }),
@@ -255,11 +264,12 @@ describe('AI notes (the canvas AI)', () => {
     expect(lines).toContain('node:waiting note 0,100 200x60 ai "まだ聞いていない"')
     expect(lines).toContain('node:plain note 0,200 200x60 "ふつうの付箋"')
     const { nodes } = readNodes(records, ['node:asked', 'node:plain'])
-    // 前の答えの写し（turns）と、範囲の中身は出さない
+    // 前の答え・会話の答えの写し（turns）と、範囲の中身は出さない
     expect(nodes[0]!.ai).toEqual({
       answer,
       contexts: [
         { kind: 'answer', label: '前', noteId: 'node:prev', canvasId: 'canvas:x' },
+        { kind: 'chat', label: '会話『整理』の答え', threadId: 't1', jobId: 'j1' },
         { kind: 'canvas', label: '範囲' },
       ],
     })

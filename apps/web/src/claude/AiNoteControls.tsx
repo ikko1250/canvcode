@@ -13,7 +13,9 @@ import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 // - コンテキストを選ぶアイコン：付箋と一緒にほかのノードを選んでいれば、それをすぐ添える。付箋だけなら「添える所を選ぶ」状態にし、
 //   キャンバスで範囲をドラッグするかノードをクリックしたら添えて、付箋を選び直す（Esc かもう一度押すとやめる）。
 //   添えた数を押すと、添えたものの一覧（× で外す）
-// - 付箋の上の札：前の答え（続き）を添えた付箋には、いつも出す（「『質問』の答え」と、元の付箋へ移る ↗）
+// - 付箋の上の札：前の答え（続き）を添えた付箋には、いつも出す（「『質問』の答え」と、元の付箋へ移る ↗）。
+//   会話の答え（会話のタブの「付箋に切り出す」）を添えた付箋には「💬 会話『題』の答え」と、会話のそのジョブへ戻る「↗ 会話へ」
+//   （docs/claude-chat-tab-plan.md の 5）。両方あれば、上下に並べる
 // - 答えを作っている間は、送信を押せない（角の三角が点滅している）。文字の編集中は Ctrl+Enter でも送る
 // - 小さく表示しているときは出さない
 const MIN_ZOOM = 0.3
@@ -32,10 +34,12 @@ export function AiNoteControls(props: {
   onSend(noteId: string): void
   // 前の答えの札の ↗：元の付箋へ移る
   onOpenContext(canvasId: string, noteId: string): void
+  // 会話の答えの札の ↗：会話のそのジョブへ戻る（Claude を使えないときは渡さない）
+  onOpenChat?(threadId: string, jobId: string): void
   canvasTitle(canvasId: string): string
   notify(message: string): void
 }) {
-  const { editor, view, session, claude, busy, focusedNoteId, onSend, onOpenContext, canvasTitle, notify } = props
+  const { editor, view, session, claude, busy, focusedNoteId, onSend, onOpenContext, onOpenChat, canvasTitle, notify } = props
   const { camera } = session
   const notes = useAiNotes(editor)
   const { models } = useClaudeState(claude)
@@ -101,23 +105,37 @@ export function AiNoteControls(props: {
   return (
     <>
       {notes.map((node) => {
-        // 付箋の上の札：前の答え（続き）
-        const context = aiNoteMeta(node)?.contexts.find((item) => item.kind === 'answer')
+        // 付箋の上の札：会話の答えと、前の答え（続き）
+        const contexts = aiNoteMeta(node)?.contexts ?? []
+        const chat = contexts.find((item) => item.kind === 'chat')
+        const answer = contexts.find((item) => item.kind === 'answer')
         const box = editor.index.get(node.id)?.worldBounds
-        if (!context || context.kind !== 'answer' || !box) return null
-        const here = context.canvasId === editor.canvasId
+        if ((!chat && !answer) || !box) return null
         return (
           <div
             key={`chip:${node.id}`}
-            className="ai-note-chip"
+            className="ai-note-chips"
             style={{ ...screen(box.x, box.y), maxWidth: Math.max(MIN_WIDTH, box.w * camera.zoom) }}
             onPointerDown={(e) => e.stopPropagation()}
-            title="前の質問と答えを踏まえて答えます"
           >
-            <span className="ai-note-chip-label">📎 「{context.label}」の答え</span>
-            <button type="button" onClick={() => onOpenContext(context.canvasId, context.noteId)} title="元の付箋へ移る">
-              ↗ {here ? '元の付箋' : canvasTitle(context.canvasId)}
-            </button>
+            {chat?.kind === 'chat' && (
+              <div className="ai-note-chip chat" title="会話の答えを踏まえて答えます（会話には何も足しません）">
+                <span className="ai-note-chip-label">💬 {chat.label}</span>
+                {onOpenChat && (
+                  <button type="button" onClick={() => onOpenChat(chat.threadId, chat.jobId)} title="会話のこの答えへ戻る">
+                    ↗ 会話へ
+                  </button>
+                )}
+              </div>
+            )}
+            {answer?.kind === 'answer' && (
+              <div className="ai-note-chip" title="前の質問と答えを踏まえて答えます">
+                <span className="ai-note-chip-label">📎 「{answer.label}」の答え</span>
+                <button type="button" onClick={() => onOpenContext(answer.canvasId, answer.noteId)} title="元の付箋へ移る">
+                  ↗ {answer.canvasId === editor.canvasId ? '元の付箋' : canvasTitle(answer.canvasId)}
+                </button>
+              </div>
+            )}
           </div>
         )
       })}
@@ -286,6 +304,7 @@ function selectionContext(editor: Editor, view: CanvasView, noteId: string): AiC
 
 function sameContext(a: AiContext, b: AiContext): boolean {
   if (a.kind === 'answer' && b.kind === 'answer') return a.noteId === b.noteId
+  if (a.kind === 'chat' && b.kind === 'chat') return a.jobId === b.jobId
   if (a.kind !== 'canvas' || b.kind !== 'canvas') return false
   const ids = (context: typeof a) => context.target.nodes.map((node) => node.id).sort().join(',')
   return ids(a) === ids(b) && JSON.stringify(a.target.rect) === JSON.stringify(b.target.rect)

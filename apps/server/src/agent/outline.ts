@@ -538,7 +538,8 @@ function aiOf(record: StoredRecord): { answer?: unknown; contexts?: unknown } | 
   return typeof ai === 'object' && ai !== null ? (ai as { answer?: unknown; contexts?: unknown }) : null
 }
 
-// read_nodes の AI 付箋：届いた答え（本文は Markdown のまま）と、添えたもの（前の答えは、どの付箋の答えかと名前だけ）
+// read_nodes の AI 付箋：届いた答え（本文は Markdown のまま）と、添えたもの（前の答えは、どの付箋の答えかと名前だけ。
+// 会話の答えは、どの会話のどのジョブかと名前だけで、写しは出さない）
 function aiDetail(ai: { answer?: unknown; contexts?: unknown }): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const answer = typeof ai.answer === 'object' && ai.answer !== null ? (ai.answer as Record<string, unknown>) : null
@@ -549,8 +550,9 @@ function aiDetail(ai: { answer?: unknown; contexts?: unknown }): Record<string, 
   }
   const contexts = (Array.isArray(ai.contexts) ? ai.contexts : []).flatMap((context) => {
     if (typeof context !== 'object' || context === null) return []
-    const { kind, label, noteId, canvasId } = context as Record<string, unknown>
+    const { kind, label, noteId, canvasId, threadId, jobId } = context as Record<string, unknown>
     if (kind === 'answer') return [{ kind, label, noteId, canvasId }]
+    if (kind === 'chat') return [{ kind, label, threadId, jobId }]
     if (kind === 'canvas') return [{ kind, label }]
     return []
   })

@@ -925,3 +925,49 @@ test('shows the whole model popover when the right half of the file editor is na
     }),
   ).toBe(true)
 })
+
+test('cuts an answer of the chat into an AI note, sends the chat answer with it, and the chip goes back to the job (claude-chat-tab-plan 5)', async ({ page }) => {
+  await openApp(page)
+  const asked: Record<string, unknown>[] = []
+  await page.route('**/api/claude/answer', (route) => {
+    asked.push(route.request().postDataJSON() as Record<string, unknown>)
+    return route.fulfill({ json: { body: '続きの答え', related: [], model: 'claude-sonnet-5-5' } })
+  })
+  const before = await page.evaluate(() => (window as any).canvcode.editor.index.allIds().length)
+
+  // 答えにマウスを乗せると「📌 付箋に切り出す」「コピー」が出る
+  const actions = page.locator('.claude-answer-actions').first()
+  await expect(actions).toHaveCSS('opacity', '0')
+  await page.locator('.claude-job').first().hover()
+  await expect(actions).toHaveCSS('opacity', '1')
+  await actions.getByRole('button', { name: '📌 付箋に切り出す' }).click()
+
+  // 画面の真ん中に、会話の札を添えた AI 付箋を置き、文字の編集を始める（会話には何も足さない）
+  const placed = await page.evaluate((count) => {
+    const editor = (window as any).canvcode.editor
+    const ids: string[] = editor.index.allIds()
+    if (ids.length !== count + 1) return null
+    const id = ids.find((id) => editor.getNode(id)?.meta?.ai)
+    return { id, ai: editor.getNode(id).meta.ai, editing: editor.session.get().editingId }
+  }, before)
+  expect(placed).toMatchObject({
+    ai: { contexts: [{ kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『hello』の答え', turns: [{ question: 'question', answer: 'Answer from Claude' }] }] },
+  })
+  expect(placed!.editing).toBe(placed!.id)
+  await expect(page.locator('.claude-prompt')).toHaveCount(1)
+  await expect(page.locator('.ai-note-chip.chat')).toContainText('💬 会話『hello』の答え')
+
+  // 書いて Ctrl+Enter で送ると、前の答えとして会話の答えを渡す
+  await page.keyboard.type('つまりどういうこと？')
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect.poll(() => asked.length).toBe(1)
+  expect(asked[0]).toMatchObject({ question: 'つまりどういうこと？', previous: [{ question: 'question', answer: 'Answer from Claude' }] })
+
+  // 質問のタブに移ってから、札の ↗ で会話のそのジョブへ戻る（少しのあいだ色が付く）
+  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await expect(panel(page)).toBeHidden()
+  await page.locator('.ai-note-chip.chat').getByRole('button', { name: '↗ 会話へ' }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(page.locator('.claude-job[data-job-id="j1"]')).toHaveClass(/highlighted/)
+  await expect(page.locator('.claude-job[data-job-id="j1"]')).not.toHaveClass(/highlighted/, { timeout: 5000 })
+})
