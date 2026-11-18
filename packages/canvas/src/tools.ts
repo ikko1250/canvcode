@@ -43,6 +43,7 @@ import {
 import { spaceBoxes, type ArrangeBox, type Axis } from './arrange.ts'
 import { bindTargetAt, makeBinding, normalizedAnchorAt } from './bindings.ts'
 import { BlockArrowHandleDrag, hitBlockArrowHandle } from './blockArrowHandles.ts'
+import { hitTriangleHandle, startTriangleHandleDrag } from './triangleHandle.ts'
 import { CornerRadiusDrag, hitCornerHandle, updateCornerHandles } from './cornerHandles.ts'
 import { GradientHandleDrag, hitGradientHandle, paintEditingTarget } from './gradientHandles.ts'
 import { CropDrag, cropEditingTarget, cropHandleCursor, cropKindOf, hitCropHandle } from './cropHandles.ts'
@@ -55,6 +56,7 @@ import {
   nearestBoxes,
   sameGuides,
   snapResize,
+  squareSizeGuides,
   type SnapGuide,
 } from './snapping.ts'
 import { buildGapIndex, sameGapGuides, snapMove, type GapGuide, type GapIndex } from './gapSnapping.ts'
@@ -279,6 +281,8 @@ type SelectState =
       handle: Handle
       tx: Transaction<WorkspaceRecord>
       selection: TransformSelection
+      canSnapSquare: boolean
+      snappedSquare: boolean
       // 吸い付く相手の箱（MAI-58）。枠が回転しているときは null（吸い付かせない）
       snapCandidates: Box[] | null
     }
@@ -301,7 +305,7 @@ type SelectState =
   // 角丸のハンドルをドラッグしている（MAI-84）
   | { name: 'draggingCorner'; tx: Transaction<WorkspaceRecord>; drag: CornerRadiusDrag }
   // ブロック矢印の形のハンドルをドラッグしている（MAI-87）
-  | { name: 'draggingBlockArrow'; tx: Transaction<WorkspaceRecord>; drag: BlockArrowHandleDrag }
+  | { name: 'draggingShapeHandle'; tx: Transaction<WorkspaceRecord>; drag: { move(world: Vec): void } }
   // 画像の切り抜きのハンドル・画像をドラッグしている
   | { name: 'draggingCrop'; tx: Transaction<WorkspaceRecord>; drag: CropDrag }
   | {
@@ -411,7 +415,14 @@ export class SelectTool implements Tool {
     if (blockArrowHit) {
       const tx = editor.begin('block arrow shape')
       this.ctx.lift([blockArrowHit.nodeId])
-      this.state = { name: 'draggingBlockArrow', tx, drag: new BlockArrowHandleDrag(editor, tx, blockArrowHit.nodeId, blockArrowHit.kind, pointer.world) }
+      this.state = { name: 'draggingShapeHandle', tx, drag: new BlockArrowHandleDrag(editor, tx, blockArrowHit.nodeId, blockArrowHit.kind, pointer.world) }
+      return
+    }
+    const triangleHit = hitTriangleHandle(editor, pointer.screen)
+    if (triangleHit) {
+      const tx = editor.begin('triangle apex')
+      this.ctx.lift([triangleHit.nodeId])
+      this.state = { name: 'draggingShapeHandle', tx, drag: startTriangleHandleDrag(editor, tx, triangleHit.nodeId, pointer.world) }
       return
     }
     // 選択枠のハンドルは、ノードより先に調べる
@@ -476,7 +487,7 @@ export class SelectTool implements Tool {
           this.setHoveredSpacing(null)
           return
         }
-        if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen) || hitBlockArrowHandle(editor, pointer.screen)) {
+        if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen) || hitBlockArrowHandle(editor, pointer.screen) || hitTriangleHandle(editor, pointer.screen)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
@@ -530,7 +541,7 @@ export class SelectTool implements Tool {
         state.drag.move(pointer.world)
         return
       }
-      case 'draggingBlockArrow': {
+      case 'draggingShapeHandle': {
         state.drag.move(pointer.world)
         return
       }
@@ -569,19 +580,29 @@ export class SelectTool implements Tool {
       }
       case 'resizing': {
         const { selection, handle, tx } = state
+        const keepAspect = pointer.shiftKey || selection.forceAspect
+        const snapEnabled = !(pointer.ctrlKey || pointer.metaKey)
+        const threshold = SNAP_THRESHOLD_PX / editor.session.get().camera.zoom
+        const squareSnapThreshold = state.canSnapSquare && snapEnabled && !keepAspect
+          ? threshold * (state.snappedSquare ? 1.5 : 1)
+          : undefined
         const options = {
-          keepAspect: pointer.shiftKey || selection.forceAspect,
+          keepAspect,
+          squareSnapThreshold,
           fromCenter: pointer.altKey,
           minW: selection.minSize.w,
           minH: selection.minSize.h,
         }
         let frame = resizeFrame(selection.frame, handle, pointer.world, options)
+        state.snappedSquare = squareSnapThreshold !== undefined && frame.w === frame.h
         // 動かしている辺を、ほかのノードの辺・中心に吸い付けるか、幅・高さをほかのノードにそろえる（MAI-58）。
         // Ctrl（⌘）を押している間は自由
         let guides: SnapGuide[] = []
         let sizes: GapGuide[] = []
-        if (state.snapCandidates && !(pointer.ctrlKey || pointer.metaKey)) {
-          const threshold = SNAP_THRESHOLD_PX / editor.session.get().camera.zoom
+        // 正方形に吸い付いている間は、他の吸い付きで縦横の寸法を変えない。
+        if (state.snappedSquare) {
+          sizes = squareSizeGuides(frame, threshold)
+        } else if (state.snapCandidates && snapEnabled) {
           const snap = snapResize(frame, handle, state.snapCandidates, threshold, options)
           frame = snap.box
           guides = snap.guides
@@ -738,7 +759,7 @@ export class SelectTool implements Tool {
       if (state.name === 'draggingArrowEnd') state.drag.end()
       editor.finish(state.tx)
       this.ctx.drop()
-    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner' || state.name === 'draggingBlockArrow' || state.name === 'draggingCrop') {
+    } else if (state.name === 'draggingGradient' || state.name === 'draggingCorner' || state.name === 'draggingShapeHandle' || state.name === 'draggingCrop') {
       editor.finish(state.tx)
       this.ctx.drop()
     }
@@ -771,7 +792,7 @@ export class SelectTool implements Tool {
       state.name === 'bendingArrow' ||
       state.name === 'draggingGradient' ||
       state.name === 'draggingCorner' ||
-      state.name === 'draggingBlockArrow' ||
+      state.name === 'draggingShapeHandle' ||
       state.name === 'draggingCrop'
     ) {
       state.tx.cancel()
@@ -912,7 +933,10 @@ export class SelectTool implements Tool {
       const { frame } = selection
       const snapCandidates =
         Math.abs(frame.rotation) < 1e-9 ? this.snapCandidates(ids, { x: frame.x, y: frame.y, w: frame.w, h: frame.h }) : null
-      this.state = { name: 'resizing', handle: hit.handle, tx, selection, snapCandidates }
+      const [target] = selection.targets
+      const shape = target.node.type === 'geo' ? (target.node.props as GeoProps).shape : undefined
+      const canSnapSquare = selection.targets.length === 1 && (shape === 'rect' || shape === 'triangle')
+      this.state = { name: 'resizing', handle: hit.handle, tx, selection, snapCandidates, canSnapSquare, snappedSquare: false }
     } else {
       const tx = editor.begin('rotate')
       this.ctx.lift(ids)
@@ -1175,10 +1199,10 @@ abstract class BoxPlacementTool<P extends { w: number; h: number }> implements T
 // ---- 図形ツール（矩形・楕円・ブロック矢印（MAI-87）） ----
 
 export class GeoTool extends BoxPlacementTool<GeoProps> {
-  readonly id: GeoShape
+  readonly id: GeoShape & ToolId
   protected readonly nodeType = 'geo'
 
-  constructor(ctx: ToolContext, shape: GeoShape) {
+  constructor(ctx: ToolContext, shape: GeoShape & ToolId) {
     super(ctx)
     this.id = shape
   }

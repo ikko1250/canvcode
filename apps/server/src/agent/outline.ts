@@ -855,7 +855,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - text, note and geo text can be formatted (bold, colours, sizes, fonts, lists); read_nodes gives that as md (see Formatted text)
 - note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
-- geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius, labelPadding, labelVerticalAlign). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
+- geo: shape, one of rect, ellipse, triangle, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius, labelPadding, labelVerticalAlign). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - labelPadding (geo): px between the shape's box (a block arrow's shaft) and its text, a number for all sides or {top,right,bottom,left}; omitted = 8. labelVerticalAlign: top | middle | bottom of the padded box; omitted = middle
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
@@ -905,7 +905,7 @@ Ops:
 - create: type (text | note | geo | frame | slide | card | portal | pdf | link), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
   text: text or md, fontSize or textStyle, color, align (left|center|right), w (wraps; default 240)
   note: text or md, color (background), fontSize or textStyle, align, w, h
-  geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label) or md, fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize or textStyle, align, verticalAlign (top | middle | bottom; default middle), padding (px around the text: a number for all sides or {"top","right","bottom","left"}; default 8), cornerRadius, w, h
+  geo: shape (rect | ellipse | triangle | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label) or md, fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize or textStyle, align, verticalAlign (top | middle | bottom; default middle), padding (px around the text: a number for all sides or {"top","right","bottom","left"}; default 8), cornerRadius, w, h
     e.g. a text field: {"op":"create","type":"geo","text":"山田","w":320,"h":48,"fill":"#ffffff","stroke":"#666666","strokeWidth":1,"align":"left","padding":{"top":12,"right":16,"bottom":12,"left":16}}
   frame: name, w, h
   slide: name, ratio, hidden, template (see Slides below)

@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { Box } from '@canvcode/core'
 import { Editor } from './editor.ts'
-import { boxDistance, nearestBoxes, sameGuides, snapResize, snapTranslation } from './snapping.ts'
+import { boxDistance, nearestBoxes, sameGuides, snapResize, snapTranslation, squareSizeGuides } from './snapping.ts'
 import { SelectTool, type ToolContext, type ToolPointer } from './tools.ts'
 
 // 移動中の吸い付き（MAI-53）
 
 const box = (x: number, y: number, w = 100, h = 100): Box => ({ x, y, w, h })
+
+it('places both square dimensions outside the rotated frame', () => {
+  const rotation = Math.PI / 2
+  const [width, height] = squareSizeGuides({ x: 100, y: 200, w: 60, h: 60, rotation }, 8)
+  expect(width).toEqual({ axis: 'x', from: 32, to: 92, at: 200, rotation, equal: true })
+  expect(height).toEqual({ axis: 'y', from: 268, to: 328, at: 100, rotation, equal: true })
+})
 
 describe('snapTranslation', () => {
   it('しきい値の外なら何もしない', () => {

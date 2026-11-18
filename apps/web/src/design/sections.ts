@@ -266,12 +266,13 @@ export const chartShowPercentField = chartFlagField('chart.showPercent', '割合
 
 // ---- 形 ----
 
-// 図形の形（MAI-87）。矩形・楕円とブロック矢印（右向き・両向き・曲がった矢印・シェブロン）を切り替える。
+// 図形の形（MAI-87）。矩形・楕円・三角形とブロック矢印（右向き・両向き・曲がった矢印・シェブロン）を切り替える。
 // 形を変えると、ブロック矢印の形のパラメータ（arrowShaft など）は消し、新しい形の既定から始める（形ごとに基準と既定が違う）。
 // 塗り・線・影・文字はそのまま。上下・左向きの矢印は回転で作る
 const SHAPE_OPTIONS: readonly SelectOption[] = [
   { value: 'rect', label: '矩形', group: '基本' },
   { value: 'ellipse', label: '楕円', group: '基本' },
+  { value: 'triangle', label: '三角形', group: '基本' },
   { value: 'blockArrow', label: '右向きの矢印', group: 'ブロック矢印' },
   { value: 'blockArrowBoth', label: '両向きの矢印', group: 'ブロック矢印' },
   { value: 'blockArrowBent', label: '曲がった矢印', group: 'ブロック矢印' },
