@@ -23,6 +23,7 @@ import {
   type PdfRegion,
   type RefTarget,
   type Vec,
+  SVG_MIME,
 } from '@canvcode/core'
 import {
   ATTACHMENT_HEIGHT,
@@ -48,6 +49,7 @@ import {
   insertLinkCard,
   insertRichText,
   insertText,
+  pastedSvg,
   pastedUrl,
   parsePayload,
   payloadText,
@@ -2621,6 +2623,9 @@ export class CanvasView {
       await this.importFiles(files, center)
       return
     }
+    // SVG のコード（Figma の「SVG としてコピー」など）は、画像にする（MAI-116）。読めなければ、文字として貼る
+    const svg = pastedSvg(text)
+    if (svg && (await this.importSvgText(svg, center))) return
     // 表は Markdown の表にして、「貼り付けた表.md」のカードにする（MAI-12、MAI-30）
     const table = this.files ? markdownTableFromClipboard(data.getData('text/html'), text) : null
     if (table) {
@@ -2670,7 +2675,7 @@ export class CanvasView {
   // 画像のファイルを Asset にする（塗りに使う。ノードは置かない）。画像でない・読めなければ知らせて null
   async importImageFile(file: Blob & { name?: string }): Promise<AssetRecord | null> {
     if (!isSupportedImage(file)) {
-      this.options.notify(`${file.name ?? ''}：塗りにできるのは画像（PNG・JPEG・GIF・WebP・AVIF・BMP）だけです`)
+      this.options.notify(`${file.name ?? ''}：塗りにできるのは画像（PNG・JPEG・GIF・WebP・AVIF・BMP・SVG）だけです`)
       return null
     }
     try {
@@ -2691,6 +2696,12 @@ export class CanvasView {
         const type = item.types.find((t) => IMAGE_MIME_TYPES.includes(t))
         if (type) {
           blob = await item.getType(type)
+          break
+        }
+        // SVG のコード（Figma の「SVG としてコピー」など。MAI-116）
+        const svg = item.types.includes('text/plain') ? pastedSvg(await (await item.getType('text/plain')).text()) : null
+        if (svg) {
+          blob = new Blob([svg], { type: SVG_MIME })
           break
         }
       }
@@ -2763,15 +2774,34 @@ export class CanvasView {
         this.options.notify(`画像を読み込めませんでした：${file.name}`)
       }
     }
-    const zoom = this.editor.session.get().camera.zoom
-    const maxSize = { w: (this.width * IMAGE_FIT_RATIO) / zoom, h: (this.height * IMAGE_FIT_RATIO) / zoom }
-    this.editor.focusGroup(null)
-    const imageIds = insertImages(this.editor, assets, center, maxSize)
+    const imageIds = this.placeImages(assets, center)
     // 画像と一緒に落としたときは、画像の下に並べる
     const imageBox = unionBoxes(imageIds.flatMap((id) => this.editor.index.get(id)?.worldBounds ?? []))
     const attachmentCenter = imageBox ? { x: center.x, y: imageBox.y + imageBox.h + 40 + ATTACHMENT_HEIGHT / 2 } : center
     const attachmentIds = insertAttachments(this.editor, attachments, attachmentCenter)
     if (imageIds.length > 0 && attachmentIds.length > 0) this.editor.setSelection([...imageIds, ...attachmentIds])
+  }
+
+  // 画像の Asset のノードを、center を中心に並べる（画面の 8 割に収まるよう縮める）。置いたノードの id を返す
+  private placeImages(assets: AssetRecord[], center: Vec): string[] {
+    const zoom = this.editor.session.get().camera.zoom
+    const maxSize = { w: (this.width * IMAGE_FIT_RATIO) / zoom, h: (this.height * IMAGE_FIT_RATIO) / zoom }
+    this.editor.focusGroup(null)
+    return insertImages(this.editor, assets, center, maxSize)
+  }
+
+  // 貼り付けた SVG のコードを画像にして、center に置く（MAI-116）。SVG として読めなければ false（文字として貼る）
+  private async importSvgText(svg: string, center: Vec): Promise<boolean> {
+    const editor = this.editor
+    let asset: AssetRecord
+    try {
+      asset = await this.assets.importImage(new Blob([svg], { type: SVG_MIME }))
+    } catch (error) {
+      console.warn('Failed to read the pasted SVG', error)
+      return false
+    }
+    if (this.editor === editor) this.placeImages([asset], center)
+    return true
   }
 
   // ---- ファイルのカード（attachment。MAI-100） ----

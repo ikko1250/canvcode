@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, realpath, rename, stat } from 'node:fs/promis
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { watch, type FSWatcher } from 'chokidar'
+import { SVG_CONTENT_SECURITY_POLICY } from './assets.ts'
 import { writeViaTemp } from './writeAtomic.ts'
 
 // Markdown / Python の File（MAI-10、MAI-13、MAI-30）。
@@ -196,8 +197,8 @@ export class FileStore {
         'cache-control': 'no-cache',
         etag,
       }
-      // SVG を直接開かれても、中のスクリプトは動かさない
-      if (type === 'image/svg+xml') headers['content-security-policy'] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+      // SVG を直接開かれても、中のスクリプトは動かさない（Asset の SVG と同じ CSP。キャンバスに置いた SVG の原本も、ここから Markdown に出る）
+      if (type === 'image/svg+xml') headers['content-security-policy'] = SVG_CONTENT_SECURITY_POLICY
       if (req.headers['if-none-match'] === etag) {
         res.writeHead(304, headers)
         res.end()

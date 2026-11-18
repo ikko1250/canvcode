@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -188,5 +189,78 @@ describe('AssetStore range requests', () => {
     const stale = await fetch(url, { headers: { range: 'bytes=0-9', 'if-range': '"other"' } })
     expect(stale.status).toBe(200)
     expect((await stale.arrayBuffer()).byteLength).toBe(1000)
+  })
+})
+
+// SVG の画像（MAI-116）：ブラウザが消毒したものだけを受け取り、大きさはサーバーで読み、スクリプトを動かさない CSP を付けて配る
+describe('AssetStore SVG images', () => {
+  const CLEAN = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 -960 960 960"><path d="M0-480h960"/></svg>'
+  const UNSAFE = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 -960 960 960" onload="alert(1)"><path d="M0-480h960"/></svg>'
+
+  async function serve() {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-assets-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const store = new AssetStore(dir, { pdftoppm: join(dir, 'no-pdftoppm'), log: () => {} })
+    await store.init()
+    const server = createServer((req, res) => void store.handle(req, res, new URL(req.url ?? '/', 'http://localhost').pathname))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanups.push(() => server.close())
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assets`
+    const post = (body: string, headers: Record<string, string> = {}) =>
+      fetch(base, {
+        method: 'POST',
+        headers: { 'content-type': 'image/svg+xml', 'x-canvcode-sha256': sha256(body), 'x-canvcode-width': '1', 'x-canvcode-height': '1', ...headers },
+        body,
+      })
+    return { dir, store, base, post }
+  }
+
+  function sha256(text: string): string {
+    return createHash('sha256').update(text).digest('hex')
+  }
+
+  it('stores a sanitized SVG with the size read from it, and serves it with a CSP that runs no script', async () => {
+    const { dir, base, post } = await serve()
+    const response = await post(CLEAN)
+    expect(response.status).toBe(200)
+    const hash = sha256(CLEAN)
+    expect(await response.json()).toEqual({ hash, mime: 'image/svg+xml', size: CLEAN.length })
+    // ブラウザが送ってきた大きさ（1×1）ではなく、SVG の width・height
+    expect(JSON.parse(readFileSync(join(dir, 'assets', `${hash}.json`), 'utf8'))).toMatchObject({ mime: 'image/svg+xml', width: 24, height: 24, variants: {} })
+    expect(readFileSync(join(dir, 'assets', `${hash}.svg`), 'utf8')).toBe(CLEAN)
+    const list = (await (await fetch(base)).json()) as { assets: unknown[] }
+    expect(list.assets).toEqual([{ hash, mime: 'image/svg+xml', size: CLEAN.length, width: 24, height: 24, variants: [] }])
+
+    const served = await fetch(`${base}/${hash}`)
+    expect(served.headers.get('content-type')).toBe('image/svg+xml')
+    expect(served.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(served.headers.get('content-security-policy')).toBe("default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox")
+    expect(await served.text()).toBe(CLEAN)
+    // 縮小版はない
+    expect((await fetch(`${base}/${hash}/256`)).status).toBe(404)
+  })
+
+  it('refuses an SVG that is not sanitized, or that it cannot read, and stores nothing', async () => {
+    const { dir, post } = await serve()
+    const unsafe = await post(UNSAFE)
+    expect(unsafe.status).toBe(422)
+    expect(await unsafe.json()).toEqual({ error: 'the svg is not sanitized' })
+    const broken = await post('<svg><g></svg>')
+    expect(broken.status).toBe(422)
+    expect(((await broken.json()) as { error: string }).error).toMatch(/^unreadable svg/)
+    const large = await post(`<svg>${' '.repeat(10 * 1024 * 1024)}</svg>`)
+    expect(large.status).toBe(413)
+    expect(readdirSync(join(dir, 'assets'))).toEqual([])
+  })
+
+  it('sanitizes SVGs stored from elsewhere (storeOriginal), and keeps SVG file cards as they are', async () => {
+    const { dir, store } = await serve()
+    const hash = await store.storeOriginal(Buffer.from(UNSAFE), 'image/svg+xml', 0, 0)
+    expect(hash).toBe(sha256(CLEAN))
+    expect(readFileSync(join(dir, 'assets', `${hash}.svg`), 'utf8')).toBe(CLEAN)
+    await expect(store.storeOriginal(Buffer.from('<html/>'), 'image/svg+xml', 0, 0)).rejects.toMatchObject({ status: 422 })
+    // ファイルのカード（MAI-100）の原本は、元のまま（画像としては描かない。配るときは同じ CSP を付ける）
+    const file = await store.storeFile(Buffer.from(UNSAFE), 'image/svg+xml', 'svg')
+    expect(readFileSync(join(dir, 'assets', `${file}.svg`), 'utf8')).toBe(UNSAFE)
   })
 })

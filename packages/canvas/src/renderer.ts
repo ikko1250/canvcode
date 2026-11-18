@@ -1,4 +1,4 @@
-import { expandBox, viewportBounds, type Box, type Camera, type Mat, type NodeRecord } from '@canvcode/core'
+import { expandBox, viewportBounds, type Box, type Camera, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
 import { drawAiCorners, type AiCornerState } from './aiCorner.ts'
 import {
   arrowPolyline,
@@ -23,7 +23,8 @@ import type { ScreenHandles } from './transform.ts'
 import { gradientHandles, type GradientHandles } from './gradientHandles.ts'
 import { cropHandles, type CropHandles } from './cropHandles.ts'
 import { CORNER_HANDLE_RADIUS_PX, cornerHandles, type CornerHandles } from './cornerHandles.ts'
-import { BLOCK_ARROW_HANDLE_SIZE_PX, blockArrowHandles, type BlockArrowHandles } from './blockArrowHandles.ts'
+import { BLOCK_ARROW_HANDLE_SIZE_PX, blockArrowHandles } from './blockArrowHandles.ts'
+import { triangleHandle } from './triangleHandle.ts'
 
 // シーンとオーバーレイの描画（MAI-5、MAI-14）。
 // - 画面に見えているノードだけを、重なり順に描く
@@ -355,9 +356,11 @@ export function drawOverlay(
   // 角丸のハンドル（MAI-84）
   const corners = cornerHandles(editor)
   if (corners) drawCornerHandles(ctx, corners, view.dpr)
-  // ブロック矢印の形のハンドル（MAI-87）
+  // 図形の形を調整するハンドル
+  const apex = triangleHandle(editor)
+  if (apex) drawShapeHandles(ctx, [apex], view.dpr)
   const arrowShape = blockArrowHandles(editor)
-  if (arrowShape) drawBlockArrowHandles(ctx, arrowShape, view.dpr)
+  if (arrowShape) drawShapeHandles(ctx, arrowShape.handles, view.dpr)
   // 間隔のハンドル（MAI-54）。選択枠のハンドルの上に描く
   const spacing = editor.session.get().editingId ? [] : spacingHandles(editor)
   if (spacing.length > 0) drawSpacingHandles(ctx, spacing, state.hoveredSpacing ?? null, state.spacingDrag ?? null, view.dpr)
@@ -460,6 +463,13 @@ function drawGapGuides(ctx: CanvasRenderingContext2D, guides: readonly GapGuide[
     const y = Math.round(r.y) + 0.5
     const w = Math.round(r.w)
     const h = Math.round(r.h)
+    const rotation = guide.rotation ?? 0
+    if (rotation) {
+      ctx.save()
+      ctx.translate(x, y)
+      ctx.rotate(rotation)
+      ctx.translate(-x, -y)
+    }
     ctx.strokeStyle = color
     ctx.beginPath()
     ctx.moveTo(x, y)
@@ -476,7 +486,12 @@ function drawGapGuides(ctx: CanvasRenderingContext2D, guides: readonly GapGuide[
       }
     }
     ctx.stroke()
-    drawValueLabel(ctx, String(Math.round(guide.to - guide.from)), x + w / 2, y + h / 2, view.dpr, 'center', color)
+    if (rotation) ctx.restore()
+    const cos = Math.cos(rotation)
+    const sin = Math.sin(rotation)
+    const midX = x + (w * cos - h * sin) / 2
+    const midY = y + (w * sin + h * cos) / 2
+    drawValueLabel(ctx, String(Math.round(guide.to - guide.from)), midX, midY, view.dpr, 'center', color)
   }
 }
 
@@ -599,13 +614,13 @@ function drawCornerHandles(ctx: CanvasRenderingContext2D, handles: CornerHandles
 }
 
 // ブロック矢印の形のハンドル：黄色のひし形（青い縁。角丸・選択枠のハンドルと見分ける。PowerPoint の調整ハンドルと同じ色）
-function drawBlockArrowHandles(ctx: CanvasRenderingContext2D, found: BlockArrowHandles, dpr: number): void {
+function drawShapeHandles(ctx: CanvasRenderingContext2D, handles: { point: Vec }[], dpr: number): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.fillStyle = '#ffd43b'
   ctx.strokeStyle = SELECTION_COLOR
   ctx.lineWidth = 1.5 * dpr
   const r = BLOCK_ARROW_HANDLE_SIZE_PX * dpr
-  for (const { point } of found.handles) {
+  for (const { point } of handles) {
     const x = point.x * dpr
     const y = point.y * dpr
     ctx.beginPath()

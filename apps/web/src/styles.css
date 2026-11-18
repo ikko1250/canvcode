@@ -1,17 +1,211 @@
+/* 画面の色・影・角丸（MAI-111）と文字（MAI-112）。デジタル庁デザインシステム（DADS）のデザイントークン（@digital-go-jp/design-tokens の
+   tokens.css。main.tsx でこのファイルより先に読み込む）を、役目の名前で指す。画面の規則はここで決めた名前だけを使い、
+   色の値や文字の大きさを直接書かない。キャンバスに描く色と文字（packages/ の中）と、ユーザーが選んだ色そのものは対象にしない。
+   もとの値はコメントに残す（もとは GitHub の Primer に近い色で、DADS のトークンのいちばん近い段に寄せた） */
 :root {
-  --panel-bg: rgba(255, 255, 255, 0.94);
-  --panel-border: #d9dde3;
-  --text: #1f2328;
-  --muted: #656d76;
-  --accent: #2f6fed;
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    'Noto Sans JP',
-    sans-serif;
-  font-size: 13px;
-  color: var(--text);
+  /* 文字。本文は Solid Gray-800（DADS の本文の色。白の上で 12.6:1）。もとは #1f2328（デザインパネルは #252a31） */
+  --color-text: var(--color-neutral-solid-gray-800);
+  /* 弱い文字（説明・単位・件数・見出しの小さな文字）。Solid Gray-600（白の上で 5.7:1、Gray-50 の上で 5.1:1）。
+     もとは #656d76 と、デザインパネルの #747e8c（白の上で 4.1:1 しかなかった。MAI-110） */
+  --color-text-sub: var(--color-neutral-solid-gray-600);
+  /* 主な色やエラーの色で塗った所、暗い地の知らせの上の文字 */
+  --color-text-on-fill: var(--color-neutral-white);
+  /* 入力欄のプレースホルダー（MAI-110）。Solid Gray-536（白の上で 4.5:1）。「混在」のように、値の代わりに状態を伝える
+     ものもあるので、文字と同じく 4.5:1 にする。もとはブラウザの既定の色 */
+  --color-text-placeholder: var(--color-neutral-solid-gray-536);
+  /* 押せない部品の文字（MAI-110）。DADS の無効の文字の色 Solid Gray-420（白の上で 3:1）。DADS も WCAG も、無効の部品には
+     4.5:1 を求めない。不透明度で薄くしているボタン（Claude のパネル・デザインパネルのアイコンなど）は、そのまま薄くする */
+  --color-text-disabled: var(--color-neutral-solid-gray-420);
+
+  /* 主な色（選んでいる所の文字、リンク、主なボタン、スライダー）。DADS のキーカラー Key-900（Blue-900 #0017c1。白の上で 11:1）。
+     もとは #2f6fed（デザインパネルは #326ce8、モデルの選択は #3b5bdb） */
+  --color-accent: var(--color-key-900);
+  /* 選んでいる所の淡い地。Key-100（その上の Key-900 の文字は 8.8:1）。もとは #e3ebfd・#eaf0ff */
+  --color-selected: var(--color-key-100);
+  /* 選んでいる所の枠。Key-200。もとは #b9ccf8 */
+  --color-selected-border: var(--color-key-200);
+  /* 主な色の淡い地（Claude に頼んだ文の吹き出し、モデルの選択の欄）。Key-50。もとは #e7efff・#e8eefc */
+  --color-accent-soft: var(--color-key-50);
+  /* 淡い地（--color-accent-soft）の上で選んでいる所。Key-200。もとは #3b5bdb の 16 % */
+  --color-selected-on-soft: var(--color-key-200);
+
+  /* 地。パネル・メニュー・入力欄などの面は白。もとのパネルの地は白の 94 %（rgba(255, 255, 255, 0.94)）で、
+     DADS に透ける面はないので、白にした */
+  --color-surface: var(--color-neutral-white);
+  /* 1 段沈んだ面（サイドバー・Claude のパネル・混在の印）。Solid Gray-50。もとは #f6f7f9・#f6f8fa・#f1f4f9 など */
+  --color-surface-sub: var(--color-neutral-solid-gray-50);
+  /* 入力欄の地。白（DADS の入力欄と同じ。Gray-50 の地に枠を付けると、DADS では無効の入力欄の見た目になる）。
+     もとはデザインパネルが #f5f6f8 の地だけで、枠がなかった（MAI-110） */
+  --color-field: var(--color-neutral-white);
+  /* 押せる所に重ねたとき（ホバー）の地。黒の 5 %（Opacity Gray-50）。白の上でも Gray-50 の上でも 1 段暗くなるよう、
+     透ける色にした。もとは #eef1f5・#e8ebef・#eef1f6 など */
+  --color-hover: var(--color-neutral-opacity-gray-50);
+  /* Claude の回答の中のコード。Solid Gray-100。もとは #eaecf0 */
+  --color-code: var(--color-neutral-solid-gray-100);
+  /* モーダルのダイアログの背後の面（MAI-108）。黒の 60 %（Opacity Gray-600） */
+  --color-backdrop: var(--color-neutral-opacity-gray-600);
+  /* 画面の下に出す知らせの地。黒の 90 %（Opacity Gray-900）。もとは rgba(31, 35, 40, 0.88) */
+  --color-notice: var(--color-neutral-opacity-gray-900);
+  /* キャンバスの地（キャンバスは透けていて、この色が見える）。キャンバスに描く色と同じく、DADS に置き換えずに残す */
+  --color-canvas: #fafbfc;
+
+  /* 線（MAI-110）。DADS では、部品だと分かるのに要る境目は、まわりの地に対して 3:1 以上にする。影では足りないので、
+     浮いている要素（パネル・メニュー・ポップオーバー・札）には 3:1 の枠を付ける。
+     浮いている要素の枠は Solid Gray-500（キャンバスの地の上で 3.9:1、Gray-50 の上で 3.6:1、白の上で 4.0:1）。
+     Gray-420 は白の上でちょうど 3:1 で、キャンバスの地（#fafbfc）の上では 2.9:1 に下がるので、1 段濃くした。もとは #d9dde3（1.4:1） */
+  --color-border: var(--color-neutral-solid-gray-500);
+  /* 入力欄（文字を打つ欄・一覧から選ぶ欄）の枠。Solid Gray-600（DADS の入力欄と同じ。白の上で 5.7:1） */
+  --color-border-field: var(--color-neutral-solid-gray-600);
+  /* 3:1 を求めない線。区切り線・領域の境目（サイドバーや Claude のパネルの端）と、文字やアイコンで押せると分かる
+     ボタンの枠（WCAG でも、文字のあるボタンの枠は求めない）。Solid Gray-200。もとは #d9dde3・#eaedf1・#eceff3 */
+  --color-border-subtle: var(--color-neutral-solid-gray-200);
+  /* スライダーの溝（値のぶんより先）。Solid Gray-200。もとはデザインパネルが #eaedf1、左のパレットのリングが黒の 14 % */
+  --color-track: var(--color-neutral-solid-gray-200);
+  /* 押せる札に重ねたときの枠。ふだんの枠（Gray-500）より濃い Solid Gray-700。もとは #b6bcc5 */
+  --color-border-hover: var(--color-neutral-solid-gray-700);
+  /* モーダルのダイアログの枠（MAI-108）。Black */
+  --color-border-modal: var(--color-neutral-black);
+  /* 暗い地の知らせの中のボタンの枠。Solid Gray-420。もとは白の 50 % */
+  --color-border-on-dark: var(--color-neutral-solid-gray-420);
+
+  /* エラー。白の上の文字と、危ない操作のボタンの地は Error-1（Red-800 #ec0000。白の上で 4.6:1）。もとは #cf222e。
+     淡い地（エラーの札の Red-50、Claude のパネルの Gray-50）の上の文字は、Error-1 だと 4.1:1 に下がるので Error-2
+     （Red-900 #ce0000。Red-50 の上で 5.1:1、Gray-50 の上で 5.2:1。MAI-110）。
+     エラーの札の淡い地は Red-50（もとは #fff5f5）。札はキャンバスの上に浮くので、枠は Error-1（キャンバスの地の上で 4.4:1。
+     もとは #f5c2c7 で 1.5:1） */
+  --color-error: var(--color-semantic-error-1);
+  --color-error-strong: var(--color-semantic-error-2);
+  --color-error-bg: var(--color-primitive-red-50);
+  --color-error-border: var(--color-semantic-error-1);
+  /* 成功（許可するボタンの地）。Success-2（Green-800 #197a4b。白い文字で 5.4:1）。もとは #1a7f37 */
+  --color-success: var(--color-semantic-success-2);
+  /* 警告。白の上の文字と目立たせる枠は Warning-Yellow-2（Yellow-900 #927200。白の上で 4.5:1）。もとは #9a6700。
+     淡い地（淡い黄の Yellow-50、Claude のパネルの Gray-50）の上の文字は、Warning-Yellow-2 だと 4.1〜4.2:1 に下がるので、
+     2 段濃い Yellow-1100（Yellow-50 の上で 6.4:1、Gray-50 の上で 5.7:1。もとは #6b4b00・#7d5a00）。
+     淡い黄の地は Yellow-50（もとは #fff8c5・#fffaeb・#fff4d6）、その枠は Warning-Yellow-1（Yellow-700。もとは #d4a72c・#f0d58a） */
+  --color-warning: var(--color-semantic-warning-yellow-2);
+  --color-warning-strong: var(--color-primitive-yellow-1100);
+  --color-warning-bg: var(--color-primitive-yellow-50);
+  --color-warning-border: var(--color-semantic-warning-yellow-1);
+  /* 選んでいるフォントがない印の丸。Yellow-500。もとは #f59f00。中の「!」は本文の色（6.8:1。白だと 1.9:1。MAI-110） */
+  --color-warning-mark: var(--color-primitive-yellow-500);
+  /* 選んでいるフォントがないときの説明の文字。Warning-Orange-2（Orange-800 #c74700。白の上で 4.9:1）。もとは #b35c00 */
+  --color-caution: var(--color-semantic-warning-orange-2);
+
+  /* ファイルの種類の札（サイドバーと全画面のエディタ）。Markdown は黄、Python は水色、表（CSV）は緑。
+     地は各色の 100（エディタの見出しの帯の Yellow-50 の上でも札が見えるように）、文字はその上で 6:1 を超える濃い段
+     （もとは半透明の地と #795b22・#0550ae・#116329） */
+  --color-kind-markdown: var(--color-primitive-yellow-1100);
+  --color-kind-markdown-bg: var(--color-primitive-yellow-100);
+  --color-kind-code: var(--color-primitive-light-blue-900);
+  --color-kind-code-bg: var(--color-primitive-light-blue-100);
+  --color-kind-table: var(--color-primitive-green-900);
+  --color-kind-table-bg: var(--color-primitive-green-100);
+  /* 全画面のエディタの見出しの帯（Markdown のカードの温かい色に合わせる）。Yellow-50、重ねたときは Yellow-100。
+     もとは #fbf8f0・#fdf6e3 */
+  --color-surface-markdown: var(--color-primitive-yellow-50);
+  --color-surface-markdown-hover: var(--color-primitive-yellow-100);
+
+  /* 色の見本のまわり。不透明度のある色の下に敷く市松模様（Solid Gray-100 と白。もとは #d9dde3 と白）、
+     見本の縁（黒の 20 %。もとは黒の 12〜15 %）、「塗りなし」の赤の斜線（Red-800。もとは #e03131） */
+  --color-checker: var(--color-neutral-solid-gray-100);
+  --color-swatch-edge: var(--color-neutral-opacity-gray-200);
+  --color-swatch-none: var(--color-primitive-red-800);
+  /* グラデーションの止め色の印の縁と影、カラーピッカーのつまみの縁 */
+  --color-marker-edge: var(--color-neutral-opacity-gray-400);
+  --color-marker-shadow: var(--color-neutral-opacity-gray-300);
+  /* 文字の編集中に、ほかへフォーカスが移っても見せる選んでいる範囲（MAI-74）。キャンバスの選択の色（packages の #3b5bdb）
+     に合わせているので、キャンバスに描く色と同じく DADS に置き換えずに残す */
+  --color-text-selection: rgba(59, 91, 219, 0.28);
+
+  /* 影は DADS のエレベーション。メニュー・ポップオーバー・吹き出しは 1、画面の端に浮かべるパネル（デザインパネル・
+     左のパレット・PDF の検索）は 2、モーダルのダイアログは 3。もとは 15 種類の値がばらばらだった */
+  --shadow-menu: var(--elevation-1);
+  --shadow-panel: var(--elevation-2);
+  --shadow-modal: var(--elevation-3);
+
+  /* 角丸は DADS の 4・6・8・12・16 の段（もとの 2・3px は 4、5px は 4 か 6、14px は 16 に寄せた）。
+     丸いもの（50 % と 999px）はそのまま書く */
+  --radius-small: var(--border-radius-4);
+  --radius-control: var(--border-radius-6);
+  --radius-panel: var(--border-radius-8);
+  --radius-large: var(--border-radius-12);
+  --radius-xlarge: var(--border-radius-16);
+
+  /* デザインパネルの中の名前（MAI-73）。パネルの規則はこの名前で書いてあるので名前は残し、上の変数を指す */
+  --dp-surface: var(--color-surface);
+  --dp-text: var(--color-text);
+  --dp-secondary: var(--color-text-sub);
+  --dp-line: var(--color-border-subtle);
+  --dp-field: var(--color-field);
+  --dp-hover: var(--color-hover);
+  --dp-accent: var(--color-accent);
+  --dp-selected: var(--color-selected);
+  --dp-radius: var(--radius-panel);
+  --dp-control-height: 32px;
+
+  /* 文字（MAI-112）。DADS のタイポグラフィに合わせる。DADS では、本文と UI の文字は 16px 以上が基準で、14px は場所の制約が
+     あるときだけ、14px 未満は原則として使わない。この画面はパネル・メニュー・サイドバーなど密な所がほとんどなので、
+     ふだんの文字は 14px（Dense のスタイル）にし、読む文（Claude との会話・ダイアログの本文など）は 16px（Standard）にする。
+     もとは 13px が基準で、9〜12px の文字が 62 か所あった。
+     - 役目ごとの変数は font の一括指定（太さ 大きさ / 行間 書体）にする。行間をいつも決めるため（決めないと書体の既定の行間になり、
+       Noto Sans JP の既定は 1.45 と高いので、部品が高くなる）
+     - 字間（letter-spacing）は font に入らず、子に受け継がれる。0 でないのは読む文と見出し（Standard の 0.02em）だけなので、
+       その 2 つの役目を使う所には --letter-spacing-body・heading を並べて書き、その中で 14px の文字やコードに戻す所には
+       --letter-spacing-ui・code（0）を書く。ほかの所は 0 のまま（body の既定）
+     - 太さは DADS の 400（N）と 700（B）だけ（--font-weight-400・700。もとは 500・600 もあった）。太字にするときは、
+       font のあとに font-weight: var(--font-weight-700) を書く
+     - 大きさと行間は DADS のトークン（--font-size-*・--line-height-*。rem なので、1rem = 16px のまま使う。body の注を見る） */
+
+  /* 書体。DADS の Noto Sans JP（--font-family-sans）。同梱の可変フォント（main.tsx の @fontsource-variable/noto-sans-jp。
+     @font-face の名前は 'Noto Sans JP Variable'。キャンバスの文字と同じもので、packages/nodes の BUNDLED_FONTS）を先頭に置き、
+     どの端末でも同じ字形と幅で描く。欧文の字も Noto Sans JP で描く。読み込めないとき（ネットワークなど）は、端末の Noto Sans JP、
+     なければ端末のゴシック。もとは system-ui が先頭で、端末ごとに書体が変わっていた */
+  --font-family-ui: 'Noto Sans JP Variable', var(--font-family-sans);
+  /* 等幅（計測の表示・コード・キーの表示・ファイルの場所・vim）。DADS の Noto Sans Mono（--font-family-mono と同じ名前）を先頭に置き、
+     端末にないときは、もとの ui-monospace（macOS の SF Mono など）で描く。Noto Sans Mono は同梱しない：等幅で描くのは短い添え書きだけで、
+     日本語の字を持たない（日本語の字はほかの書体で描く）書体のために、Web フォントを読み込ませないため */
+  --font-family-code: 'Noto Sans Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* 画面の地の文字。Dns-14N-130（14px・行間 1.3・字間 0）。body に置くので、ほかを指定しない所はこれになる。
+     パネルやメニューの中の説明・見出し・知らせ・ツールの行など、折り返すことのある密な所の文字 */
+  --font-ui: var(--font-weight-400) var(--font-size-14) / var(--line-height-130) var(--font-family-ui);
+  --letter-spacing-ui: 0;
+  /* 1 行の部品の文字。Dns-14N-120（14px・行間 1.2・字間 0）。ボタン・タブ・札・入力欄・メニューやパイメニューの項目・パンくずなど。
+     DADS のメニューリスト（小）と同じ行間。DADS のボタンの Oneline（行間 1・字間 0.02em）にすると、上下の余白で高さを決めている
+     今のボタンや項目が 3〜4px 低くなるので、行間 1.2 にして、もとの高さをほぼ保つ（部品の大きさは MAI-113 で決める） */
+  --font-control: var(--font-weight-400) var(--font-size-14) / var(--line-height-120) var(--font-family-ui);
+  /* 1 行の部品の 16px。Dns-16N-120。iOS で入力欄にフォーカスしたときに拡大しないよう 16px にする入力欄（PDF のページ番号）と、
+     全画面のエディタの File の名前 */
+  --font-control-large: var(--font-weight-400) var(--font-size-16) / var(--line-height-120) var(--font-family-ui);
+  /* 読む文。Std-16N-170（16px・行間 1.7・字間 0.02em）。Claude との会話（頼んだ文・回答・説明）と、その入力欄、
+     ダイアログの本文、調べた語の意味 */
+  --font-body: var(--font-weight-400) var(--font-size-16) / var(--line-height-170) var(--font-family-ui);
+  --letter-spacing-body: 0.02em;
+  /* 見出し。ダイアログの名前は Std-20B-150（20px・行間 1.5）、Claude の回答の中の見出しと調べた語は Std-18B-160（18px・行間 1.6）。
+     字間はどちらも 0.02em。ダイアログの名前は、DADS のモーダルダイアログの例（24px）より 1 段小さくし、長い名前
+     （「…」が外で変更されました）でも、幅 480px のダイアログで 1 行に収まるようにする */
+  --font-heading: var(--font-weight-700) var(--font-size-20) / var(--line-height-150) var(--font-family-ui);
+  --font-subheading: var(--font-weight-700) var(--font-size-18) / var(--line-height-160) var(--font-family-ui);
+  --letter-spacing-heading: 0.02em;
+  /* 等幅。Mono-14N-150（14px・行間 1.5・字間 0）。計測の表示、Claude の回答の中のコード、許可を待っているコマンド */
+  --font-code: var(--font-weight-400) var(--font-size-14) / var(--line-height-150) var(--font-family-code);
+  --letter-spacing-code: 0;
+  /* 1 行の部品の中の等幅（右クリックのメニューのキー、全画面のエディタのファイルの場所・vim のボタンとモード）。Mono-14N-150 の大きさで、
+     行間は、並ぶ部品の文字（--font-control）と同じ 1.2（1.5 だと、その部品だけ高くなる） */
+  --font-code-control: var(--font-weight-400) var(--font-size-14) / var(--line-height-120) var(--font-family-code);
+  /* 全画面のエディタの本文（CodeMirror）の大きさ。本文の基準の 16px（もとは 15px）。書体と行間は CodeMirror の設定のまま */
+  --font-size-editor: var(--font-size-16);
+  /* 文字で描いたアイコン（×・‹・☰・↑↓）。文字ではなく印なので、DADS のテキストスタイルは当てず、大きさだけ DADS の段にする。
+     ふつうは 16px、全画面のエディタを閉じる × は 20px。行間は 1（もとと同じ。ボタンの高さを変えない） */
+  --font-icon: var(--font-weight-400) var(--font-size-16) / var(--line-height-100) var(--font-family-ui);
+  --font-icon-large: var(--font-weight-400) var(--font-size-20) / var(--line-height-100) var(--font-family-ui);
+
+  /* フォーカスの枠の色（MAI-109）。DADS のフォーカスカラー（Black と Yellow-300） */
+  --focus-ring-outer: var(--color-neutral-black);
+  --focus-ring-inner: var(--color-primitive-yellow-300);
+
+  color: var(--color-text);
 }
 
 html,
@@ -20,7 +214,151 @@ body,
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #fafbfc;
+  background: var(--color-canvas);
+}
+
+/* 文字の大きさと書体は body で決める（画面の地の文字 --font-ui。MAI-112）。:root（html）には置かない。DADS のトークンの角丸や
+   文字の大きさは rem で書いてあり、:root の文字の大きさを変えると 1rem がずれる（13px だと --border-radius-8 が 6.5px、
+   --font-size-14 が 11.4px になる）ため、1rem はブラウザの既定の 16px のままにする */
+body {
+  font: var(--font-ui);
+}
+
+/* 入力欄のプレースホルダー（MAI-110）。Firefox は既定で薄くする（opacity）ので、1 に戻す */
+::placeholder {
+  color: var(--color-text-placeholder);
+  opacity: 1;
+}
+
+/* フォーカスの枠（MAI-109）。DADS の規定どおり、黒 4px の outline（要素から 2px 離す）と、その内側に黄 2px の box-shadow を重ねる。
+   DADS では「いかなる場合も変更してはいけない」ので、ここ 1 か所で決め、ほかの規則（フォーカスで枠の色を変える指定や、
+   ボタンの影など）に負けないよう !important にする。
+   - 出すのは :focus-visible のとき。キーボードで移ったときと、文字を打つ欄にフォーカスしたとき。マウスで押したボタンには出ない
+   - DADS の実装例は border-radius: 4px も指定するが、ここでは指定しない。丸い色の見本などの形が、フォーカスで変わってしまうため
+     （outline と box-shadow は、要素の角丸に沿う）。テキストのボタンの背景を黄にする指定（DADS の任意の指定）も入れない。
+     色の見本は背景が色そのもので、切り替えのボタンは背景で選んでいるかを見せるため
+   - フォーカスの間は、要素の影（box-shadow）は黄の枠に置き換わる。影で中身を描いている要素は、--focus-ring-shadow に
+     自分の影を足して残す（.claude-stops-track）
+   - 枠は要素の外へ 6px 出る。スクロールする一覧や overflow: hidden の入れ物の端で切れる所は、入れ物の内側に 6px の余白をとる
+     （.plot-dialog-form、.design-image-list、.claude-model-list、.file-editor-modes）
+   枠を出さない所（:not の中）：
+   - キャンバスの面（.canvas-container > div[tabindex]）。キーを受けるためにフォーカスを持つが、枠を出すと画面全体を囲んでしまう
+   - キーをキャンバスに渡さないため、または Esc を受けるために、プログラムからフォーカスするだけの入れ物（tabIndex={-1}）。
+     Claude のパネル（.claude-panel）と、モーダルのダイアログの本体（.dialog。確認のダイアログとグラフを作るダイアログ。
+     本文を押したときにフォーカスを外へ逃がさないためと、グラフのダイアログが開いたときに受けるだけ。MAI-108）
+   - キャンバスの上で文字を編集する DOM（.canvcode-text-editor。packages/canvas/src/textEditor.ts）。描いた文字と重ねるので、
+     枠を出すと文字の位置に枠が浮く。編集中であることは、キャンバスの側で見せる
+   - CodeMirror の本文（.cm-content）。カードの上のエディタと全画面のエディタ。CodeMirror が自分でフォーカスの見た目を持つ
+   - デザインパネルの数字の欄の中の入力（.design-number > input）。欄の形は外側の .design-number なので、枠はそちらに出す */
+:focus-visible:not(
+    :where(.canvas-container > div[tabindex], .claude-panel, .dialog, .canvcode-text-editor, .cm-content, .design-number > input)
+  ),
+.design-number:has(> input:focus-visible) {
+  outline: 4px solid var(--focus-ring-outer) !important;
+  outline-offset: 2px !important;
+  box-shadow: var(--focus-ring-shadow, 0 0 0 2px var(--focus-ring-inner)) !important;
+}
+
+/* 触れられる範囲（当たり。MAI-113）。DADS では、ボタンは見えない部分を含めて 44×44px 以上を確保する。WCAG 2.2 の AA（2.5.8）は
+   24×24px 以上。指で押すスマホ・タブレットでも使うので、見た目の大きさは変えずに、押せる範囲だけを広げる。
+   - 広げ方はここの 1 つ：押せる要素の中に見えない ::before を置き（position: absolute）、要素の外へはみ出させる。::before は
+     その要素の一部として当たるので、押すとその要素を押したことになり、:hover も効く。フォーカスの枠（MAI-109）は要素の枠に沿ったまま
+   - 広げる量は、44px（--target-size）に足りない分の半分ずつを、上下と左右に（要素の大きさから計算する。44px 以上なら広げない）。
+     隣の押せるものの当たりと重ならないよう、各方向に広げる上限を --target-reach-x・--target-reach-y（片側だけは
+     --target-reach-top・-bottom・-left・-right）で決める。並んだボタンなら、間の隙間の半分。上限は枠（border）の内側から数えるので、
+     枠のある要素は、外へ出る量が枠の太さだけ減る（1px の枠なら、隙間の半分に 1px を足して書く）。重なった所でどちらに当たるかは、
+     要素の重なり順で決まり、見た目からは分からないので、重ねない
+   - パネルやメニューの中の部品は、パネルの枠の外（キャンバス）へ出さない（上限をパネルの余白までにする）。キャンバスの上に 1 つで
+     浮かぶボタン（サイドバーを開く・Claude・右上の札など）は、まわりのキャンバスへ 44px まで広げる
+   - 要素は position: relative にする（:where で詳細度を 0 にしているので、ほかで absolute などにしている要素はそのまま）。
+     overflow: hidden の要素は ::before が切れるので、使わない（色の見本は、中の span を clip-path で切る）
+   - スクロールする入れ物の中では、::before もスクロールの範囲に数えられる。入れ物の内側の余白より外へ出さない
+   - ::before を置けない入力欄は、label で包んで label を広げる（.design-font-filter-field）。デザインパネルの数字の欄
+     （.design-number）は、枠を描く外側を label にして、単位の文字など枠の中のどこを押しても入力に移るようにする。
+     スライダー（input type=range）は要素そのものを押すので、要素を上下に高くし、同じだけの負の margin で並びを保つ
+     （溝とつまみは content-box の上下の中央に描かれるので、見た目は変わらない。.design-slider）。後ろに続く要素の下に
+     隠れないよう、position: relative にする */
+:where(
+    .sidebar-open,
+    .breadcrumb button,
+    .claude-toggle,
+    .backup-status,
+    .design-panel-toggle,
+    button.pdf-page-number,
+    .loading-screen button,
+    .agent-notice button,
+    .cite-pending-cancel,
+    .sidebar-header button,
+    .sidebar-action,
+    .dialog-buttons button,
+    .plot-kinds button,
+    .plot-link,
+    .design-panel button,
+    .design-gradient-bar,
+    .design-font-filter-field,
+    .style-palette button,
+    .text-format-toolbar button,
+    .pdf-search button,
+    .file-editor-header button,
+    .word-lookup-close,
+    .word-lookup-actions button,
+    .claude-panel button,
+    .claude-stops-track
+  ) {
+  position: relative;
+}
+
+:where(
+    .sidebar-open,
+    .breadcrumb button,
+    .claude-toggle,
+    .backup-status,
+    .design-panel-toggle,
+    button.pdf-page-number,
+    .loading-screen button,
+    .agent-notice button,
+    .cite-pending-cancel,
+    .sidebar-header button,
+    .sidebar-action,
+    .dialog-buttons button,
+    .plot-kinds button,
+    .plot-link,
+    .design-panel button,
+    .design-gradient-bar,
+    .design-font-filter-field,
+    .style-palette button,
+    .text-format-toolbar button,
+    .pdf-search button,
+    .file-editor-header button,
+    .word-lookup-close,
+    .word-lookup-actions button,
+    .claude-panel button,
+    .claude-stops-track
+  )::before {
+  content: '';
+  position: absolute;
+  /* top・bottom の % は入れ物（この要素）の高さ、left・right の % は幅に対して。上限の 22px は、大きさ 0 の要素を 44px にする量 */
+  top: max(calc(var(--target-reach-top, var(--target-reach-y, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+  bottom: max(calc(var(--target-reach-bottom, var(--target-reach-y, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+  left: max(calc(var(--target-reach-left, var(--target-reach-x, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+  right: max(calc(var(--target-reach-right, var(--target-reach-x, 22px)) * -1), min(0px, calc((100% - var(--target-size, 44px)) / 2)));
+}
+
+/* 1 行に切って省略記号を付ける所（overflow: hidden）。行間を書体の既定（Noto Sans JP は 1.45）より狭くしたので（MAI-112）、
+   欧文の下に出る字（g・p・y）の端が、行間 1.2 で 1.6px、1.3 で 0.9px ほど行の外に出て切れる。上下に 2px の余白をとって切れないようにし、
+   負のマージンで、まわりの並びはもとのままにする */
+.design-panel-title,
+.design-font-name,
+.design-font-option-name,
+.file-editor-title,
+.file-editor-path,
+.claude-tasks-header > span:nth-child(2),
+.claude-task-name,
+.claude-model-option-description,
+.claude-model-button > span,
+.claude-attachment span {
+  padding-block: 2px;
+  margin-block: -2px;
 }
 
 .app {
@@ -68,23 +406,26 @@ body,
   -webkit-touch-callout: none;
 }
 
+/* 名前は 14px（MAI-112）。4 文字の名前（そのほか）は丸に 1 行で収まらないので、2 文字ずつの 2 行にする（balance で行の長さをそろえる。
+   ないブラウザでは「そのほ／か」になる）。丸の大きさは変えない（触れる範囲は MAI-113） */
 .pie-buttons button {
   width: 56px;
   height: 56px;
   padding: 0;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
+  font: var(--font-control);
+  text-wrap: balance;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 50%;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-menu);
   touch-action: none;
 }
 
 .pie-buttons button.open {
-  color: #ffffff;
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--color-text-on-fill);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .pie-hub {
@@ -97,18 +438,18 @@ body,
   width: 48px;
   height: 48px;
   transform: translate(-50%, -50%);
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 50%;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-menu);
 }
 
 /* 中心の丸の名前（メニューと、入っているサブメニュー）は、丸の下に出す */
 .pie-hub span {
   position: absolute;
   top: calc(100% + 4px);
-  font-size: 11px;
-  color: var(--muted);
+  font: var(--font-control);
+  color: var(--color-text-sub);
   white-space: nowrap;
 }
 
@@ -126,7 +467,7 @@ body,
   width: 8px;
   height: 8px;
   margin-left: -4px;
-  background: var(--accent);
+  background: var(--color-accent);
   border-radius: 50%;
 }
 
@@ -136,32 +477,33 @@ body,
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
-  background: #ffffff;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-  color: var(--text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-text);
+  font: var(--font-control);
   white-space: nowrap;
 }
 
 .pie-item.active {
-  background: #e3ebfd;
-  border-color: #b9ccf8;
-  color: var(--accent);
+  background: var(--color-selected);
+  /* キャンバスの上に浮くので、選んでいる項目の枠も 3:1 以上にする（MAI-110） */
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .pie-item.highlight {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #ffffff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-on-fill);
 }
 
 .pie-item.disabled {
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .pie-more {
-  font-size: 11px;
   opacity: 0.7;
 }
 
@@ -170,11 +512,10 @@ body,
   right: 12px;
   top: 52px;
   padding: 8px 10px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  font: 12px ui-monospace, monospace;
-  line-height: 1.6;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  font: var(--font-code);
   pointer-events: none;
 }
 
@@ -184,10 +525,10 @@ body,
   left: 12px;
   max-width: calc(100% - 24px);
   padding: 10px 12px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .bench-header {
@@ -206,7 +547,7 @@ body,
 .bench-result th,
 .bench-result td {
   padding: 4px 8px;
-  border-bottom: 1px solid #eceff3;
+  border-bottom: 1px solid var(--color-border-subtle);
   text-align: right;
   white-space: nowrap;
 }
@@ -218,15 +559,14 @@ body,
 
 .bench-result p {
   margin: 8px 0 0;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .help {
   position: absolute;
   left: 12px;
   bottom: 12px;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
   pointer-events: none;
 }
 
@@ -245,11 +585,9 @@ body,
 .notice {
   max-width: min(640px, calc(100vw - 32px));
   padding: 8px 14px;
-  border-radius: 6px;
-  background: rgba(31, 35, 40, 0.88);
-  color: #ffffff;
-  font-size: 13px;
-  line-height: 1.5;
+  border-radius: var(--radius-control);
+  background: var(--color-notice);
+  color: var(--color-text-on-fill);
 }
 
 /* AI の編集の知らせ（AgentToasts）。ほかの知らせの上に出し、「元に戻す」を押せるようにする */
@@ -265,12 +603,15 @@ body,
 }
 
 .agent-notice button {
+  /* 当たり（MAI-113）：高さ 23px のボタンを、上下は知らせの余白（8px）まで、左右は文字との間（12px）の半分まで広げる（枠の 1px を足す） */
+  --target-reach-x: 7px;
+  --target-reach-y: 9px;
   padding: 2px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 4px;
+  border: 1px solid var(--color-border-on-dark);
+  border-radius: var(--radius-small);
   background: transparent;
   color: inherit;
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -309,28 +650,41 @@ body,
   align-items: center;
   gap: 4px;
   padding: 6px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
 }
 
 .style-palette button {
+  /* 当たり（MAI-113）：ボタン（28px）と色（22px）は 4px の間で並ぶので、上下はその半分まで。左右は、整列の行（4px の間）では
+     その半分まで、1 列に並ぶ所（下の > button と色）ではパレットの内側の余白（6px）まで。枠の太さ（ボタンは 1px、色は 2px）を足して書く */
+  --target-reach-x: 3px;
+  --target-reach-y: 3px;
   min-width: 28px;
   height: 28px;
   padding: 0 6px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: var(--text);
-  font: inherit;
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
+.style-palette > button {
+  --target-reach-x: 7px;
+}
+
+.style-palette button.swatch {
+  --target-reach-x: 8px;
+  --target-reach-y: 4px;
+}
+
 .style-palette button.active {
-  background: #e3ebfd;
-  border-color: #b9ccf8;
-  color: var(--accent);
+  background: var(--color-selected);
+  border-color: var(--color-selected-border);
+  color: var(--color-accent);
 }
 
 .style-palette button.swatch {
@@ -339,12 +693,12 @@ body,
   height: 22px;
   padding: 0;
   border-radius: 50%;
-  border: 2px solid #ffffff;
-  box-shadow: 0 0 0 1px var(--panel-border);
+  border: 2px solid var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-border-subtle);
 }
 
 .style-palette button.swatch.active {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: 0 0 0 2px var(--color-accent);
 }
 
 .style-palette button svg {
@@ -354,9 +708,8 @@ body,
 
 /* 今の文字の大きさ（MAI-50） */
 .style-palette .value {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1;
+  font: var(--font-control);
+  color: var(--color-text-sub);
   padding: 2px 0;
 }
 
@@ -364,7 +717,7 @@ body,
   width: 20px;
   height: 1px;
   margin: 2px 0;
-  background: var(--panel-border);
+  background: var(--color-border-subtle);
 }
 
 /* 整列・等間隔・間隔（MAI-54）。横に並べる行と、間隔の数字の入力 */
@@ -383,19 +736,17 @@ body,
   width: 52px;
   height: 24px;
   padding: 0 4px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-small);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
 .style-palette input.gap:focus {
-  outline: none;
-  border-color: var(--accent);
+  border-color: var(--color-accent);
 }
 
 /* フリーハンドの透過率（MAI-49）。選んでいる色をもう一度クリックすると、色のアイコンのまわりにリングのスライダーが出る */
@@ -430,37 +781,48 @@ body,
   user-select: none;
 }
 
+/* リングの溝・吸い付き先の印・つまみの地（値のぶんの弧とつまみの縁は、DrawPalette.tsx で選んでいる色にする） */
+.style-palette .opacity-ring-track {
+  stroke: var(--color-track);
+}
+
+.style-palette .opacity-ring-stop,
+.style-palette .opacity-ring-knob {
+  fill: var(--color-surface);
+}
+
 .style-palette .opacity-label {
   position: absolute;
   left: calc(100% + 22px);
   top: 50%;
   transform: translateY(-50%);
   padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  color: var(--muted);
-  font-size: 11px;
+  border-radius: var(--radius-small);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-text-sub);
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   pointer-events: none;
 }
 
 .style-palette .opacity-label.dragging {
-  color: var(--accent);
-  border-color: #b9ccf8;
+  color: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 /* ---- ワークスペース（MAI-29） ---- */
 
+/* 幅は、文字を 14px にしたとき（MAI-112）に、名前の見える字数がもと（240px・13px）とほぼ同じになるよう、文字が大きくなった分と
+   ボタン（ここに置く・元に戻す）が広がった分だけ広げる */
 .sidebar {
-  width: 240px;
+  width: 264px;
   flex-shrink: 0;
   overflow-y: auto;
-  background: #f6f7f9;
-  border-right: 1px solid var(--panel-border);
-  font-size: 13px;
+  background: var(--color-surface-sub);
+  border-right: 1px solid var(--color-border-subtle);
 }
 
 .sidebar-header {
@@ -470,33 +832,34 @@ body,
   padding: 12px 12px 8px;
 }
 
+/* サイドバーの閉じるボタン（23×26px）の当たりは 44×44px（冒頭の「触れられる範囲」。MAI-113）。見出しの上・右・下の余白
+   （12・12・8px）と、下の行までの間に収まる */
 .sidebar-header button,
 .sidebar-open {
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1;
+  font: var(--font-icon);
   padding: 4px 8px;
   cursor: pointer;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .sidebar-header button:hover,
 .sidebar-open:hover {
-  background: #e8ebef;
+  background: var(--color-hover);
 }
 
 .sidebar-section {
   padding: 4px 0 12px;
 }
 
+/* 未配置・ゴミ箱の見出し。Dns-14B-130 */
 .sidebar-section h3 {
   margin: 8px 12px 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--muted);
+  font: var(--font-ui);
+  font-weight: var(--font-weight-700);
+  color: var(--color-text-sub);
 }
 
 .sidebar-row {
@@ -515,25 +878,26 @@ body,
   text-align: left;
   padding: 4px 6px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: var(--text);
-  font: inherit;
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .sidebar-title:hover {
-  background: #e8ebef;
+  background: var(--color-hover);
 }
 
+/* 今の Canvas は太字（DADS のメニューリストの今の項目と同じ。Dns-14B-120。もとは 500） */
 .sidebar-title.current {
-  background: #e3ebfd;
-  color: var(--accent);
-  font-weight: 500;
+  background: var(--color-selected);
+  color: var(--color-accent);
+  font-weight: var(--font-weight-700);
 }
 
 .sidebar-row.trashed .sidebar-title {
-  color: var(--muted);
+  color: var(--color-text-sub);
   cursor: default;
 }
 
@@ -541,31 +905,33 @@ body,
   flex: 1;
   min-width: 0;
   padding: 3px 5px;
-  border: 1px solid var(--accent);
-  border-radius: 5px;
-  font: inherit;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-control);
+  font: var(--font-control);
 }
 
 .sidebar-action {
   flex-shrink: 0;
+  /* 当たり（MAI-113）：ボタンは高さ 23px、行（名前のボタン）は 25px で、行どうしは隙間なく並ぶ。上下は行の高さまで（1px）、
+     左右は並んだボタンの間（4px）の半分まで広げ、25px にする（どちらも枠の 1px を足して書く） */
+  --target-reach-x: 3px;
+  --target-reach-y: 2px;
   padding: 2px 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 5px;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
-  font-size: 11px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .sidebar-action.danger {
-  color: #cf222e;
+  color: var(--color-error);
 }
 
 .sidebar-empty {
   padding: 2px 14px;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
 }
 
 .topbar {
@@ -583,70 +949,82 @@ body,
 }
 
 .sidebar-open {
-  background: var(--panel-bg);
-  border-color: var(--panel-border);
+  /* 当たり（MAI-113）：キャンバスに浮かぶボタンなので、上下は 44px まで。右はパンくずとの間（6px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 4px;
+  background: var(--color-surface);
+  border-color: var(--color-border);
 }
 
 .breadcrumb {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  /* 折り返したとき（狭い画面で深い所を開いたとき）の行の間。上下に広げた当たり（.breadcrumb button）が、上と下の行で重ならないように
+     （MAI-113。折り返さなければ見た目は変わらない） */
+  row-gap: 12px;
   padding: 5px 10px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  font-size: 13px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  font: var(--font-control);
 }
 
 .breadcrumb button {
+  /* 当たり（MAI-113）：名前のボタンは高さ 21px。上下は札の内側（余白 5px と枠 1px）まで広げて札の高さ（33px）にし、
+     左右は区切りの「›」の半分ほど（4px）まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 6px;
   padding: 2px 4px;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--accent);
-  font: inherit;
+  color: var(--color-accent);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .breadcrumb button:hover {
-  background: #eef1f5;
+  background: var(--color-hover);
 }
 
+/* 今の Canvas の名前。Dns-14B-120（もとは 600） */
 .breadcrumb strong {
   padding: 2px 4px;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .breadcrumb-rename {
   padding: 1px 4px;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  font: inherit;
-  font-weight: 600;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-small);
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
 }
 
 .breadcrumb-sep {
   margin: 0 2px;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .breadcrumb-note {
   padding: 1px 6px;
-  border-radius: 4px;
-  background: #fff4d6;
-  color: #7d5a00;
-  font-size: 11px;
+  border-radius: var(--radius-small);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-strong);
 }
 
+/* 幅は項目の名前に合わせる（max-content。画面の端に寄せても項目が折り返さないように）。位置は ContextMenu.tsx が、測った大きさで
+   画面に収める */
 .context-menu {
   position: fixed;
   z-index: 20;
+  width: max-content;
   min-width: 220px;
   padding: 4px;
-  background: #ffffff;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-menu);
 }
 
 .context-menu button {
@@ -657,33 +1035,38 @@ body,
   gap: 16px;
   padding: 6px 10px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text);
-  font: inherit;
+  color: var(--color-text);
+  font: var(--font-control);
   text-align: left;
   cursor: pointer;
 }
 
 .context-menu button:hover {
-  background: #eef1f5;
+  background: var(--color-hover);
 }
 
 .context-menu button.danger {
-  color: #cf222e;
+  color: var(--color-error);
 }
 
 .context-menu kbd {
-  font: 11px ui-monospace, monospace;
-  color: var(--muted);
+  font: var(--font-code-control);
+  color: var(--color-text-sub);
 }
 
 .context-menu-separator {
   height: 1px;
   margin: 4px 6px;
-  background: var(--panel-border);
+  background: var(--color-border-subtle);
 }
 
+/* モーダルのダイアログ（確認のダイアログ・グラフのダイアログ）。見た目は DADS のモーダルダイアログに合わせる（MAI-108）：
+   背後の面は黒の 60 %、ダイアログは 1px の黒の枠・角丸 8px・影は elevation-3。
+   幅は中身に合わせ（ボタンが多いときに折り返さないように）、480px から 640px まで（本文の 1 行が長くなりすぎないように）。
+   上限は、文字を 14px（ボタン）と 16px（本文）にしたとき（MAI-112）に、ボタンが 4 つのダイアログ（外で変更された File の確認）が
+   1 行に収まるよう、600px から広げた。本文（16px）の 1 行はおよそ 36 字 */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -691,63 +1074,80 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(31, 35, 40, 0.28);
+  background: var(--color-backdrop);
 }
 
 .dialog {
-  width: min(460px, calc(100vw - 32px));
-  padding: 18px 20px;
-  background: #ffffff;
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  width: fit-content;
+  min-width: min(480px, calc(100vw - 32px));
+  max-width: min(640px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 20px 24px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-modal);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-modal);
 }
 
 .dialog h2 {
   margin: 0 0 8px;
-  font-size: 15px;
+  font: var(--font-heading);
+  letter-spacing: var(--letter-spacing-heading);
 }
 
 .dialog p {
   margin: 0 0 16px;
-  line-height: 1.6;
-  color: var(--text);
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
+  color: var(--color-text);
   white-space: pre-line;
 }
 
+/* 「やめる」（取り消し）は左端、決める側は右寄せで、右ほど重要（主な選択肢が右端。DADS のボタンの並べ方） */
 .dialog-buttons {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
+  /* 行の間は、折り返したとき（狭い画面）に、44px に広げた上下の当たりが重ならない幅（MAI-113。折り返さなければ見た目は変わらない） */
+  gap: 14px 8px;
+}
+
+.dialog-buttons .dialog-cancel {
+  margin-right: auto;
 }
 
 .dialog-buttons button {
+  /* 当たり（MAI-113）：高さ 31px のボタンを、上下に 44px まで（ダイアログの下の余白 20px と、本文との間 16px の中）。
+     左右は並んだボタンの間（8px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 5px;
   padding: 6px 12px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .dialog-buttons button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #ffffff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-on-fill);
 }
 
 .dialog-buttons button.primary.danger {
-  background: #cf222e;
-  border-color: #cf222e;
+  background: var(--color-error);
+  border-color: var(--color-error);
 }
 
 .dialog-buttons button.danger:not(.primary) {
-  color: #cf222e;
+  color: var(--color-error);
 }
 
 /* CSV からグラフを作るダイアログ（plot/PlotDialog.tsx）。左に作り方、右にプレビュー */
 .dialog.plot-dialog {
   width: min(960px, calc(100vw - 32px));
+  max-width: none;
   max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
@@ -755,10 +1155,12 @@ body,
   outline: none;
 }
 
+/* 見出しの横のファイルの名前は、本文の大きさ（Std-16N-170） */
 .plot-dialog-file {
   margin-left: 8px;
-  font-weight: normal;
-  color: var(--muted);
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
+  color: var(--color-text-sub);
 }
 
 .plot-dialog-body {
@@ -774,6 +1176,9 @@ body,
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
+  /* 欄のフォーカスの枠（外へ 6px）がスクロールの端で切れないよう、内側に 6px の余白をとり、負のマージンで位置を戻す（MAI-109） */
+  padding: 6px;
+  margin: -6px;
 }
 
 .plot-field {
@@ -784,18 +1189,17 @@ body,
 }
 
 .plot-field > span {
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
 }
 
 .plot-field input,
 .plot-field select {
   padding: 4px 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  font: inherit;
-  color: var(--text);
-  background: #ffffff;
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-control);
+  font: var(--font-control);
+  color: var(--color-text);
+  background: var(--color-surface);
 }
 
 .plot-field-row {
@@ -815,20 +1219,22 @@ body,
 }
 
 .plot-kinds button {
+  /* 当たり（MAI-113）：種類のボタン（高さ 25px）は、縦にも横にも 4px の間で並ぶので、その半分ずつ広げる（枠の 1px を足す） */
+  --target-reach-x: 3px;
+  --target-reach-y: 3px;
   padding: 3px 8px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 999px;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .plot-kinds button.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #ffffff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-on-fill);
 }
 
 .plot-columns {
@@ -838,32 +1244,34 @@ body,
   max-height: 140px;
   overflow-y: auto;
   padding: 4px 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
 }
 
 .plot-columns label {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 値の列のチェックボックスは、行（label）ごと押せる。行の高さは文字の 20px で、2px の間で並んでいたので、24px に足りず、
+     隣の行と重ならずに広げる隙間もなかった。行を 24px にする（MAI-113。見た目は行の間が 4px 広がる） */
+  min-height: 24px;
 }
 
 .plot-columns label.text-column {
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
+/* small の既定の小さな文字（smaller）にしない */
 .plot-columns small {
   margin-left: auto;
-  font-size: 11px;
+  font-size: inherit;
 }
 
 .plot-style-info {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
+  color: var(--color-text-sub);
 }
 
 .plot-swatches {
@@ -874,18 +1282,19 @@ body,
 .plot-swatches i {
   width: 14px;
   height: 14px;
-  border-radius: 3px;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
 }
 
 .plot-link {
+  /* 当たり（MAI-113）：文字だけのボタン（高さ 17px）。上下は、まわりの欄との間（10px）の半分まで広げる */
+  --target-reach-y: 5px;
   align-self: flex-start;
   padding: 0;
   border: none;
   background: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: 12px;
+  color: var(--color-accent);
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -909,8 +1318,8 @@ body,
   width: 100%;
   max-height: 60vh;
   object-fit: contain;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
 }
 
 .plot-dialog-preview img.stale {
@@ -922,37 +1331,36 @@ body,
   align-items: center;
   justify-content: center;
   aspect-ratio: 16 / 10;
-  border: 1px dashed var(--panel-border);
-  border-radius: 6px;
-  color: var(--muted);
+  border: 1px dashed var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--color-text-sub);
 }
 
 .dialog p.plot-error {
   margin: 0;
-  color: #cf222e;
+  color: var(--color-error);
 }
 
 .plot-warnings {
   margin: 0;
   padding-left: 18px;
-  color: #9a6700;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.dialog-buttons .plot-claude {
-  margin-right: auto;
+  color: var(--color-warning);
 }
 
 @media (max-width: 720px) {
+  /* 狭い画面では本体がスクロールするので、フォーカスの枠の余白は本体にとる（MAI-109。下の余白は 14px のまま） */
   .plot-dialog-body {
     flex-direction: column-reverse;
     overflow-y: auto;
+    padding: 6px;
+    margin: -6px -6px 8px;
   }
 
   .plot-dialog-form {
     flex: none;
     overflow: visible;
+    padding: 0;
+    margin: 0;
   }
 }
 
@@ -962,11 +1370,10 @@ body,
   z-index: 5;
   box-sizing: border-box;
   margin: 0;
-  border: 2px solid var(--accent);
-  border-radius: 8px 8px 0 0;
-  background: #ffffff;
-  color: var(--text);
-  outline: none;
+  border: 2px solid var(--color-accent);
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 
 /* ---- PDF の単語検索（試作） ---- */
@@ -979,50 +1386,53 @@ body,
   align-items: center;
   gap: 4px;
   padding: 4px 6px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  color: var(--text);
-  font-size: 13px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
+  color: var(--color-text);
 }
 
 .pdf-search input {
   width: 220px;
   padding: 4px 8px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  font: inherit;
-  outline: none;
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-control);
+  font: var(--font-control);
 }
 
 .pdf-search input:focus {
-  border-color: var(--accent);
+  border-color: var(--color-accent);
 }
 
 .pdf-search-count {
   min-width: 56px;
-  color: var(--muted);
+  color: var(--color-text-sub);
   white-space: nowrap;
 }
 
+/* ↑・↓・× は文字で描いたアイコン（もとはブラウザの既定のボタンの文字の 13.33px） */
 .pdf-search button {
+  /* 当たり（MAI-113）：上下は検索の帯の枠まで、左右は並んだボタンの間（4px）の半分まで */
+  --target-reach-x: 2px;
+  --target-reach-y: 5px;
   width: 26px;
   height: 26px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: var(--text);
+  color: var(--color-text);
+  font: var(--font-icon);
   cursor: pointer;
 }
 
 .pdf-search button:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--color-hover);
 }
 
 .pdf-search button:disabled {
-  color: var(--panel-border);
+  color: var(--color-text-disabled);
   cursor: default;
 }
 
@@ -1032,16 +1442,16 @@ body,
   display: inline-block;
   margin-right: 5px;
   padding: 0 4px;
-  border-radius: 3px;
-  background: rgba(209, 166, 76, 0.24);
-  color: #795b22;
-  font-size: 9px;
-  font-weight: 700;
+  border-radius: var(--radius-small);
+  background: var(--color-kind-markdown-bg);
+  color: var(--color-kind-markdown);
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
   vertical-align: 1px;
 }
 
 .sidebar-title.missing {
-  color: var(--muted);
+  color: var(--color-text-sub);
   text-decoration: line-through;
 }
 
@@ -1051,30 +1461,49 @@ body,
   z-index: 25;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: var(--color-surface);
 }
 
+/* 狭い画面で 1 行に収まらないときは、部品を次の行へ送る（MAI-112。もとは部品が縦に細く潰れ、右端の部品が画面の外に出ていた） */
 .file-editor-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  /* 行の間は、折り返したとき（狭い画面）に、上下に広げたボタンの当たりが重ならない幅（MAI-113。もとは 6px。折り返さなければ
+     見た目は変わらない） */
+  gap: 16px 10px;
   flex-shrink: 0;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--panel-border);
-  background: #fbf8f0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-markdown);
 }
 
 .file-editor-type {
   padding: 2px 5px;
-  border-radius: 4px;
-  background: rgba(209, 166, 76, 0.24);
-  color: #795b22;
-  font-size: 10px;
-  font-weight: 700;
+  border-radius: var(--radius-small);
+  background: var(--color-kind-markdown-bg);
+  color: var(--color-kind-markdown);
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
 }
 
+/* 開いている File の名前。Dns-16B-120 */
 .file-editor-title {
-  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  font: var(--font-control-large);
+  font-weight: var(--font-weight-700);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 部品の名前は折り返さない（収まらなければ、部品ごと次の行へ送る） */
+.file-editor-header button {
+  /* 当たり（MAI-113）：上下は見出しの帯の余白（8px）まで、左右は並んだ部品の間（10px）の半分まで（枠のあるボタンは、
+     外へ出る量が 1px 減る） */
+  --target-reach-x: 5px;
+  --target-reach-y: 8px;
+  white-space: nowrap;
 }
 
 .file-editor-path {
@@ -1083,92 +1512,101 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
-  font: 12px ui-monospace, monospace;
+  color: var(--color-text-sub);
+  font: var(--font-code-control);
 }
 
+/* 角を丸めるのに overflow: hidden を使うと、ボタンのフォーカスの枠が切れて見えなくなるので、端のボタンの角を丸める（MAI-109） */
 .file-editor-modes {
   display: flex;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
 }
 
 .file-editor-modes button {
+  /* 当たり（MAI-113）：表示の切り替えは隙間なく並ぶので、左右には広げない（上下は .file-editor-header button） */
+  --target-reach-x: 0px;
   padding: 4px 10px;
   border: none;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .file-editor-modes button + button {
-  border-left: 1px solid var(--panel-border);
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+.file-editor-modes button:first-child {
+  border-radius: calc(var(--radius-control) - 1px) 0 0 calc(var(--radius-control) - 1px);
+}
+
+.file-editor-modes button:last-child {
+  border-radius: 0 calc(var(--radius-control) - 1px) calc(var(--radius-control) - 1px) 0;
 }
 
 .file-editor-modes button.active {
-  background: #e3ebfd;
-  color: var(--accent);
+  background: var(--color-selected);
+  color: var(--color-accent);
 }
 
 .file-editor-quote {
   padding: 4px 10px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .file-editor-quote:hover {
-  background: #fdf6e3;
+  background: var(--color-surface-markdown-hover);
 }
 
 .file-editor-quote:disabled {
-  color: var(--muted, #8a8a8a);
+  color: var(--color-text-sub);
   cursor: progress;
 }
 
 .file-editor-vim {
   padding: 4px 10px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #ffffff;
-  color: var(--muted);
-  font: 12px ui-monospace, monospace;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-sub);
+  font: var(--font-code-control);
   cursor: pointer;
 }
 
 .file-editor-vim.active {
-  background: #e3ebfd;
-  color: var(--accent);
+  background: var(--color-selected);
+  color: var(--color-accent);
 }
 
 /* vim のモード（MAI-60） */
 .file-editor-status {
   flex-shrink: 0;
   padding: 3px 14px;
-  border-top: 1px solid var(--panel-border);
-  background: #fbf8f0;
-  color: var(--muted);
-  font: 12px ui-monospace, monospace;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-markdown);
+  color: var(--color-text-sub);
+  font: var(--font-code-control);
 }
 
 .file-editor-close {
   padding: 2px 10px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: var(--muted);
-  font-size: 20px;
-  line-height: 1;
+  color: var(--color-text-sub);
+  font: var(--font-icon-large);
   cursor: pointer;
 }
 
 .file-editor-close:hover {
-  background: #eef1f5;
+  background: var(--color-hover);
 }
 
 .file-editor-body {
@@ -1189,14 +1627,14 @@ body,
 .file-editor-source {
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--panel-border);
-  font-size: 15px;
+  border-right: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-editor);
 }
 
 .file-editor-preview {
   min-width: 0;
   overflow: auto;
-  background: #fffdf7;
+  background: var(--color-surface);
 }
 
 .file-editor-body.mode-source .file-editor-preview,
@@ -1209,16 +1647,20 @@ body,
   display: none;
 }
 
+/* 置き場所では切らない（パネルは下の min-width: 0 で右半分に収まる）。右半分が狭いと、モデルを選ぶ欄はパネルの左へ
+   はみ出して開くので、切ると左の端（「Model ›」）が見えず、押せなかった（キャンバスの右の置き場所も切らない） */
 .file-editor-claude {
   display: flex;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
 }
 
+/* 幅は右半分に合わせる。min-width: 0 がないと、flex の子の最小の幅が中身の折り返せない一番長い行（長いツールの行や
+   コードブロック）の幅になり、パネルが右半分より広がって、はみ出した右側（送るボタン）が切れていた */
 .file-editor-claude .claude-panel {
   flex: 1;
   width: auto;
+  min-width: 0;
   border-left: none;
 }
 
@@ -1233,25 +1675,25 @@ body,
   position: absolute;
   inset: 50% auto auto 50%;
   transform: translate(-50%, -50%);
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 /* Python（MAI-31） */
 .file-editor-type.code {
-  background: rgba(56, 139, 253, 0.16);
-  color: #0550ae;
+  background: var(--color-kind-code-bg);
+  color: var(--color-kind-code);
 }
 
 .sidebar-kind.code {
-  background: rgba(56, 139, 253, 0.16);
-  color: #0550ae;
+  background: var(--color-kind-code-bg);
+  color: var(--color-kind-code);
 }
 
 /* 表（CSV） */
 .file-editor-type.table,
 .sidebar-kind.table {
-  background: rgba(26, 127, 55, 0.16);
-  color: #116329;
+  background: var(--color-kind-table-bg);
+  color: var(--color-kind-table);
 }
 
 /* 保存の状態（段階 11-1） */
@@ -1267,22 +1709,22 @@ body,
 
 .sync-status {
   padding: 4px 10px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 999px;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
+  font: var(--font-control);
   pointer-events: none;
 }
 
 .sync-status.saving {
-  color: var(--accent);
+  color: var(--color-accent);
 }
 
 .sync-status.offline {
-  color: #cf222e;
-  border-color: #f5c2c7;
-  background: #fff5f5;
+  color: var(--color-error-strong);
+  border-color: var(--color-error-border);
+  background: var(--color-error-bg);
 }
 
 /* PDF のページの Canvas で、今のページの PDF の中での番号と総ページ数（MAI-92）。札の形は .sync-status と同じ。
@@ -1298,12 +1740,11 @@ body,
   height: 24px;
   margin: 0;
   padding: 0 10px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 999px;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
+  color: var(--color-text-sub);
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1313,14 +1754,14 @@ button.pdf-page-number {
 }
 
 button.pdf-page-number:hover {
-  background: #ffffff;
-  border-color: #b6bcc5;
-  color: var(--text);
+  background: var(--color-surface);
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
 }
 
 .pdf-page-number.editing {
   height: 30px;
-  color: var(--text);
+  color: var(--color-text);
 }
 
 .pdf-page-number input {
@@ -1328,17 +1769,16 @@ button.pdf-page-number:hover {
   height: 22px;
   margin: 0 3px;
   padding: 0 2px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #ffffff;
-  color: var(--text);
-  font: inherit;
-  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする（Claude の入力欄と同じ） */
-  font-size: 16px;
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-small);
+  background: var(--color-surface);
+  color: var(--color-text);
+  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする（Claude の入力欄と同じ）。Dns-16N-120 */
+  font: var(--font-control-large);
   text-align: center;
-  outline: none;
 }
 
+/* マウスの端末では、札の高さに収まる 14px にする（Dns-14N-120。もとは 12px） */
 @media (pointer: fine) {
   .pdf-page-number.editing {
     height: 24px;
@@ -1346,16 +1786,16 @@ button.pdf-page-number:hover {
 
   .pdf-page-number input {
     height: 16px;
-    font-size: 12px;
+    font: var(--font-control);
   }
 }
 
 .pdf-page-number input:focus {
-  border-color: var(--accent);
+  border-color: var(--color-accent);
 }
 
 .pdf-page-number input[aria-invalid='true'] {
-  border-color: #cf222e;
+  border-color: var(--color-error);
 }
 
 /* 番号が使えないときの注意。札の上に出す */
@@ -1365,11 +1805,10 @@ button.pdf-page-number:hover {
   bottom: calc(100% + 6px);
   transform: translateX(-50%);
   padding: 4px 10px;
-  background: #fff5f5;
-  border: 1px solid #f5c2c7;
-  border-radius: 6px;
-  color: #cf222e;
-  font-size: 12px;
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error-border);
+  border-radius: var(--radius-control);
+  color: var(--color-error-strong);
   white-space: nowrap;
 }
 
@@ -1380,24 +1819,27 @@ button.pdf-page-number:hover {
 }
 
 .backup-status {
+  /* 当たり（MAI-113）：キャンバスに浮かぶ札なので、上下は 44px まで。左右は並んだ札の間（6px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid #f5c2c7;
+  border: 1px solid var(--color-error-border);
   border-radius: 999px;
-  background: #fff5f5;
-  color: #cf222e;
+  background: var(--color-error-bg);
+  color: var(--color-error);
   cursor: pointer;
   pointer-events: auto;
 }
 
+/* 札はキャンバスの上に浮くので、枠は 3:1 を超える Warning-Yellow-2（Warning-Yellow-1 はキャンバスの地の上で 2.9:1。MAI-110） */
 .backup-status.stale {
-  border-color: #f0d58a;
-  background: #fffaeb;
-  color: #9a6700;
+  border-color: var(--color-warning);
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
 }
 
 .backup-status-detail {
@@ -1407,19 +1849,17 @@ button.pdf-page-number:hover {
   width: min(300px, calc(100vw - 24px));
   box-sizing: border-box;
   padding: 8px 10px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.6;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-text);
   overflow-wrap: anywhere;
   pointer-events: auto;
 }
 
 .backup-status-detail-title {
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
   margin-bottom: 2px;
 }
 
@@ -1431,15 +1871,15 @@ button.pdf-page-number:hover {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .loading-screen button {
   padding: 6px 14px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #ffffff;
-  font: inherit;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font: var(--font-control);
   cursor: pointer;
 }
 
@@ -1450,32 +1890,16 @@ button.pdf-page-number:hover {
   top: 12px;
   transform: translateX(-50%);
   padding: 6px 14px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  font-size: 12px;
-  color: var(--text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  color: var(--color-text);
   pointer-events: none;
 }
 
 /* デザインパネル（MAI-73）。右上に重ね、選んでいるノードの見た目のプロパティを並べる。
    高さは中身に合わせ、画面より長ければパネルの中でスクロールする（キャンバスのホイールには渡らない）。
    見た目は temp/ui-designs のコンパクト案：行の左にアイコン、灰色の地の入力、セクションの間は区切り線だけ */
-.design-panel,
-.design-panel-toggle {
-  --dp-surface: #ffffff;
-  --dp-text: #252a31;
-  --dp-secondary: #747e8c;
-  --dp-line: #eaedf1;
-  --dp-field: #f5f6f8;
-  --dp-hover: #eef1f6;
-  --dp-accent: #326ce8;
-  --dp-selected: #eaf0ff;
-  --dp-shadow: rgba(24, 41, 68, 0.08);
-  --dp-radius: 8px;
-  --dp-control-height: 32px;
-}
-
 .design-panel {
   position: absolute;
   right: 12px;
@@ -1487,11 +1911,9 @@ button.pdf-page-number:hover {
   overscroll-behavior: contain;
   background: var(--dp-surface);
   color: var(--dp-text);
-  border: 1px solid var(--dp-line);
-  border-radius: 14px;
-  box-shadow: 0 10px 36px var(--dp-shadow), 0 2px 8px var(--dp-shadow);
-  font-size: 13px;
-  line-height: 1.5;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xlarge);
+  box-shadow: var(--shadow-panel);
 }
 
 .design-panel-header {
@@ -1520,9 +1942,10 @@ button.pdf-page-number:hover {
   color: var(--dp-secondary);
 }
 
+/* 選んでいるものの名前。Dns-14B-130（もとは 500） */
 .design-panel-title {
   overflow: hidden;
-  font-weight: 500;
+  font-weight: var(--font-weight-700);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -1535,6 +1958,9 @@ button.pdf-page-number:hover {
 
 .design-panel button.design-panel-tab,
 .design-panel button.design-panel-close {
+  /* 当たり（MAI-113）：30px のボタン（枠なし）を、上下は 44px（見出しの帯 48px の中）、左右は並んだボタンの間（4px）の半分まで広げる */
+  --target-reach-x: 2px;
+  --target-reach-y: 9px;
   width: 30px;
   height: 30px;
   padding: 0;
@@ -1560,8 +1986,15 @@ button.pdf-page-number:hover {
   border-radius: var(--dp-radius);
   background: var(--dp-surface);
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
   cursor: pointer;
+}
+
+/* パネルの中のボタンの当たり（MAI-113）。行どうし・並んだ部品どうしは 6px（文字の書式の行は 4px）の間で並ぶので、その半分ずつ
+   （上下 3px・左右 2px）広げる。ボタンには 1px の枠があるので、1px を足して書く。アイコンのボタン（28px）は 32×34px になる */
+.design-panel button {
+  --target-reach-x: 3px;
+  --target-reach-y: 4px;
 }
 
 .design-panel button:hover {
@@ -1586,9 +2019,10 @@ button.pdf-page-number:hover {
   width: 40px;
   height: 40px;
   padding: 0;
-  border-radius: 12px;
+  border-color: var(--color-border);
+  border-radius: var(--radius-large);
   color: var(--dp-secondary);
-  box-shadow: 0 4px 16px var(--dp-shadow);
+  box-shadow: var(--shadow-panel);
 }
 
 .design-panel-toggle:hover {
@@ -1616,10 +2050,11 @@ button.pdf-page-number:hover {
   border-top: 1px solid var(--dp-line);
 }
 
+/* セクションの見出し。Dns-14B-130（もとは 11px・600） */
 .design-section h3 {
   margin: 0 0 8px;
-  font-size: 11px;
-  font-weight: 600;
+  font: var(--font-ui);
+  font-weight: var(--font-weight-700);
   color: var(--dp-secondary);
 }
 
@@ -1639,7 +2074,6 @@ button.pdf-page-number:hover {
   flex: 0 0 52px;
   padding-top: 7px;
   color: var(--dp-secondary);
-  font-size: 12px;
   user-select: none;
 }
 
@@ -1678,6 +2112,8 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
+/* 入力欄は Gray-600 の枠と白の地（DADS の入力欄。もとは枠がなく、灰色の地だけで 1.1:1。MAI-110）。
+   フォーカスのときは枠を主な色にする（.design-number:focus-within など） */
 .design-number {
   box-sizing: border-box;
   flex: 0 0 auto;
@@ -1685,14 +2121,13 @@ button.pdf-page-number:hover {
   align-items: center;
   width: 76px;
   height: var(--dp-control-height);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
 }
 
 .design-number:focus-within,
 .design-hex:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -1704,7 +2139,7 @@ button.pdf-page-number:hover {
   border: none;
   background: transparent;
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1713,13 +2148,13 @@ button.pdf-page-number:hover {
   width: 0;
   padding-right: 4px;
   text-align: right;
+  /* フォーカスの枠は、欄の形をした外側の .design-number に出す（MAI-109。冒頭の :focus-visible） */
   outline: none;
 }
 
 .design-unit {
   padding-right: 8px;
   color: var(--dp-secondary);
-  font-size: 11px;
 }
 
 /* スライダー：細い溝（左から今の値までをアクセントの色）と丸いつまみ。--fill は Slider が入れる今の位置 */
@@ -1730,7 +2165,11 @@ button.pdf-page-number:hover {
 }
 
 .design-slider:not(.design-hue-slider):not(.design-alpha-slider) {
-  height: 16px;
+  /* 当たり（MAI-113）：溝とつまみ（14px）を描く高さは 16px のまま、要素を上下に 11px ずつ高くし（行の高さ 32px と、行の間 6px の
+     半分まで）、負の margin で並びを保つ。溝は要素の上下の中央に描かれるので、見た目は変わらない */
+  position: relative;
+  height: 38px;
+  margin-block: -11px;
   appearance: none;
   background: transparent;
   cursor: pointer;
@@ -1738,19 +2177,19 @@ button.pdf-page-number:hover {
 
 .design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-webkit-slider-runnable-track {
   height: 3px;
-  border-radius: 2px;
-  background: linear-gradient(to right, var(--dp-accent) var(--fill, 0%), var(--dp-line) var(--fill, 0%));
+  border-radius: var(--radius-small);
+  background: linear-gradient(to right, var(--dp-accent) var(--fill, 0%), var(--color-track) var(--fill, 0%));
 }
 
 .design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-moz-range-track {
   height: 3px;
-  border-radius: 2px;
-  background: var(--dp-line);
+  border-radius: var(--radius-small);
+  background: var(--color-track);
 }
 
 .design-slider:not(.design-hue-slider):not(.design-alpha-slider)::-moz-range-progress {
   height: 3px;
-  border-radius: 2px;
+  border-radius: var(--radius-small);
   background: var(--dp-accent);
 }
 
@@ -1770,11 +2209,6 @@ button.pdf-page-number:hover {
   border: none;
   border-radius: 50%;
   background: var(--dp-accent);
-}
-
-.design-slider:focus-visible {
-  outline: 2px solid var(--dp-selected);
-  outline-offset: 2px;
 }
 
 /* 値が混在しているときは、つまみの位置に意味がないので薄くする */
@@ -1861,16 +2295,12 @@ button.pdf-page-number:hover {
   padding: 0 20px 0 2px;
   border: none;
   border-radius: var(--dp-radius);
-  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23747e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
+  /* 下向きの山。線の色は .design-select と同じく --color-text-sub の値 */
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
   color: var(--dp-secondary);
-  font: inherit;
-  font-size: 12px;
+  font: var(--font-control);
   appearance: none;
   cursor: pointer;
-}
-
-.design-unit-select:focus-visible {
-  outline: 2px solid var(--dp-selected);
 }
 
 /* 色の見本（MAI-81）。押すとカラーピッカーを開く。不透明度のある色が分かるよう、市松模様の上に色を重ねる */
@@ -1883,26 +2313,31 @@ button.pdf-page-number:hover {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
-  overflow: hidden;
+  background: repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 8px 8px;
+  box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
   cursor: pointer;
+  /* 当たり（MAI-113）：見本（24px）には枠がないので、並んだ部品との間の半分（上下 3px・左右 2px）をそのまま書く。28×30px になる */
+  --target-reach-x: 2px;
+  --target-reach-y: 3px;
 }
 
+/* 色の地は、見本の丸に合わせて切る。もとは見本を overflow: hidden にして切っていたが、外へ広げた当たり（::before）も切れるので、
+   地だけを clip-path で切る（MAI-113。切り方は同じなので、見た目は変わらない） */
 .design-swatch > span {
   position: absolute;
   inset: 0;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
+  clip-path: inset(0 round 50%);
 }
 
 /* 混在：斜めの縞 */
 .design-panel button.design-swatch.mixed {
-  background: repeating-linear-gradient(45deg, #d9dde3 0 4px, #ffffff 4px 8px);
+  background: repeating-linear-gradient(45deg, var(--color-checker) 0 4px, var(--color-surface) 4px 8px);
 }
 
 /* 塗りなし：白地に赤の斜線 */
 .design-panel button.design-swatch.none {
-  background: linear-gradient(to top right, transparent calc(50% - 1px), #e03131 calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)), #ffffff;
+  background: linear-gradient(to top right, transparent calc(50% - 1px), var(--color-swatch-none) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)), var(--color-surface);
 }
 
 .design-color-field .design-hex {
@@ -1996,6 +2431,8 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-paint-types button {
+  /* 当たり（MAI-113）：種類のボタンは隙間なく並ぶので、左右には広げない */
+  --target-reach-x: 0px;
   flex: 1;
   min-width: 0;
   padding: 0 2px;
@@ -2010,11 +2447,14 @@ button.pdf-page-number:hover {
 }
 
 .design-gradient-bar {
+  /* 当たり（MAI-113）：押すと止め色を足す帯（高さ 16px）。上下に 4px ずつ広げて 24px にする（止め色の印は帯の上に重なり、そちらが先に当たる） */
+  --target-reach-x: 0px;
+  --target-reach-y: 4px;
   position: relative;
   height: 16px;
   margin: 6px 8px 10px;
-  border-radius: 4px;
-  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+  border-radius: var(--radius-small);
+  background: repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 8px 8px;
   cursor: copy;
   touch-action: none;
 }
@@ -2022,12 +2462,16 @@ button.pdf-page-number:hover {
 .design-gradient-fill {
   position: absolute;
   inset: 0;
-  border-radius: 4px;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
   pointer-events: none;
 }
 
 .design-panel button.design-gradient-stop {
+  /* 当たり（MAI-113）：14×22px の印を、左右は 24px まで、上下は種類のボタン・位置の欄との間（9px）のうち 6px まで広げる。
+     印どうしが 24px より近いと当たりが重なる（印そのものも重なりうる。選んでいる印が上） */
+  --target-reach-x: 5px;
+  --target-reach-y: 6px;
   position: absolute;
   top: 50%;
   min-width: 0;
@@ -2036,9 +2480,9 @@ button.pdf-page-number:hover {
   margin: -11px 0 0 -7px;
   padding: 2px;
   border: none;
-  border-radius: 4px;
-  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 6px 6px, #ffffff;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-small);
+  background: repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 6px 6px, var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-marker-edge), 0 1px 2px var(--color-marker-shadow);
   cursor: ew-resize;
 }
 
@@ -2046,11 +2490,11 @@ button.pdf-page-number:hover {
   display: block;
   width: 100%;
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--radius-small);
 }
 
 .design-panel button.design-gradient-stop.selected {
-  box-shadow: 0 0 0 2px var(--accent), 0 1px 2px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 0 2px var(--color-accent), 0 1px 2px var(--color-marker-shadow);
   z-index: 1;
 }
 
@@ -2060,8 +2504,9 @@ button.pdf-page-number:hover {
 }
 
 .design-panel button.design-gradient-remove {
+  /* 当たり（MAI-113）：上の角度の欄との間が 2px なので、上下は 2px まで（26px。枠の 1px を足して書く） */
+  --target-reach-y: 3px;
   height: 22px;
-  font-size: 11px;
 }
 
 /* 画像の塗り（MAI-83）。表示のしかたの切り替え・切り抜きの範囲・タイルの倍率・画像の選択 */
@@ -2078,9 +2523,11 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-image-modes button {
+  /* 当たり（MAI-113）：隙間なく並ぶので左右には広げず、上下は画像の欄の中の間（4px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 0px;
+  --target-reach-y: 3px;
   min-width: 0;
   padding: 0 2px;
-  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -2090,12 +2537,13 @@ button.pdf-page-number:hover {
 }
 
 .design-panel .design-image-actions button {
+  /* 当たり（MAI-113）：4px の間で並ぶので、その半分まで（枠の 1px を足す） */
+  --target-reach-y: 3px;
   flex: 1;
   min-width: 0;
   padding: 0 2px;
   white-space: nowrap;
   height: 24px;
-  font-size: 11px;
 }
 
 .design-image-list {
@@ -2104,6 +2552,9 @@ button.pdf-page-number:hover {
   gap: 4px;
   max-height: 140px;
   overflow-y: auto;
+  /* 画像のボタンのフォーカスの枠（外へ 6px）がスクロールの端で切れないよう、内側に 6px の余白をとり、負のマージンで位置を戻す（MAI-109） */
+  padding: 6px;
+  margin: -6px;
 }
 
 .design-panel button.design-image-chip {
@@ -2111,13 +2562,13 @@ button.pdf-page-number:hover {
   height: 40px;
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  background: #eef0f3;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-small);
+  background: var(--color-surface-sub);
 }
 
 .design-panel button.design-image-chip.selected {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: 0 0 0 2px var(--color-accent);
 }
 
 .design-image-chip img {
@@ -2136,23 +2587,19 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 6px;
   padding: 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #ffffff;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
 }
 
 .design-color-square {
   position: relative;
   height: 120px;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
+  /* 彩度と明度の面。色そのものを見せる所なので、黒と白は DADS の変数を通さずに書く（色相の帯も同じ） */
   background-image: linear-gradient(to top, #000000, transparent), linear-gradient(to right, #ffffff, transparent);
   cursor: crosshair;
   touch-action: none;
-  outline: none;
-}
-
-.design-color-square:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .design-color-thumb {
@@ -2160,9 +2607,9 @@ button.pdf-page-number:hover {
   width: 10px;
   height: 10px;
   margin: -6px 0 0 -6px;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--color-surface);
   border-radius: 50%;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 1px var(--color-marker-edge);
   pointer-events: none;
 }
 
@@ -2172,23 +2619,48 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+/* 色相の行は、スポイト（22px）のないブラウザ（EyeDropper のない Firefox・Safari）でも 22px の高さにそろえる。色相の帯の上下に、
+   当たりを広げる場所をとるため（MAI-113。帯は行の中央。Firefox・Safari では、帯の上下の余白が 6px ずつ広がる） */
+.design-color-row:has(> .design-hue-slider) {
+  min-height: 22px;
+}
+
 .design-slider.design-hue-slider,
 .design-slider.design-alpha-slider {
   flex: 1;
   height: 10px;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   appearance: none;
 }
 
+/* 当たり（MAI-113）：色相と不透明度の帯（10px）は、要素そのものの地に描くので、上下の余白（padding）で要素を高くし、地は
+   content-box（10px の帯）にだけ塗る（background-origin・clip）。角丸は、帯の角が 5px の丸になるよう、縦の半径に余白の分を足す。
+   並びは負の margin で保つ。色相の帯は、上は色の四角まで（11px）、下は不透明度の帯との間（12px）の半分まで。
+   不透明度の帯は、上はその半分まで、下は次の見出しの文字（押せない）に 4px かかるまで（10px）。スポイト（.design-eyedropper）は
+   不透明度の帯の上に並ぶので、下へは広げない */
 .design-slider.design-hue-slider {
-  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+  position: relative;
+  box-sizing: border-box;
+  height: 27px;
+  padding-block: 11px 6px;
+  margin-block: -11px -6px;
+  border-radius: 5px / 16px 16px 11px 11px;
+  background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000) content-box;
 }
 
 .design-slider.design-alpha-slider {
-  background: linear-gradient(to right, transparent, var(--alpha-color, #1f2328)), repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+  position: relative;
+  box-sizing: border-box;
+  height: 26px;
+  padding-block: 6px 10px;
+  margin-block: -6px -10px;
+  border-radius: 5px / 11px 11px 15px 15px;
+  background: linear-gradient(to right, transparent, var(--alpha-color, var(--color-text))) content-box, repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 8px 8px content-box;
 }
 
 .design-panel button.design-eyedropper {
+  /* 当たり（MAI-113）：すぐ下に不透明度の帯（の当たり）が並ぶので、下へは広げない */
+  --target-reach-bottom: 0px;
   min-width: 0;
   flex: 0 0 24px;
   width: 24px;
@@ -2203,44 +2675,49 @@ button.pdf-page-number:hover {
 
 .design-color-group-title {
   margin-bottom: 3px;
-  font-size: 10px;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .design-color-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
+  /* 見本の間。もとは 3px で、18px の見本を隣と重ならずに 24px（WCAG 2.2 の最低限）へ広げる隙間がなかったので、6px にする
+     （MAI-113。見本の大きさは変えず、1 行に並ぶ数が 1 つ減る） */
+  gap: 6px;
 }
 
 .design-panel button.design-color-chip {
+  /* 当たり（MAI-113）：18px の見本を、間（6px）の半分ずつ広げて 24×24px にする */
+  --target-reach-x: 3px;
+  --target-reach-y: 3px;
   min-width: 0;
   position: relative;
   width: 18px;
   height: 18px;
   padding: 0;
   border: none;
-  border-radius: 3px;
-  background: repeating-conic-gradient(#d9dde3 0 25%, #ffffff 0 50%) 0 0 / 6px 6px;
-  overflow: hidden;
+  border-radius: var(--radius-small);
+  background: repeating-conic-gradient(var(--color-checker) 0 25%, var(--color-surface) 0 50%) 0 0 / 6px 6px;
   cursor: pointer;
 }
 
+/* 色の地は角丸で切る（.design-swatch > span と同じく、見本は overflow: hidden にしない） */
 .design-color-chip > span {
   position: absolute;
   inset: 0;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  box-shadow: inset 0 0 0 1px var(--color-swatch-edge);
+  clip-path: inset(0 round var(--radius-small));
 }
 
 .design-panel button.design-color-chip.selected {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: 0 0 0 2px var(--color-accent);
 }
 
 .design-hex {
   box-sizing: border-box;
   flex: 1;
   height: var(--dp-control-height);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
 }
@@ -2261,17 +2738,16 @@ button.pdf-page-number:hover {
   width: 100%;
   height: var(--dp-control-height);
   padding: 0 30px 0 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
-  /* 下向きの山（lucide の chevron-down） */
-  background: var(--dp-field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23747e8c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+  /* 下向きの山（lucide の chevron-down）。data: の画像の中では変数を使えないので、線の色は --color-text-sub（Solid Gray-600）の値を書く */
+  background: var(--dp-field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23666666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
   appearance: none;
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .design-select:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -2288,7 +2764,8 @@ button.pdf-page-number:hover {
   width: 100%;
   height: var(--dp-control-height);
   padding: 0 8px;
-  border-color: transparent;
+  /* 一覧から選ぶ欄なので、入力欄と同じ枠（MAI-110） */
+  border-color: var(--color-border-field);
   background: var(--dp-field);
   text-align: left;
 }
@@ -2301,25 +2778,24 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
+/* 「!」は 14px（Dns-14B-120）。丸は、14px の字が収まるよう 16px にする（もとは 14px の丸に 10px の字） */
 .design-font-missing-mark {
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: #f59f00;
-  color: #ffffff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 14px;
+  background: var(--color-warning-mark);
+  color: var(--color-text);
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
+  line-height: 16px;
   text-align: center;
 }
 
 /* 選んでいるフォントがこの端末にないときの説明 */
 .design-font-missing {
   margin-top: 3px;
-  font-size: 10px;
-  line-height: 1.4;
-  color: #b35c00;
+  color: var(--color-caution);
 }
 
 .design-font-name.mixed {
@@ -2342,16 +2818,24 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 4px;
   padding: 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
 }
 
 .design-font-popup-header {
   padding: 2px 4px 4px;
-  font-weight: 600;
-  color: var(--text);
+  font-weight: var(--font-weight-700);
+  color: var(--color-text);
+}
+
+/* 絞り込みの欄（高さ 22px）を包む label。当たり（MAI-113）：入力欄には ::before を置けないので、label を上下に 2px ずつ広げ
+   （下の一覧との間 4px の半分）、26px にする。広げた所を押すと、欄にフォーカスが移る */
+.design-font-filter-field {
+  display: block;
+  --target-reach-x: 0px;
+  --target-reach-y: 2px;
 }
 
 .design-font-filter {
@@ -2360,15 +2844,14 @@ button.pdf-page-number:hover {
   min-width: 0;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  color: var(--text);
-  font: inherit;
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-small);
+  color: var(--color-text);
+  font: var(--font-control);
 }
 
 .design-font-filter:focus {
-  outline: none;
-  border-color: var(--accent);
+  border-color: var(--color-accent);
 }
 
 .design-font-list {
@@ -2379,8 +2862,7 @@ button.pdf-page-number:hover {
 
 .design-font-group {
   padding: 4px 4px 2px;
-  font-size: 10px;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .design-font-option {
@@ -2388,8 +2870,7 @@ button.pdf-page-number:hover {
   align-items: baseline;
   gap: 6px;
   padding: 3px 6px;
-  border-radius: 4px;
-  font-size: 13px;
+  border-radius: var(--radius-small);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2403,36 +2884,36 @@ button.pdf-page-number:hover {
   text-overflow: ellipsis;
 }
 
+/* 項目はそのフォントで描くので、注意の文字は画面の書体に戻す */
 .design-font-option-missing {
   flex: none;
-  font-family: system-ui, sans-serif;
-  font-size: 10px;
-  font-weight: 400;
-  color: #b35c00;
+  font: var(--font-ui);
+  color: var(--color-caution);
 }
 
 .design-font-option.active {
-  background: #eef1f5;
+  background: var(--color-hover);
 }
 
 .design-font-option.selected {
-  color: var(--accent);
-  font-weight: 600;
+  color: var(--color-accent);
+  font-weight: var(--font-weight-700);
 }
 
 .design-font-empty {
   padding: 4px 6px;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .design-panel button.design-font-local {
-  font-size: 11px;
-  color: var(--muted);
+  /* 当たり（MAI-113）：上の一覧との間（4px）の半分まで（枠の 1px を足す） */
+  --target-reach-y: 3px;
+  color: var(--color-text-sub);
 }
 
 /* 文字の編集中に、デザインパネルにフォーカスが移っても、選んでいる範囲を見せる（MAI-74。CSS Custom Highlight API） */
 ::highlight(canvcode-text-selection) {
-  background-color: rgba(59, 91, 219, 0.28);
+  background-color: var(--color-text-selection);
 }
 
 /* 文字を編集している間の書式のツールバー（MAI-79）。編集中のテキストの上に、ズームによらない大きさで出す。
@@ -2444,32 +2925,35 @@ button.pdf-page-number:hover {
   height: 32px;
   box-sizing: border-box;
   padding: 3px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-menu);
   user-select: none;
 }
 
 .text-format-toolbar button {
+  /* 当たり（MAI-113）：上下はツールバーの枠まで（32px）、左右は並んだボタンの間（2px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 2px;
+  --target-reach-y: 5px;
   width: 26px;
   height: 24px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
-  color: var(--text);
+  color: var(--color-text);
   cursor: pointer;
 }
 
 .text-format-toolbar button:hover {
-  background: #eef1f5;
+  background: var(--color-hover);
 }
 
 .text-format-toolbar button.active {
-  background: #e3ebfd;
-  border-color: #b9ccf8;
-  color: var(--accent);
+  background: var(--color-selected);
+  border-color: var(--color-selected-border);
+  color: var(--color-accent);
 }
 
 .text-format-toolbar button svg {
@@ -2480,8 +2964,8 @@ button.pdf-page-number:hover {
 /* 太字などが混在している（一部の文字だけオン） */
 .text-format-toolbar button.mixed,
 .design-panel button.mixed {
-  background: #f1f4f9;
-  border-color: #d5dbe5;
+  background: var(--color-surface-sub);
+  border-color: var(--color-border-subtle);
   border-style: dashed;
 }
 
@@ -2510,7 +2994,7 @@ button.pdf-page-number:hover {
 .design-shadow {
   margin: 2px 0 8px;
   padding-top: 6px;
-  border-top: 1px dashed var(--panel-border);
+  border-top: 1px dashed var(--color-border-subtle);
 }
 
 .design-shadow.hidden .design-corner-grid,
@@ -2543,7 +3027,6 @@ button.pdf-page-number:hover {
 .design-chart-message {
   margin: 0 0 6px;
   color: var(--dp-secondary);
-  font-size: 11px;
 }
 
 /* 表を貼り付ける欄（「貼り付け」のボタンで開く） */
@@ -2559,16 +3042,16 @@ button.pdf-page-number:hover {
   box-sizing: border-box;
   width: 100%;
   padding: 6px 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
   color: var(--dp-text);
-  font: inherit;
+  /* 何行かの表を貼る欄なので、地の文字（行間 1.3） */
+  font: var(--font-ui);
   resize: vertical;
 }
 
 .design-chart-paste-text:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -2610,11 +3093,11 @@ button.pdf-page-number:hover {
   min-width: 0;
   height: var(--dp-control-height);
   padding: 0 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-field);
   border-radius: var(--dp-radius);
   background: var(--dp-field);
   color: var(--dp-text);
-  font: inherit;
+  font: var(--font-control);
 }
 
 .design-chart-cell.numeric {
@@ -2624,7 +3107,6 @@ button.pdf-page-number:hover {
 }
 
 .design-chart-cell:focus {
-  outline: none;
   border-color: var(--dp-accent);
 }
 
@@ -2653,6 +3135,12 @@ button.pdf-page-number:hover {
 }
 
 .design-field-row[data-row='chart.shape'] .design-slider {
+  /* 当たり（MAI-113）：数字の下の段に置くので、上は段の間（6px）まで、下は次の行（名前・割合の切り替え）との間の半分（3px）まで。
+     上下の余白（padding）で広げ、溝は content-box（16px）の中央に描く */
+  box-sizing: border-box;
+  height: 25px;
+  padding-block: 6px 3px;
+  margin-block: -6px -3px;
   grid-column: 1 / -1;
   grid-row: 2;
 }
@@ -2670,11 +3158,12 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+/* オン・オフの切り替えは入力欄ではないので、枠を付けず、1 段沈んだ地にする（入力欄の地が白になったため。MAI-110） */
 .design-panel .design-switch-field button {
   width: 44px;
   height: var(--dp-control-height);
   border-color: transparent;
-  background: var(--dp-field);
+  background: var(--color-surface-sub);
   color: var(--dp-secondary);
 }
 
@@ -2688,19 +3177,17 @@ button.pdf-page-number:hover {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
 }
 
 .design-panel .design-chart-auto button {
-  border-color: var(--panel-border);
-  font-size: 11px;
+  border-color: var(--color-border-subtle);
   white-space: nowrap;
 }
 
 .design-mixed {
   flex: 1;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 /* グラフ：データの表と、形（穴・開始角度・表示）の間に区切り線 */
@@ -2715,38 +3202,35 @@ button.pdf-page-number:hover {
   position: fixed;
   z-index: 40;
   padding: 8px 10px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
 }
 
 .table-filter-input label {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .table-filter-input input {
   padding: 4px 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  font: inherit;
-  font-size: 14px;
-  color: #1f2328;
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-small);
+  font: var(--font-control);
+  color: var(--color-text);
 }
 
 .table-filter-input input[aria-invalid] {
-  border-color: #cf222e;
+  border-color: var(--color-error);
 }
 
 /* 大小を比べる条件で、数・日付として読めない値（MAI-94） */
 .table-filter-warning {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: #cf222e;
+  color: var(--color-error);
 }
 
 /* 調べた語の吹き出し（workspace/WordLookupBubble.tsx。MAI-99）。PDF のページの上で選んだ所のそばに出す */
@@ -2757,12 +3241,13 @@ button.pdf-page-number:hover {
   max-height: 60vh;
   overflow: auto;
   padding: 10px 12px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-  font-size: 13px;
-  line-height: 1.55;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
+  /* 語の意味は読む文なので、本文の文字（Std-16N-170） */
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 /* APA の引用を作っている間の印（MAI-98）。引用を置くアイテムの右下に出す */
@@ -2773,22 +3258,24 @@ button.pdf-page-number:hover {
   align-items: center;
   gap: 8px;
   padding: 6px 6px 6px 10px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  color: var(--muted);
-  font-size: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-text-sub);
+  font: var(--font-control);
   white-space: nowrap;
 }
 
 .cite-pending-cancel {
+  /* 当たり（MAI-113）：上下と右は札の余白（6px）まで、左は文字との間（8px）の半分まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 6px;
   padding: 0 4px;
   border: none;
   background: none;
-  color: var(--muted);
-  font-size: 15px;
-  line-height: 1.2;
+  color: var(--color-text-sub);
+  font: var(--font-icon);
   cursor: pointer;
 }
 
@@ -2805,18 +3292,18 @@ button.pdf-page-number:hover {
   border-radius: 8px;
   background: #fffdf2;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
-  color: var(--text);
-  font-size: 12px;
+  color: var(--color-text);
+  font-size: var(--font-size-14);
 }
 
 .ai-note-controls button {
   padding: 3px 8px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 6px;
   background: #fff;
-  color: var(--text);
+  color: var(--color-text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-14);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -2860,7 +3347,7 @@ button.pdf-page-number:hover {
   border: none;
   background: none;
   color: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-14);
   line-height: 1.2;
 }
 
@@ -2871,7 +3358,7 @@ button.pdf-page-number:hover {
   padding: 3px 5px;
   border-color: transparent;
   background: none;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .ai-note-controls .ai-note-attach:hover,
@@ -2888,7 +3375,7 @@ button.pdf-page-number:hover {
   border-radius: 999px;
   background: #e8eefc;
   color: #1f4b99;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .ai-note-picking {
@@ -2909,7 +3396,7 @@ button.pdf-page-number:hover {
   background: #eef0fb;
   color: #3c4257;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-14);
 }
 
 /* 送信（紙飛行機）は 1 段目の右端 */
@@ -2943,7 +3430,7 @@ button.pdf-page-number:hover {
   border-radius: 6px;
   background: #f4f7ff;
   color: #1f4b99;
-  font-size: 11px;
+  font-size: var(--font-size-14);
   white-space: nowrap;
   transform: translateY(calc(-100% - 6px));
 }
@@ -2980,8 +3467,8 @@ button.pdf-page-number:hover {
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
-  color: var(--text);
-  font-size: 13px;
+  color: var(--color-text);
+  font-size: var(--font-size-14);
   line-height: 1.6;
 }
 
@@ -3008,7 +3495,7 @@ button.pdf-page-number:hover {
   background: #eef0fb;
   color: #3c4257;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-14);
 }
 
 .answer-popover .answer-view {
@@ -3027,14 +3514,14 @@ button.pdf-page-number:hover {
 
 .answer-view-note {
   margin: 8px 0 0;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 .answer-view-error {
   margin: 8px 0 0;
   color: #c92a2a;
-  font-size: 12px;
+  font-size: var(--font-size-14);
 }
 
 .answer-view-related {
@@ -3048,8 +3535,8 @@ button.pdf-page-number:hover {
 }
 
 .answer-view-related-title {
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 .answer-view-related-note {
@@ -3061,7 +3548,7 @@ button.pdf-page-number:hover {
   background: #f8f9fd;
   color: #1f4b99;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-14);
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
@@ -3081,7 +3568,7 @@ button.pdf-page-number:hover {
   border: 1px solid transparent;
   border-radius: 999px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-14);
   cursor: pointer;
 }
 
@@ -3108,7 +3595,7 @@ button.pdf-page-number:hover {
   align-items: center;
   gap: 2px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-14);
 }
 
 .answer-view-step.done {
@@ -3117,7 +3604,7 @@ button.pdf-page-number:hover {
 
 .answer-view-step.current {
   color: #1d4ed8;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .answer-view-step.todo,
@@ -3132,9 +3619,9 @@ button.pdf-page-number:hover {
 
 .answer-view-stop {
   margin-left: auto;
-  border-color: var(--panel-border);
+  border-color: var(--color-border-subtle);
   background: #fff;
-  color: var(--text);
+  color: var(--color-text);
 }
 
 /* 下に開くモデルの欄（AI モードの付箋の下の欄） */
@@ -3151,19 +3638,23 @@ button.pdf-page-number:hover {
   gap: 8px;
 }
 
+/* 調べた語。Std-18B-160 */
 .word-lookup-phrase {
   flex: 1;
-  font-size: 15px;
+  font: var(--font-subheading);
+  letter-spacing: var(--letter-spacing-heading);
   overflow-wrap: anywhere;
 }
 
 .word-lookup-close {
+  /* 当たり（MAI-113）：吹き出しはスクロールするので、上と右は吹き出しの余白（10・12px）の中まで。左は語との間（8px）まで */
+  --target-reach-x: 8px;
+  --target-reach-y: 10px;
   padding: 0 4px;
   border: none;
   background: none;
-  color: var(--muted);
-  font-size: 16px;
-  line-height: 1.2;
+  color: var(--color-text-sub);
+  font: var(--font-icon);
   cursor: pointer;
 }
 
@@ -3173,11 +3664,11 @@ button.pdf-page-number:hover {
 
 .word-lookup-status,
 .word-lookup-heading {
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .word-lookup-error {
-  color: #cf222e;
+  color: var(--color-error);
 }
 
 .word-lookup-actions {
@@ -3188,15 +3679,15 @@ button.pdf-page-number:hover {
 
 .word-lookup-actions button {
   padding: 4px 10px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #f6f8fa;
-  font: inherit;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sub);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .word-lookup-actions button:hover {
-  background: #eef1f4;
+  background: var(--color-hover);
 }
 
 /* Claude のパネルの置き場所（MAI-102）。パネルは claude-host ごと、キャンバスの右（claude-slot）か、
@@ -3220,9 +3711,8 @@ button.pdf-page-number:hover {
   width: 380px;
   flex-shrink: 0;
   min-height: 0;
-  background: #f6f7f9;
-  border-left: 1px solid var(--panel-border);
-  font-size: 13px;
+  background: var(--color-surface-sub);
+  border-left: 1px solid var(--color-border-subtle);
 }
 
 .claude-panel[hidden],
@@ -3230,7 +3720,7 @@ button.pdf-page-number:hover {
   display: none;
 }
 
-/* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない */
+/* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない（冒頭の :focus-visible でも、枠を出さない所にしている） */
 .claude-panel:focus,
 .question-panel:focus {
   outline: none;
@@ -3252,32 +3742,41 @@ button.pdf-page-number:hover {
   align-items: center;
   gap: 6px;
   padding: 10px 10px 8px 12px;
-  border-bottom: 1px solid var(--panel-border);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .claude-panel-header strong {
   margin-right: auto;
 }
 
+/* ボタンの当たり（MAI-113）：パネルの中の部品は 6px の間で並ぶので、その半分ずつ広げる（枠の 1px を足して書く。高さ 25px の
+   ボタンは 31px）。場所ごとに、まわりの余白の分だけ広げる所は、それぞれの規則に書く */
+.claude-panel button {
+  --target-reach-x: 4px;
+  --target-reach-y: 4px;
+}
+
 .claude-panel button,
 .question-panel button,
 .claude-thread-select {
   padding: 3px 8px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  background: #fff;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
 }
 
 .claude-thread-select {
   min-width: 0;
   max-width: 170px;
+  border-color: var(--color-border-field);
 }
 
 .claude-panel-header button {
+  /* 当たり（MAI-113）：上下は見出しの帯の余白（上 10px・下 8px）のうち 8px まで */
+  --target-reach-y: 8px;
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -3291,8 +3790,7 @@ button.pdf-page-number:hover {
 :is(.claude-panel, .question-panel) .claude-close {
   border-color: transparent;
   background: transparent;
-  font-size: 16px;
-  line-height: 1;
+  font: var(--font-icon);
 }
 
 .claude-log {
@@ -3303,10 +3801,13 @@ button.pdf-page-number:hover {
   padding: 12px;
 }
 
+/* 会話の欄の文字（頼んだ文・回答・説明）は、読む文なので本文の文字（Std-16N-170。MAI-112）。
+   ツールの行・状態・エラーなどの添え書きは、パネルの地の文字（14px）のまま */
 .claude-hint {
   margin: 0;
-  color: var(--muted);
-  line-height: 1.6;
+  color: var(--color-text-sub);
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 .answer-thinking {
@@ -3335,7 +3836,7 @@ button.pdf-page-number:hover {
 }
 
 .answer-thinking-empty {
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 /* 調べている語・読んでいるページ（続けて並んだものは、間を空けずに並べる） */
@@ -3354,9 +3855,10 @@ button.pdf-page-number:hover {
   margin-left: 32px;
   margin-bottom: 8px;
   padding: 8px 10px;
-  border-radius: 8px;
-  background: #e7efff;
-  line-height: 1.5;
+  border-radius: var(--radius-panel);
+  background: var(--color-accent-soft);
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 .claude-prompt-text {
@@ -3366,13 +3868,15 @@ button.pdf-page-number:hover {
 
 .claude-prompt-ref {
   margin-top: 4px;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
+  font: var(--font-ui);
+  letter-spacing: var(--letter-spacing-ui);
 }
 
 .claude-text {
   margin: 6px 0;
-  line-height: 1.6;
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
   overflow-wrap: anywhere;
 }
 
@@ -3396,24 +3900,39 @@ button.pdf-page-number:hover {
   padding-left: 20px;
 }
 
+/* 回答の中の見出しは Std-18B-160、それより下の段（h4〜h6）は本文の太字（Std-16B-170。ブラウザの既定だと 14px 未満になる） */
 .claude-text h1,
 .claude-text h2,
 .claude-text h3 {
   margin: 10px 0 4px;
-  font-size: 14px;
+  font: var(--font-subheading);
+  letter-spacing: var(--letter-spacing-heading);
+}
+
+.claude-text h4,
+.claude-text h5,
+.claude-text h6 {
+  margin: 10px 0 4px;
+  font-weight: var(--font-weight-700);
+}
+
+/* コードは Mono-14N-150 */
+.claude-text code,
+.claude-text pre {
+  font: var(--font-code);
+  letter-spacing: var(--letter-spacing-code);
 }
 
 .claude-text code {
   padding: 1px 4px;
-  border-radius: 4px;
-  background: #eaecf0;
-  font-size: 12px;
+  border-radius: var(--radius-small);
+  background: var(--color-code);
 }
 
 .claude-text pre {
   padding: 8px;
-  border-radius: 6px;
-  background: #eaecf0;
+  border-radius: var(--radius-control);
+  background: var(--color-code);
   overflow-x: auto;
 }
 
@@ -3428,13 +3947,14 @@ button.pdf-page-number:hover {
 .claude-text th,
 .claude-text td {
   padding: 2px 6px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--color-border-subtle);
 }
 
+/* 上下の 1px は、欧文の下に出る字の端が overflow: hidden で切れないための余白（MAI-112。行の間は、もとの margin 2px とほぼ同じ） */
 .claude-tool {
-  margin: 2px 0;
-  color: var(--muted);
-  font-size: 12px;
+  margin: 1px 0;
+  padding: 1px 0;
+  color: var(--color-text-sub);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3444,14 +3964,14 @@ button.pdf-page-number:hover {
   content: '・';
 }
 
+/* ツールの行の中の等幅。大きさと行間は行のまま（14px） */
 .claude-tool-detail {
   margin-left: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-family: var(--font-family-code);
 }
 
 .claude-tool.denied {
-  color: #9a6700;
+  color: var(--color-warning-strong);
   white-space: normal;
 }
 
@@ -3460,14 +3980,13 @@ button.pdf-page-number:hover {
 }
 
 .claude-tool.task.failed {
-  color: #cf222e;
+  color: var(--color-error-strong);
 }
 
 /* バックグラウンドの作業が終わって、Claude が自分で続けたジョブの見出し */
 .claude-wake {
   margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
   overflow-wrap: anywhere;
 }
 
@@ -3478,13 +3997,13 @@ button.pdf-page-number:hover {
 .claude-tasks {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  /* 行の間。行（文字の 18px）に並ぶ「止める」（文字だけのボタン）を、隣の行と重ならずに 24px へ広げるため、2px から広げる（MAI-113） */
+  gap: 6px;
   max-height: 30%;
   overflow-y: auto;
   padding: 6px 12px;
-  border-top: 1px solid var(--panel-border);
-  color: var(--muted);
-  font-size: 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  color: var(--color-text-sub);
 }
 
 .claude-tasks-header,
@@ -3507,11 +4026,12 @@ button.pdf-page-number:hover {
   padding-left: 16px;
 }
 
+/* 区切れない長い語（パスなど）も折り返す（会話の欄が横にスクロールし、入力欄の下のエラーは切れていた） */
 .claude-error {
   margin: 6px 0;
-  color: #cf222e;
-  font-size: 12px;
+  color: var(--color-error-strong);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .claude-status {
@@ -3519,26 +4039,29 @@ button.pdf-page-number:hover {
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
 }
 
 .claude-status.failed {
-  color: #cf222e;
+  color: var(--color-error-strong);
 }
 
 .claude-panel .claude-link {
+  /* 当たり（MAI-113）：文字だけのボタン（高さ 17px。枠なし）を、上下に 3.5px ずつ広げて 24px にする（作業の一覧の行の間 6px の
+     半分と、行の中の余り）。左右は、並んだ部品との間の半分まで */
+  --target-reach-x: 3px;
+  --target-reach-y: 3.5px;
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--accent);
+  color: var(--color-accent);
 }
 
 .claude-spinner {
   width: 10px;
   height: 10px;
-  border: 2px solid var(--panel-border);
-  border-top-color: var(--accent);
+  border: 2px solid var(--color-border-subtle);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: claude-spin 0.8s linear infinite;
 }
@@ -3554,7 +4077,7 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--panel-border);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .claude-attachment {
@@ -3565,8 +4088,7 @@ button.pdf-page-number:hover {
   max-width: 100%;
   padding: 2px 4px 2px 10px;
   border-radius: 999px;
-  background: #e7efff;
-  font-size: 12px;
+  background: var(--color-accent-soft);
 }
 
 .claude-attachment span {
@@ -3576,34 +4098,31 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel .claude-attachment button {
+  /* 当たり（MAI-113）：入力の欄の先頭なので、上は欄の余白（10px）まで */
+  --target-reach-top: 10px;
   padding: 0 6px;
   border: none;
   background: transparent;
 }
 
 .claude-panel .claude-attach {
+  --target-reach-top: 10px;
   align-self: flex-start;
   border-style: dashed;
   background: transparent;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .claude-compose textarea {
   resize: vertical;
   min-height: 56px;
   padding: 8px;
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  font: inherit;
-  /* iOS で入力欄にフォーカスしたときに拡大しないよう、16px にする */
-  font-size: 16px;
-  line-height: 1.5;
-}
-
-@media (pointer: fine) {
-  .claude-compose textarea {
-    font-size: 13px;
-  }
+  border: 1px solid var(--color-border-field);
+  border-radius: var(--radius-control);
+  /* 会話と同じ読む文の文字（16px）。iOS で入力欄にフォーカスしたときに拡大しないよう、16px より小さくしない。
+     もとはマウスの端末（pointer: fine）で 13px にしていたが、会話の文字が 16px になったので、どの端末でも 16px にする（MAI-112） */
+  font: var(--font-body);
+  letter-spacing: var(--letter-spacing-body);
 }
 
 .claude-compose-actions {
@@ -3612,10 +4131,16 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+/* 当たり（MAI-113）：送る・止める・モデルは欄の最後の行なので、下は欄の余白（12px）まで（モデルの欄の中のボタンは含めない） */
+.claude-compose-actions > button,
+.claude-model > .claude-model-button {
+  --target-reach-bottom: 12px;
+}
+
 .claude-panel .claude-danger {
-  border-color: #cf222e;
-  background: #cf222e;
-  color: #fff;
+  border-color: var(--color-error);
+  background: var(--color-error);
+  color: var(--color-text-on-fill);
 }
 
 /* 送るボタンの横の、モデルと effort（MAI-106）。押すと選ぶ欄が上に開く */
@@ -3626,17 +4151,19 @@ button.pdf-page-number:hover {
 
 :is(.claude-panel, .ai-note-controls) .claude-model-button {
   max-width: 200px;
+  color: var(--color-text-sub);
+}
+
+/* 長い名前は省略記号で切る。ボタンそのものを overflow: hidden にすると、外へ広げた当たり（::before）が切れるので、中の名前で切る（MAI-113） */
+.claude-model-button > span {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
 }
 
 /* 選ぶ欄：Model と Effort の 2 本のスライダー。「Model ›」で全部のバージョンの一覧に替わる */
 .claude-model-popover {
-  --model-bg: #e8eefc;
-  --model-line: #3b5bdb;
-  --model-ink: #1f2328;
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
@@ -3646,10 +4173,11 @@ button.pdf-page-number:hover {
   gap: 6px;
   width: 296px;
   padding: 10px 14px 12px;
-  border-radius: 8px;
-  background: var(--model-bg);
-  box-shadow: 0 6px 20px rgba(24, 41, 68, 0.16);
-  color: var(--model-ink);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-accent-soft);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-text);
 }
 
 .claude-model-row {
@@ -3666,29 +4194,38 @@ button.pdf-page-number:hover {
   align-items: flex-start;
 }
 
+/* 行の名前（Model・Effort）。Dns-14N-120 の文字を、溝の高さ（24px）の行の真ん中に置く */
 .claude-model-name {
   flex-shrink: 0;
   width: 60px;
   height: 24px;
-  font-size: 14px;
+  font: var(--font-control);
   line-height: 24px;
   white-space: nowrap;
 }
 
 :is(.claude-panel, .ai-note-controls) .claude-model-more,
 :is(.claude-panel, .ai-note-controls) .claude-model-back {
+  /* 当たり（MAI-113）：右のスライダーとの間（8px）の半分まで。上は欄の余白（10px）まで。下は、「Model ›」は Effort の名前（押せない）
+     にかかるまで、「‹ Model」は下の一覧との間の半分まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 10px;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-small);
   background: transparent;
   color: inherit;
-  font-size: 14px;
   text-align: left;
+}
+
+/* 「‹ Model」のすぐ下は一覧（スクロールする）なので、下へは広げない（スクロールした項目の端を奪わないように） */
+:is(.claude-panel, .ai-note-controls) .claude-model-back {
+  --target-reach-bottom: 0px;
 }
 
 :is(.claude-panel, .ai-note-controls) .claude-model-more:hover,
 :is(.claude-panel, .ai-note-controls) .claude-model-back:hover {
-  color: var(--model-line);
+  color: var(--color-accent);
 }
 
 .claude-stops {
@@ -3698,11 +4235,12 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
+/* 段の名前。Dns-14N-130（欧文の下に出る字（p・g）が溝に重ならないよう、行間 1 にしない）。
+   名前は位置を決めて重ねるので、行の高さを書く */
 .claude-stops-labels {
   position: relative;
-  height: 15px;
-  font-size: 11px;
-  line-height: 15px;
+  font: var(--font-ui);
+  height: calc(1em * var(--line-height-130));
 }
 
 .claude-stops-label {
@@ -3713,24 +4251,24 @@ button.pdf-page-number:hover {
 }
 
 .claude-stops-selected {
-  font-weight: 700;
+  font-weight: var(--font-weight-700);
   transition: left 120ms ease;
 }
 
 /* 段の中心は、両端からつまみの半分（17px）内側に等しく並べる（ModelPicker.tsx の KNOB_WIDTH） */
 .claude-stops-track {
+  /* 当たり（MAI-113）：上下は段の名前（押せない）と、2 本のスライダーの間（6px）の半分まで。左は名前のボタンとの間（8px）の半分まで */
+  --target-reach-x: 4px;
+  --target-reach-y: 3px;
   position: relative;
   height: 24px;
   border-radius: 999px;
-  background: var(--model-bg);
-  box-shadow: inset 0 0 0 2px var(--model-line);
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
   cursor: pointer;
   touch-action: none;
-}
-
-.claude-stops-track:focus-visible {
-  outline: 2px solid var(--model-line);
-  outline-offset: 2px;
+  /* 内側の線は溝の形なので、フォーカスの枠（黄の box-shadow）に置き換えずに残す（MAI-109。冒頭の :focus-visible） */
+  --focus-ring-shadow: inset 0 0 0 2px var(--color-accent), 0 0 0 2px var(--focus-ring-inner);
 }
 
 .claude-stops-track[aria-disabled='true'] {
@@ -3745,7 +4283,7 @@ button.pdf-page-number:hover {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--model-ink);
+  background: var(--color-text);
 }
 
 .claude-stops-knob {
@@ -3755,17 +4293,18 @@ button.pdf-page-number:hover {
   width: 34px;
   height: 24px;
   border-radius: 999px;
-  background: var(--model-ink);
+  background: var(--color-text);
   transition: left 120ms ease;
 }
 
 :is(.claude-panel, .ai-note-controls) .claude-model-reset {
+  /* 当たり（MAI-113）：文字だけのボタン（17px）。上は Effort の段の名前（押せない）、下は欄の余白（12px）の中まで */
+  --target-reach-y: 12px;
   align-self: flex-end;
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
   text-decoration: underline;
 }
 
@@ -3775,88 +4314,96 @@ button.pdf-page-number:hover {
   gap: 4px;
   max-height: 300px;
   overflow-y: auto;
+  /* 項目のフォーカスの枠（外へ 6px）がスクロールの端で切れないよう、内側に 6px の余白をとり、負のマージンで位置を戻す（MAI-109） */
+  padding: 6px;
+  margin: -6px;
 }
 
 .claude-model-group {
   display: flex;
   flex-direction: column;
   padding-top: 4px;
-  border-top: 1px solid rgba(59, 91, 219, 0.2);
+  border-top: 1px solid var(--color-selected-border);
 }
 
+/* 名前と説明の 2 行なので、地の文字（Dns-14N-130） */
 :is(.claude-panel, .ai-note-controls) .claude-model-option {
+  /* 当たり（MAI-113）：一覧の項目（26px）は隙間なく並ぶので、広げない */
+  --target-reach-x: 0px;
+  --target-reach-y: 0px;
+  font: var(--font-ui);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
   padding: 4px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: inherit;
   text-align: left;
 }
 
 :is(.claude-panel, .ai-note-controls) .claude-model-option:hover {
-  background: rgba(59, 91, 219, 0.08);
+  background: var(--color-hover);
 }
 
 :is(.claude-panel, .ai-note-controls) .claude-model-option[aria-checked='true'] {
-  background: rgba(59, 91, 219, 0.16);
-}
-
-.claude-model-option-label {
-  font-size: 13px;
+  background: var(--color-selected-on-soft);
 }
 
 .claude-model-option[aria-checked='true'] .claude-model-option-label {
-  font-weight: 700;
+  font-weight: var(--font-weight-700);
 }
 
 .claude-model-option-description {
   max-width: 100%;
   overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 選んでいる項目の地（Key-200）の上では、弱い文字の色だと 4.0:1 に下がるので、本文の色にする（MAI-110） */
+.claude-model-option[aria-checked='true'] .claude-model-option-description {
+  color: var(--color-text);
+}
+
 .claude-model-note {
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
 }
 
 .claude-panel .claude-send {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-text-on-fill);
 }
 
 /* 右上の「Claude」を開くボタン（.status-bar の中） */
 .claude-toggle {
+  /* 当たり（MAI-113）：.backup-status と同じ */
+  --target-reach-x: 4px;
   padding: 3px 10px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--color-border);
   border-radius: 999px;
-  background: var(--panel-bg);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-control);
   cursor: pointer;
   pointer-events: auto;
 }
 
 .claude-toggle.running {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 /* 画面で許可を待っている問い合わせがある（パネルが閉じていても気づけるように） */
 .claude-toggle.waiting {
-  border-color: #9a6700;
-  background: #fff8c5;
-  color: #6b4b00;
+  border-color: var(--color-warning);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-strong);
 }
 
 .claude-toggle.waiting::after {
@@ -3871,14 +4418,13 @@ button.pdf-page-number:hover {
   max-height: 45%;
   overflow-y: auto;
   padding: 8px 12px;
-  border-top: 1px solid #d4a72c;
-  background: #fff8c5;
-  font-size: 12px;
+  border-top: 1px solid var(--color-warning-border);
+  background: var(--color-warning-bg);
 }
 
 .claude-permissions-header {
-  color: #6b4b00;
-  font-weight: 600;
+  color: var(--color-warning-strong);
+  font-weight: var(--font-weight-700);
 }
 
 .claude-permission {
@@ -3886,9 +4432,9 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 4px;
   padding: 6px 8px;
-  border: 1px solid #d4a72c;
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
 }
 
 .claude-permission-title {
@@ -3903,8 +4449,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-permission-left {
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
   white-space: nowrap;
 }
 
@@ -3913,16 +4458,15 @@ button.pdf-page-number:hover {
   margin: 0;
   overflow: auto;
   padding: 4px 6px;
-  border-radius: 4px;
-  background: #f6f8fa;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  border-radius: var(--radius-small);
+  background: var(--color-surface-sub);
+  font: var(--font-code);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .claude-permission-note {
-  color: var(--muted);
+  color: var(--color-text-sub);
   overflow-wrap: anywhere;
 }
 
@@ -3933,20 +4477,20 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel .claude-allow {
-  border-color: #1a7f37;
-  background: #1a7f37;
-  color: #fff;
+  border-color: var(--color-success);
+  background: var(--color-success);
+  color: var(--color-text-on-fill);
 }
 
 .claude-tool.ask {
-  color: #9a6700;
+  color: var(--color-warning-strong);
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
 .claude-tool.answer.denied,
 .claude-tool.answer.expired {
-  color: #9a6700;
+  color: var(--color-warning-strong);
 }
 
 /* 右のパネルの上の「会話｜質問」のタブ（claude/ClaudeTabs.tsx） */
@@ -3965,15 +4509,15 @@ button.pdf-page-number:hover {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 .claude-panel-header .claude-tabs button[aria-selected='true'],
 .question-panel .claude-tabs button[aria-selected='true'] {
   background: #fff;
-  color: var(--text);
-  font-weight: 600;
+  color: var(--color-text);
+  font-weight: var(--font-weight-700);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
@@ -3981,7 +4525,7 @@ button.pdf-page-number:hover {
 .claude-toggle-count {
   margin-left: 4px;
   color: #1d4ed8;
-  font-size: 11px;
+  font-size: var(--font-size-14);
 }
 
 /* 質問のタブ（claude/QuestionPanel.tsx）：① 一覧 */
@@ -3999,12 +4543,12 @@ button.pdf-page-number:hover {
 .question-panel .question-filter {
   align-self: flex-start;
   padding: 3px 8px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 999px;
   background: #fff;
   color: #1d4ed8;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-14);
 }
 
 .question-section {
@@ -4014,8 +4558,8 @@ button.pdf-page-number:hover {
 }
 
 .question-section-title {
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 .question-row {
@@ -4031,7 +4575,7 @@ button.pdf-page-number:hover {
   gap: 8px;
   min-width: 0;
   padding: 8px 10px;
-  border-color: var(--panel-border);
+  border-color: var(--color-border-subtle);
   border-radius: 8px;
   background: #fff;
   text-align: left;
@@ -4071,15 +4615,15 @@ button.pdf-page-number:hover {
 
 .question-row-label {
   overflow: hidden;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .question-row-meta,
 .question-row-steps {
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 .question-row-steps {
@@ -4091,8 +4635,8 @@ button.pdf-page-number:hover {
   margin-top: 8px;
   padding: 2px 6px;
   border-radius: 50%;
-  color: var(--muted);
-  font-size: 9px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 /* 質問のタブ：② 答え */
@@ -4107,13 +4651,13 @@ button.pdf-page-number:hover {
 .question-panel .question-back {
   border-color: transparent;
   background: transparent;
-  color: var(--muted);
+  color: var(--color-text-sub);
 }
 
 .question-detail-title {
   margin-top: 8px;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: var(--font-weight-700);
 }
 
 .question-detail-meta {
@@ -4122,8 +4666,8 @@ button.pdf-page-number:hover {
   justify-content: space-between;
   gap: 8px;
   margin-top: 4px;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--color-text-sub);
+  font-size: var(--font-size-14);
 }
 
 .question-model {

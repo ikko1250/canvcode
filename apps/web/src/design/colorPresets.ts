@@ -1,9 +1,13 @@
-import { ARROW_COLORS, GEO_DEFAULT_FILL, NOTE_TEXT_COLOR } from '@canvcode/nodes'
+import tokens from '@digital-go-jp/design-tokens'
+import { ARROW_COLORS, GEO_DEFAULT_FILL, NOTE_TEXT_COLOR, normalizeColor } from '@canvcode/nodes'
 import { COLORS as SLIDE_COLORS } from '@canvcode/slides/core/slide-layout-spec'
 
 // カラーピッカーの「テンプレートの色」（MAI-81）。
 // - スライド：スライドのテーマ色（packages/slides の slide-layout-spec.ts の COLORS。スライドに置く図の色をそろえるため）
 // - キャンバス：アプリの標準の色（ペン・矢印の 5 色と、図形・付箋の既定の色、それに合う淡い色）
+// - DADS：デジタル庁デザインシステムの色（MAI-114）。キーカラー（Blue）・ニュートラルカラー・セマンティックカラーの 3 つに分ける。
+//   DADS に沿った図やスライドを作るときに使う。値は @digital-go-jp/design-tokens の JS 版から取る（版を上げると付いてくる）。
+//   名前は DADS の名前（Blue-900・Solid Gray-536・Error-1 など）
 
 export interface ColorPreset {
   color: string
@@ -14,6 +18,44 @@ export interface ColorPresetGroup {
   name: string
   colors: readonly ColorPreset[]
 }
+
+// トークンの値（#rrggbb）
+function tokenColor(token: { $value?: unknown }): string {
+  return normalizeColor(String(token.$value))
+}
+
+const { Primitive, Neutral, Semantic } = tokens.Color
+
+const DADS_KEY_STEPS = ['50', '100', '200', '900', '1000', '1200'] as const
+const DADS_GRAY_STEPS = ['50', '420', '536', '600', '800', '900'] as const
+
+export const DADS_COLOR_PRESET_GROUPS: readonly ColorPresetGroup[] = [
+  {
+    name: 'DADS キーカラー',
+    colors: DADS_KEY_STEPS.map((step) => ({ color: tokenColor(Primitive.Blue[step]), name: `Blue-${step}` })),
+  },
+  {
+    name: 'DADS ニュートラル',
+    colors: [
+      { color: tokenColor(Neutral.White), name: 'White' },
+      ...DADS_GRAY_STEPS.map((step) => ({ color: tokenColor(Neutral.SolidGray[step]), name: `Solid Gray-${step}` })),
+      { color: tokenColor(Neutral.Black), name: 'Black' },
+    ],
+  },
+  {
+    name: 'DADS セマンティック',
+    colors: [
+      { color: tokenColor(Semantic.Success[1]), name: 'Success-1' },
+      { color: tokenColor(Semantic.Success[2]), name: 'Success-2' },
+      { color: tokenColor(Semantic.Error[1]), name: 'Error-1' },
+      { color: tokenColor(Semantic.Error[2]), name: 'Error-2' },
+      { color: tokenColor(Semantic.Warning.Yellow[1]), name: 'Warning-Yellow-1' },
+      { color: tokenColor(Semantic.Warning.Yellow[2]), name: 'Warning-Yellow-2' },
+      { color: tokenColor(Semantic.Warning.Orange[1]), name: 'Warning-Orange-1' },
+      { color: tokenColor(Semantic.Warning.Orange[2]), name: 'Warning-Orange-2' },
+    ],
+  },
+]
 
 export const COLOR_PRESET_GROUPS: readonly ColorPresetGroup[] = [
   {
@@ -46,4 +88,5 @@ export const COLOR_PRESET_GROUPS: readonly ColorPresetGroup[] = [
       { color: '#ffffff', name: '白' },
     ],
   },
+  ...DADS_COLOR_PRESET_GROUPS,
 ]

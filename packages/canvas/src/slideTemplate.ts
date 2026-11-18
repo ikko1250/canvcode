@@ -18,8 +18,8 @@ import { richTextFromPlain, solidPaint, type GeoProps, type SlideLayoutKind, typ
 // （置くのは Editor.applySlideTemplate）。
 // - 見た目はテーマ（canvas-slide-theme.ts）の中立の形から作る。位置と大きさは決めない（並べ直し（slideLayoutArrange.ts）が決める）
 // - title / subtitle は text、それ以外（パネル・行の見出しと本文・図の枠・credits）は geo の矩形
-// - geo のセルの余白は labelPadding で持つ（v1 のセルの padding）。上下の寄せは geo の文字がいつも上下中央なので、
-//   テーマの verticalAlign（セルはすべて middle）と同じになる
+// - geo のセルの余白は labelPadding で持つ（v1 のセルの padding）。上下の寄せは、geo の縦の揃え（labelVerticalAlign。MAI-115）の
+//   既定（上下の中央）が、テーマの verticalAlign（セルはすべて middle）と同じなので、セルには持たせない
 // - text には余白がない。表紙のタイトル・副題の左右の余白（textPaddingX）は、中央揃えなので位置には効かず、
 //   折り返す幅が余白の分だけ広くなる（並べ直しが幅を見出しの領域の幅にする）
 // - 箇条書きの行は 1 段（v1 の 1 段目の大きさ・字下げなし・記号なし）だけにする。text の箇条書き（MAI-78）は

@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
-import { normalizeForSearch, searchPages, type NormalizedText, type PdfSearchPage } from '@canvcode/core'
+import { MAX_SVG_BYTES, normalizeForSearch, sanitizeSvg, searchPages, SVG_MIME, SvgError, type NormalizedText, type PdfSearchPage } from '@canvcode/core'
 import { PdfPreviews, type PdfPreviewOptions } from './pdfPreview.ts'
 import { writeViaTemp } from './writeAtomic.ts'
 
@@ -27,6 +27,9 @@ import { writeViaTemp } from './writeAtomic.ts'
 // - 画像・PDF のほかの種類のファイル（docx・xlsx・zip など。Canvas のファイルのカード（attachment）の実体。MAI-100）も受け取る。
 //   ブラウザが x-canvcode-file-ext で元のファイルの拡張子を送ってきたときだけ受け、<ハッシュ>.<拡張子> に置き、拡張子を <ハッシュ>.json に書く。
 //   配るときは ?name=<元の名前> でその名前を付け、?download=1 なら保存させる（Content-Disposition: attachment）
+// - SVG の画像（MAI-116）は、受け取ったものを消毒し（@canvcode/core の sanitizeSvg）、大きさもサーバーで読む。
+//   ブラウザは消毒したものを送ってくる（ハッシュはその中身のもの）。消毒し直して変わるものは、ハッシュが合わなくなるので断る（422）。
+//   縮小版は作らない（ブラウザが要る大きさで描き直す）。配るときは、スクリプトを動かさない CSP（SVG_CONTENT_SECURITY_POLICY）を付ける
 
 const ORIGINAL_TYPES: Record<string, string> = {
   'image/png': 'png',
@@ -35,6 +38,7 @@ const ORIGINAL_TYPES: Record<string, string> = {
   'image/webp': 'webp',
   'image/avif': 'avif',
   'image/bmp': 'bmp',
+  [SVG_MIME]: 'svg',
   'application/pdf': 'pdf',
 }
 const VARIANT_TYPES: Record<string, string> = { 'image/webp': 'webp', 'image/png': 'png' }
@@ -47,6 +51,11 @@ const PAGES_VERSION = 2
 const MAX_SEARCH_CACHE = 8
 const MAX_QUERY_LENGTH = 200
 const PDFJS_DIR = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
+// Asset の応答の CSP。直接開かれても、何も読み込ませず、スクリプトも動かさない（sandbox）
+const CONTENT_SECURITY_POLICY = "default-src 'none'; sandbox"
+// SVG の応答の CSP（ワークスペースの画像の配信（files.ts）も使う）。直接開かれても、スクリプトは動かさず、外のものは読ませない。
+// SVG の中の style と、埋め込んだ data: の画像だけは使わせる（ブラウザによっては、<img> で読んだ SVG にもこの CSP をかけるので）
+export const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox"
 
 interface AssetMeta {
   mime: string
@@ -119,13 +128,15 @@ export class AssetStore {
     const fileExt = req.headers['x-canvcode-file-ext']
     const generic = typeof fileExt === 'string'
     if (!generic && !ORIGINAL_TYPES[mime]) throw new HttpError(415, `unsupported type: ${mime}`)
-    const body = await readBody(req, MAX_ORIGINAL_BYTES)
+    const svg = !generic && mime === SVG_MIME
+    const body = await readBody(req, svg ? MAX_SVG_BYTES : MAX_ORIGINAL_BYTES)
     // ブラウザが計算したハッシュと違えば、途中で壊れている
     const claimed = req.headers['x-canvcode-sha256']
     if (typeof claimed === 'string' && claimed !== createHash('sha256').update(body).digest('hex')) throw new HttpError(400, 'hash mismatch')
+    // SVG は、ブラウザが消毒したものだけを受け取る（消毒し直して変わるなら、置くもののハッシュがブラウザの知るものと違ってしまう）
     const hash = generic
       ? await this.storeFile(body, mime, fileExt)
-      : await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'))
+      : await this.storeOriginal(body, mime, headerNumber(req, 'x-canvcode-width'), headerNumber(req, 'x-canvcode-height'), svg)
     sendJson(res, 200, { hash, mime, size: body.length })
   }
 
@@ -146,10 +157,22 @@ export class AssetStore {
     return assetOriginalPath(this.dataDir, hash)
   }
 
-  // 原本を保存して、ハッシュを返す（すでにあれば何もしない）。旧データの取り込みからも使う
-  async storeOriginal(body: Buffer, mime: string, width: number, height: number): Promise<string> {
+  // 原本を保存して、ハッシュを返す（すでにあれば何もしない）。旧データの取り込みからも使う。
+  // SVG は消毒したものを置き、大きさも SVG から読む（width・height は使わない。読めない SVG なら 422 の HttpError）。
+  // onlySanitized なら、消毒して変わる SVG は置かずに 422 にする（ブラウザから受け取るとき。消毒は 1 回だけ）
+  async storeOriginal(original: Buffer, mime: string, imageWidth: number, imageHeight: number, onlySanitized = false): Promise<string> {
     const ext = ORIGINAL_TYPES[mime]
     if (!ext) throw new HttpError(415, `unsupported type: ${mime}`)
+    let body = original
+    let width = imageWidth
+    let height = imageHeight
+    if (mime === SVG_MIME) {
+      const svg = readSvg(original)
+      body = Buffer.from(svg.svg, 'utf8')
+      if (onlySanitized && !body.equals(original)) throw new HttpError(422, 'the svg is not sanitized')
+      width = svg.width
+      height = svg.height
+    }
     const hash = createHash('sha256').update(body).digest('hex')
     if (!(await this.readMeta(hash))) {
       await writeAtomic(join(this.dir, `${hash}.${ext}`), body)
@@ -243,7 +266,7 @@ export class AssetStore {
       'accept-ranges': 'bytes',
       etag,
       'x-content-type-options': 'nosniff',
-      'content-security-policy': "default-src 'none'; sandbox",
+      'content-security-policy': mime === SVG_MIME ? SVG_CONTENT_SECURITY_POLICY : CONTENT_SECURITY_POLICY,
     }
     // 元の名前を付ける（ファイルのカード。MAI-100）。download なら開かずに保存させる
     const name = size === null ? params?.get('name') : null
@@ -380,6 +403,17 @@ export function contentDisposition(type: 'inline' | 'attachment', name: string):
   const ascii = cleaned.replace(/[^\x20-\x7e]/g, '_').replace(/["%;]/g, '_')
   const encoded = encodeURIComponent(cleaned).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
   return `${type}; filename="${ascii}"; filename*=UTF-8''${encoded}`
+}
+
+// SVG を消毒する（sanitizeSvg）。大きすぎる・読めないなら HttpError
+function readSvg(body: Buffer): { svg: string; width: number; height: number } {
+  if (body.length > MAX_SVG_BYTES) throw new HttpError(413, 'too large')
+  try {
+    return sanitizeSvg(body.toString('utf8'))
+  } catch (error) {
+    if (error instanceof SvgError) throw new HttpError(422, `unreadable svg: ${error.message}`)
+    throw error
+  }
 }
 
 function headerNumber(req: IncomingMessage, name: string): number {

@@ -76,6 +76,7 @@ export interface ResizeOptions {
   fromCenter: boolean
   minW: number
   minH: number
+  squareSnapThreshold?: number
 }
 
 // ハンドルをワールド座標の点まで動かしたときの、新しい枠。
@@ -107,6 +108,11 @@ export function resizeFrame(frame: Frame, handle: Handle, pointer: Vec, options:
   } else {
     w = Math.max(w, options.minW)
     h = Math.max(h, options.minH)
+    if (options.squareSnapThreshold !== undefined && Math.abs(w - h) <= options.squareSnapThreshold) {
+      // 辺は動かさない方の寸法に合わせ、角は両軸を均等に補正する。
+      const side = hx === 0 ? w : hy === 0 ? h : (w + h) / 2
+      if (side >= Math.max(options.minW, options.minH)) w = h = side
+    }
   }
 
   // 固定する側に合わせて、新しい枠の原点（ローカル座標）を決める。

@@ -1,16 +1,5 @@
 import { applyMat, boxesIntersect, IDENTITY, multiply, transformOf, type Box, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
-import {
-  ATTACHMENT_HEIGHT,
-  formatFileSize,
-  hasNodeRichFormatting,
-  noteHeight,
-  noteType,
-  richTextMarkdownOf,
-  richTextTargetOfType,
-  slideSize,
-  type NoteProps,
-  type SlideRatio,
-} from '@canvcode/nodes'
+import { ATTACHMENT_HEIGHT, baseFormatOf, formatFileSize, hasNodeRichFormatting, letterSpacingOf, lineHeightOf, noteHeight, noteType, richTextMarkdownOf, richTextTargetOfType, slideSize, textStyleOf, type NoteProps, type SlideRatio } from '@canvcode/nodes'
 import { slideOrder } from '@canvcode/canvas/slideOrder'
 import { slideLayoutOverflow, type SlideOverflow } from '@canvcode/canvas/slideOverflow'
 import { getMaxRowCount, getStandardMaxRowCount, TABLE_IMAGE_SPEC, TABLE_SPEC, TABLE_IMAGE_WIDTH_RANGE, TABLE_IMAGES_SPEC } from '@canvcode/slides'
@@ -597,6 +586,7 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       out.text = clip(plainTextOfProps(p))
       richMarkdown(out, type, p)
       copy('fontSize', 'fontFamily', 'color', 'align')
+      textStyleName(out, type, p)
       if (type === 'text') copy('autoWidth')
       if (type === 'note') {
         copy('sizing')
@@ -611,6 +601,9 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       const stroke = p.stroke as { color?: unknown } | string | null | undefined
       out.stroke = typeof stroke === 'string' ? stroke : typeof stroke?.color === 'string' ? stroke.color : 'none'
       copy('strokeWidth', 'strokeDash', 'cornerRadius', 'labelFontSize', 'labelColor')
+      textStyleName(out, type, p)
+      // 文字の余白と縦の揃え（MAI-115）。持つときだけ（ないときは四方 8・上下の中央）
+      copy('labelPadding', 'labelVerticalAlign')
       const fill = p.fill as { type?: unknown; assetId?: unknown; scaleMode?: unknown; crop?: unknown } | null | undefined
       if (fill?.type === 'image' && typeof fill.assetId === 'string') {
         out.assetId = fill.assetId
@@ -842,6 +835,17 @@ function richMarkdown(out: Record<string, unknown>, type: string, props: Record<
   else out.md = markdown
 }
 
+// DADS のテキストスタイル（MAI-114）。ノードの既定の書式（大きさ・太さ・フォント）と行間・字間が、どれかのスタイルと同じなら、
+// その名前（edit_canvas の textStyle と同じ）。範囲ごとに変えた大きさ・太さは md に出る
+function textStyleName(out: Record<string, unknown>, type: string, props: Record<string, unknown>): void {
+  const target = richTextTargetOfType(type)
+  if (!target) return
+  const style = target.style(props)
+  const { fontSize, fontWeight, fontFamily } = baseFormatOf(style)
+  const preset = textStyleOf({ fontSize, fontWeight, fontFamily, lineHeight: lineHeightOf(style), letterSpacing: letterSpacingOf(style.letterSpacing) })
+  if (preset) out.textStyle = preset.name
+}
+
 function clip(text: string): string {
   return text.length > MAX_DETAIL_TEXT ? `${text.slice(0, MAX_DETAIL_TEXT)}…（${text.length - MAX_DETAIL_TEXT} 文字省略）` : text
 }
@@ -889,11 +893,12 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - text, note and geo text can be formatted (bold, colours, sizes, fonts, lists); read_nodes gives that as md (see Formatted text)
 - note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
 - AI note ("AI 付箋"): a note the user asks Claude with; the outline marks it ai, or ai:answered when it holds Claude's answer. The answer is not on the canvas: the user opens it from the blue triangle at the note's top right. read_nodes gives ai.answer (body = the answer in Markdown, related = ids of related notes, model, effort, question = the question it answered, answeredAt) and ai.contexts (what is attached: kind answer = the previous answer it continues (noteId, canvasId), kind canvas = a place on the canvas)
-- geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
+- geo: shape, one of rect, ellipse, triangle, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius, labelPadding, labelVerticalAlign). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
+- labelPadding (geo): px between the shape's box (a block arrow's shaft) and its text, a number for all sides or {top,right,bottom,left}; omitted = 8. labelVerticalAlign: top | middle | bottom of the padded box; omitted = middle
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
 - draw: freehand stroke (color, size; points are not returned)
-- image: bitmap (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
+- image: a picture the user pasted or dropped, a bitmap (PNG, JPEG, …) or an SVG such as an icon, which stays sharp when zoomed (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
 - frame: named container that clips its children (name, w, h)
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
@@ -925,6 +930,7 @@ Ids: an op may name what it creates with "as":"a"; later ops refer to it as "$a"
 Coordinates: world. x,y = top-left of the node's box, as in read_canvas (also inside rotated frames/groups; the server converts).
 Position (create/move/grid): x,y, or place:{rightOf|leftOf|below|above:<id>, gap?:40, align?:start|center|end} (start aligns the top or left edges), or place:{empty:"right"|"below", gap?:200} (right of or below all the content; inside a parent, right of or below its children). Omitted on create: in free space near the centre of the user's view (else right of the existing content), or 24 px inside a parent's top-left; later unpositioned creates in the same call stack below it.
 Colours are hex (#rrggbb); fill/stroke also accept "none".
+textStyle (text, note, geo): a text style of DADS (the design system of Japan's Digital Agency) that sets the font size, weight, line height and letter spacing of the whole text at once (per-range sizes and weights are cleared; not together with fontSize). Name = <kind>-<size px><N (400) | B (700)>-<line height %>, e.g. "Std-17N-170" = 17px, 400, line height 1.7, letter spacing 0.02em. The styles: Dsp-64/57/48-140 (display); Std-45/36-140, Std-32/28/26/24/22/20-150, Std-18-160, Std-17/16-170, Std-16-175 (headings and body); Dns-17/16/14-130 or -120 (dense: tables, admin screens); Oln-17/16/14-100 (one-line UI such as buttons); Mono-17/16/14-150 (code; also sets the font to monospace). Each size has N and B (Std-17B-170). read_nodes shows textStyle when a node's text matches one.
 
 Placing many nodes:
 1. read_canvas once for bounds= and the user's viewing= (with rect= on a large canvas).
@@ -935,9 +941,10 @@ Placing many nodes:
 
 Ops:
 - create: type (text | note | geo | frame | slide | card | portal | pdf | link), as?, parent? (frame/group/slide id), position, w?, h?, rotation? (deg) and style:
-  text: text or md, fontSize, color, align (left|center|right), w (wraps; default 240)
-  note: text or md, color (background), fontSize, align, w, h
-  geo: shape (rect | ellipse | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label) or md, fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize, align, cornerRadius, w, h
+  text: text or md, fontSize or textStyle, color, align (left|center|right), w (wraps; default 240)
+  note: text or md, color (background), fontSize or textStyle, align, w, h
+  geo: shape (rect | ellipse | triangle | blockArrow | blockArrowBoth | blockArrowBent | chevron), text (label) or md, fill, stroke, strokeWidth, dash (solid | dashed | dotted), color (label), fontSize or textStyle, align, verticalAlign (top | middle | bottom; default middle), padding (px around the text: a number for all sides or {"top","right","bottom","left"}; default 8), cornerRadius, w, h
+    e.g. a text field: {"op":"create","type":"geo","text":"山田","w":320,"h":48,"fill":"#ffffff","stroke":"#666666","strokeWidth":1,"align":"left","padding":{"top":12,"right":16,"bottom":12,"left":16}}
   frame: name, w, h
   slide: name, ratio, hidden, template (see Slides below)
   card: file (document id from list_documents; markdown, code or table) or path (its path as list_documents shows it), w, h (fixes the height). If the document already has a card, the new one is a shortcut to it (dashed, "↗"), fixed at 200 high unless h is given.
@@ -950,7 +957,7 @@ Ops:
   text replaces formatted text with plain text (a warning says so); to keep or change formatting, read_nodes the md, edit it and write md (md over 20000 characters is not returned: mdOmitted).
   arrow (made by connect): text (label), color, strokeWidth (line width), dash (solid | dashed | dotted), heads (end | start | both | none | bars; none = a plain line, bars = a dimension line |―| with short perpendicular bars at both ends, e.g. to show the size of a gap next to a bar chart).
   crop (image, or geo with an image fill): {"x":0.1,"y":0,"w":0.5,"h":1} = the part of the image to show (0–1 fractions of the whole image); null shows the whole image. An image keeps its width and gets the height of the cropped part; a geo keeps its box and its fill switches to scaleMode crop (null: back to fill).
-- defaults: type?, parent?, and style fields of that type (no type: parent only; type card applies to every card type). Later create and grid ops of the call use them for what they omit (fill, stroke, fontSize, w, h, parent…); an op's own field wins, also over a default under another name of it (text / label / md / name, a note's color / fill). Write them once instead of repeating them on every node.
+- defaults: type?, parent?, and style fields of that type (no type: parent only; type card applies to every card type). Later create and grid ops of the call use them for what they omit (fill, stroke, fontSize, w, h, parent…); an op's own field wins, also over a default under another name of it (text / label / md / name, a note's color / fill, fontSize / textStyle). Write them once instead of repeating them on every node.
 - grid: type (text | note | geo | card | markdown-card | code-card | table-card), cols, items, gap?:20 (or gapX / gapY), as?, parent? (not a rotated one), position, style. items are texts ("8.50%") or create fields ({"text","as","fill","file",…}; no position). Lays them out row by row; each column is as wide as its widest cell and each row as tall as its tallest. Names: an item's as, else "<as>.<k>" (k from 0), e.g. "$t.4"; without as, created lists them as "#<op index>.<k>" (not kept for later calls).
 - move: ids, dx,dy or x,y or place (several ids move together; x,y is their bounding box top-left).
 - delete: ids, documents? ("trash" (default) | "unplace"): what happens to the canvas/document of a deleted portal or card.

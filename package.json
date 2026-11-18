@@ -20,7 +20,8 @@
     "import": "node apps/server/src/import-cli.ts",
     "bench:memory": "npm run build -w @canvcode/web && node tests/bench/memory.ts",
     "bench:newtab": "npm run build -w @canvcode/web && node tests/bench/newtab.ts",
-    "test:e2e": "playwright test --project=chromium --project=firefox"
+    "bench:target-size": "node tests/bench/target-size.ts",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

@@ -822,3 +822,82 @@ test('the file editor shows the chat directly, without the answers panel (MAI-10
   await expect(answerPanel(page)).toBeVisible()
   await expect(panel(page)).toBeHidden()
 })
+
+test('keeps the panel within the right half of the file editor when the conversation has long lines (MAI-102)', async ({ page }) => {
+  const now = Date.now()
+  // 折り返せない長い行：ツールの行（1 行にして、はみ出す分を省略記号で切る）と、コードブロック（その中で横にスクロールする）。
+  // パネルの幅が決まっていないと、パネルがこの行の幅まで広がり、右半分からはみ出した所（送るボタン）が切れていた
+  const command = `npx playwright test ${'tests/e2e/claude-panel.spec.ts '.repeat(8)}--project=chromium`
+  const code = `const line = "${'abcdefghij'.repeat(20)}"`
+  // 長いエラー（区切れない語）は折り返す
+  const error = `ENOENT: ${'/very/long/path'.repeat(20)}`
+  const events = [
+    { kind: 'tool', name: 'Bash', detail: command },
+    { kind: 'text', text: '```\n' + code + '\n```' },
+    { kind: 'error', message: error },
+  ]
+  const jobs = [{ id: 'k1', threadId: 't1', prompt: 'long lines', status: 'done', createdAt: now + 60_000, eventCount: events.length, events }]
+  await openApp(page, { jobs }, { open: false })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  await openFileEditor(page)
+  await page.getByRole('button', { name: 'Claude に頼む', exact: true }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(page.locator('.claude-tool-detail')).toHaveText(command)
+
+  // パネルは右半分に収まる
+  const editorBox = (await page.locator('.file-editor-body').boundingBox())!
+  const panelBox = (await panel(page).boundingBox())!
+  expect(Math.abs(panelBox.x - (editorBox.x + editorBox.width / 2))).toBeLessThan(2)
+  expect(Math.abs(panelBox.x + panelBox.width - (editorBox.x + editorBox.width))).toBeLessThan(2)
+
+  // 送るボタンは切れずに見えていて、押せる（真ん中の点の上にあるのが送るボタン）
+  await promptBox(page).fill('question')
+  const send = page.locator('.claude-send')
+  await expect(send).toBeInViewport({ ratio: 1 })
+  const sendBox = (await send.boundingBox())!
+  expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(editorBox.x + editorBox.width)
+  expect(
+    await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('.claude-send')), {
+      x: sendBox.x + sendBox.width / 2,
+      y: sendBox.y + sendBox.height / 2,
+    }),
+  ).toBe(true)
+
+  // 長い行は、パネルの中で切れる（ツールの行）か、スクロールする（コードブロック）
+  expect(await page.locator('.claude-tool').evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true)
+  expect(await page.locator('.claude-text pre').evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true)
+  await expect(page.locator('.claude-error')).toHaveText(error)
+  // 会話の欄そのものは、横にスクロールしない
+  expect(await page.locator('.claude-log').evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1)
+})
+
+test('shows the whole model popover when the right half of the file editor is narrow (MAI-102)', async ({ page }) => {
+  // 右半分（365px）が、選ぶ欄（326px）とその右の送るボタンの分より狭い。選ぶ欄はパネルの左へはみ出して開く
+  await page.setViewportSize({ width: 730, height: 720 })
+  const catalog = {
+    models: [{ value: 'opus', label: 'Opus 5.5', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }],
+    default: { value: 'opus', label: 'Opus 5.5' },
+    fromClaude: true,
+  }
+  await page.route('**/api/claude/models', (route) => route.fulfill({ json: catalog }))
+  await openApp(page, {}, { open: false })
+  await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
+  await openFileEditor(page)
+  await page.getByRole('button', { name: 'Claude に頼む', exact: true }).click()
+  await expect(panel(page)).toBeVisible()
+
+  await page.locator('.claude-model-button').click()
+  const popover = page.locator('.claude-model-popover')
+  await expect(popover).toBeVisible()
+  const popoverBox = (await popover.boundingBox())!
+  const panelBox = (await panel(page).boundingBox())!
+  expect(popoverBox.x).toBeLessThan(panelBox.x)
+  // 選ぶ欄の左の端は切れずに見えていて、押せる（もとは右半分の外が切れ、「Model ›」の左を押すとエディタに入っていた）
+  await expect(popover).toBeInViewport({ ratio: 1 })
+  expect(
+    await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('.claude-model-popover')), {
+      x: popoverBox.x + 4,
+      y: popoverBox.y + popoverBox.height / 2,
+    }),
+  ).toBe(true)
+})

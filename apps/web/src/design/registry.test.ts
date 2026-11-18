@@ -6,6 +6,7 @@ import { designSections, propField, registerDesignSection, visibleSections, type
 import { applyChartRowsChange, chartDataField, chartInnerRadiusField, chartShowLabelsField, chartShowPercentField, chartStartAngleField, type ChartRowsChange } from './sections.ts'
 import { arrowHeadLengthField, arrowHeadWidthField, arrowShaftField, chevronDepthField, geoShapeField } from './sections.ts'
 import { arrowheadsField, applyFillChange, applyShadowsChange, shadowRows, shadowsField, strokeAlignField, strokeDashField, strokeDashGapField, strokeDashLengthField, boldField, cornerRadiusField, fillField, fontFamilyField, fontWeightField, italicField, strikethroughField, fontSizeField, letterSpacingField, lineHeightField, listStyleField, listTypeField, opacityField, strokeColorField, strokeWidthField, textAlignField, textColorField } from './sections.ts'
+import { labelPaddingField, labelVerticalAlignField, textStyleField } from './sections.ts'
 
 // デザインパネルのセクションと項目（MAI-73）
 
@@ -33,7 +34,7 @@ describe('design sections', () => {
     expect(sectionIds([geo])).toEqual(['shape', 'corner', 'fill', 'stroke', 'effects', 'layer'])
     expect(fieldIds([geo])).toEqual(['shape.shape', 'corner.radius', 'fill.paint', 'stroke.color', 'stroke.width', 'stroke.align', 'stroke.dash', 'effects.shadows', 'layer.opacity'])
     expect(sectionIds([text])).toEqual(['text', 'layer'])
-    expect(fieldIds([text])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text])).toEqual(['text.textStyle', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     expect(sectionIds([arrow])).toEqual(['stroke', 'layer'])
   })
 
@@ -55,7 +56,8 @@ describe('design sections', () => {
   it('puts the text of a shape in the text tab, with the same fields as a text', () => {
     const { geo, text } = setup()
     const label = visibleSections([geo]).filter((s) => s.tab === '文字')
-    expect(label.map((s) => s.section.id)).toEqual(['text'])
+    // 書式の下に、図形だけの縦の揃えと余白（MAI-115）
+    expect(label.map((s) => s.section.id)).toEqual(['text', 'label-box'])
     expect(label[0].fields.map((f) => f.field.id)).toEqual(fieldIds([text]).filter((id) => id.startsWith('text.')))
     // 書式を持たない図形は既定（18px・中央揃え・行間 1.35 倍）
     const value = (id: string) => label[0].fields.find((f) => f.field.id === id)!.value
@@ -81,8 +83,8 @@ describe('design sections', () => {
   it('shows only the fields every selected node has', () => {
     const { geo, text, note, arrow, group } = setup()
     // テキストと付箋：フォント・文字の大きさ・行間・文字間・色・揃えは共通（付箋の文字の色は、文字に当てる。MAI-74）。塗りは付箋だけ
-    expect(fieldIds([text, note])).toEqual(['text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
-    expect(fieldIds([note])).toEqual(['fill.paint', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([text, note])).toEqual(['text.textStyle', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
+    expect(fieldIds([note])).toEqual(['fill.paint', 'text.textStyle', 'text.fontFamily', 'text.fontWeight', 'text.fontSize', 'text.bold', 'text.italic', 'text.underline', 'text.strikethrough', 'text.color', 'text.lineHeight', 'text.letterSpacing', 'text.align', 'text.list', 'text.listStyle', 'layer.opacity'])
     // 図形と矢印：線の色・太さ・種類は共通（図形の stroke と矢印の color）
     expect(fieldIds([geo, arrow])).toEqual(['stroke.color', 'stroke.width', 'stroke.dash', 'layer.opacity'])
     expect(fieldIds([geo, text])).toEqual(['layer.opacity'])
@@ -145,7 +147,7 @@ describe('design sections', () => {
     }
     const all = [...designSections(), extra].sort((a, b) => a.order - b.order)
     const { geo } = setup()
-    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'corner', 'fill', 'test-border', 'stroke', 'effects', 'text', 'layer'])
+    expect(visibleSections([geo], all).map((s) => s.section.id)).toEqual(['shape', 'corner', 'fill', 'test-border', 'stroke', 'effects', 'text', 'label-box', 'layer'])
     expect(visibleSections([geo], all)[3].fields[0].value).toEqual({ kind: 'same', value: 0 })
     // 同じ id で登録し直すと置き換わる
     registerDesignSection({ ...extra, id: 'fill', order: 100 })
@@ -466,6 +468,89 @@ describe('font weight', () => {
   })
 })
 
+describe('DADS text style field (MAI-114)', () => {
+  const valueOf = (nodes: NodeRecord[], selection: TextSelection | null = null) =>
+    visibleSections(nodes, undefined, selection)
+      .flatMap((s) => s.fields)
+      .find((f) => f.field.id === 'text.textStyle')!.value
+  const options = () => (textStyleField.control as Extract<typeof textStyleField.control, { kind: 'select' }>).options
+
+  it('lists the styles grouped by kind, at the top of the text fields', () => {
+    expect(options()).toHaveLength(54)
+    expect([...new Set(options().map((o) => o.group))]).toEqual(['Display（大きな見出し）', 'Standard（見出し・本文）', 'Dense（表・管理画面）', 'Oneline（ボタンなどの 1 行）', 'Mono（コード・等幅）'])
+    expect(options().slice(0, 2).map((o) => o.value)).toEqual(['Dsp-64N-140', 'Dsp-64B-140'])
+    const { geo } = setup()
+    expect(visibleSections([geo]).find((s) => s.section.id === 'text')!.fields[0].field).toBe(textStyleField)
+  })
+
+  it('reads the style of the values, custom when no style matches, and mixed when the values differ', () => {
+    const { text, note, geo } = setup()
+    // テキストの既定（12px・400・1.35 倍・字間 0）は、どのスタイルでもない
+    expect(valueOf([text])).toEqual({ kind: 'same', value: 'custom:12/400/1.35/0' })
+    // どちらもスタイルでなくても、4 つの値が違えば「混在」（付箋の既定は大きさ・行間が違う）
+    expect(valueOf([text, note]).kind).toBe('mixed')
+    expect(valueOf([text, { ...text, id: 'node:copy' }])).toEqual({ kind: 'same', value: 'custom:12/400/1.35/0' })
+    const std = textStyleField.write(text, 'Std-17N-170')
+    expect(valueOf([std])).toEqual({ kind: 'same', value: 'Std-17N-170' })
+    expect(valueOf([std, textStyleField.write(geo, 'Std-17N-170')])).toEqual({ kind: 'same', value: 'Std-17N-170' })
+    expect(valueOf([std, textStyleField.write(note, 'Std-17B-170')]).kind).toBe('mixed')
+    // 1 つの値を変えると「カスタム」（字間 2 % → 3 %）
+    expect(valueOf([letterSpacingField.write(std, 0.03)])).toEqual({ kind: 'same', value: 'custom:17/400/1.7/0.03' })
+    // パネルで打った字間（2 % → 0.02em）でも同じスタイル
+    const spacing = letterSpacingField.control as Extract<typeof letterSpacingField.control, { kind: 'number' }>
+    expect(valueOf([letterSpacingField.write(std, spacing.fromDisplay!(2))])).toEqual({ kind: 'same', value: 'Std-17N-170' })
+    // px の行間はスタイルにしない
+    expect(valueOf([lineHeightField.write(std, { convertTo: 'px' })]).kind).toBe('same')
+    expect((valueOf([lineHeightField.write(std, { convertTo: 'px' })]) as { value: string }).value).toMatch(/^custom:/)
+  })
+
+  it('reads per range while editing: the size and weight of the characters, with the line height and spacing of the node', () => {
+    const { text } = setup()
+    const std = textStyleField.write(text, 'Std-17N-170')
+    const ranged = fontWeightField.write(std, '700', { start: 0, end: 2 })
+    expect(valueOf([ranged])).toEqual({ kind: 'mixed', values: ['Std-17B-170', 'Std-17N-170'] })
+    expect(valueOf([ranged], { nodeId: text.id, start: 0, end: 2 })).toEqual({ kind: 'same', value: 'Std-17B-170' })
+    expect(valueOf([ranged], { nodeId: text.id, start: 3, end: 5 })).toEqual({ kind: 'same', value: 'Std-17N-170' })
+  })
+
+  it('writes the four values at once, to the range or the whole node, as one undo step', () => {
+    const { editor, text, note } = setup()
+    editNodes(editor, [text.id, note.id], (node) => textStyleField.write(node, 'Dsp-48B-140'), 'test')
+    for (const id of [text.id, note.id]) {
+      expect(editor.getNode(id)!.props).toMatchObject({ fontSize: 48, fontWeight: 700, lineHeight: { unit: 'multiplier', value: 1.4 }, letterSpacing: 0 })
+    }
+    // パネルの各項目にも出る（字間は 0 %、行間は 1.4 倍）
+    const shown = (id: string) => visibleSections([editor.getNode(text.id)!]).flatMap((s) => s.fields).find((f) => f.field.id === id)!.value
+    expect(shown('text.fontSize')).toEqual({ kind: 'same', value: 48 })
+    expect(shown('text.fontWeight')).toEqual({ kind: 'same', value: '700' })
+    expect(shown('text.bold')).toEqual({ kind: 'same', value: true })
+    editor.undo()
+    expect((editor.getNode(text.id)!.props as TextProps).fontSize).toBe(12)
+    expect((editor.getNode(text.id)!.props as TextProps).lineHeight).toBeUndefined()
+    expect((editor.getNode(note.id)!.props as NoteProps).letterSpacing).toBeUndefined()
+
+    // 範囲：大きさ・太さはその文字、行間・字間はノード
+    const ranged = textStyleField.write(editor.getNode(text.id)!, 'Oln-14B-100', { start: 0, end: 2 })
+    expect(ranged.props).toMatchObject({ fontSize: 12, lineHeight: { unit: 'multiplier', value: 1 }, letterSpacing: 0.02 })
+    expect((ranged.props as TextProps).paragraphs).toEqual([{ runs: [{ text: 'he', format: { fontSize: 14, fontWeight: 700 } }, { text: 'llo' }] }])
+    // 同じスタイルなら同じノード。知らない名前は何もしない
+    const same = textStyleField.write(text, 'Std-16N-170')
+    expect(textStyleField.write(same, 'Std-16N-170')).toBe(same)
+    expect(textStyleField.write(text, 'custom:12/400/1.35/0')).toBe(text)
+  })
+
+  it('makes the text monospace only for the Mono styles', () => {
+    const { text } = setup()
+    const mono = textStyleField.write(text, 'Mono-16N-150')
+    expect((mono.props as TextProps).fontFamily).toBe('monospace')
+    expect(valueOf([mono])).toEqual({ kind: 'same', value: 'Mono-16N-150' })
+    // ほかのスタイルはフォントを変えない
+    expect((textStyleField.write(mono, 'Dns-16N-130').props as TextProps).fontFamily).toBe('monospace')
+    // 等幅でなければ Mono ではない
+    expect(valueOf([fontFamilyField.write(mono, 'sans-serif')])).toEqual({ kind: 'same', value: 'custom:16/400/1.5/0' })
+  })
+})
+
 describe('bold, italic, underline and strikethrough (MAI-79)', () => {
   it('shows mixed per format, and toggles all the characters of the whole node (no default in the props)', () => {
     const editor = new Editor()
@@ -630,6 +715,79 @@ describe('corner radius field (MAI-84)', () => {
     editor.createNodes([other])
     const value = visibleSections([editor.getNode(geo.id)!, editor.getNode(other.id)!]).find((s) => s.section.id === 'corner')!.fields[0].value
     expect(value).toEqual({ kind: 'mixed', values: [0, [4, 0, 0, 0]] })
+  })
+})
+
+describe('shape label box fields (MAI-115)', () => {
+  const labelBox = (nodes: NodeRecord[]) => visibleSections(nodes).find((s) => s.section.id === 'label-box')
+  const sides = (top: number, right: number, bottom: number, left: number) => ({ top, right, bottom, left })
+
+  it('shows the vertical align and the padding in the text tab of every shape, also without text', () => {
+    const { editor, geo, geo2, text, note } = setup()
+    const arrow = editor.makeNode('geo', { x: 0, y: 800, props: { shape: 'blockArrow', w: 200, h: 100, label: '' } })
+    for (const shape of [geo, geo2, arrow]) {
+      const section = labelBox([shape])!
+      expect(section.tab).toBe('文字')
+      expect(section.fields.map((f) => f.field.id)).toEqual(['label.verticalAlign', 'label.padding'])
+    }
+    // 持たない図形は、上下の中央・四方 8
+    expect(labelBox([geo])!.fields.map((f) => f.value)).toEqual([
+      { kind: 'same', value: 'middle' },
+      { kind: 'same', value: sides(8, 8, 8, 8) },
+    ])
+    // テキスト・付箋には出さない（一緒に選んでも出さない）
+    expect(labelBox([text])).toBeUndefined()
+    expect(labelBox([note])).toBeUndefined()
+    expect(labelBox([geo, text])).toBeUndefined()
+  })
+
+  it('writes the vertical align, and the padding of all sides as a number or of one side, each undoable', () => {
+    const { editor, geo } = setup()
+    const props = () => editor.getNode(geo.id)!.props as { labelVerticalAlign?: string; labelPadding?: unknown }
+    editNodes(editor, [geo.id], (node) => labelVerticalAlignField.write(node, 'bottom'), 'design')
+    expect(props().labelVerticalAlign).toBe('bottom')
+    // DADS の入力欄：上下 12・左右 16
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: null, value: 12 }), 'design')
+    expect(props().labelPadding).toBe(12)
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: 'left', value: 16 }), 'design')
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: 'right', value: 16 }), 'design')
+    expect(props().labelPadding).toEqual(sides(12, 16, 12, 16))
+    // 四方が同じになれば数値にまとめる。負の値は 0
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, sides(16, 16, 16, 16)), 'design')
+    expect(props().labelPadding).toBe(16)
+    editNodes(editor, [geo.id], (node) => labelPaddingField.write(node, { side: 'top', value: -4 }), 'design')
+    expect(props().labelPadding).toEqual(sides(0, 16, 16, 16))
+    // 同じ値なら変えない（持たない図形に既定の 8 を書いても変えない）
+    const node = editor.getNode(geo.id)!
+    expect(labelPaddingField.write(node, { side: 'right', value: 16 })).toBe(node)
+    expect(labelVerticalAlignField.write(node, 'bottom')).toBe(node)
+    const plain = editor.makeNode('geo', { x: 0, y: 600, props: { shape: 'rect', w: 100, h: 100 } })
+    expect(labelPaddingField.write(plain, { side: null, value: 8 })).toBe(plain)
+    expect(labelVerticalAlignField.write(plain, 'middle')).toBe(plain)
+    // 1 回の変更が Undo 1 回で戻る
+    editor.undo()
+    expect(props().labelPadding).toBe(16)
+    editor.undo()
+    expect(props().labelPadding).toEqual(sides(12, 16, 12, 16))
+    for (let i = 0; i < 3; i++) editor.undo()
+    expect(props()).not.toHaveProperty('labelPadding')
+    expect(props().labelVerticalAlign).toBe('bottom')
+    editor.undo()
+    expect(props()).not.toHaveProperty('labelVerticalAlign')
+  })
+
+  it('reports mixed values when the selected shapes differ', () => {
+    const { editor, geo, geo2 } = setup()
+    editNodes(editor, [geo2.id], (node) => labelPaddingField.write(labelVerticalAlignField.write(node, 'top'), { side: 'top', value: 24 }), 'design')
+    const [align, padding] = labelBox([editor.getNode(geo.id)!, editor.getNode(geo2.id)!])!.fields.map((f) => f.value)
+    expect(align).toEqual({ kind: 'mixed', values: ['middle', 'top'] })
+    expect(padding).toEqual({ kind: 'mixed', values: [sides(8, 8, 8, 8), sides(24, 8, 8, 8)] })
+    // 両方に同じ変更を当て、1 回の Undo で両方戻る
+    editNodes(editor, [geo.id, geo2.id], (node) => labelPaddingField.write(node, { side: 'left', value: 16 }), 'design')
+    expect(labelBox([editor.getNode(geo.id)!, editor.getNode(geo2.id)!])!.fields[1].value).toEqual({ kind: 'mixed', values: [sides(8, 8, 8, 16), sides(24, 8, 8, 16)] })
+    editor.undo()
+    expect((editor.getNode(geo.id)!.props as { labelPadding?: unknown }).labelPadding).toBeUndefined()
+    expect((editor.getNode(geo2.id)!.props as { labelPadding?: unknown }).labelPadding).toEqual(sides(24, 8, 8, 8))
   })
 })
 
