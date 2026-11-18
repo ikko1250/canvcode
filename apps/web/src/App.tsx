@@ -1228,9 +1228,9 @@ export function App(props: { initial: InitialRecords }) {
       setClaudeView('chat')
       setEditorClaudeHidden(false)
       setClaudeFocus((n) => n + 1)
-      setChatImport({ item, newThread, n: Date.now() })
+      setChatImport({ item, newThread, ...(!newThread && chatThread ? { threadId: chatThread.threadId } : {}), n: Date.now() })
     },
-    [closeAnswer],
+    [closeAnswer, chatThread],
   )
   // 会話の質問を質問のタブで開く（会話の欄の「答えを見る →」・取り込んだ会話の質問のカードの ↗）
   const [questionOpen, setQuestionOpen] = useState<QuestionOpenRequest | null>(null)

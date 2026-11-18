@@ -59,10 +59,12 @@ export interface ChatAnswerCut {
   answer: string
 }
 
-// 付箋の質問を取り込む（答えの「会話で続ける」）。newThread なら新しい会話にする。n が変わるたびに取り込む
+// 付箋の質問を取り込む（答えの「会話で続ける」）。newThread なら新しい会話にし、そうでなければ threadId の会話（メニューに出した「いまの会話」）に入れる。
+// n が変わるたびに取り込む
 export interface ChatImportRequest {
   item: ImportedQuestion
   newThread: boolean
+  threadId?: string
   n: number
 }
 
@@ -152,6 +154,7 @@ export function ClaudePanel(props: Props) {
     setSeenImport(importRequest)
     if (importRequest) {
       if (importRequest.newThread) setThreadId(null)
+      else if (importRequest.threadId) setThreadId(importRequest.threadId)
       setPendingImport(importRequest.item)
       setMode('chat')
     }

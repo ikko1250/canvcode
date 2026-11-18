@@ -3405,7 +3405,16 @@ button.pdf-page-number:hover {
   flex: 1;
 }
 
-/* モデルの札（モックの「opus5.5・High」） */
+/* モデルの札（モックの「opus5.5・High」）。欄が狭ければ、名前を省略記号で切って縮む（送信に重ならないように） */
+.ai-note-controls .claude-model {
+  flex: 0 1 auto;
+}
+
+/* 後ろの :is(.claude-panel, .ai-note-controls) .claude-model-button（max-width: 200px）より強くする */
+.ai-note-controls .claude-model > .claude-model-button {
+  max-width: 100%;
+}
+
 .ai-note-controls .claude-model-button {
   border: none;
   border-radius: 999px;
@@ -3626,11 +3635,10 @@ button.pdf-page-number:hover {
 
 .answer-view-actions button,
 .answer-view-stop {
-  /* 当たり（MAI-113）：並んだボタンの間（8px）の半分。上は区切り線との間（10px）まで、下はパネルの余白（12px）まで */
+  /* 当たり（MAI-113）：見た目で高さ 27px ある。並んだボタンの間（8px）の半分まで（狭いと 2 段に折り返すので、上下も間の半分まで） */
   --target-reach-x: 5px;
-  --target-reach-top: 10px;
-  --target-reach-bottom: 12px;
-  padding: 4px 14px;
+  --target-reach-y: 4px;
+  padding: 4px 12px;
   border: 1px solid transparent;
   border-radius: 999px;
   font: var(--font-control);
@@ -3685,8 +3693,6 @@ button.pdf-page-number:hover {
 }
 
 .answer-view-stop {
-  --target-reach-top: 6px;
-  --target-reach-bottom: 6px;
   margin-left: auto;
   border-color: var(--color-border-subtle);
   background: var(--color-surface);

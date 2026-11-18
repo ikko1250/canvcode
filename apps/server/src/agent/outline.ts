@@ -548,12 +548,11 @@ function aiDetail(ai: { answer?: unknown; contexts?: unknown }): Record<string, 
       ['body', 'related', 'model', 'effort', 'question', 'answeredAt'].flatMap((key) => (answer[key] !== undefined ? [[key, answer[key]]] : [])),
     )
   }
-  const contexts = (Array.isArray(ai.contexts) ? ai.contexts : []).flatMap((context) => {
+  const contexts = (Array.isArray(ai.contexts) ? ai.contexts : []).flatMap((context): Record<string, unknown>[] => {
     if (typeof context !== 'object' || context === null) return []
-    const { kind, label, noteId, canvasId, threadId, jobId } = context as Record<string, unknown>
+    const { kind, label, noteId, canvasId, threadId, jobId, questionId } = context as Record<string, unknown>
     if (kind === 'answer') return [{ kind, label, noteId, canvasId }]
     if (kind === 'chat') {
-      const { questionId } = context as Record<string, unknown>
       return [{ kind, label, ...(threadId !== undefined ? { threadId } : {}), ...(jobId !== undefined ? { jobId } : {}), ...(questionId !== undefined ? { questionId } : {}) }]
     }
     if (kind === 'canvas') return [{ kind, label }]

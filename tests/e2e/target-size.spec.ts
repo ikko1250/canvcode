@@ -78,6 +78,21 @@ async function openApp(page: Page) {
   return { stops }
 }
 
+
+// 答えを持つ AI 付箋を置き（会話の答えの札も添える）、画面の真ん中に寄せる。付箋の id を返す（docs/claude-chat-tab-plan.md の 9）
+async function addAiNote(page: Page): Promise<string> {
+  const id = await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const node = editor.makeNode('note', { x: 860, y: 140, props: { paragraphs: [{ runs: [{ text: 'コンテキストとは？' }] }] } })
+    const answer = { body: '前提：LLM\n\n**コンテキスト**は、モデルに渡す文の全体です。', related: [], model: 'claude-sonnet-5-5', effort: 'medium', question: 'コンテキストとは？', answeredAt: Date.now() }
+    const chat = { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『会話』の答え', turns: [{ question: '整理して', answer: '整理しました' }] }
+    editor.transact('AI 付箋', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [chat], answer } } }))
+    return node.id as string
+  })
+  await page.evaluate((id) => (window as any).canvcode.view.focusNode(id), id)
+  return id
+}
+
 const canvasRoot = (page: Page) => page.locator('.canvas-container > div[tabindex]')
 
 async function clickWorld(page: Page, x: number, y: number, button: 'left' | 'right' = 'left') {
@@ -462,4 +477,43 @@ test('the focus ring follows the visible button, not the widened target', async 
   // 小数の位置の丸めで 1px までずれる
   const expected = { left: margin - 6, top: margin - 6, right: margin + box.width + 6, bottom: margin + box.height + 6 }
   for (const side of ['left', 'top', 'right', 'bottom'] as const) expect(Math.abs(black[side] - expected[side]), side).toBeLessThanOrEqual(1)
+})
+
+test('the questions tab, the answer panel by a note, the AI note controls and the chat menus have targets of 24×24 or more (claude-chat-tab-plan 0)', async ({ page }) => {
+  await openApp(page)
+  const noteId = await addAiNote(page)
+  // 付箋の下の欄と、上の札（会話の答え）
+  await page.evaluate((id) => (window as any).canvcode.editor.setSelection([id]), noteId)
+  await expect(page.locator('.ai-note-controls')).toBeVisible()
+  expect(await targetProblems(page.locator('.ai-note-controls'))).toEqual([])
+  expect(await targetProblems(page.locator('.ai-note-chips'))).toEqual([])
+  // 質問のタブ（一覧・答え・「会話で続ける」のメニュー）
+  await page.locator('.claude-toggle').click()
+  const questions = page.locator('.question-panel')
+  await expect(questions.locator('.question-row-main')).toHaveCount(1)
+  expect(await targetProblems(questions)).toEqual([])
+  await questions.locator('.question-row-main').click()
+  await expect(questions.getByRole('button', { name: '会話で続ける' })).toBeVisible()
+  expect(await targetProblems(questions)).toEqual([])
+  await questions.getByRole('button', { name: '会話で続ける' }).click()
+  expect(await targetProblems(questions.getByRole('menu'))).toEqual([])
+  await page.keyboard.press('Escape')
+  // 付箋の横の答えのパネル
+  await questions.getByRole('button', { name: '↗ 付箋へ移動' }).click()
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  expect(await targetProblems(page.locator('.answer-popover'))).toEqual([])
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.answer-popover')).toHaveCount(0)
+  // 会話のタブ：答えの操作（マウスを乗せたとき）・入力欄の「会話｜質問」・会話の一覧・⋯ のメニュー
+  await questions.getByRole('tab', { name: '会話' }).click()
+  const claude = page.locator('.claude-panel')
+  await claude.locator('.claude-job').first().hover()
+  await expect(claude.locator('.claude-answer-actions').first()).toHaveCSS('opacity', '1')
+  await expect(claude.getByRole('radiogroup', { name: '送り方' })).toBeVisible()
+  expect(await targetProblems(claude)).toEqual([])
+  await claude.locator('.claude-thread-button').click()
+  expect(await targetProblems(claude.locator('.claude-thread-menu'))).toEqual([])
+  await page.keyboard.press('Escape')
+  await claude.getByRole('button', { name: 'この会話のメニュー' }).click()
+  expect(await targetProblems(claude.locator('.claude-more-menu'))).toEqual([])
 })
