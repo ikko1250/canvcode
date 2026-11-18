@@ -1,3 +1,4 @@
+import { hitAiCorner } from './aiCorner.ts'
 import {
   applyMat,
   boxFromPoints,
@@ -81,6 +82,8 @@ import {
 const DRAG_THRESHOLD_PX = 3
 // 当たり判定の余裕（CSS ピクセル）
 export const HIT_MARGIN_PX = 4
+// 同じボタンをこの間（ミリ秒）にもう一度押しても、押したことにしない（ダブルクリックの 2 回目）
+const DOUBLE_PRESS_MS = 500
 
 export interface ToolPointer {
   screen: Vec
@@ -93,6 +96,8 @@ export interface ToolPointer {
   // 前のイベントからの間にまとめて届いた位置（ワールド座標、古い順。最後は world と同じ）。
   // 速く動かしたときも、フリーハンドの線を角張らせないために使う（MAI-27）
   coalesced?: Vec[]
+  // ブラウザが操作を取り消した（pointercancel。長押しでメニューが出たときなど）。離したのと同じに渡すが、ボタンは押さない
+  cancelled?: boolean
 }
 
 export interface ToolContext {
@@ -124,6 +129,8 @@ export interface ToolContext {
   moveToCanvas(ids: string[], canvasId: string): void
   // 画面に見えている範囲（ワールド座標）。吸い付きの候補を絞る（MAI-53）。ないときはすべてのノードが候補
   viewportBox?(): Box
+  // 付箋の角の三角（答えを見るボタン。aiCorner.ts）を押した
+  openAnswer?(noteId: string): void
 }
 
 export type WordSelectionEvent = { phase: 'move' | 'end'; pageId: string; from: Vec; to: Vec; screen: Vec } | { phase: 'cancel' }
@@ -230,6 +237,8 @@ export interface Tool {
   onDoubleClick?(pointer: ToolPointer): void
   // 操作の途中なら取り消して true を返す
   cancel(): boolean
+  // 右クリック・長押しでメニューを出す前（押しかけたボタンを押さないようにする）
+  onContextMenu?(): void
   // 別のツールに切り替わるとき
   onExit?(): void
 }
@@ -253,6 +262,10 @@ function placeAt(editor: Editor, point: Vec): { parentId: string; local: Vec } {
 type SelectState =
   | { name: 'idle' }
   | { name: 'pointingNode'; start: ToolPointer; nodeId: string; wasSelected: boolean }
+  // 選んでいない押せるノード（ボタン）の上を押した。離せば押したことにし、ドラッグすれば選んで動かす
+  // locked は固定したボタン（押せるが、ドラッグしても動かさず、範囲選択にする）
+  // 付箋の角の三角を押した（離したら答えのパネルを開く。動かしても何もしない）
+  | { name: 'pointingAiCorner'; start: ToolPointer; noteId: string }
   // nodeId は、Ctrl（⌘）を押してノードの上を押したとき。ドラッグすれば範囲選択、しなければそのノードのクリック。
   // excludeId は、Ctrl（⌘）を押して押したノード（塗りなしの図形の中の空白も含む）。範囲選択で選ばない
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string; excludeId?: string }
@@ -322,6 +335,8 @@ export class SelectTool implements Tool {
   readonly id = 'select' as const
   readonly cursor = 'default'
   private state: SelectState = { name: 'idle' }
+  // 最後にボタンを押した時刻（ダブルクリックの 2 回目で、同じボタンを重ねて押さない）
+  private lastPress: { id: string; time: number } | null = null
   // 離したあとも PDF の文字の読み込みが続く。次の操作まで、中止できるようにしておく。
   private hasWordSelection = false
   private readonly ctx: ToolContext
@@ -437,6 +452,12 @@ export class SelectTool implements Tool {
       this.startSpacing(spacingHit, pointer)
       return
     }
+    // 付箋の角の三角（答えを見るボタン）。ノードより先に調べる（付箋を選ばずに、答えのパネルを開く）
+    const aiCorner = hitAiCorner(editor, pointer.world)
+    if (aiCorner) {
+      this.state = { name: 'pointingAiCorner', start: pointer, noteId: aiCorner }
+      return
+    }
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
     const selected = editor.session.get().selectedIds
@@ -478,6 +499,7 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(cropHandleCursor(cropHit.hit, cropHit.handles.window.frame.rotation))
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         const gradientHit = hitGradientHandle(editor, pointer.screen)
@@ -485,12 +507,14 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(gradientHit.hit.handle === 'line' ? 'copy' : 'pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         if (hitArrowHandle(editor, pointer) || hitCornerHandle(editor, pointer.screen) || hitBlockArrowHandle(editor, pointer.screen) || hitTriangleHandle(editor, pointer.screen)) {
           this.ctx.setCursor('pointer')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         const handleHit = this.hitSelectionHandle(pointer)
@@ -498,6 +522,7 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(this.cursorFor(handleHit.hit, handleHit.selection))
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing(null)
+          this.setHoveredAiCorner(null)
           return
         }
         const spacingHit = hitSpacingHandle(editor, pointer)
@@ -505,9 +530,18 @@ export class SelectTool implements Tool {
           this.ctx.setCursor(spacingHit.axis === 'x' ? 'col-resize' : 'row-resize')
           if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
           this.setHoveredSpacing({ axis: spacingHit.axis, gapIndex: spacingHit.gapIndex })
+          this.setHoveredAiCorner(null)
           return
         }
         this.setHoveredSpacing(null)
+        // 付箋の角の三角の上では指のカーソル。三角を少し大きく描く
+        const aiCorner = hitAiCorner(editor, pointer.world)
+        this.setHoveredAiCorner(aiCorner)
+        if (aiCorner) {
+          this.ctx.setCursor('pointer')
+          if (editor.session.get().hoveredId) editor.session.set({ hoveredId: null })
+          return
+        }
         const zoom = editor.session.get().camera.zoom
         const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
         // 引用の範囲を選ぶ前は十字、調べる語をなぞる前は文字を選ぶカーソル（MAI-99）、
@@ -643,6 +677,8 @@ export class SelectTool implements Tool {
         this.onPointerMove(pointer)
         return
       }
+      case 'pointingAiCorner':
+        return
       case 'pointingCanvas': {
         if (dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) return
         this.state = { name: 'brushing', start: state.start, initial: state.initial, additive: state.start.shiftKey, excludeId: state.excludeId }
@@ -698,7 +734,15 @@ export class SelectTool implements Tool {
     if ((state.name === 'translating' || state.name === 'resizing') && editor.session.get().gapGuides.length > 0) {
       editor.session.set({ gapGuides: [] })
     }
-    if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
+    if (state.name === 'pointingAiCorner') {
+      // 離した：答えのパネルを開く（閉じる）。ダブルクリックの 2 回目は押さない（開いてすぐ閉じないように）。動かしていたら何もしない
+      const now = Date.now()
+      const repeated = this.lastPress?.id === state.noteId && now - this.lastPress.time < DOUBLE_PRESS_MS
+      if (editor.getNode(state.noteId) && !repeated && !pointer.cancelled && dist(pointer.screen, state.start.screen) < DRAG_THRESHOLD_PX) {
+        this.lastPress = { id: state.noteId, time: now }
+        this.ctx.openAnswer?.(state.noteId)
+      }
+    } else if (state.name === 'pointingNode' && pointer.shiftKey && state.wasSelected) {
       // Shift+クリックで、選択済みのノードを選択から外す
       const next = new Set(editor.session.get().selectedIds)
       next.delete(state.nodeId)
@@ -827,6 +871,8 @@ export class SelectTool implements Tool {
     const editor = this.ctx.editor
     const zoom = editor.session.get().camera.zoom
     const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
+    // 付箋の角の三角のダブルクリックは、三角を押したことになっている（文字の編集は、三角の外で）
+    if (hitAiCorner(editor, pointer.world)) return
     if (!hit || editor.isContainer(hit, 'frame')) {
       createTextAt(this.ctx, pointer.world)
       return
@@ -851,7 +897,16 @@ export class SelectTool implements Tool {
 
   onExit(): void {
     this.cancel()
-    this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null })
+    this.ctx.editor.session.set({ hoveredId: null, hoveredSpacing: null, hoveredAiCorner: null })
+  }
+
+  // 長押し（タッチ）でメニューが出たら、押しかけた三角は押さない
+  onContextMenu(): void {
+    if (this.state.name === 'pointingAiCorner') this.state = { name: 'idle' }
+  }
+
+  private setHoveredAiCorner(next: string | null): void {
+    if (this.ctx.editor.session.get().hoveredAiCorner !== next) this.ctx.editor.session.set({ hoveredAiCorner: next })
   }
 
   private setHoveredSpacing(next: { axis: Axis; gapIndex: number } | null): void {
@@ -1406,14 +1461,16 @@ export class TextTool implements Tool {
   }
 }
 
+// 付箋を置く。aiNote は AI モードの付箋（meta.ai。Claude に聞く付箋）を置く
 export class NoteTool implements Tool {
-  readonly id = 'note' as const
+  readonly id: 'note' | 'aiNote'
   readonly cursor = 'crosshair'
   private creating: { tx: Transaction<WorkspaceRecord>; node: NodeRecord<NoteProps> } | null = null
   private readonly ctx: ToolContext
 
-  constructor(ctx: ToolContext) {
+  constructor(ctx: ToolContext, id: 'note' | 'aiNote' = 'note') {
     this.ctx = ctx
+    this.id = id
   }
 
   // クリックした位置を中心に付箋を作る
@@ -1423,7 +1480,8 @@ export class NoteTool implements Tool {
     const { parentId, local } = placeAt(editor, pointer.world)
     const tx = editor.begin('create note')
     const draft = editor.makeNode('note', { x: 0, y: 0, parentId }) as NodeRecord<NoteProps>
-    const node = { ...draft, x: local.x - draft.props.w / 2, y: local.y - noteHeight(draft.props) / 2 }
+    const meta = this.id === 'aiNote' ? { ...draft.meta, ai: { contexts: [] } } : draft.meta
+    const node = { ...draft, meta, x: local.x - draft.props.w / 2, y: local.y - noteHeight(draft.props) / 2 }
     tx.put(node)
     tx.flush()
     this.creating = { tx, node }

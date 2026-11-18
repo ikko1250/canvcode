@@ -7,6 +7,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { handleClaude, parseStart } from './http.ts'
 import { ClaudeJobs, type RunQuery } from './jobs.ts'
+import { RunningQuestions } from './questions.ts'
 import { ClaudeStore } from './store.ts'
 
 // 画面から Claude Code に頼む API
@@ -62,10 +63,10 @@ function makeJobs(query: RunQuery = run): ClaudeJobs {
   return jobs
 }
 
-async function setup(jobs: ClaudeJobs | null): Promise<string> {
+async function setup(jobs: ClaudeJobs | null, questions: RunningQuestions | null = null): Promise<string> {
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    if (!handleClaude(req, res, url.pathname, jobs)) res.writeHead(404).end()
+    if (!handleClaude(req, res, url.pathname, jobs, questions)) res.writeHead(404).end()
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   cleanups.push(() => {
@@ -103,6 +104,34 @@ async function readEvents(base: string, until: (messages: Record<string, unknown
 }
 
 describe('/api/claude', () => {
+  it('streams the running questions of the sticky notes: all of them in the snapshot (with the thinking), then their changes', async () => {
+    const questions = new RunningQuestions()
+    const base = await setup(makeJobs(), questions)
+    const first = questions.start({ noteId: 'node:a', canvasId: 'canvas:c', label: 'コンテキストとは？' }, { model: 'opus', effort: 'high' }, () => {})
+    questions.thinking(first, 'まず')
+    // つないで（SSE が質問の変化を受け始めて）から変える（snapshot が先に届く）
+    const subscribe = questions.subscribe.bind(questions)
+    const subscribed = new Promise<void>((resolve) => {
+      questions.subscribe = (listener) => {
+        const off = subscribe(listener)
+        resolve()
+        return off
+      }
+    })
+    const reading = readEvents(base, (messages) => messages.some((m) => m.type === 'question-done'))
+    await subscribed
+    questions.step(first, 'search')
+    questions.thinking(first, '調べる')
+    questions.end(first, 'failed', 'だめでした')
+    const messages = await reading
+    expect(messages[0]).toMatchObject({ type: 'snapshot', questions: [{ id: first, noteId: 'node:a', canvasId: 'canvas:c', label: 'コンテキストとは？', model: 'opus', effort: 'high', status: 'running', step: 'read', thinking: 'まず' }] })
+    expect(messages.slice(1).map((m) => m.type)).toEqual(['question', 'question-thinking', 'question-done'])
+    expect(messages[1]).toMatchObject({ question: { id: first, step: 'search' } })
+    expect((messages[1]!.question as Record<string, unknown>).thinking).toBeUndefined()
+    expect(messages[2]).toEqual({ type: 'question-thinking', id: first, text: '調べる' })
+    expect(messages[3]).toEqual({ type: 'question-done', id: first, status: 'failed', error: 'だめでした' })
+  })
+
   it('starts a job and streams its events', async () => {
     const base = await setup(makeJobs())
     const done = (messages: Record<string, unknown>[]) =>
@@ -116,7 +145,7 @@ describe('/api/claude', () => {
     expect(job.refId).toBe('ref:Ab12Cd34Ef')
 
     const messages = await streamed
-    expect(messages[0]).toEqual({ type: 'snapshot', threads: [], running: [] })
+    expect(messages[0]).toEqual({ type: 'snapshot', threads: [], running: [], questions: [] })
     const events = messages.filter((m) => m.type === 'job').flatMap((m) => m.events as unknown[])
     expect(events).toEqual([{ kind: 'text', text: 'こんにちは' }])
 

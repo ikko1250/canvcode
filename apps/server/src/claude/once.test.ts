@@ -1,6 +1,6 @@
 import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest'
-import { answeredModel, ClaudeOnce, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, type OnceQuery } from './once.ts'
+import { answeredModel, ClaudeOnce, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, jsonFromText, jsonInstruction, thinksAdaptively, type OnceQuery } from './once.ts'
 
 // Claude を 1 回だけ動かす共通の仕組み（単語を調べる MAI-99、APA の引用 MAI-98 などが使う）
 
@@ -143,6 +143,77 @@ describe('ClaudeOnce', () => {
     const again = once.ask({ prompt: 'p', model: 'haiku', signal: later.signal })
     later.abort()
     await expect(again).rejects.toMatchObject({ status: 499 })
+  })
+})
+
+describe('thinking', () => {
+  const delta = (thinking: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking } } }) as unknown as SDKMessage
+
+  it('onThinking を渡すと、考えている中身を要約して返すよう頼み、届いた分を渡す。渡さなければ頼まない', async () => {
+    const calls: Call[] = []
+    const run: OnceQuery = (params) => {
+      calls.push(params)
+      return (async function* () {
+        yield delta('まず')
+        yield delta('')
+        yield delta('考える。')
+        yield success()
+      })()
+    }
+    const got: string[] = []
+    await new ClaudeOnce({ run }).ask({ prompt: '問い', model: 'sonnet', onThinking: (text) => got.push(text) })
+    expect(got).toEqual(['まず', '考える。'])
+    expect(calls[0]!.options).toMatchObject({ includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' } })
+    await new ClaudeOnce({ run }).ask({ prompt: '問い', model: 'sonnet' })
+    expect(calls[1]!.options.includePartialMessages).toBeUndefined()
+    expect(calls[1]!.options.thinking).toBeUndefined()
+    // 考える仕組みを持たない古いモデルには頼まない
+    await new ClaudeOnce({ run }).ask({ prompt: '問い', model: 'claude-haiku-4-5-20251001', onThinking: () => undefined })
+    expect(calls[2]!.options.thinking).toBeUndefined()
+  })
+
+  it('JSON の形と一緒に onThinking を渡すと、構造化出力を使わず（モデルが考えないので）、JSON を文字で返させて読む。読めなければ 502', async () => {
+    const schema = { type: 'object', properties: { a: { type: 'number' } }, required: ['a'] }
+    const calls: Call[] = []
+    const result = await new ClaudeOnce({ run: answering(success({ result: '```json\n{"a": 1}\n```' }), calls) }).ask({
+      prompt: '問い',
+      model: 'sonnet',
+      systemPrompt: '係です',
+      schema,
+      onThinking: () => undefined,
+    })
+    expect(result.output).toEqual({ a: 1 })
+    const { options } = calls[0]!
+    expect(options.outputFormat).toBeUndefined()
+    expect(options.systemPrompt).toBe(`係です\n\n${jsonInstruction(schema)}`)
+    expect(options.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    // 答えを渡すツールは使わせない
+    expect(await hookOf(options)(preToolUse(STRUCTURED_OUTPUT_TOOL), undefined, { signal: new AbortController().signal })).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    })
+    // 前後に文があっても、{ から } までを読む
+    const wordy = await new ClaudeOnce({ run: answering(success({ result: 'はい。{"a": 2} です' })) }).ask({ prompt: '問い', model: 'sonnet', schema, onThinking: () => undefined })
+    expect(wordy.output).toEqual({ a: 2 })
+    await expect(new ClaudeOnce({ run: answering(success({ result: 'JSON ではない' })) }).ask({ prompt: '問い', model: 'sonnet', schema, onThinking: () => undefined })).rejects.toMatchObject({
+      status: 502,
+    })
+    // 考えない古いモデルなら、これまでどおり構造化出力
+    const old: Call[] = []
+    await new ClaudeOnce({ run: answering(success({ structured_output: { a: 3 } }), old) }).ask({ prompt: '問い', model: 'claude-sonnet-4-5', schema, onThinking: () => undefined })
+    expect(old[0]!.options.outputFormat).toEqual({ type: 'json_schema', schema })
+  })
+
+  it('jsonFromText は、オブジェクトでない JSON を読まない', () => {
+    expect(jsonFromText('[1, 2]')).toBeUndefined()
+    expect(jsonFromText('"text"')).toBeUndefined()
+    expect(jsonFromText('{"a": {"b": 1}}')).toEqual({ a: { b: 1 } })
+  })
+
+  it('adaptive thinking を持つモデル：別名と 4.6 以降。4.5 までと 3 系は持たない', () => {
+    for (const model of ['sonnet', 'opus', 'haiku', 'fable', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-5-5', 'claude-haiku-5-5']) expect(thinksAdaptively(model)).toBe(true)
+    for (const model of ['claude-sonnet-4-5', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-opus-4-1', 'claude-3-7-sonnet-latest', 'claude-sonnet-4-5@20250929']) {
+      expect(thinksAdaptively(model)).toBe(false)
+    }
   })
 })
 

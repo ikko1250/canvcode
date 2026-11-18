@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   applyStreamMessage,
   ClaudeClient,
+  KEPT_FINISHED_QUESTIONS,
   jobsOfThread,
   threadAsking,
   threadBusy,
   type ClaudeJob,
   type ClaudeState,
   type PendingPermission,
+  type RunningQuestion,
   type ThreadSummary,
 } from './claudeClient.ts'
 
@@ -33,7 +35,74 @@ const thread = (threadId: string, updatedAt: number, extra: Partial<ThreadSummar
   ...extra,
 })
 const summary = ({ events: _events, ...rest }: ClaudeJob) => rest
-const state = (extra: Partial<ClaudeState> = {}): ClaudeState => ({ availability: 'on', threads: [], jobs: new Map(), loaded: new Set(), ...extra })
+const state = (extra: Partial<ClaudeState> = {}): ClaudeState => ({
+  availability: 'on',
+  threads: [],
+  jobs: new Map(),
+  loaded: new Set(),
+  questions: [],
+  finishedQuestions: new Map(),
+  ...extra,
+})
+const question = (id: string, extra: Partial<RunningQuestion> = {}): RunningQuestion => ({
+  id,
+  noteId: `node:${id}`,
+  canvasId: 'canvas:c',
+  label: id,
+  status: 'running',
+  step: 'read',
+  searched: false,
+  thinking: '',
+  startedAt: 0,
+  ...extra,
+})
+
+describe('running questions', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('takes them from the snapshot, adds and updates them, keeping the thinking', () => {
+    let { state: s } = applyStreamMessage(state(), { type: 'snapshot', threads: [], running: [], questions: [question('a', { thinking: 'まず' })] })
+    expect(s.questions).toEqual([question('a', { thinking: 'まず' })])
+    ;({ state: s } = applyStreamMessage(s, { type: 'question-thinking', id: 'a', text: '考える' }))
+    const { thinking: _thinking, ...searching } = question('a', { step: 'search' })
+    ;({ state: s } = applyStreamMessage(s, { type: 'question', question: searching }))
+    expect(s.questions).toEqual([question('a', { step: 'search', thinking: 'まず考える' })])
+    const { thinking: _new, ...fresh } = question('b')
+    ;({ state: s } = applyStreamMessage(s, { type: 'question', question: fresh }))
+    expect(s.questions.map((q) => q.id)).toEqual(['a', 'b'])
+    // 前のサーバーの snapshot（questions がない）なら空
+    expect(applyStreamMessage(s, { type: 'snapshot', threads: [], running: [] }).state.questions).toEqual([])
+  })
+
+  it('drops a finished one and remembers how it ended, newest first, up to KEPT_FINISHED_QUESTIONS', () => {
+    let s = state({ questions: [question('a'), question('b')] })
+    ;({ state: s } = applyStreamMessage(s, { type: 'question-done', id: 'a', status: 'cancelled' }))
+    expect(s.questions.map((q) => q.id)).toEqual(['b'])
+    expect(s.finishedQuestions.get('a')).toBe('cancelled')
+    for (let i = 0; i < KEPT_FINISHED_QUESTIONS; i++) ({ state: s } = applyStreamMessage(s, { type: 'question-done', id: `x${i}`, status: 'done' }))
+    expect(s.finishedQuestions.size).toBe(KEPT_FINISHED_QUESTIONS)
+    expect(s.finishedQuestions.has('a')).toBe(false)
+    expect([...s.finishedQuestions.keys()][0]).toBe(`x${KEPT_FINISHED_QUESTIONS - 1}`)
+  })
+
+  it('cancels and finishes through the server', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+    const client = Object.create(ClaudeClient.prototype) as ClaudeClient
+    await client.cancelQuestion('q1')
+    await client.finishQuestion('q1', 'failed', '見えない')
+    expect(fetch.mock.calls.map((call) => (call as unknown[])[0])).toEqual(['/api/claude/questions/q1/cancel', '/api/claude/questions/q1/finish'])
+    const init = (fetch.mock.calls[1] as unknown[])[1] as RequestInit
+    expect(init.headers).toMatchObject({ 'content-type': 'application/json' })
+    expect(JSON.parse(init.body as string)).toEqual({ status: 'failed', error: '見えない' })
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: 'だめ' }), { status: 500 }))
+    await expect(client.cancelQuestion('q1')).rejects.toThrow('だめ')
+    vi.stubGlobal('fetch', async () => new Response(null, { status: 404 }))
+    await expect(client.cancelQuestion('q1')).resolves.toBeUndefined()
+  })
+})
 
 describe('applyStreamMessage', () => {
   it('replaces the threads and the running jobs with a snapshot, and forgets what was loaded', () => {

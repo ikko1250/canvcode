@@ -18,9 +18,10 @@ import {
 // - 欄は 2 本のスライダー。Model は Haiku・Sonnet・Opus・Fable のそれぞれの最新版の 4 段、Effort はそのモデルで選べる段。
 //   段の点を押すか、つまみを引いて選ぶ（キーは ←→・Home・End）。左端の名前と、選んでいるものの名前（太字）を添える
 // - 「Model ›」を押すと、全部のバージョンの一覧に替わる（古いバージョンと「既定」はここで選ぶ）。選ぶか「‹ Model」で戻る
-// 選んだ値は次に送るときから使う。欄の外を押すか Esc で閉じる（一覧なら Esc でまずスライダーに戻る。Esc はパネルを閉じない）
-export function ModelPicker(props: { catalog: ModelCatalog | undefined; setting: ModelSetting; onChange(setting: ModelSetting): void }) {
-  const { catalog, setting, onChange } = props
+// 選んだ値は次に送るときから使う。欄の外を押すか Esc で閉じる（一覧なら Esc でまずスライダーに戻る。Esc はパネルを閉じない）。
+// placement が down なら、欄は下に開く（AI モードの付箋の下の欄）
+export function ModelPicker(props: { catalog: ModelCatalog | undefined; setting: ModelSetting; onChange(setting: ModelSetting): void; placement?: 'up' | 'down' }) {
+  const { catalog, setting, onChange, placement = 'up' } = props
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<'sliders' | 'list'>('sliders')
   const rootRef = useRef<HTMLDivElement>(null)
@@ -89,7 +90,7 @@ export function ModelPicker(props: { catalog: ModelCatalog | undefined; setting:
         <span>{settingLabel(catalog, setting)}</span>
       </button>
       {open && (
-        <div className="claude-model-popover" role="dialog" aria-label="モデルと effort">
+        <div className={placement === 'down' ? 'claude-model-popover claude-model-popover-down' : 'claude-model-popover'} role="dialog" aria-label="モデルと effort">
           {view === 'sliders' ? (
             <>
               <div className="claude-model-row claude-model-row-top">

@@ -309,7 +309,7 @@ describe('buildPieMenus', () => {
     // ブロック矢印（MAI-87）は 図形 › ブロック矢印 › の中
     const blockArrows = sub('図形').find((e) => e.label === 'ブロック矢印')!
     expect(isSubmenu(blockArrows) ? labels(blockArrows.items) : []).toEqual(['右向き', '両向き', '曲がった矢印', 'シェブロン'])
-    expect(labels(sub('文字'))).toEqual(['テキスト', 'タイトル', '付箋'])
+    expect(labels(sub('文字'))).toEqual(['テキスト', 'タイトル', '付箋', 'AI 付箋'])
     expect(labels(sub('Portal'))).toEqual(['空', 'PDF', 'Python', 'Markdown'])
     expect(labels(sub('Card'))).toEqual(['Python', 'Markdown', 'CSV'])
   })

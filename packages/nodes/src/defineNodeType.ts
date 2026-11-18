@@ -164,6 +164,11 @@ export interface NodeTypeDef<P extends object> {
   hitTest(node: NodeRecord<P>, point: Vec, margin: number, zoom: number, info?: HitTestInfo): boolean
   // ctx はノードのローカル座標に合わせてある。1 単位 = ワールド 1 単位。
   render(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
+  // ほかのノードをすべて描いたあとに描くもの（フレームの名前など）。ほかのノードと重なっても隠れない。
+  // ctx は render と同じく、ノードのローカル座標に合わせてある。簡略描画のときは描かない
+  renderLabel?(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
+  // renderLabel で描いたものに、ローカル座標の点が当たっているか。手前に見えるので、当たり判定ではほかのノードより先に見る
+  hitLabel?(node: NodeRecord<P>, point: Vec, zoom: number, info?: HitTestInfo): boolean
   // ズームアウト時の簡略描画。定義しなければ基盤がバウンディングボックスを塗りつぶす。
   renderRough?(ctx: CanvasRenderingContext2D, node: NodeRecord<P>, info: RenderInfo): void
   // 簡略描画に使う色

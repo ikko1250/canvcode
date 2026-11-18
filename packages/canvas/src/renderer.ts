@@ -1,4 +1,5 @@
 import { expandBox, viewportBounds, type Box, type Camera, type Mat, type NodeRecord, type Vec } from '@canvcode/core'
+import { drawAiCorners, type AiCornerState } from './aiCorner.ts'
 import {
   arrowPolyline,
   HIDDEN_SLIDE_OPACITY,
@@ -164,6 +165,8 @@ export function drawNodes(
   }
   let drawn = 0
   let lastRoughColor = ''
+  // 名前（フレームの名前など。型の renderLabel）は、ノードをすべて描いたあとに描く（ほかのノードに隠れないように）
+  const labels: { id: string; alpha: number }[] = []
   for (const id of ids) {
     if (skip?.has(id)) continue
     const entry = editor.index.get(id)
@@ -172,7 +175,8 @@ export function drawNodes(
     const type = editor.getType(node)
     const ancestors = editor.index.ancestorsOf(id)
     // 非表示のスライドは、枠と中身（子孫）をまとめて薄く描く（スライド v2）。PDF に出す画像では薄くしない
-    ctx.globalAlpha = !view.print && inHiddenSlide(editor, node, ancestors) ? node.opacity * HIDDEN_SLIDE_OPACITY : node.opacity
+    const alpha = !view.print && inHiddenSlide(editor, node, ancestors) ? node.opacity * HIDDEN_SLIDE_OPACITY : node.opacity
+    ctx.globalAlpha = alpha
     const screenSize = Math.max(worldBounds.w, worldBounds.h) * view.camera.zoom
     if (screenSize < ROUGH_THRESHOLD_PX) {
       if (type.renderRough) {
@@ -195,8 +199,18 @@ export function drawNodes(
       type.render(ctx, node, id === view.editingId ? { ...info, editing: true } : info)
       if (clipped) ctx.restore()
       lastRoughColor = ''
+      if (type.renderLabel) labels.push({ id, alpha })
     }
     drawn++
+  }
+  for (const { id, alpha } of labels) {
+    const entry = editor.index.get(id)!
+    ctx.globalAlpha = alpha
+    // 入れ子のフレームの名前は、外のフレームの枠で切り抜く（ノードと同じ）
+    const clipped = clipToFrames(ctx, editor, editor.index.ancestorsOf(id), view)
+    setNodeTransform(ctx, entry.worldMatrix, view)
+    editor.getType(entry.node).renderLabel!(ctx, entry.node, info)
+    if (clipped) ctx.restore()
   }
   ctx.globalAlpha = 1
   return drawn
@@ -297,6 +311,8 @@ export interface OverlayState {
   // 間隔のハンドル（MAI-54）：ホバー中の隙間と、ドラッグ中の間隔
   hoveredSpacing?: { axis: Axis; gapIndex: number } | null
   spacingDrag?: { axis: Axis; gap: number } | null
+  // 付箋の角の三角（答えを見るボタン。aiCorner.ts）
+  aiCorners?: AiCornerState
 }
 
 export function drawOverlay(
@@ -313,6 +329,8 @@ export function drawOverlay(
 
   // 文字があふれているセル（スライド v2）。選択の枠より下に描く。PDF に出す画像には描かない
   if (!view.print) drawSlideOverflows(ctx, editor, view)
+  // 付箋の角の三角（答えを見るボタン）。選択の枠とハンドルより下に描く
+  if (state.aiCorners) drawAiCorners(ctx, editor, view, state.aiCorners)
 
   ctx.lineWidth = 1.5 * view.dpr
   ctx.strokeStyle = SELECTION_COLOR

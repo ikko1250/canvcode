@@ -21,6 +21,9 @@ import {
 import { builtinNodeTypes, upgradeNode, type AnyNodeTypeDef, type ArrowProps, type DocumentReference } from '@canvcode/nodes'
 import { BindingIndex, resolveArrow, unbind, type NodeLookup } from './bindings.ts'
 
+// 矢印の meta にこれが true なら、つないだ先のどちらかを消したときに、矢印も一緒に消す（ふつうの矢印は、端をその場に止めて残す）
+export const REMOVE_WITH_ENDS = 'removeWithEnds'
+
 // ワークスペース（MAI-8、MAI-11）。
 // - ストアはワークスペースに 1 つ。Canvas・Node・Binding をすべて入れる。履歴は Canvas ごと（scope）に分ける
 // - どの Canvas にも関係する決まりごと（子孫の削除、矢印のつながり、空の group、Portal と階層、ゴミ箱）は、
@@ -547,11 +550,15 @@ export class Workspace implements NodeLookup {
       const child = tx.get(childId)
       if (isNodeRecord(child) && child.parentId === record.id) tx.remove(childId)
     }
-    // 矢印を消したら、その Binding も消す。つながっている先を消したら、矢印の端をその場に固定して外す
+    // 矢印を消したら、その Binding も消す。つながっている先を消したら、矢印の端をその場に固定して外す。
+    // ただし meta.removeWithEnds の矢印（キャンバスの AI が引いた、質問 → 答え・答え → 続きの質問の矢印）は、どちらかの端を消したら一緒に消す
     for (const id of this.bindings.ofArrow(record.id)) tx.remove(id)
     for (const id of this.bindings.toTarget(record.id)) {
       const binding = tx.get(id)
-      if (isBindingRecord(binding)) unbind(tx, binding)
+      if (!isBindingRecord(binding)) continue
+      const arrow = tx.get(binding.fromId)
+      if (isNodeRecord(arrow) && arrow.meta?.[REMOVE_WITH_ENDS] === true) tx.remove(arrow.id)
+      else unbind(tx, binding)
     }
     // 引用ノートを消して、その SourceAnchor を引用するノートがなくなったら、SourceAnchor も消す（MAI-33）
     const anchorId = this.types.get(record.type)?.citation?.(record)

@@ -149,6 +149,8 @@ export interface CanvasViewOptions {
   onOpenCitations?: (anchorIds: string[], point: { clientX: number; clientY: number }) => void
   // 引用ノートの出典へ移る（出典の帯の Ctrl（⌘）+クリック）
   onOpenSource?: (anchorId: string) => void
+  // 付箋の角の三角（答えを見るボタン。aiCorner.ts）を押した
+  onOpenAnswer?: (noteId: string) => void
   // 旧データ（.ricbackup）がドロップされた（MAI-36）
   onImportBackup?: (file: File) => void
   // 「単語を調べる」で、PDF のページの上の語をなぞって離した（MAI-99）。呼び出し側が調べて、吹き出しで見せる。
@@ -310,6 +312,8 @@ export class CanvasView {
   private readonly stats = new FrameStats()
   private lastDrawnNodes = 0
   private readonly frameCallbacks = new Set<(now: number) => void>()
+  // 角の三角の点滅を止める（点滅している間だけある）
+  private stopAiCornerBlink: (() => void) | null = null
   // 文字の編集モード（MAI-24）
   readonly textEditor: TextEditor
   private readonly disposers: (() => void)[] = []
@@ -336,6 +340,7 @@ export class CanvasView {
       onOpenCitations: options.onOpenCitations ?? (() => {}),
       onOpenSource: options.onOpenSource ?? (() => {}),
       onImportBackup: options.onImportBackup ?? (() => {}),
+      onOpenAnswer: options.onOpenAnswer ?? (() => {}),
       onWordLookup: options.onWordLookup ?? (() => {}),
     }
     this.files = options.files ?? null
@@ -482,6 +487,7 @@ export class CanvasView {
     this.listen(this.root, 'pointercancel', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointerleave', () => {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
+      if (this.editor.session.get().hoveredAiCorner) this.editor.session.set({ hoveredAiCorner: null })
       // 角丸のハンドルも、ポインタが外へ出たら消す（MAI-84）
       if (this.editor.session.get().cornerHandlesId) this.editor.session.set({ cornerHandlesId: null })
       this.setLinkHover(null)
@@ -561,7 +567,7 @@ export class CanvasView {
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
     this.clearSearch()
     this.wordDrag = null
-    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, wordLookupArmed: false, wordHighlight: null, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null })
+    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, wordLookupArmed: false, wordHighlight: null, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null, hoveredAiCorner: null })
     this.editorRef = editor
     // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
     this.images.trim(IMAGE_CACHE_KEEP_ON_SWITCH_BYTES)
@@ -622,6 +628,7 @@ export class CanvasView {
         this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
       },
       moveToCanvas: (ids, canvasId) => void this.moveToCanvas(ids, canvasId, { confirm: true }),
+      openAnswer: (noteId) => this.options.onOpenAnswer(noteId),
       // 画面に見えている範囲（ワールド座標。吸い付きの候補を絞る。MAI-53）
       viewportBox: () => {
         const camera = this.editor.session.get().camera
@@ -640,6 +647,7 @@ export class CanvasView {
       ['text', new TextTool(toolContext)],
       ['title', new TextTool(toolContext, 'title')],
       ['note', new NoteTool(toolContext)],
+      ['aiNote', new NoteTool(toolContext, 'aiNote')],
       ['frame', new FrameTool(toolContext)],
       ['draw', new DrawTool(toolContext)],
       ['eraser', new EraserTool(toolContext)],
@@ -670,6 +678,8 @@ export class CanvasView {
         this.invalidate('overlay')
       }),
     ]
+    // 新しい Editor の答えを作っている付箋に合わせて、角の三角の点滅を始める・止める
+    this.updateAiCornerBlink()
   }
 
   // 今の Canvas のサムネイルを作る（その Canvas を離れるときに呼ぶ）。中身がなければ消す。
@@ -1865,6 +1875,8 @@ export class CanvasView {
 
   private onContextMenu(e: MouseEvent): void {
     e.preventDefault()
+    // 長押しでメニューが出るときは、押しかけたボタンを押さない
+    this.tool.onContextMenu?.()
     if (this.textEditor.editingId) return
     const editor = this.editor
     const pointer = this.toPointer(e)
@@ -1970,7 +1982,7 @@ export class CanvasView {
     }
     if (this.dirty.has('scene')) drawn += this.drawSceneLayer(view)
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, wordHighlight, snapGuides, gapGuides, hoveredSpacing, spacingDrag } =
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, wordHighlight, snapGuides, gapGuides, hoveredSpacing, spacingDrag, answeringIds, hoveredAiCorner } =
         this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
@@ -1984,6 +1996,7 @@ export class CanvasView {
         gapGuides,
         hoveredSpacing,
         spacingDrag,
+        aiCorners: { answeringIds, hoveredId: hoveredAiCorner, now },
       })
     }
     // 描いたノード数は、シーンを描き直したフレームの値を表示し続ける
@@ -2123,15 +2136,28 @@ export class CanvasView {
       state.spacingDrag !== prev.spacingDrag ||
       state.paintEditing !== prev.paintEditing ||
       state.cropEditing !== prev.cropEditing ||
-      state.cornerHandlesId !== prev.cornerHandlesId
+      state.cornerHandlesId !== prev.cornerHandlesId ||
+      state.answeringIds !== prev.answeringIds ||
+      state.hoveredAiCorner !== prev.hoveredAiCorner
     ) {
       this.invalidate('overlay')
     }
+    if (state.answeringIds !== prev.answeringIds) this.updateAiCornerBlink()
     if (state.toolId !== prev.toolId) {
       this.tool.onExit?.()
       this.tool = this.tools.get(state.toolId)!
       this.cursorOverride = null
       this.updateCursor()
+    }
+  }
+
+  // 答えを作っている付箋があれば、角の三角を点滅させる（毎フレーム、オーバーレイを描き直す）。なくなったら止める
+  private updateAiCornerBlink(): void {
+    const answering = this.editor.session.get().answeringIds.size > 0
+    if (answering && !this.stopAiCornerBlink) this.stopAiCornerBlink = this.onFrame(() => this.dirty.add('overlay'))
+    if (!answering && this.stopAiCornerBlink) {
+      this.stopAiCornerBlink()
+      this.stopAiCornerBlink = null
     }
   }
 
@@ -2148,6 +2174,7 @@ export class CanvasView {
       altKey: e.altKey,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
+      ...(e.type === 'pointercancel' ? { cancelled: true } : {}),
     }
   }
 

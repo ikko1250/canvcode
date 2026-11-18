@@ -1,5 +1,5 @@
 import { tmpdir } from 'node:os'
-import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { EffortLevel, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { JobError } from './jobs.ts'
 
 // Claude を 1 回だけ動かして、答えを返す（画面の小さな頼みごとに使う共通の仕組み。単語を調べる claude/lookup.ts（MAI-99）など）。
@@ -40,7 +40,7 @@ export interface OnceRequest {
   maxTurns?: number
   // 答えの JSON の形（JSON Schema）。渡すと、答えを OnceResult の output に入れて返す
   schema?: Record<string, unknown>
-  effort?: 'low' | 'medium' | 'high'
+  effort?: EffortLevel
   // 既定は ClaudeOnce に渡した timeoutMs（さらにその既定は ONCE_TIMEOUT_MS）
   timeoutMs?: number
   // 止める（画面が頼みをやめたときなど）
@@ -49,6 +49,12 @@ export interface OnceRequest {
   failure?: string
   // Claude Code から届いたメッセージを 1 つずつ見る（ツールの結果から、実際に開いた URL を集めるなど。APA の引用 MAI-98）
   onMessage?: (message: SDKMessage) => void
+  // Claude の考えている中身（thinking）を、少しずつ受ける。渡すと、考えている中身を要約して返すよう頼み（既定では返さない）、
+  // 途中のメッセージも受ける。考える仕組み（adaptive thinking）を持たない古いモデルでは何も届かない。
+  // 考えるかはモデルが決める（effort が high 以上でないと、考えずに答えることが多い）。
+  // schema と一緒に渡すと、構造化出力（答えを渡すツールを必ず使わせる。そのときモデルは考えない）を使わず、
+  // JSON を文字で返すよう頼んで、それを読む（読めなければ 502）
+  onThinking?: (text: string) => void
 }
 
 export interface OnceResult<T = unknown> {
@@ -119,12 +125,18 @@ export class ClaudeOnce {
     const messages = await run({ prompt: request.prompt, options: onceOptions(request, tools, abortController) })
     for await (const message of messages) {
       request.onMessage?.(message)
+      if (request.onThinking && message.type === 'stream_event') {
+        const event = message.event
+        if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta' && event.delta.thinking) request.onThinking(event.delta.thinking)
+        continue
+      }
       if (message.type !== 'result') continue
       if (message.subtype === 'success' && !message.is_error) {
-        if (request.schema && message.structured_output === undefined) throw new JobError(502, `${failure}：答えが決めた形になっていません`)
+        const output = request.schema ? (jsonAsText(request) ? jsonFromText(message.result) : message.structured_output) : undefined
+        if (request.schema && output === undefined) throw new JobError(502, `${failure}：答えが決めた形になっていません`)
         return {
           text: message.result,
-          output: request.schema ? (message.structured_output as T) : undefined,
+          output: output as T | undefined,
           model: answeredModel(message.modelUsage ?? {}, request.model),
           costUsd: message.total_cost_usd,
           durationMs: message.duration_ms,
@@ -140,8 +152,11 @@ export class ClaudeOnce {
 
 // query() に渡すもの（テストで確かめるために出す）
 export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], abortController: AbortController): Options {
+  const thinking = request.onThinking !== undefined && thinksAdaptively(request.model)
+  const asText = jsonAsText(request)
   // 答えの JSON の形を渡したときは、答えを渡すツール（StructuredOutput。SDK が足す）も通す。断ると、答えられずにターン数の上限まで繰り返す
-  const allowed = new Set<string>(request.schema ? [...tools, STRUCTURED_OUTPUT_TOOL] : tools)
+  const allowed = new Set<string>(request.schema && !asText ? [...tools, STRUCTURED_OUTPUT_TOOL] : tools)
+  const systemPrompt = asText ? [request.systemPrompt, jsonInstruction(request.schema!)].filter(Boolean).join('\n\n') : request.systemPrompt
   const deny = (name: string) => `${name} は使えません（使えるのは ${tools.length > 0 ? tools.join('・') : 'なし'}）`
   // 使ってよいツールのほかは、フックで断る（tools で見せていないので、ふつうは来ない。念のため）
   const guard: HookCallback = async (input) => {
@@ -152,7 +167,7 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
     cwd: tmpdir(),
     model: request.model,
     ...(request.effort ? { effort: request.effort } : {}),
-    ...(request.systemPrompt !== undefined ? { systemPrompt: request.systemPrompt } : {}),
+    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     tools: [...tools],
     // 使ってよいツールは尋ねずに使わせる。ほかは断る（画面で尋ねる仕組みはない）
     allowedTools: [...tools],
@@ -163,10 +178,42 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
     settingSources: [],
     persistSession: false,
     maxTurns: request.maxTurns ?? (tools.length > 0 ? DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS : DEFAULT_ONCE_MAX_TURNS),
-    ...(request.schema ? { outputFormat: { type: 'json_schema', schema: request.schema } } : {}),
+    ...(request.schema && !asText ? { outputFormat: { type: 'json_schema', schema: request.schema } } : {}),
+    // 考えている中身を受けるときは、途中のメッセージも受け、考えている中身を要約して返すよう頼む（既定の omitted では空になる）
+    ...(thinking ? { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' } } : {}),
     abortController,
     env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
   }
+}
+
+// JSON の答えを文字で返させるか（考えている中身を受けるとき。構造化出力ではモデルが考えないため）
+function jsonAsText(request: OnceRequest): boolean {
+  return request.schema !== undefined && request.onThinking !== undefined && thinksAdaptively(request.model)
+}
+
+// JSON を文字で返させるときに、システムプロンプトに足す頼み方
+export function jsonInstruction(schema: Record<string, unknown>): string {
+  return `答えの返し方:\n- 次の JSON Schema に合う JSON の値を 1 つだけ返す。前後に文を書かない。コードブロックの記号（\`\`\`）で囲まない\n${JSON.stringify(schema)}`
+}
+
+// 文字で返った JSON を読む（コードブロックで囲んであれば外し、前後に文があれば最初の { から最後の } までを読む）。読めなければ undefined
+export function jsonFromText(text: string): unknown {
+  const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(text)
+  const body = (fenced ? fenced[1]! : text).trim()
+  for (const candidate of [body, body.slice(body.indexOf('{'), body.lastIndexOf('}') + 1)]) {
+    try {
+      const value = JSON.parse(candidate) as unknown
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value
+    } catch {
+      // 次を試す
+    }
+  }
+  return undefined
+}
+
+// adaptive thinking を持つモデルか。別名（sonnet・opus・haiku・fable）は今の版を指すので持つ。版を書いた古いモデル（4.5 まで、3 系）は持たない
+export function thinksAdaptively(model: string): boolean {
+  return !/^claude-(?:3|(?:haiku|sonnet|opus)-(?:3|4(?:-[0-5])?(?:$|@|-\d{8})))/.test(model)
 }
 
 // 実際に答えたモデル。WebFetch はページを別のモデル（Haiku）に読ませるので、modelUsage には 2 つ入ることがある。

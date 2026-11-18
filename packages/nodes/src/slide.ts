@@ -1,5 +1,5 @@
 import type { NodeRecord } from '@canvcode/core'
-import { drawFrameBox, drawFrameLabel, frameHitTest } from './container.ts'
+import { drawFrameBox, drawFrameLabel, frameHitTest, frameLabelHitTest } from './container.ts'
 import { defineNodeType, type HitTestInfo } from './defineNodeType.ts'
 
 // スライド（スライド v2）。キャンバスに置く 16:9 / 4:3 の枠で、位置から順番を決めて PDF に出す。
@@ -77,6 +77,8 @@ export const slideType = defineNodeType<SlideProps>({
     return frameHitTest(w, h, labelOf(node, info), point, margin, zoom)
   },
 
+  hitLabel: (node, point, zoom, info) => frameLabelHitTest(slideSize(node.props.ratio).w, labelOf(node, info), point, zoom),
+
   // 非表示のスライドを薄くするのは、子孫とまとめて基盤の描画がする（ここでは描く文字列だけを変える）。
   // PDF に出す画像（info.print）では、白い地だけを描く（名前・番号と枠の線は画面で見分けるためのもの）
   render(ctx, node, info) {
@@ -87,6 +89,11 @@ export const slideType = defineNodeType<SlideProps>({
       return
     }
     drawFrameBox(ctx, w, h, info.zoom)
+  },
+
+  // 名前（番号）は、ほかのノードを描いたあとに描く（PDF に出す画像には描かない）
+  renderLabel(ctx, node, info) {
+    if (info.print) return
     drawFrameLabel(ctx, labelOf(node, info), info.zoom, overflowsOf(node, info) ? OVERFLOW_LABEL_COLOR : undefined)
   },
 

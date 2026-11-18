@@ -161,6 +161,8 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
 
   // Claude のパネル：ヘッダーと添え書きは 14px 以上、会話（頼んだ文・回答）と入力欄は 16px・行間 1.5 以上
   await page.locator('.claude-toggle').click()
+  // 右上の「質問」は質問のタブを開くので、会話のタブに移る
+  await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
   const claude = page.locator('.claude-panel')
   await expect(claude).toBeVisible()
   await claude.locator('.claude-thread-select').selectOption('t1')

@@ -279,8 +279,9 @@ test('buttons, sliders and swatches in the main places have targets of 24×24 or
   expect(await targetProblems(page.locator('.style-palette'))).toEqual([])
   await page.evaluate(() => (window as any).canvcode.editor.session.set({ toolId: 'select' }))
 
-  // Claude のパネル（作業の一覧の「止める」）と、モデルの選択
+  // Claude のパネル（作業の一覧の「止める」）と、モデルの選択。右上の「質問」は質問のタブを開くので、会話のタブに移る
   await page.locator('.claude-toggle').click()
+  await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
   const claude = page.locator('.claude-panel')
   await claude.locator('.claude-thread-select').selectOption('t1')
   await expect(claude.locator('.claude-task')).toBeVisible()
@@ -393,13 +394,14 @@ test('pressing just outside a small button presses it, not its neighbor', async 
   expect(hits).toEqual([true, true])
   await page.locator('.sidebar-header button').click()
 
-  // Claude のパネルの作業の「止める」（文字だけ、高さ 17px）：文字の 3px 下を押す
+  // Claude のパネルの作業の「止める」（文字だけ、高さ 17px）：文字の 3px 下を押す（右上の「質問」から、会話のタブに移る）
   await page.locator('.claude-toggle').click()
+  await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
   await page.locator('.claude-thread-select').selectOption('t1')
   const stop = (await page.locator('.claude-task').getByRole('button', { name: '止める' }).boundingBox())!
   await page.mouse.click(stop.x + stop.width / 2, stop.y + stop.height + 3)
   await expect.poll(() => stops).toEqual(['/api/claude/threads/t1/tasks/ag1/stop'])
-  await page.locator('.claude-close').click()
+  await page.locator('.claude-panel .claude-close').click()
 
   // 確認のダイアログ：「未配置にする」の 6px 下を押すと、未配置にする（ダイアログの外を押したときの「やめる」にはならない）
   await page.evaluate(() => {

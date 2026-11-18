@@ -8,6 +8,8 @@ export { OWN_KEYS_ATTRIBUTE, isEditableKeyboardTarget, isImeEvent } from './imeG
 export * from './imageCache.ts'
 export * from './pdfPageStore.ts'
 export * from './transform.ts'
+export * from './aiCorner.ts'
+export * from './answers.ts'
 export * from './arrange.ts'
 export * from './reorder.ts'
 export * from './propertyEdit.ts'

@@ -117,9 +117,9 @@ describe('slide', () => {
       },
     }) as unknown as CanvasRenderingContext2D
     const node = slide({ name: 'はじめに' })
-    slideType.render(ctx, node, { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => 2 } })
-    slideType.render(ctx, node, { zoom: 1, devicePixelRatio: 1, detail: 'full' })
-    slideType.render(ctx, slide({ name: 'はじめに', hidden: true }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => null } })
+    slideType.renderLabel!(ctx, node, { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => 2 } })
+    slideType.renderLabel!(ctx, node, { zoom: 1, devicePixelRatio: 1, detail: 'full' })
+    slideType.renderLabel!(ctx, slide({ name: 'はじめに', hidden: true }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => null } })
     expect(drawn).toEqual(['2. はじめに', 'はじめに', '非表示 · はじめに'])
   })
 
@@ -134,9 +134,9 @@ describe('slide', () => {
       },
     }) as unknown as CanvasRenderingContext2D
     const slides = { number: () => 3, overflows: () => true }
-    slideType.render(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides })
-    slideType.render(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => 3, overflows: () => false } })
-    slideType.render(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides, print: true })
+    slideType.renderLabel!(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides })
+    slideType.renderLabel!(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => 3, overflows: () => false } })
+    slideType.renderLabel!(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides, print: true })
     expect(drawn).toEqual([
       { text: '3. はじめに ⚠ あふれ', color: '#e03131' },
       { text: '3. はじめに', color: '#656d76' },
@@ -152,7 +152,10 @@ describe('slide', () => {
         return true
       },
     }) as unknown as CanvasRenderingContext2D
-    slideType.render(ctx, slide({ name: 'はじめに' }), { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => 2 }, print: true })
+    const node = slide({ name: 'はじめに' })
+    const info = { zoom: 1, devicePixelRatio: 1, detail: 'full', slides: { number: () => 2 }, print: true } as const
+    slideType.render(ctx, node, info)
+    slideType.renderLabel!(ctx, node, info)
     expect(calls).toEqual(['fillRect'])
   })
 

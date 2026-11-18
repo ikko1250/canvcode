@@ -49,6 +49,9 @@ describe('model choice (MAI-106)', () => {
     // 一覧を読む前・一覧にないモデル
     expect(settingLabel(undefined, {})).toBe('既定')
     expect(modelLabel(catalog, 'claude-old')).toBe('claude-old')
+    // 一覧にない、実際に答えたモデルの id は読める形にする
+    expect(modelLabel(undefined, 'claude-sonnet-5-5')).toBe('Sonnet 5.5')
+    expect(modelLabel(undefined, 'claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
     // 終わった依頼の行には、選んで頼んだものだけを添える
     expect(jobSettingLabel(catalog, {})).toBeUndefined()
     expect(jobSettingLabel(catalog, { model: 'opus', effort: 'max' })).toBe('Opus 5.5 · Max')

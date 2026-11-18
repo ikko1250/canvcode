@@ -3,6 +3,14 @@ import { createPortal } from 'react-dom'
 import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRecord, type ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
+  aiNoteMeta,
+  followUpContext,
+  placeAnswerText,
+  placeFollowUpAt,
+  placeFollowUpNote,
+  type AiNoteMeta,
+  questionOf,
+  setAiNote,
   Editor,
   FileManager,
   SyncClient,
@@ -72,10 +80,16 @@ import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
+import { ClaudeTabs } from './claude/ClaudeTabs.tsx'
+import { QuestionPanel } from './claude/QuestionPanel.tsx'
+import { SeenAnswers } from './claude/seenAnswers.ts'
+import { AnswerPopover } from './claude/AnswerPopover.tsx'
 import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
 import { memoParagraphs, memoSource, requestMemo } from './claude/memo.ts'
 import { lookupMemo, requestLookup } from './claude/lookup.ts'
 import { citationParagraphs, citeSourceOf, requestCitation } from './claude/cite.ts'
+import { AiNoteControls } from './claude/AiNoteControls.tsx'
+import { useCanvasAnswers } from './claude/useCanvasAnswers.ts'
 import { PlotDialog } from './plot/PlotDialog.tsx'
 import { renderPlot, type RenderedPlot } from './plot/plotClient.ts'
 import { BackupStatus } from './backup/BackupStatus.tsx'
@@ -376,7 +390,10 @@ export function App(props: { initial: InitialRecords }) {
   // クライアントは画面を開いている間ずっと使う（SSE はパネルを初めて開いたときにつなぐ）
   const [claude] = useState(() => new ClaudeClient())
   const claudeState = useClaudeState(claude)
-  const [claudeOpen, setClaudeOpen] = useState(false)
+  // パネルに出すもの。answers は質問のタブ（付箋で聞いた質問と答え。QuestionPanel）、chat は会話のタブ（ClaudePanel）。null は閉じている。
+  // キャンバスで右上の「質問」・C を押すと answers、上の「会話｜質問」のタブで行き来する（もう一度 C で会話の入力欄へ）。
+  // 「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、chat を直接開く。会話は質問を見ている間も閉じずに隠す（書きかけの文を残す）
+  const [claudeView, setClaudeView] = useState<'answers' | 'chat' | null>(null)
   const [claudeAttachment, setClaudeAttachment] = useState<ClaudeAttachment | null>(null)
   const [claudeFocus, setClaudeFocus] = useState(0)
   // 全画面のエディタでは、パネルをプレビューの代わりに右半分に出す（MAI-102）。エディタでほかの表示に切り替えたら、
@@ -434,9 +451,9 @@ export function App(props: { initial: InitialRecords }) {
     setWordLookup(null)
     viewRef.current?.clearWordHighlight()
   }, [])
-  // パネルを開く。save があれば、その場所（ref）を保存して添える（保存できなければ添付を外す）
+  // チャットを開く。save があれば、その場所（ref）を保存して添える（保存できなければ添付を外す）
   const askClaude = useCallback((label: string, save?: () => Promise<string | null>) => {
-    setClaudeOpen(true)
+    setClaudeView('chat')
     setClaudeFocus((n) => n + 1)
     setEditorClaudeHidden(false)
     if (!save) return
@@ -446,6 +463,23 @@ export function App(props: { initial: InitialRecords }) {
   }, [])
   // パネルの入力欄に入れておく文字（「Claude におまかせ」で、頼み方の下書きを入れる）
   const [claudeDraft, setClaudeDraft] = useState<{ text: string; n: number } | null>(null)
+  // 付箋の答えのパネルを開く（右上の「Claude」と C）。見えている方のパネルがフォーカスを受ける
+  const showAnswers = useCallback(() => {
+    setClaudeView('answers')
+    setClaudeFocus((n) => n + 1)
+  }, [])
+  // C の処理（キーを受ける useEffect）から読む。開いていなければ付箋の答え、開いていればチャットへ
+  const claudeViewRef = useRef(claudeView)
+  useLayoutEffect(() => {
+    claudeViewRef.current = claudeView
+  }, [claudeView])
+  // パネルを閉じる（× と Esc）。開き直したときに、使い終わった下書きをもう一度入れない
+  const closeClaude = useCallback(() => {
+    setClaudeView(null)
+    setClaudeDraft(null)
+    if (fileEditorRef.current) fileEditorRef.current.focus()
+    else viewRef.current?.root.focus({ preventScroll: true })
+  }, [])
 
   // CSV からグラフを作るダイアログ（plot/PlotDialog.tsx）。表のカードから作る（tableNodeId）か、グラフの画像の作り方を変える（imageNodeId）
   const [plotTarget, setPlotTarget] = useState<PlotTarget | null>(null)
@@ -627,7 +661,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       setOpenFileId(fileId)
       setFileFocus(options.focus ?? null)
-      // 前のエディタで隠したままブラウザの「戻る」で閉じていても、パネルを開いていれば右半分に出す（MAI-102）
+      // 前のエディタで隠したままブラウザの「戻る」で閉じていても、チャットを開いていれば右半分に出す（MAI-102。付箋の答えのパネルは出さない）
       setEditorClaudeHidden(false)
       if (options.push !== false) history.pushState({ fileId }, '', fileUrl(fileId))
     },
@@ -1036,6 +1070,145 @@ export function App(props: { initial: InitialRecords }) {
     [notify],
   )
 
+  // キャンバスの AI（付箋で聞き、答えは付箋に持たせる。claude/useCanvasAnswers.ts）。動いている質問はサーバーが流し、質問のタブ（QuestionPanel）に出す。
+  // まだ見ていない答え（質問のタブの青い点）は、ブラウザに覚える
+  const [seenAnswers] = useState(() => new SeenAnswers())
+  // 答えを書く Canvas の Editor。待っている間に、取っておく数（MAX_EDITORS）を超えて捨てられていても、読み込んであれば作り直す
+  const answerEditor = useCallback(
+    (canvasId: string) => editors.get(canvasId) ?? (sync.isLoaded(canvasId) && workspace.getCanvas(canvasId) ? getEditor(canvasId) : undefined),
+    [editors, sync, workspace, getEditor],
+  )
+  const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
+  const { answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvasTitle })
+  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルにフォーカスがあるか（付箋の下の欄を出す）。
+  // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
+  const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
+  const [answerFocused, setAnswerFocused] = useState(false)
+  const closeAnswer = useCallback(() => {
+    setAnswerNote(null)
+    setAnswerFocused(false)
+  }, [])
+  // Canvas を移ったら閉じる（描くときに、移ったと気づいたら閉じる）
+  const [answerCanvasId, setAnswerCanvasId] = useState(canvasId)
+  if (answerCanvasId !== canvasId) {
+    setAnswerCanvasId(canvasId)
+    if (answerNote) setAnswerNote(null)
+  }
+  const openAnswer = useCallback(
+    (noteId: string) => {
+      setAnswerNote((current) => (current?.noteId === noteId && current.canvasId === editor.canvasId ? null : { canvasId: editor.canvasId, noteId }))
+    },
+    [editor],
+  )
+  // 付箋へ移って（ほかの Canvas なら、その Canvas に移って）、答えのパネルを開く
+  const openNoteAnswer = useCallback(
+    async (targetCanvasId: string, noteId: string) => {
+      if (!workspace.getCanvas(targetCanvasId)) return notify('付箋の Canvas はもうありません')
+      if (viewRef.current?.editor.canvasId !== targetCanvasId) await navigate(targetCanvasId)
+      const view = viewRef.current
+      if (!view || view.editor.canvasId !== targetCanvasId) return
+      if (!view.editor.getNode(noteId)) return notify('付箋はもうありません（消したか、Undo で戻しました）')
+      await view.focusNode(noteId)
+      setAnswerNote({ canvasId: targetCanvasId, noteId })
+    },
+    [workspace, navigate, notify],
+  )
+  // 答えのパネルの「続けて聞く」：元の付箋の下に続きの AI 付箋を置き、文字の編集を始める（置くことと書いた文字で Undo 1 回）
+  const continueAnswer = useCallback(
+    (noteId: string) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      const context = followUpContext(noteId, editor.canvasId, aiNoteMeta(editor.getNode(noteId)))
+      if (!context) return notify('この付箋には、まだ答えがありません')
+      closeAnswer()
+      const tx = editor.begin('続けて聞く')
+      const placed = placeFollowUpNote(editor, tx, noteId, context)
+      if (!placed) return tx.cancel()
+      tx.flush()
+      view.textEditor.start(placed, { tx })
+    },
+    [notify, closeAnswer],
+  )
+  // 答えのパネルの「Canvasに残す」：答えを書式付きのテキストにして、付箋の右に置いて選ぶ（Undo 1 回）
+  const keepAnswer = useCallback(
+    (noteId: string) => {
+      const editor = viewRef.current?.editor
+      const answer = aiNoteMeta(editor?.getNode(noteId))?.answer
+      if (!editor || !answer) return
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const placed = placeAnswerText(editor, answer.body, { noteId })
+      if (!placed) return
+      closeAnswer()
+      editor.setSelection([placed])
+    },
+    [notify, closeAnswer],
+  )
+  // 関連する付箋へ移る（パネルは閉じる）
+  const openRelated = useCallback(
+    (noteId: string) => {
+      const view = viewRef.current
+      if (!view?.editor.getNode(noteId)) return notify('その付箋はもうありません')
+      closeAnswer()
+      void view.focusNode(noteId)
+    },
+    [notify, closeAnswer],
+  )
+  // 答えを作っているのをやめる（ほかのタブで頼んだものも）
+  const stopAnswer = useCallback(
+    (noteId: string) => {
+      const question = claude.state.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
+      if (question) void claude.cancelQuestion(question.id).catch((error: unknown) => notify(`やめられませんでした：${error instanceof Error ? error.message : String(error)}`))
+      else cancelAnswer(noteId)
+    },
+    [claude, canvasId, cancelAnswer, notify],
+  )
+  // 質問のタブの「続けて聞く」：元の付箋がいま開いている Canvas にあれば、付箋の横のパネルと同じ。
+  // なければ、画面の真ん中に前の答えの札を添えた AI 付箋を置き、書き始める（Undo 1 回）
+  const continueQuestion = useCallback(
+    (sourceCanvasId: string, noteId: string, meta: AiNoteMeta) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      if (sourceCanvasId === editor.canvasId && editor.getNode(noteId)) return continueAnswer(noteId)
+      const context = followUpContext(noteId, sourceCanvasId, meta)
+      if (!context) return notify('この付箋には、まだ答えがありません')
+      const tx = editor.begin('続けて聞く')
+      const placed = placeFollowUpAt(editor, tx, viewCenter(view), context)
+      tx.flush()
+      view.textEditor.start(placed, { tx })
+    },
+    [continueAnswer, notify],
+  )
+  // 質問のタブの「Canvasに残す」：元の付箋がいま開いている Canvas になければ、画面の真ん中に置く
+  const keepQuestion = useCallback(
+    (sourceCanvasId: string, noteId: string, body: string) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      if (sourceCanvasId === editor.canvasId && editor.getNode(noteId)) return keepAnswer(noteId)
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const placed = placeAnswerText(editor, body, { center: viewCenter(view) })
+      if (placed) editor.setSelection([placed])
+    },
+    [keepAnswer, notify],
+  )
+  const openAnswerRef = useRef(openAnswer)
+  useLayoutEffect(() => {
+    openAnswerRef.current = openAnswer
+  }, [openAnswer])
+  // 付箋の角の三角を点滅させる付箋（この画面で頼んでいるものと、サーバーが流す動いている質問。ほかのタブで頼んだものも）。
+  // Canvas ごとの Editor の session に立てる（Canvas を移ったら、移った先の Editor に）
+  const answeringQuestions = claudeState.questions
+  useEffect(() => {
+    const ids = new Set([
+      ...answering.flatMap((job) => (job.canvasId === editor.canvasId ? job.anchorIds.slice(0, 1) : [])),
+      ...answeringQuestions.flatMap((question) => (question.canvasId === editor.canvasId ? [question.noteId] : [])),
+    ])
+    const current = editor.session.get().answeringIds
+    if (ids.size !== current.size || [...ids].some((id) => !current.has(id))) editor.session.set({ answeringIds: ids })
+  }, [editor, answering, answeringQuestions])
+
   // APA の引用を置く（MAI-98）：アイテム（PDF の Portal・PDF のページ・リンクカード・Markdown のカード）の引用を、Claude（既定は Sonnet）に
   // Web で確かめながら作ってもらい、アイテムの右下にテキストとして置く（Undo 1 回で消える）。待っている間は、置く所に「作っています」を出す
   // （× でやめられる）。待っている間に別の Canvas に移っても、その Canvas の Editor が残っていれば、そこに置く。同じアイテムを重ねて頼まない
@@ -1219,6 +1392,18 @@ export function App(props: { initial: InitialRecords }) {
             },
           })
         }
+      }
+      // 付箋を質問にして、Claude に聞く（選んでいるのが付箋だけで、どれかに文字があるとき）。答えは付箋に書く。
+      // 付箋 1 枚なら、AI モード（付箋の下に、モデル・添えるもの・送信を出す）にする・やめる
+      if (claude.state.availability === 'on' && selected.length > 0 && selected.every((node) => node.type === 'note')) {
+        const askable = questionOf(editor, selected.map((node) => node.id)) !== null
+        if (askable) items.push({ label: 'Claude に聞く', onSelect: () => void askWithNotes(selected.map((node) => node.id)) })
+        if (single) {
+          const ai = aiNoteMeta(single)
+          const label = ai ? (ai.answer ? 'AI モードをやめる（答えも消す）' : 'AI モードをやめる') : 'AI モードにする（Claude に聞く付箋）'
+          items.push({ label, onSelect: () => void setAiNote(editor, single.id, ai ? null : { contexts: [] }) })
+        }
+        if (askable && !single) items.push('separator')
       }
       // 付箋の高さ：文字に合わせる／固定する。文字があれば、箇条書きのメモにする（Claude）
       if (single?.type === 'note') {
@@ -1479,7 +1664,7 @@ export function App(props: { initial: InitialRecords }) {
       }
       return items
     },
-    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo, citeNode],
+    [openPortal, openNodeInNewTab, openFile, workspace, setRenaming, setMenu, openSource, citationItems, goToOwner, notify, navigate, exportPdf, createPdfPortal, claude, askClaudeAboutSelection, redrawPlot, noteToMemo, citeNode, askWithNotes],
   )
 
 
@@ -1501,6 +1686,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       onOpenSource: (anchorId) => void openSource(anchorId),
       onImportBackup: (file) => importBackupRef.current(file),
+      onOpenAnswer: (noteId) => openAnswerRef.current(noteId),
       onWordLookup: (request) => startWordLookupRef.current(request),
       onContextMenu: ({ clientX, clientY }) => {
         const at = { x: clientX, y: clientY }
@@ -1614,7 +1800,7 @@ export function App(props: { initial: InitialRecords }) {
       files.dispose()
     }
     // どれも useCallback で固定してあるので、この処理は最初に 1 回だけ走る
-  }, [workspace, files, sync, editors, visited, startCanvasId, notify, ask, getEditor, navigate, loadCanvasNow, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference])
+  }, [workspace, files, sync, editors, visited, startCanvasId, notify, ask, getEditor, navigate, loadCanvasNow, openPortal, openNodeInNewTab, openFile, buildMenu, onQuote, citationItems, openSource, openReference, claude])
 
   // Ctrl+F（⌘F）で PDF の単語検索を開く（試作）。今の Canvas に PDF のページがなければ、ブラウザの検索に任せる
   useEffect(() => {
@@ -1675,9 +1861,11 @@ export function App(props: { initial: InitialRecords }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [workspace, canvasId, openFileId, dialog, renaming, navigate])
 
-  // C で Claude のパネルを開き、入力欄にフォーカスする（MAI-91）。開いていれば入力欄にフォーカスを戻すだけで、閉じない（閉じるのは Esc・×・右上の「Claude」）。
+  // C で付箋の答えのパネルを開き、もう一度押すとチャットに移って入力欄にフォーカスする（MAI-91。右上の「Claude」→「チャット」と同じ 2 段）。
+  // チャットを開いていれば入力欄にフォーカスを戻すだけで、閉じない（閉じるのは Esc・×・右上の「Claude」）。
   // 選んでいる所は添えない（添えるのは Ctrl+Alt+Enter）。全画面のエディタ・ダイアログ・名前の変更・表のフィルターの入力の間と、
-  // 文字の入力中（パネルの中も。パイメニューと同じ条件）は、ただの文字として扱う。既定の動作は止める（フォーカスを移した入力欄に c が入らないように）
+  // 文字の入力中（チャットの中も。パイメニューと同じ条件）は、ただの文字として扱う。既定の動作は止める（フォーカスを移した入力欄に c が入らないように）。
+  // 付箋の答えのパネルの中（キーを自分で扱う所だが、文字を打つ欄はない）で押しても、チャットに移る
   useEffect(() => {
     if (openFileId || dialog || renaming || tableFilter) return
     // C で開いて、まだ離していないキー（e.code）。押し続けたときのリピートの keydown は、フォーカスを移した入力欄に届くので、
@@ -1689,11 +1877,13 @@ export function App(props: { initial: InitialRecords }) {
         return
       }
       if (e.defaultPrevented || e.repeat || !isClaudePanelKey(e) || claude.state.availability !== 'on') return
-      if (isImeEvent(e) || isEditableKeyboardTarget(e.target)) return
+      const inAnswers = e.target instanceof Element && e.target.closest('.question-panel')
+      if (isImeEvent(e) || (!inAnswers && isEditableKeyboardTarget(e.target))) return
       if (e.target instanceof Element && e.target.closest('[role="dialog"]')) return
       e.preventDefault()
       held = e.code
-      askClaude('')
+      if (claudeViewRef.current) askClaude('')
+      else showAnswers()
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === held) held = null
@@ -1710,7 +1900,7 @@ export function App(props: { initial: InitialRecords }) {
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
     }
-  }, [claude, askClaude, openFileId, dialog, renaming, tableFilter])
+  }, [claude, askClaude, showAnswers, openFileId, dialog, renaming, tableFilter])
 
   // G で、PDF のページの番号を入れて移る欄を開く（画面の下の札を押したのと同じ。MAI-92）。PDF のページの Canvas でだけ受ける。
   // U と同じく、全画面のエディタ・ダイアログ・名前の変更・表のフィルターの入力の間と、文字の入力中は、ただの文字として扱う。
@@ -2056,9 +2246,15 @@ export function App(props: { initial: InitialRecords }) {
     })
   }
 
-  // Claude のパネルの置き場所（MAI-102）。全画面のエディタを開いていて、エディタで隠していなければ、エディタの右半分
-  const claudeAvailable = claudeOpen && claudeState.availability === 'on'
-  const claudeInEditor = claudeAvailable && openFileId !== null && !editorClaudeHidden
+  // Claude のパネルの置き場所（MAI-102）。全画面のエディタを開いていて、チャットを開いていて、エディタで隠していなければ、エディタの右半分。
+  // 付箋の答えのパネルは、キャンバスの右にだけ出す（エディタを開いている間は隠す）
+  const claudeAvailable = claudeView !== null && claudeState.availability === 'on'
+  // 右のパネルの上の「会話｜質問」のタブ
+  const claudeTabs = (active: 'chat' | 'questions') => (
+    <ClaudeTabs active={active} running={claudeState.questions.length} onChat={() => askClaude('')} onQuestions={showAnswers} />
+  )
+  const claudeChat = claudeView === 'chat'
+  const claudeInEditor = claudeAvailable && claudeChat && openFileId !== null && !editorClaudeHidden
   const claudeSlot = claudeInEditor ? editorClaudeSlot : canvasClaudeSlot
   useLayoutEffect(() => {
     if (!claudeSlot || claudeHost.parentNode === claudeSlot) return
@@ -2068,8 +2264,8 @@ export function App(props: { initial: InitialRecords }) {
     claudeSlot.appendChild(claudeHost)
     if (focused && focused.isConnected && claudeHost.contains(focused) && (active === document.body || active === focused)) focused.focus({ preventScroll: true })
   }, [claudeSlot, claudeHost])
-  // パネルが見えている置き場所（隠しているなら null）。変わったら、パネルは会話の欄と入力欄のスクロールを戻す（DOM を移すと先頭に戻るため）
-  const claudePlacement = claudeSlot && !(claudeSlot === canvasClaudeSlot && openFileId && !claudeInEditor) ? claudeSlot : null
+  // チャットが見えている置き場所（隠しているなら null）。変わったら、チャットは会話の欄と入力欄のスクロールを戻す（DOM を移したり隠したりすると先頭に戻るため）
+  const claudePlacement = claudeChat && claudeSlot && !(claudeSlot === canvasClaudeSlot && openFileId && !claudeInEditor) ? claudeSlot : null
 
   return (
     <div className="app">
@@ -2322,16 +2518,17 @@ export function App(props: { initial: InitialRecords }) {
             <button
               type="button"
               // waiting は、どれかの会話が画面で許可を待っている（パネルが閉じていても気づけるように、印を出す）
-              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) ? ' running' : ''}${claudeState.threads.some(threadAsking) ? ' waiting' : ''}`}
+              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) || answering.length > 0 || claudeState.questions.length > 0 ? ' running' : ''}${claudeState.threads.some(threadAsking) ? ' waiting' : ''}`}
               onClick={() => {
-                if (!claudeOpen) return askClaude('')
-                setClaudeOpen(false)
+                if (!claudeView) return showAnswers()
+                setClaudeView(null)
                 setClaudeDraft(null)
               }}
               // C はこのボタンと違って閉じないので、aria-keyshortcuts は付けず、ここに書く（MAI-91）
-              title="Claude に頼むパネルを開け閉めする（C で開くか、開いていれば入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて開く）"
+              title="付箋で聞いた質問（どの Canvas のものも）と、Claude との会話のパネルを開け閉めする（C で開き、もう一度 C で会話の入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて会話を開く）"
             >
-              Claude
+              質問
+              {claudeState.questions.length > 0 && <span className="claude-toggle-count">●{claudeState.questions.length}</span>}
             </button>
           )}
           <BackupStatus serverOnline={syncStatus !== 'offline'} />
@@ -2361,6 +2558,51 @@ export function App(props: { initial: InitialRecords }) {
         )}
 
         <AgentToasts sync={sync} />
+
+        {view && claudeState.availability === 'on' && (
+          <AiNoteControls
+            editor={editor}
+            view={view}
+            session={session}
+            claude={claude}
+            busy={session.answeringIds}
+            focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
+            onSend={(noteId) => void askWithNotes([noteId])}
+            onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
+            canvasTitle={canvasTitle}
+            notify={notify}
+          />
+        )}
+
+        {view &&
+          // 答えを見るのに Claude は要らないので、Claude を使えないときも開く
+          answerNote?.canvasId === canvasId &&
+          (() => {
+            const { noteId } = answerNote
+            // 答えを作っている間の進み具合（サーバーが流すもの。ほかのタブで頼んだものも。この画面で頼んだばかりで、まだ届いていなければ「読む」）
+            const question = claudeState.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
+            const progress = question ? question : session.answeringIds.has(noteId) ? { step: 'read' as const, searched: false, thinking: '' } : null
+            const error = answerFailures.get(noteId)
+            return (
+              <AnswerPopover
+                editor={editor}
+                view={view}
+                camera={session.camera}
+                noteId={noteId}
+                catalog={claudeState.models}
+                progress={progress}
+                {...(question ? { runningModel: { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort } : {}) } } : {})}
+                {...(error ? { error } : {})}
+                onClose={closeAnswer}
+                onSeen={(id, answeredAt) => seenAnswers.mark(id, answeredAt)}
+                onFocusChange={setAnswerFocused}
+                onRelated={openRelated}
+                onContinue={() => continueAnswer(noteId)}
+                onKeep={() => keepAnswer(noteId)}
+                {...(progress ? { onStop: () => stopAnswer(noteId) } : {})}
+              />
+            )
+          })()}
 
         {citing.map((job) => {
           // 引用を作っている間の印（置く所＝アイテムの右下に出す。カメラに付いて動く）
@@ -2493,24 +2735,37 @@ export function App(props: { initial: InitialRecords }) {
       <div className={openFileId && !claudeInEditor ? 'claude-slot hidden' : 'claude-slot'} ref={setCanvasClaudeSlot} />
       {claudeAvailable &&
         createPortal(
-          <ClaudePanel
-            client={claude}
-            canvasId={canvasId}
-            attachment={claudeAttachment}
-            focusRequest={claudeFocus}
-            draft={claudeDraft}
-            // 全画面のエディタでは、選んでいる行を添える
-            placement={claudePlacement}
-            onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
-            onClearAttachment={() => setClaudeAttachment(null)}
-            onClose={() => {
-              setClaudeOpen(false)
-              // 開き直したときに、使い終わった下書きをもう一度入れない
-              setClaudeDraft(null)
-              if (fileEditorRef.current) fileEditorRef.current.focus()
-              else view?.root.focus({ preventScroll: true })
-            }}
-          />,
+          <>
+            <QuestionPanel
+              claude={claude}
+              editor={editor}
+              seen={seenAnswers}
+              hidden={claudeChat}
+              focusRequest={claudeFocus}
+              tabs={claudeTabs('questions')}
+              canvasTitle={canvasTitle}
+              canPlace={!openFileId}
+              onOpenNote={(target, noteId) => void openNoteAnswer(target, noteId)}
+              onContinue={continueQuestion}
+              onKeep={keepQuestion}
+              onClose={closeClaude}
+            />
+            <ClaudePanel
+              client={claude}
+              canvasId={canvasId}
+              attachment={claudeAttachment}
+              focusRequest={claudeFocus}
+              draft={claudeDraft}
+              placement={claudePlacement}
+              hidden={!claudeChat}
+              // 全画面のエディタでは、選んでいる行を添える
+              onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
+              onClearAttachment={() => setClaudeAttachment(null)}
+              // 全画面のエディタでは、チャットだけを出す（質問のタブに移るのは、キャンバスでだけ）
+              {...(claudeInEditor ? {} : { tabs: claudeTabs('chat') })}
+              onClose={closeClaude}
+            />
+          </>,
           claudeHost,
         )}
     </div>
@@ -2521,4 +2776,10 @@ export function App(props: { initial: InitialRecords }) {
 function truncateLabel(text: string, max: number): string {
   const line = text.replace(/\s+/g, ' ').trim()
   return line.length > max ? `${line.slice(0, max)}…` : line
+}
+
+// 画面に見えている所の真ん中（ワールド座標）。質問のタブから、ほかの Canvas の答えを置くときに使う
+function viewCenter(view: CanvasView): { x: number; y: number } {
+  const { camera } = view.editor.session.get()
+  return { x: camera.x + view.root.clientWidth / 2 / camera.zoom, y: camera.y + view.root.clientHeight / 2 / camera.zoom }
 }

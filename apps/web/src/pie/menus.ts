@@ -27,6 +27,8 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   // テキストと同じノードで、文字が大きいだけ（MAI-62）
   title: 'タイトル',
   note: '付箋',
+  // AI モードの付箋（Claude に聞く付箋）
+  aiNote: 'AI 付箋',
   frame: 'フレーム',
   draw: 'フリーハンド',
   eraser: '消しゴム',
@@ -370,7 +372,7 @@ export function buildPieMenus(ctx: PieMenuContext): PieMenuDef[] {
             tool('arrow'),
           ],
         },
-        group('文字', ['text', 'title', 'note']),
+        group('文字', ['text', 'title', 'note', 'aiNote']),
         {
           label: 'Portal',
           items: [
