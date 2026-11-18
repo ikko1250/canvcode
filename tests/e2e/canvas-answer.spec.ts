@@ -379,8 +379,10 @@ test('付箋の下の欄は、AI 付箋を選んでいるときだけ出す。�
 
 test('角の三角で開いたとき（付箋は選ばない）も、付箋の下の欄のボタンを押せる。欄からほかへフォーカスが移ったら欄を消す', async ({ page }) => {
   const sent: any[] = []
+  let release: (() => void) | undefined
   const noteId = await openApp(page, async (route) => {
     sent.push(route.request().postDataJSON())
+    await new Promise<void>((resolve) => (release = resolve))
     await route.fulfill({ json: { ...ANSWER, body: '二度目の答え' } })
   })
   await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
@@ -406,10 +408,16 @@ test('角の三角で開いたとき（付箋は選ばない）も、付箋の�
   await expect(controls).toHaveCount(0)
   await expect(popover).toBeVisible()
 
-  // 送信：もう一度聞いて、答えを書き直す
+  // 送信：もう一度聞いて、答えを書き直す。答えを作っている間、送信は押せなくなり（フォーカスは落ちる）、欄は出したまま
   await popover.focus()
   await controls.locator('.ai-note-send').click()
+  await expect.poll(() => Boolean(release)).toBe(true)
+  await expect(controls.locator('.ai-note-send')).toBeDisabled()
+  await page.waitForTimeout(200)
+  await expect(controls).toBeVisible()
+  release!()
   await expect.poll(() => answerOf(page, noteId)).toMatchObject({ body: '二度目の答え' })
+  await expect(controls).toBeVisible()
   expect(sent).toHaveLength(1)
 
   // 添える所を選ぶ：押すと選ぶ状態になる

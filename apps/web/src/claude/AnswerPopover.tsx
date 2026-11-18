@@ -11,9 +11,10 @@ import { useNodesVersion } from './useNodesVersion.ts'
 //   POPOVER_MAX_HEIGHT まで。本文は中でスクロール）。キャンバスの端からはみ出さない
 // - 上に「回答」とモデルの札。その下は AnswerView（本文・関連する付箋・「続けて聞く」「Canvasに残す」。答えを作っている間は進み具合）
 // - 閉じる：同じ三角をもう一度押す（App）・Esc・パネルの外のキャンバスを押す（左ボタン。付箋の下の欄の上は除く）・付箋が消えた
-// - 開いたらパネルにフォーカスする。フォーカスがある間は、付箋の下の欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない。
-//   フォーカスがその欄へ移ったときは、フォーカスがあるままとする（欄のボタンを押すとフォーカスが移るので、そこで欄を消すと押せない）。
-//   欄からほかへ移ったら、欄のほうが知らせる（AiNoteControls の onFocusLeave）
+// - 開いたらパネルにフォーカスする。パネルか付箋の下の欄にフォーカスがある間は、欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない。
+//   どちらにあるかは、文書の focusin で決める（blur では決めない）。欄のボタンを押すとフォーカスが欄へ移るので、そこで欄を消すと押せない。
+//   また、押したボタンが消えた（× で外した）・押せなくなった（送信）ときは、フォーカスが body へ落ちるだけで focusin は来ない。
+//   そのときは欄を出したままにする（ほかへフォーカスが移るか、パネルを閉じるまで）
 
 export const POPOVER_WIDTH = 360
 export const POPOVER_MAX_HEIGHT = 480
@@ -64,6 +65,16 @@ export function AnswerPopover(props: {
   useEffect(() => {
     if (answeredAt !== undefined) onSeen(noteId, answeredAt)
   }, [noteId, answeredAt, onSeen])
+
+  // フォーカスがパネルか付箋の下の欄に入ったか、ほかへ入ったか（下のフォーカスする effect より先に聞き始める）
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target
+      onFocusChange(target instanceof Element && (rootRef.current?.contains(target) === true || target.closest('.ai-note-controls') !== null))
+    }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  }, [onFocusChange])
 
   // 開いたら（別の付箋に替わったら）、パネルにフォーカスする
   useEffect(() => {
@@ -118,12 +129,6 @@ export function AnswerPopover(props: {
       style={{ left, top, width: POPOVER_WIDTH, maxHeight }}
       onKeyDown={onKeyDown}
       onPointerDown={(e) => e.stopPropagation()}
-      onFocus={() => onFocusChange(true)}
-      onBlur={(e) => {
-        const next = e.relatedTarget
-        if (next instanceof Element && (e.currentTarget.contains(next) || next.closest('.ai-note-controls'))) return
-        onFocusChange(false)
-      }}
       {...{ [OWN_KEYS_ATTRIBUTE]: '' }}
     >
       <div className="answer-popover-head">

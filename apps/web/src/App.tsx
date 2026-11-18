@@ -1093,7 +1093,7 @@ export function App(props: { initial: InitialRecords }) {
   )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
   const { answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvasTitle })
-  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネル（か、パネルから移ったその付箋の下の欄）にフォーカスがあるか（付箋の下の欄を出す）。
+  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルか付箋の下の欄にフォーカスがあるか（付箋の下の欄を出す。パネルが focusin で見張る）。
   // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
   const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
   const [answerFocused, setAnswerFocused] = useState(false)
@@ -2665,7 +2665,6 @@ export function App(props: { initial: InitialRecords }) {
             claude={claude}
             busy={session.answeringIds}
             focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
-            onFocusLeave={() => setAnswerFocused(false)}
             onSend={(noteId) => void askWithNotes([noteId])}
             onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
             onOpenChat={openChatAnswer}

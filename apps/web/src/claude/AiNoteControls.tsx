@@ -9,7 +9,7 @@ import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 // AI 付箋（meta.ai。Claude に聞く付箋）のまわり（docs/canvas-answer-panel-plan.md の 5）。カメラに付いて動く。
 // - 付箋の下の欄：左にコンテキストを選ぶアイコン（範囲で囲む絵。横に添えた数）、右にモデルの札と送信（➤）。枠で囲まず、付箋の下に並べる。
 //   出すのは、選んでいるものに AI 付箋がちょうど 1 枚あるとき（ほかと一緒でもよい）・その付箋の文字の編集中・
-//   その付箋の答えのパネルにフォーカスがあるとき（パネルからこの欄へ移ったときも。欄からほかへ移ったら onFocusLeave で知らせる）・
+//   その付箋の答えのパネルかこの欄にフォーカスがあるとき（答えのパネルが見張る。AnswerPopover の onFocusChange）・
 //   添える所を選んでいる間だけ
 // - コンテキストを選ぶアイコン：付箋と一緒にほかのノードを選んでいれば、それをすぐ添える。付箋だけなら「添える所を選ぶ」状態にし、
 //   キャンバスで範囲をドラッグするかノードをクリックしたら添えて、付箋を選び直す（Esc かもう一度押すとやめる）。
@@ -30,10 +30,8 @@ export function AiNoteControls(props: {
   claude: ClaudeClient
   // 答えを作っている付箋
   busy: ReadonlySet<string>
-  // 答えのパネルにフォーカスがある付箋
+  // 答えのパネルかこの欄にフォーカスがある付箋（答えのパネルで見ている付箋）
   focusedNoteId: string | null
-  // フォーカスがこの欄から出た（答えのパネルへ戻ったときは除く）
-  onFocusLeave(): void
   onSend(noteId: string): void
   // 前の答えの札の ↗：元の付箋へ移る
   onOpenContext(canvasId: string, noteId: string): void
@@ -42,7 +40,7 @@ export function AiNoteControls(props: {
   canvasTitle(canvasId: string): string
   notify(message: string): void
 }) {
-  const { editor, view, session, claude, busy, focusedNoteId, onFocusLeave, onSend, onOpenContext, onOpenChat, canvasTitle, notify } = props
+  const { editor, view, session, claude, busy, focusedNoteId, onSend, onOpenContext, onOpenChat, canvasTitle, notify } = props
   const { camera } = session
   const notes = useAiNotes(editor)
   const { models } = useClaudeState(claude)
@@ -175,14 +173,10 @@ export function AiNoteControls(props: {
               className="ai-note-controls"
               data-own-keys=""
               // 押してもフォーカスを持たないボタン（Mac の Safari・Firefox）を押したときも、フォーカスがこの欄に来るように
+              // （キャンバスへ移ると、答えのパネルから開いた欄が消え、押せない）
               tabIndex={-1}
               style={{ left: screen(box.x, 0).left, top: screen(0, box.y + box.h).top + 6, width: Math.max(MIN_WIDTH, box.w * camera.zoom) }}
               onPointerDown={(e) => e.stopPropagation()}
-              onBlur={(e) => {
-                const next = e.relatedTarget
-                if (next instanceof Element && (e.currentTarget.contains(next) || next.closest('.answer-popover'))) return
-                onFocusLeave()
-              }}
             >
               <div className="ai-note-controls-row">
                 <button
