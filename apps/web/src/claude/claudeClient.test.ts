@@ -51,6 +51,7 @@ const question = (id: string, extra: Partial<RunningQuestion> = {}): RunningQues
   label: id,
   status: 'running',
   step: 'read',
+  searched: false,
   thinking: '',
   startedAt: 0,
   ...extra,

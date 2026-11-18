@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { assetIdFromHash, indicesBetween, isFileRecord, unionBoxes, type Camera, type NodeRecord, type ReferenceRecord } from '@canvcode/core'
+import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRecord, type ReferenceRecord } from '@canvcode/core'
 import {
   CanvasView,
   aiNoteMeta,
+  followUpContext,
+  placeAnswerText,
+  placeFollowUpNote,
   questionOf,
   setAiNote,
   Editor,
@@ -76,6 +79,7 @@ import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
 import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { AnswerPanel } from './claude/AnswerPanel.tsx'
+import { AnswerPopover } from './claude/AnswerPopover.tsx'
 import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
 import { memoParagraphs, memoSource, requestMemo } from './claude/memo.ts'
 import { lookupMemo, requestLookup } from './claude/lookup.ts'
@@ -1071,23 +1075,102 @@ export function App(props: { initial: InitialRecords }) {
     [editors, sync, workspace, getEditor],
   )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
-  const { answering, ask: askWithNotes } = useCanvasAnswers({ viewRef, claude, log: answerLog, notify, answerEditor, canvasTitle })
+  const { answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, log: answerLog, notify, answerEditor, canvasTitle })
   const answerEntries = useSyncExternalStore(answerLog.subscribe, answerLog.getSnapshot)
-  // 付箋の答えのパネルの「答えへ移る」：答えの Canvas に移り、答えを書いた付箋を見せる
-  const jumpToAnswer = useCallback(
-    async (entry: AnswerLogEntry) => {
-      if (!entry.noteId) return
-      if (!workspace.getCanvas(entry.canvasId)) return notify('答えを書いた付箋の Canvas はもうありません')
-      await navigate(entry.canvasId)
+  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルにフォーカスがあるか（付箋の下の欄を出す）。
+  // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
+  const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
+  const [answerFocused, setAnswerFocused] = useState(false)
+  const closeAnswer = useCallback(() => {
+    setAnswerNote(null)
+    setAnswerFocused(false)
+  }, [])
+  // Canvas を移ったら閉じる（描くときに、移ったと気づいたら閉じる）
+  const [answerCanvasId, setAnswerCanvasId] = useState(canvasId)
+  if (answerCanvasId !== canvasId) {
+    setAnswerCanvasId(canvasId)
+    if (answerNote) setAnswerNote(null)
+  }
+  const openAnswer = useCallback(
+    (noteId: string) => {
+      setAnswerNote((current) => (current?.noteId === noteId && current.canvasId === editor.canvasId ? null : { canvasId: editor.canvasId, noteId }))
+    },
+    [editor],
+  )
+  // 付箋へ移って（ほかの Canvas なら、その Canvas に移って）、答えのパネルを開く
+  const openNoteAnswer = useCallback(
+    async (targetCanvasId: string, noteId: string) => {
+      if (!workspace.getCanvas(targetCanvasId)) return notify('付箋の Canvas はもうありません')
+      if (viewRef.current?.editor.canvasId !== targetCanvasId) await navigate(targetCanvasId)
       const view = viewRef.current
-      if (!view || view.editor.canvasId !== entry.canvasId) return
-      if (!view.editor.getNode(entry.noteId)) return notify('答えを書いた付箋はもうありません（消したか、Undo で戻しました）')
-      await view.focusNode(entry.noteId)
+      if (!view || view.editor.canvasId !== targetCanvasId) return
+      if (!view.editor.getNode(noteId)) return notify('付箋はもうありません（消したか、Undo で戻しました）')
+      await view.focusNode(noteId)
+      setAnswerNote({ canvasId: targetCanvasId, noteId })
     },
     [workspace, navigate, notify],
   )
-  // 答えを書いている付箋（AI モードの付箋の欄を隠す）
-  const answeringBusy = useMemo(() => new Set(answering.flatMap((job) => job.busy)), [answering])
+  // 付箋の答えのパネルの「答えへ移る」：答えを書いた付箋へ移り、答えを開く
+  const jumpToAnswer = useCallback(
+    async (entry: AnswerLogEntry) => {
+      if (entry.noteId) await openNoteAnswer(entry.canvasId, entry.noteId)
+    },
+    [openNoteAnswer],
+  )
+  // 答えのパネルの「続けて聞く」：元の付箋の下に続きの AI 付箋を置き、文字の編集を始める（置くことと書いた文字で Undo 1 回）
+  const continueAnswer = useCallback(
+    (noteId: string) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      const context = followUpContext(noteId, editor.canvasId, aiNoteMeta(editor.getNode(noteId)))
+      if (!context) return notify('この付箋には、まだ答えがありません')
+      closeAnswer()
+      const tx = editor.begin('続けて聞く')
+      const placed = placeFollowUpNote(editor, tx, noteId, context)
+      if (!placed) return tx.cancel()
+      tx.flush()
+      view.textEditor.start(placed, { tx })
+    },
+    [notify, closeAnswer],
+  )
+  // 答えのパネルの「Canvasに残す」：答えを書式付きのテキストにして、付箋の右に置いて選ぶ（Undo 1 回）
+  const keepAnswer = useCallback(
+    (noteId: string) => {
+      const editor = viewRef.current?.editor
+      const answer = aiNoteMeta(editor?.getNode(noteId))?.answer
+      if (!editor || !answer) return
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const placed = placeAnswerText(editor, answer.body, { noteId })
+      if (!placed) return
+      closeAnswer()
+      editor.setSelection([placed])
+    },
+    [notify, closeAnswer],
+  )
+  // 関連する付箋へ移る（パネルは閉じる）
+  const openRelated = useCallback(
+    (noteId: string) => {
+      const view = viewRef.current
+      if (!view?.editor.getNode(noteId)) return notify('その付箋はもうありません')
+      closeAnswer()
+      void view.focusNode(noteId)
+    },
+    [notify, closeAnswer],
+  )
+  // 答えを作っているのをやめる（ほかのタブで頼んだものも）
+  const stopAnswer = useCallback(
+    (noteId: string) => {
+      const question = claude.state.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
+      if (question) void claude.cancelQuestion(question.id).catch((error: unknown) => notify(`やめられませんでした：${error instanceof Error ? error.message : String(error)}`))
+      else cancelAnswer(noteId)
+    },
+    [claude, canvasId, cancelAnswer, notify],
+  )
+  const openAnswerRef = useRef(openAnswer)
+  useLayoutEffect(() => {
+    openAnswerRef.current = openAnswer
+  }, [openAnswer])
   // 付箋の角の三角を点滅させる付箋（この画面で頼んでいるものと、サーバーが流す動いている質問。ほかのタブで頼んだものも）。
   // Canvas ごとの Editor の session に立てる（Canvas を移ったら、移った先の Editor に）
   const answeringQuestions = claudeState.questions
@@ -1577,6 +1660,7 @@ export function App(props: { initial: InitialRecords }) {
       },
       onOpenSource: (anchorId) => void openSource(anchorId),
       onImportBackup: (file) => importBackupRef.current(file),
+      onOpenAnswer: (noteId) => openAnswerRef.current(noteId),
       onWordLookup: (request) => startWordLookupRef.current(request),
       onContextMenu: ({ clientX, clientY }) => {
         const at = { x: clientX, y: clientY }
@@ -2448,13 +2532,45 @@ export function App(props: { initial: InitialRecords }) {
           <AiNoteControls
             editor={editor}
             view={view}
-            camera={session.camera}
+            session={session}
             claude={claude}
-            busy={answeringBusy}
+            busy={session.answeringIds}
+            focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
             onSend={(noteId) => void askWithNotes([noteId])}
+            onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
+            canvasTitle={canvasTitle}
             notify={notify}
           />
         )}
+
+        {view &&
+          claudeState.availability === 'on' &&
+          answerNote?.canvasId === canvasId &&
+          (() => {
+            const { noteId } = answerNote
+            // 答えを作っている間の進み具合（サーバーが流すもの。ほかのタブで頼んだものも。この画面で頼んだばかりで、まだ届いていなければ「読む」）
+            const question = claudeState.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
+            const progress = question ? question : session.answeringIds.has(noteId) ? { step: 'read' as const, searched: false, thinking: '' } : null
+            const error = answerFailures.get(noteId)
+            return (
+              <AnswerPopover
+                editor={editor}
+                view={view}
+                camera={session.camera}
+                noteId={noteId}
+                catalog={claudeState.models}
+                progress={progress}
+                {...(question ? { runningModel: { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort } : {}) } } : {})}
+                {...(error ? { error } : {})}
+                onClose={closeAnswer}
+                onFocusChange={setAnswerFocused}
+                onRelated={openRelated}
+                onContinue={() => continueAnswer(noteId)}
+                onKeep={() => keepAnswer(noteId)}
+                {...(progress ? { onStop: () => stopAnswer(noteId) } : {})}
+              />
+            )
+          })()}
 
         {(() => {
           // ボタンのホバーの説明（「＋」・版の帯）。ボタンの下に出す
@@ -2469,27 +2585,6 @@ export function App(props: { initial: InitialRecords }) {
             </div>
           )
         })()}
-
-        {answering.map((job) => {
-          // キャンバスの AI が書いている間の印（質問の付箋（いくつもあれば、全体）か、書き直すフレームの右上に出す。カメラに付いて動く）
-          const box = job.canvasId === canvasId ? unionBoxes(job.anchorIds.flatMap((id) => editor.index.get(id)?.worldBounds ?? [])) : null
-          if (!box) return null
-          const { camera } = session
-          return (
-            <div
-              key={job.key}
-              className="cite-pending"
-              role="status"
-              style={{ left: (box.x + box.w - camera.x) * camera.zoom + 8, top: (box.y - camera.y) * camera.zoom }}
-            >
-              <span className="claude-spinner" aria-hidden="true" />
-              <span>{job.message}</span>
-              <button className="cite-pending-cancel" title="やめる" aria-label="Claude に頼むのをやめる" onClick={() => job.abort.abort()}>
-                ×
-              </button>
-            </div>
-          )
-        })}
 
         {citing.map((job) => {
           // 引用を作っている間の印（置く所＝アイテムの右下に出す。カメラに付いて動く）

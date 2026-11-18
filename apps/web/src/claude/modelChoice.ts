@@ -46,10 +46,18 @@ export function sameSetting(a: ModelSetting, b: ModelSetting): boolean {
   return a.model === b.model && a.effort === b.effort
 }
 
-// モデルの名前。既定なら、既定で動くモデルの名前を添える（わからなければ「既定」）
+// モデルの名前。既定なら、既定で動くモデルの名前を添える（わからなければ「既定」）。
+// 一覧にないモデルの id（実際に答えたモデル claude-opus-5-5 など）は、Opus 5.5 のように読める形にする
 export function modelLabel(catalog: ModelCatalog | undefined, model: string | undefined): string {
-  if (model) return catalog?.models.find((choice) => choice.value === model)?.label ?? model
+  if (model) return catalog?.models.find((choice) => choice.value === model)?.label ?? readableModelId(model)
   return catalog?.default.label ? `既定（${catalog.default.label}）` : '既定'
+}
+
+function readableModelId(model: string): string {
+  const match = /^claude-(fable|opus|sonnet|haiku)-(\d+)-(\d+)(?:$|-\d{8}$)/.exec(model)
+  if (!match) return model
+  const [, family, major, minor] = match
+  return `${family![0]!.toUpperCase()}${family!.slice(1)} ${major}.${minor}`
 }
 
 // ボタンに出す名前（Opus 5.5 · High）。effort が既定なら、モデルだけ

@@ -98,7 +98,8 @@ test('付箋で聞くと、答えを付箋に書く（キャンバスには置�
   const before = await nodeTypes(page)
   await askWithMenu(page, noteId)
 
-  await expect(page.getByText('Claude が答えを書いています')).toBeVisible()
+  // 答えを作っている間は、付箋の角の三角が点滅する
+  await expect.poll(() => page.evaluate((id) => (window as any).canvcode.editor.session.get().answeringIds.has(id), noteId)).toBe(true)
   await expect.poll(() => Boolean(release)).toBe(true)
   expect(sent[0]).toEqual({
     question: QUESTION,
@@ -108,7 +109,7 @@ test('付箋で聞くと、答えを付箋に書く（キャンバスには置�
   release!()
 
   await expect.poll(() => answerOf(page, noteId)).toMatchObject({ body: ANSWER.body, related: [nearId], model: ANSWER.model, question: QUESTION })
-  await expect(page.getByText('Claude が答えを書いています')).toHaveCount(0)
+  await expect.poll(() => page.evaluate((id) => (window as any).canvcode.editor.session.get().answeringIds.has(id), noteId)).toBe(false)
   // 答えのフレームも矢印も置かない
   expect(await nodeTypes(page)).toEqual(before)
 
@@ -171,13 +172,214 @@ test('付箋に書く前に、ほかのタブで止められたら（SSE の que
   expect(await answerOf(page, noteId)).toBeNull()
 })
 
-test('続きの付箋は前の質問と答えを送り、答えをその付箋に書く。付箋の答えのパネルで考えた中身を見て、付箋へ移る', async ({ page }) => {
+// 付箋の右上の角（三角）の画面の位置（ブラウザのウィンドウ基準。角から inset だけ内側。
+// 選んでいる付箋では、角から 8px までは選択枠のハンドルが先に当たるので、既定は 10px 内側）
+async function cornerOf(page: Page, id: string, inset = 10): Promise<{ x: number; y: number }> {
+  const box = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  const at = await page.evaluate(
+    ({ id, inset }) => {
+      const editor = (window as any).canvcode.editor
+      const bounds = editor.index.get(id).worldBounds
+      const camera = editor.session.get().camera
+      return { x: (bounds.x + bounds.w - camera.x) * camera.zoom - inset, y: (bounds.y - camera.y) * camera.zoom + inset }
+    },
+    { id, inset },
+  )
+  return { x: box.x + at.x, y: box.y + at.y }
+}
+
+// 答えを持つ付箋にする（Claude に聞かずに）
+const giveAnswer = (page: Page, id: string, answer: Record<string, unknown>) =>
+  page.evaluate(
+    ({ id, answer }) => {
+      const editor = (window as any).canvcode.editor
+      const node = editor.getNode(id)
+      editor.transact('answer', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [], answer } } }))
+    },
+    { id, answer },
+  )
+
+// 同じ三角を続けて押す（500ms のうちの 2 回目はダブルクリックとして押さない）
+const again = (page: Page) => page.waitForTimeout(550)
+
+const selection = (page: Page) => page.evaluate(() => [...(window as any).canvcode.editor.session.get().selectedIds] as string[])
+
+test('角の三角で、付箋の横に答えのパネルを開く。関連する付箋へ移れる。もう一度押すと閉じ、Esc でも閉じる', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  const nearId = await addNote(page, '付箋をインプットとする方向性はよかった', { x: 300, y: 700 })
+  await giveAnswer(page, noteId, { ...ANSWER, related: [nearId, 'node:gone'], effort: 'high', question: QUESTION, answeredAt: 1 })
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.move(corner.x, corner.y)
+  await expect.poll(() => page.evaluate(() => (window as any).canvcode.editor.session.get().hoveredAiCorner)).toBe(noteId)
+  await page.mouse.click(corner.x, corner.y)
+  const popover = page.locator('.answer-popover')
+  await expect(popover).toBeVisible()
+  await expect(popover).toBeFocused()
+  // 付箋は選ばない。付箋の右に出る
+  expect(await selection(page)).toEqual([])
+  expect((await popover.boundingBox())!.x).toBeGreaterThan(corner.x)
+  await expect(popover.locator('.answer-popover-head')).toContainText('回答')
+  await expect(popover.locator('.answer-popover-model')).not.toBeEmpty()
+  await expect(popover.locator('.answer-view-body strong')).toHaveText('Xcode')
+  await expect(popover.locator('.answer-view-body li')).toHaveText('まず App Store から Xcode を入れる')
+  // 関連する付箋：消えた付箋は出さない
+  await expect(popover.locator('.answer-view-related-note')).toHaveText(['↗ 付箋をインプットとする方向性はよかった'])
+  // 答えにフォーカスがある間は、付箋の下の欄を出す
+  await expect(page.locator('.ai-note-controls')).toBeVisible()
+  await page.screenshot({ path: test.info().outputPath('answer-popover.png') })
+
+  // もう一度押すと閉じる
+  await again(page)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(popover).toHaveCount(0)
+  await expect(page.locator('.ai-note-controls')).toHaveCount(0)
+  // Esc でも閉じる
+  await again(page)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(popover).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(popover).toHaveCount(0)
+  // 外のキャンバスを押しても閉じる
+  await again(page)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(popover).toBeVisible()
+  await page.mouse.click(corner.x - 400, corner.y + 200)
+  await expect(popover).toHaveCount(0)
+
+  // 関連する付箋を押すと、その付箋へ移って選ぶ（パネルは閉じる）
+  await again(page)
+  await page.mouse.click(corner.x, corner.y)
+  await popover.locator('.answer-view-related-note').click()
+  await expect(popover).toHaveCount(0)
+  await expect.poll(() => selection(page)).toEqual([nearId])
+})
+
+test('縮小しても、三角の当たり判定は画面で 24px あり、答えのパネルが開く', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
+  await page.evaluate(() => (window as any).canvcode.editor.session.set({ camera: { x: 0, y: 0, zoom: 0.5 } }))
+  // 三角はワールドで 22（画面で 11px）だが、角から 13px 内側でも当たる（付箋の短い辺の半分まで）
+  const corner = await cornerOf(page, noteId, 13)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(page.locator('.answer-popover')).toBeVisible()
+})
+
+test('答えのパネルの「Canvasに残す」で、答えを書式付きのテキストにして付箋の右に置く。Undo 1 回で消える', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
+  const before = await nodeTypes(page)
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  await page.locator('.answer-view-keep').click()
+  await expect(page.locator('.answer-popover')).toHaveCount(0)
+  await expect.poll(() => nodeTypes(page)).toEqual([...before, 'arrow', 'text'].sort())
+  const placed = await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const id = [...editor.session.get().selectedIds][0] as string
+    const node = editor.getNode(id)
+    return { type: node.type, text: node.props.paragraphs.map((p: any) => p.runs.map((r: any) => r.text).join('')) }
+  })
+  expect(placed).toEqual({ type: 'text', text: ['前提：iOS アプリを作る', '', 'Xcode を入れれば、開発環境はほぼ整う。', '', 'まず App Store から Xcode を入れる'] })
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => nodeTypes(page)).toEqual(before)
+})
+
+test('「続けて聞く」で、元の付箋の下に札付きの AI 付箋を置いて書き始め、送ると前の質問と答えを送る', async ({ page }) => {
+  const sent: any[] = []
+  const FOLLOW = { body: 'Xcode は無料です。', related: [], model: 'claude-sonnet-5-5' }
+  const noteId = await openApp(page, async (route) => {
+    sent.push(route.request().postDataJSON())
+    await route.fulfill({ json: FOLLOW })
+  })
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  await page.locator('.answer-view-continue').click()
+  await expect(page.locator('.answer-popover')).toHaveCount(0)
+  // 文字の編集が始まっている。付箋の上に前の答えの札、下に欄
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  await expect(page.locator('.ai-note-chip')).toContainText('「swiftの開発環境ってどうやって整えたら良いの?」の答え')
+  await expect(page.locator('.ai-note-chip button')).toHaveText('↗ 元の付箋')
+  await expect(page.locator('.ai-note-controls')).toBeVisible()
+  await page.keyboard.type('Xcode は無料？')
+  await page.keyboard.press('Control+Enter')
+  const followId = await page.evaluate((noteId) => {
+    const editor = (window as any).canvcode.editor
+    return [...editor.index.nodeIds()].find((id: string) => id !== noteId && editor.getNode(id).meta?.ai?.contexts?.length) as string
+  }, noteId)
+  await expect.poll(() => answerOf(page, followId)).toMatchObject({ body: 'Xcode は無料です。', question: 'Xcode は無料？' })
+  expect(sent[0]).toMatchObject({ question: 'Xcode は無料？', previous: [{ question: QUESTION, answer: ANSWER.body }] })
+  // 続きの付箋は元の付箋の下
+  const boxes = await page.evaluate(
+    ([a, b]) => {
+      const editor = (window as any).canvcode.editor
+      return [editor.index.get(a).worldBounds, editor.index.get(b).worldBounds]
+    },
+    [noteId, followId],
+  )
+  expect(boxes[1].y).toBeGreaterThan(boxes[0].y + boxes[0].h)
+  await page.screenshot({ path: test.info().outputPath('follow-up.png') })
+  // 札の ↗ で元の付箋へ移り、その答えを開く
+  await page.locator('.ai-note-chip button').click()
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  await expect.poll(() => selection(page)).toEqual([noteId])
+})
+
+test('付箋の下の欄は、AI 付箋を選んでいるときだけ出す。アイコンを押して、ほかのノードをクリックすると添える', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  const otherId = await addNote(page, '添える付箋', { x: 700, y: 300 })
+  await page.evaluate((id) => {
+    const editor = (window as any).canvcode.editor
+    const node = editor.getNode(id)
+    editor.transact('ai', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [] } } }))
+  }, noteId)
+  await expect(page.locator('.ai-note-controls')).toHaveCount(0)
+  const note = await centerOf(page, noteId)
+  await page.mouse.click(note.x, note.y)
+  await expect(page.locator('.ai-note-controls')).toBeVisible()
+  await expect(page.locator('.ai-note-attach-count')).toHaveCount(0)
+  await page.locator('.ai-note-attach').click()
+  await expect(page.locator('.ai-note-picking')).toBeVisible()
+  const other = await centerOf(page, otherId)
+  await page.mouse.click(other.x, other.y)
+  // 添えて、付箋を選び直す
+  await expect(page.locator('.ai-note-attach-count')).toHaveText('1')
+  await expect.poll(() => selection(page)).toEqual([noteId])
+  await page.locator('.ai-note-attach-count').click()
+  await expect(page.locator('.ai-note-context')).toContainText('1 個のノード')
+  await page.locator('.ai-note-controls').screenshot({ path: test.info().outputPath('ai-note-controls.png') })
+  // 何もない所をクリックすると、欄は消える
+  await page.mouse.click(note.x - 150, note.y + 350)
+  await expect(page.locator('.ai-note-controls')).toHaveCount(0)
+})
+
+test('答えを作っている間は、三角のパネルに進み具合と「やめる」を出し、やめられる', async ({ page }) => {
+  let release: (() => void) | undefined
+  const noteId = await openApp(page, async (route) => {
+    await new Promise<void>((resolve) => (release = resolve))
+    await route.fulfill({ json: ANSWER }).catch(() => undefined)
+  })
+  await askWithMenu(page, noteId)
+  await expect.poll(() => Boolean(release)).toBe(true)
+  await expect.poll(() => page.evaluate((id) => (window as any).canvcode.editor.session.get().answeringIds.has(id), noteId)).toBe(true)
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  const popover = page.locator('.answer-popover')
+  await expect(popover.locator('.answer-view-step.current')).toHaveText(/読む/)
+  await popover.locator('.answer-view-stop').click()
+  await expect(page.getByText('Claude に頼むのをやめました')).toBeVisible()
+  await expect.poll(() => page.evaluate((id) => (window as any).canvcode.editor.session.get().answeringIds.has(id), noteId)).toBe(false)
+  release!()
+  expect(await answerOf(page, noteId)).toBeNull()
+})
+
+test('続きの付箋は前の質問と答えを送る。付箋の答えの記録で考えた中身を見て、付箋へ移ると答えが開く', async ({ page }) => {
   const sent: any[] = []
   const FOLLOW = { body: 'Xcode は無料です。', related: [], model: 'claude-sonnet-5-5' }
   const noteId = await openApp(page, async (route) => {
     sent.push(route.request().postDataJSON())
     // NDJSON（進み具合と考えている中身のあとに答え）
-    const lines = [
+    await ndjson(route, [
       { type: 'step', step: 'read' },
       { type: 'thinking', text: '前の答えで Xcode を勧めた。' },
       { type: 'thinking', text: '値段を答える。' },
@@ -187,39 +389,14 @@ test('続きの付箋は前の質問と答えを送り、答えをその付箋�
       { type: 'thinking', text: '無料だとわかった。' },
       { type: 'step', step: 'write' },
       { type: 'answer', answer: FOLLOW },
-    ]
-    await route.fulfill({ body: lines.map((line) => JSON.stringify(line)).join('\n') + '\n', contentType: 'application/x-ndjson' })
+    ])
   })
   const canvasId = await canvasIdOf(page)
   const turns = [{ question: QUESTION, answer: ANSWER.body }]
   const followId = await addNote(page, 'Xcode は無料？', { x: 300, y: 600 }, { contexts: [{ kind: 'answer', noteId, canvasId, label: 'swiftの開発環境', turns }] })
   const before = await nodeTypes(page)
-
-  // AI 付箋の下の欄に、前の答えが添えてある
-  await expect(page.locator('.ai-note-controls')).toBeVisible()
-  await expect(page.locator('.ai-note-context')).toContainText('続き：swiftの開発環境')
-  // 添えたものは 2 段目（モデル・送信の段の下）。長い名前でも欄からはみ出さない
-  await page.evaluate((id) => {
-    const editor = (window as any).canvcode.editor
-    const node = editor.getNode(id)
-    const long = { ...node.meta.ai.contexts[0], noteId: 'node:other', label: '日本の容量市場の主な問題点と、その背景にある制度設計の課題についての長い題' }
-    editor.transact('long', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [node.meta.ai.contexts[0], long] } } }))
-  }, followId)
-  await expect(page.locator('.ai-note-context')).toHaveCount(2)
-  const layout = await page.locator('.ai-note-controls').evaluate((controls) => {
-    const box = (selector: string) => controls.querySelector(selector)!.getBoundingClientRect()
-    const outer = controls.getBoundingClientRect()
-    const chips = [...controls.querySelectorAll('.ai-note-context')].map((chip) => chip.getBoundingClientRect())
-    return { sendBottom: box('.ai-note-send').bottom, chipTops: chips.map((chip) => chip.top), overflow: chips.some((chip) => chip.right > outer.right + 0.5), wider: controls.scrollWidth > controls.clientWidth }
-  })
-  for (const top of layout.chipTops) expect(top).toBeGreaterThan(layout.sendBottom)
-  expect(layout.overflow).toBe(false)
-  expect(layout.wider).toBe(false)
-  await page.evaluate((id) => {
-    const editor = (window as any).canvcode.editor
-    const node = editor.getNode(id)
-    editor.transact('back', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [node.meta.ai.contexts[0]] } } }))
-  }, followId)
+  const follow = await centerOf(page, followId)
+  await page.mouse.click(follow.x, follow.y)
   await page.locator('.ai-note-send').click()
 
   await expect.poll(() => answerOf(page, followId)).toMatchObject({ body: 'Xcode は無料です。', question: 'Xcode は無料？' })
@@ -233,17 +410,17 @@ test('続きの付箋は前の質問と答えを送り、答えをその付箋�
   expect(await page.evaluate((id) => (window as any).canvcode.editor.getNode(id).meta.ai.contexts.length, followId)).toBe(1)
   expect(await nodeTypes(page)).toEqual(before)
 
-  // 右上の「Claude」で開く付箋の答えのパネルに、回答終了の記録。押すと考えた中身だけを見る。「答えへ移る」で、答えを書いた付箋を選ぶ
+  // 右上の「Claude」で開く付箋の答えの記録に、回答終了の行。押すと考えた中身だけを見る。「答えへ移る」で、答えを書いた付箋へ移り、答えを開く
   await page.locator('.claude-toggle').click()
   await expect(page.locator('.answer-panel')).toBeVisible()
   const row = page.locator('.answer-row', { hasText: '続き：Xcode は無料？' })
   await expect(row).toContainText('回答終了')
   await row.locator('.answer-row-main').click()
   // 段落と、調べている行のまとまりに分けて出す（間の空の行は詰める）
-  await expect(page.locator('.answer-thinking > p')).toHaveText(['前の答えで Xcode を勧めた。値段を答える。', '無料だとわかった。'])
-  await expect(page.locator('.answer-thinking-tool > div')).toHaveText(['Web で調べる：Xcode 値段', 'ページを読む：https://developer.apple.com/xcode/'])
+  await expect(page.locator('.answer-panel .answer-thinking > p')).toHaveText(['前の答えで Xcode を勧めた。値段を答える。', '無料だとわかった。'])
+  await expect(page.locator('.answer-panel .answer-thinking-tool > div')).toHaveText(['Web で調べる：Xcode 値段', 'ページを読む：https://developer.apple.com/xcode/'])
   await page.locator('.answer-thinking-head button', { hasText: '← 一覧に戻る' }).click()
-  await expect(page.locator('.answer-thinking')).toHaveCount(0)
   await row.locator('.answer-row-jump').click()
-  await expect.poll(() => page.evaluate(() => [...(window as any).canvcode.editor.session.get().selectedIds])).toEqual([followId])
+  await expect.poll(() => selection(page)).toEqual([followId])
+  await expect(page.locator('.answer-popover .answer-view-body')).toHaveText('Xcode は無料です。')
 })

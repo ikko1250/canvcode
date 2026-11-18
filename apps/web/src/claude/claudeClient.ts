@@ -100,6 +100,8 @@ export interface RunningQuestion {
   effort?: string
   status: 'running' | 'placing'
   step: 'read' | 'search' | 'write'
+  // Web を調べたか
+  searched: boolean
   thinking: string
   startedAt: number
 }

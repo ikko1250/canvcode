@@ -2792,7 +2792,7 @@ button.pdf-page-number:hover {
   cursor: pointer;
 }
 
-/* AI モードの付箋（Claude に聞く付箋）の下の欄。1 段目にモデル・「＋ 選んでいる所」・送信、2 段目から添えたもの */
+/* AI 付箋（Claude に聞く付箋）の下の欄。1 段目に、左にコンテキストを選ぶアイコンと添えた数、右にモデルの札と送信。2 段目に添えたもの（数を押したとき） */
 .ai-note-controls {
   position: absolute;
   z-index: 5;
@@ -2865,17 +2865,276 @@ button.pdf-page-number:hover {
 }
 
 .ai-note-controls .ai-note-attach {
-  border-style: dashed;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 5px;
+  border-color: transparent;
+  background: none;
   color: var(--muted);
 }
 
-/* 送信は 1 段目の右端 */
-.ai-note-controls .ai-note-send {
-  margin-left: auto;
-  border-color: #3b5bdb;
-  background: #3b5bdb;
-  color: #fff;
+.ai-note-controls .ai-note-attach:hover,
+.ai-note-controls .ai-note-attach.picking {
+  border-color: #c9d4f5;
+  background: #eef2fd;
+  color: #1d4ed8;
+}
+
+.ai-note-controls .ai-note-attach-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 999px;
+  background: #e8eefc;
+  color: #1f4b99;
   font-weight: 600;
+}
+
+.ai-note-picking {
+  overflow: hidden;
+  color: #1d4ed8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-note-controls-spacer {
+  flex: 1;
+}
+
+/* モデルの札（モックの「opus5.5・High」） */
+.ai-note-controls .claude-model-button {
+  border: none;
+  border-radius: 999px;
+  background: #eef0fb;
+  color: #3c4257;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+/* 送信（紙飛行機）は 1 段目の右端 */
+.ai-note-controls .ai-note-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 12px;
+  border-color: #1d3fbf;
+  border-radius: 999px;
+  background: #1d3fbf;
+  color: #fff;
+}
+
+.ai-note-controls .ai-note-send:disabled {
+  border-color: #c7cde0;
+  background: #c7cde0;
+  cursor: default;
+}
+
+/* 前の答え（続き）を添えた AI 付箋の上の札 */
+.ai-note-chip {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid #c9d4f5;
+  border-radius: 6px;
+  background: #f4f7ff;
+  color: #1f4b99;
+  font-size: 11px;
+  white-space: nowrap;
+  transform: translateY(calc(-100% - 6px));
+}
+
+.ai-note-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-note-chip button {
+  flex: none;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: #1d4ed8;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ai-note-chip button:hover {
+  text-decoration: underline;
+}
+
+/* 付箋の横の答えのパネル（付箋の角の三角で開く） */
+.answer-popover {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 10px 12px 12px;
+  border: 1px solid #b9c6f2;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.answer-popover:focus {
+  outline: none;
+}
+
+.answer-popover:focus-within {
+  border-color: #6f8ae6;
+}
+
+.answer-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e3e7f1;
+}
+
+.answer-popover-model {
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: #eef0fb;
+  color: #3c4257;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.answer-popover .answer-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.answer-view-body {
+  flex: 1;
+  min-height: 0;
+  margin: 8px 0 0;
+  overflow-y: auto;
+}
+
+.answer-view-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.answer-view-error {
+  margin: 8px 0 0;
+  color: #c92a2a;
+  font-size: 12px;
+}
+
+.answer-view-related {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e3e7f1;
+}
+
+.answer-view-related-title {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.answer-view-related-note {
+  max-width: 100%;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 1px solid #dfe4f2;
+  border-radius: 6px;
+  background: #f8f9fd;
+  color: #1f4b99;
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.answer-view-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e3e7f1;
+}
+
+.answer-view-actions button,
+.answer-view-stop {
+  padding: 4px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.answer-view-continue {
+  background: #1d3fbf;
+  color: #fff;
+}
+
+.answer-view-keep {
+  background: #e8eefc;
+  color: #1d3fbf;
+}
+
+.answer-view-running .answer-thinking {
+  flex: 1;
+  min-height: 60px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.answer-view-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.answer-view-step.done {
+  color: #2b8a3e;
+}
+
+.answer-view-step.current {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.answer-view-step.todo,
+.answer-view-step.skipped {
+  color: #adb5bd;
+}
+
+.answer-view-step-arrow {
+  color: #adb5bd;
+  font-weight: 400;
+}
+
+.answer-view-stop {
+  margin-left: auto;
+  border-color: var(--panel-border);
+  background: #fff;
+  color: var(--text);
 }
 
 /* 下に開くモデルの欄（AI モードの付箋の下の欄） */

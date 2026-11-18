@@ -44,6 +44,8 @@ export interface RunningQuestion extends QuestionSource {
   // running：答えを作っている。placing：答えを画面に渡し、付箋に書くのを待っている
   status: 'running' | 'placing'
   step: QuestionStep
+  // Web を調べたか（一度でも search になったか）
+  searched: boolean
   thinking: string
   startedAt: number
 }
@@ -91,6 +93,7 @@ export class RunningQuestions {
       ...(setting.effort ? { effort: setting.effort } : {}),
       status: 'running',
       step: 'read',
+      searched: false,
       thinking: '',
       startedAt: Date.now(),
     }
@@ -102,7 +105,7 @@ export class RunningQuestions {
   step(id: string, step: QuestionStep): void {
     const entry = this.entries.get(id)
     if (!entry || entry.question.step === step) return
-    entry.question = { ...entry.question, step }
+    entry.question = { ...entry.question, step, ...(step === 'search' ? { searched: true } : {}) }
     this.emitQuestion(entry.question)
   }
 
