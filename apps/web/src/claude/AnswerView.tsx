@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
 import type { AiAnswer } from '@canvcode/canvas'
 import { thinkingBlocks } from './thinking.ts'
@@ -9,7 +9,8 @@ import type { RunningQuestion } from './claudeClient.ts'
 // - 本文はチャットと同じ Markdown の出し方（renderMarkdownToSafeHtml）
 // - 質問の付箋の文字が送ったときと違えば、本文の上に知らせる
 // - 関連する付箋：↗ と 1 行目。押すと、その付箋へ移る
-// - 下に「続けて聞く」「Canvasに残す」（付箋を置けないとき（全画面のエディタ）は出さない）
+// - 下に「続けて聞く」「会話で続ける」「Canvasに残す」（付箋を置けないとき（全画面のエディタ）は出さない）。
+//   「会話で続ける」は小さなメニュー：「いまの会話「題」に入れる」（会話を選んでいれば）・「新しい会話にする」（docs/claude-chat-tab-plan.md の 6）
 // - 答えを作っている間は、本文の代わりに、進み具合（読む → 調べる → 書く）と考えている中身と「やめる」
 // - 失敗したら、前の答えがあればそれを出し、上に失敗のわけを 1 行出す
 
@@ -32,8 +33,12 @@ export function AnswerView(props: {
   onContinue?(): void
   onKeep?(): void
   onStop?(): void
+  // 会話で続ける（newThread なら新しい会話）。chatTitle は、いま会話のタブで選んでいる会話の題（なければ新しい会話だけ）
+  onChat?(newThread: boolean): void
+  chatTitle?: string | null
 }) {
-  const { answer, progress, error, questionChanged, related, onRelated, onContinue, onKeep, onStop } = props
+  const { answer, progress, error, questionChanged, related, onRelated, onContinue, onKeep, onStop, onChat, chatTitle } = props
+  const [chatMenu, setChatMenu] = useState(false)
   const html = useMemo(() => (answer ? renderMarkdownToSafeHtml(answer.body) : ''), [answer])
   if (progress) return <AnswerProgressView progress={progress} {...(onStop ? { onStop } : {})} />
   return (
@@ -48,22 +53,44 @@ export function AnswerView(props: {
               <div className="answer-view-related-title">関連する付箋</div>
               {related.map((note) => (
                 <button key={note.id} type="button" className="answer-view-related-note" onClick={() => onRelated(note.id)} title="この付箋へ移る">
-                  ↗ {note.label}
+                  <span>↗ {note.label}</span>
                 </button>
               ))}
             </div>
           )}
-          {(onContinue || onKeep) && (
+          {(onContinue || onKeep || onChat) && (
             <div className="answer-view-actions">
               {onContinue && (
                 <button type="button" className="answer-view-continue" onClick={onContinue} title="この答えを踏まえて聞く付箋を、元の付箋の下に置く">
                   続けて聞く
                 </button>
               )}
+              {onChat && (
+                <button
+                  type="button"
+                  className="answer-view-chat"
+                  aria-haspopup="menu"
+                  aria-expanded={chatMenu}
+                  onClick={() => setChatMenu((open) => !open)}
+                  title="この質問と答えを、会話に取り込んで続ける"
+                >
+                  会話で続ける
+                </button>
+              )}
               {onKeep && (
                 <button type="button" className="answer-view-keep" onClick={onKeep} title="答えを書式付きのテキストにして、キャンバスに置く">
                   Canvasに残す
                 </button>
+              )}
+              {onChat && chatMenu && (
+                <ChatMenu
+                  title={chatTitle ?? null}
+                  onChoose={(newThread) => {
+                    setChatMenu(false)
+                    onChat(newThread)
+                  }}
+                  onClose={() => setChatMenu(false)}
+                />
               )}
             </div>
           )}
@@ -73,6 +100,50 @@ export function AnswerView(props: {
       )}
     </div>
   )
+}
+
+// 「会話で続ける」のメニュー。開いたら最初の項目にフォーカスし、Esc で閉じる（パネルは閉じない）。外を押すと閉じる
+function ChatMenu(props: { title: string | null; onChoose(newThread: boolean): void; onClose(): void }) {
+  const { title, onChoose, onClose } = props
+  const menuRef = useRef<HTMLDivElement>(null)
+  // 閉じる関数は描くたびに変わるので、ref から呼ぶ（effect は開いたときに 1 回だけ）
+  const closeRef = useRef(onClose)
+  useEffect(() => {
+    closeRef.current = onClose
+  })
+  useEffect(() => {
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
+    const onDown = (e: PointerEvent) => {
+      if (e.target instanceof Node && menuRef.current?.parentElement?.contains(e.target)) return
+      closeRef.current()
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    return () => window.removeEventListener('pointerdown', onDown, true)
+  }, [])
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
+    e.preventDefault()
+    e.stopPropagation()
+    onClose()
+  }
+  return (
+    <div ref={menuRef} className="answer-view-chat-menu" role="menu" onKeyDown={onKeyDown}>
+      {title !== null && (
+        <button type="button" role="menuitem" onClick={() => onChoose(false)}>
+          <span>いまの会話「{oneLine(title)}」に入れる</span>
+        </button>
+      )}
+      <button type="button" role="menuitem" onClick={() => onChoose(true)}>
+        <span>新しい会話にする</span>
+      </button>
+    </div>
+  )
+}
+
+function oneLine(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  const chars = Array.from(line)
+  return chars.length > 20 ? `${chars.slice(0, 19).join('')}…` : line
 }
 
 const STEPS: readonly { step: AnswerProgress['step']; label: string }[] = [

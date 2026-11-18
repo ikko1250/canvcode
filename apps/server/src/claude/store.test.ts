@@ -145,6 +145,68 @@ describe('ClaudeStore', () => {
     expect(store.thread('a')).not.toHaveProperty('effort')
   })
 
+  it('adds the ref_label and imports columns and the questions table to an older database, keeping its jobs (claude-chat-tab-plan 8)', () => {
+    const dir = dataDir()
+    // model・effort まではあるが、ref_label・imports の列と questions の表のない claude.db
+    const old = new DatabaseSync(join(dir, 'claude.db'))
+    old.exec(`
+      CREATE TABLE jobs (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, prompt TEXT NOT NULL, origin TEXT, ref_id TEXT, canvas_id TEXT, status TEXT NOT NULL,
+        created_at INTEGER NOT NULL, finished_at INTEGER, cost_usd REAL, duration_ms INTEGER, session_id TEXT, event_count INTEGER NOT NULL DEFAULT 0, model TEXT, effort TEXT);
+      CREATE TABLE events (job_id TEXT NOT NULL, seq INTEGER NOT NULL, event TEXT NOT NULL, PRIMARY KEY (job_id, seq));
+      INSERT INTO jobs (id, thread_id, prompt, ref_id, status, created_at, event_count) VALUES ('a', 'a', 'old', 'ref:Ab12Cd34Ef', 'done', 1, 0);
+      PRAGMA user_version = 1;
+    `)
+    old.close()
+    let store = new ClaudeStore(dir)
+    expect(store.job('a')).toMatchObject({ prompt: 'old', refId: 'ref:Ab12Cd34Ef' })
+    expect(store.job('a')).not.toHaveProperty('refLabel')
+    expect(store.job('a')).not.toHaveProperty('imports')
+    const imports = [{ label: '質問', question: '質問', answer: '答え', noteId: 'node:n', canvasId: 'canvas:c' }]
+    store.insertJob(job('b', 'a', 2, { refId: 'ref:Ab12Cd34Ef', refLabel: '3 個のノード', imports }))
+    store.close()
+    store = open(dir)
+    expect(store.job('b')).toMatchObject({ refLabel: '3 個のノード', imports })
+    expect(store.threadQuestions('a')).toEqual([])
+    // 版は上げない（古いサーバーが壊れたものとして脇に移さないように）
+    store.close()
+    const raw = new DatabaseSync(join(dir, 'claude.db'))
+    expect((raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1)
+    raw.close()
+    expect(readdirSync(dir).some((name) => name.startsWith('claude.db.broken-'))).toBe(false)
+  })
+
+  it('keeps the questions asked from the chat, lists the answered ones, and deletes them with their thread (claude-chat-tab-plan 7)', () => {
+    const dir = dataDir()
+    let store = new ClaudeStore(dir)
+    store.insertJob(job('t', 't', 1))
+    const previous = [{ question: '前の質問', answer: '前の答え' }]
+    store.insertQuestion({ id: 'q1', threadId: 't', question: 'コンテキストとは？', previous, model: 'sonnet', effort: 'medium', status: 'running', createdAt: 2 })
+    store.insertQuestion({ id: 'q2', question: '会話の外', previous: [], status: 'running', createdAt: 3 })
+    store.insertQuestion({ id: 'q3', threadId: 't', question: '止めた', previous: [], status: 'running', createdAt: 4 })
+    expect(store.question('q1')).toEqual({ id: 'q1', threadId: 't', question: 'コンテキストとは？', previous, model: 'sonnet', effort: 'medium', status: 'running', createdAt: 2 })
+    store.finishQuestion('q1', { status: 'done', body: '答え', model: 'claude-sonnet-5-5', answeredAt: 5 })
+    store.finishQuestion('q2', { status: 'done', body: '外の答え', answeredAt: 6 })
+    store.finishQuestion('q3', { status: 'cancelled', answeredAt: 7 })
+    expect(store.question('q1')).toMatchObject({ status: 'done', body: '答え', model: 'claude-sonnet-5-5', answeredAt: 5 })
+    expect(store.threadQuestions('t').map((q) => [q.id, q.status])).toEqual([
+      ['q1', 'done'],
+      ['q3', 'cancelled'],
+    ])
+    // 答えたものだけ、答えた時刻の新しいものから
+    expect(store.answeredQuestions().map((q) => q.id)).toEqual(['q2', 'q1'])
+    // 答えを作っていることになっているものは、開き直すと（サーバーが止まって途切れた）失敗にする
+    store.insertQuestion({ id: 'q4', threadId: 't', question: '途中', previous: [], status: 'running', createdAt: 8 })
+    store.interruptRunning('途切れました', 9)
+    expect(store.question('q4')).toMatchObject({ status: 'failed', error: '途切れました', answeredAt: 9 })
+    store.close()
+    store = open(dir)
+    // 会話を消すと、その会話の質問も消える（会話の外のものは残る）
+    store.deleteThread('t')
+    expect(store.question('q1')).toBeUndefined()
+    expect(store.threadQuestions('t')).toEqual([])
+    expect(store.question('q2')).toMatchObject({ body: '外の答え' })
+  })
+
   it('moves a broken database aside and starts over', () => {
     const dir = dataDir()
     writeFileSync(join(dir, 'claude.db'), 'not a database'.repeat(100))

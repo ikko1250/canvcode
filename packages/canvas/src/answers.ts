@@ -25,6 +25,7 @@ import type { IndexEntry } from './nodeIndex.ts'
 // - AI 付箋（meta.ai）は、Claude に添えるもの（contexts）・モデル・effort・届いた答えを持つ
 // - 「続けて聞く」：元の付箋の下に AI 付箋を置き、矢印を引く（元の付箋がこの Canvas になければ、渡された所に置く）。
 //   置いた付箋には、前の質問と答えの写し（turns）を添える。元の付箋がほかの Canvas にあっても、消えても送れるように
+// - 会話の答え（会話のタブの「付箋に切り出す」）も、写しを添えた札（kind: 'chat'）にする。続けて聞くと、写しを引き継ぐ
 // - 「Canvasに残す」：答えの本文を、書式付きのテキスト 1 つにして置く（付箋の Markdown で読むので、見出し・太字・箇条書きが残る）
 // Claude に頼むのは画面（apps/web/src/claude/answer.ts）。ここは Editor の上で読む・書く・置くだけ
 
@@ -51,10 +52,13 @@ export interface AiAnswer {
 }
 
 // AI 付箋に添えるもの。answer は前の答え（続き。turns は「続けて聞く」を押したときの写し）、
-// canvas は選んだ所（送るときに ref にする。ref は 3 日で消えるので、範囲を持っておく）
+// canvas は選んだ所（送るときに ref にする。ref は 3 日で消えるので、範囲を持っておく）、
+// chat は会話の答え（会話のタブの「付箋に切り出す」。turns は、切り出したときの頼んだ文と答えの写し。docs/claude-chat-tab-plan.md の 5）。
+// 会話の質問（会話に入れずに聞いたもの）の「続けて聞く」も chat にする（jobId の代わりに questionId。会話の外で聞いたものは threadId もない）
 export type AiContext =
   | { kind: 'answer'; noteId: string; canvasId: string; label: string; turns: PreviousTurn[] }
   | { kind: 'canvas'; label: string; target: CanvasRefTarget }
+  | { kind: 'chat'; threadId?: string; jobId?: string; questionId?: string; label: string; turns: PreviousTurn[] }
 
 export interface AiNoteMeta {
   contexts: AiContext[]
@@ -75,8 +79,9 @@ export const ANSWER_TEXT_GAP = 64
 // Canvas に残す答えのテキストの幅と文字の大きさ
 export const ANSWER_TEXT_WIDTH = 480
 export const ANSWER_TEXT_FONT_SIZE = 14
-// 前の答えの札の名前（質問の 1 行目）の長さ
+// 前の答えの札の名前（質問の 1 行目）の長さと、会話の答えの札の名前に入れる会話の題の長さ
 const CONTEXT_LABEL_LENGTH = 30
+const CHAT_TITLE_LENGTH = 20
 // 関連する付箋の候補の数と、1 枚の文字の長さ（サーバーの上限と同じ）
 export const ANSWER_CANDIDATES = 30
 export const ANSWER_CANDIDATE_LENGTH = 200
@@ -152,9 +157,36 @@ export function setAiAnswer(editor: Editor, noteId: string, answer: AiAnswer, la
   return true
 }
 
-// 前の答え（続き）の札に添えた、前の質問と答え（古い方から）。札がなければ空
+// 前の答え（続き）・会話の答えの札に添えた、前の質問と答え（古い方から）。札がなければ空。
+// 両方あれば（ふつうはない）、会話の答えを先にして、上限に収める
 export function previousTurnsOf(meta: AiNoteMeta | null): PreviousTurn[] {
-  return meta?.contexts.find((context) => context.kind === 'answer')?.turns ?? []
+  const contexts = meta?.contexts ?? []
+  const chat = contexts.find((context) => context.kind === 'chat')?.turns ?? []
+  const answer = contexts.find((context) => context.kind === 'answer')?.turns ?? []
+  return chat.length > 0 && answer.length > 0 ? fitTurns([...chat, ...answer]) : chat.length > 0 ? chat : answer
+}
+
+// 会話の答えの札（会話のタブの「付箋に切り出す」・会話の質問の「続けて聞く」）。title は会話の題、question と answer は頼んだ文と答え（Markdown）、
+// previous はその前の質問と答え（会話の質問に添えた前の答え）。名前は「会話「題」の答え」（会話がなければ「「質問」の答え」）、
+// 写しは FOLLOW_UP_TURNS 個・FOLLOW_UP_LENGTH 文字に収める
+export function chatContext(chat: {
+  threadId?: string
+  jobId?: string
+  questionId?: string
+  title?: string
+  question: string
+  answer: string
+  previous?: readonly PreviousTurn[]
+}): Extract<AiContext, { kind: 'chat' }> {
+  const title = chat.title?.replace(/\s+/g, ' ').trim()
+  return {
+    kind: 'chat',
+    ...(chat.threadId ? { threadId: chat.threadId } : {}),
+    ...(chat.jobId ? { jobId: chat.jobId } : {}),
+    ...(chat.questionId ? { questionId: chat.questionId } : {}),
+    label: title ? `会話「${clip(title, CHAT_TITLE_LENGTH)}」の答え` : `「${firstLine(chat.question, CONTEXT_LABEL_LENGTH)}」の答え`,
+    turns: fitTurns([...(chat.previous ?? []), { question: chat.question, answer: chat.answer }]),
+  }
 }
 
 // 「続けて聞く」で、続きの付箋に添える札。元の付箋（noteId。canvasId はその Canvas）の前の答えの札の写しに、元の付箋の質問と答えを足す。
@@ -315,13 +347,21 @@ function contextOf(value: unknown): AiContext[] {
     return [{ kind: 'canvas', label, target: context.target as CanvasRefTarget }]
   }
   if (context.kind === 'answer' && typeof context.noteId === 'string' && typeof context.canvasId === 'string') {
-    const turns = (Array.isArray(context.turns) ? context.turns : []).flatMap((turn): PreviousTurn[] => {
-      const { question, answer } = (typeof turn === 'object' && turn !== null ? turn : {}) as Record<string, unknown>
-      return typeof question === 'string' && typeof answer === 'string' ? [{ question, answer }] : []
-    })
+    const turns = turnsOf(context.turns)
     return [{ kind: 'answer', noteId: context.noteId, canvasId: context.canvasId, label, turns }]
   }
+  if (context.kind === 'chat') {
+    const id = (key: string) => (typeof context[key] === 'string' ? { [key]: context[key] as string } : {})
+    return [{ kind: 'chat', ...id('threadId'), ...id('jobId'), ...id('questionId'), label, turns: turnsOf(context.turns) }]
+  }
   return []
+}
+
+function turnsOf(value: unknown): PreviousTurn[] {
+  return (Array.isArray(value) ? value : []).flatMap((turn): PreviousTurn[] => {
+    const { question, answer } = (typeof turn === 'object' && turn !== null ? turn : {}) as Record<string, unknown>
+    return typeof question === 'string' && typeof answer === 'string' ? [{ question, answer }] : []
+  })
 }
 
 function answerOf(value: unknown): AiAnswer | null {

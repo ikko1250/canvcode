@@ -1,20 +1,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { normalizeRefId } from '@canvcode/core'
-import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
+import { JobError, type ClaudeJobs, type ImportedQuestion, type StartRequest } from './jobs.ts'
 import { isEffortLevel, isModelName } from './models.ts'
 import type { RunningQuestions } from './questions.ts'
 
 // 画面から Claude Code に頼む API（claude/jobs.ts）。
 // - GET /api/claude/threads：会話の一覧（最後に動いたものから）{ threads }
 // - GET /api/claude/threads/<id>：会話とそのジョブ（出来事も含む）{ thread, jobs }
-// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼かバックグラウンドの作業があれば 409）
+// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼かバックグラウンドの作業があれば 409。その会話から聞いている質問は止める）
 // - POST /api/claude/threads/<id>/stop：会話のプロセスごと止める（今のターンもバックグラウンドの作業も）。204
 // - POST /api/claude/threads/<id>/tasks/<taskId>/stop：バックグラウンドの作業を 1 つ止める。204（もう動いていなければ 404）
 // - POST /api/claude/threads/<id>/permissions/<permissionId> { decision: 'allow' | 'deny' }：画面で待っている問い合わせに答える。204
 //   （もう待っていなければ 404）。content-type は application/json だけ受ける（別のサイトのフォームから送らせないため。415）
 // - GET /api/claude/models：選べるモデルと effort（claude/models.ts の ModelCatalog。MAI-106）。初めは Claude Code に聞くので、少し待たせる
-// - POST /api/claude/jobs { prompt, refId?, canvasId?, threadId?, model?, effort? }：頼む（threadId があれば、その会話の続き。
-//   model・effort がなければ既定）。201 { job }
+// - POST /api/claude/jobs { prompt, refId?, refLabel?, canvasId?, threadId?, model?, effort?, imports? }：頼む（threadId があれば、その会話の続き。
+//   model・effort がなければ既定。refLabel は添えた所の名前で、画面に出すだけ。imports は取り込む付箋の質問と答え
+//   { label, question, answer, noteId?, canvasId?, questionId? } を 1 つまで）。201 { job }
+// - GET /api/claude/threads/<id> の { thread, jobs, questions }：questions は、その会話の質問（会話に入れずに聞いたもの。store.ts の ChatQuestion）
 // - GET /api/claude/jobs/<id>：1 つのジョブ
 // - POST /api/claude/jobs/<id>/cancel：止める（そのターンだけ。バックグラウンドの作業は残る）
 // - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running, questions }（running は動いているジョブ、
@@ -28,6 +30,15 @@ import type { RunningQuestions } from './questions.ts'
 
 const PREFIX = '/api/claude'
 const MAX_BODY = 64 * 1024
+// 添えた所の名前の長さ（文字）
+export const MAX_REF_LABEL_LENGTH = 40
+// 取り込む付箋の質問と答え：数、質問と答えの長さ（文字。答えは付箋の答えの上限と同じ。頼んだ文の上限とは別に数える）、名前の長さ
+export const MAX_IMPORTS = 1
+export const MAX_IMPORT_QUESTION_LENGTH = 6_000
+export const MAX_IMPORT_ANSWER_LENGTH = 12_000
+const MAX_IMPORT_LABEL_LENGTH = 60
+// 頼む本文の上限（バイト）。頼んだ文（20000 文字）と取り込む質問と答え（18000 文字）が上限いっぱいでも、日本語（1 字 3 バイト）で収まるように
+const START_MAX_BODY = 192 * 1024
 // 経路の途中（Tailscale Serve など）で、黙っている接続を切られないように送る
 const HEARTBEAT_MS = 25_000
 // バックグラウンドの作業の id（Claude Code の task_id）
@@ -91,6 +102,8 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
     } else if (req.method === 'DELETE') {
       jobs.deleteThread(threadId).then(
         () => {
+          // その会話から聞いている質問（会話の質問）も止める（答えを書く行は、会話と一緒に消えている）
+          questions?.cancelThread(threadId)
           res.writeHead(204)
           res.end()
         },
@@ -130,7 +143,7 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
 
 async function startJob(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJobs): Promise<void> {
   try {
-    const job = jobs.start(parseStart(await readJson(req)))
+    const job = jobs.start(parseStart(await readJson(req, START_MAX_BODY)))
     sendJson(res, 201, { job })
   } catch (error) {
     sendError(res, error)
@@ -154,7 +167,7 @@ async function answerPermission(req: IncomingMessage, res: ServerResponse, jobs:
 
 export function parseStart(body: unknown): StartRequest {
   if (typeof body !== 'object' || body === null) throw new JobError(400, 'invalid body')
-  const { prompt, refId, canvasId, threadId, model, effort } = body as Record<string, unknown>
+  const { prompt, refId, refLabel, canvasId, threadId, model, effort, imports } = body as Record<string, unknown>
   if (typeof prompt !== 'string') throw new JobError(400, 'prompt is required')
   if (model !== undefined && model !== null && model !== '' && !isModelName(model)) throw new JobError(400, 'invalid model')
   if (effort !== undefined && effort !== null && effort !== '' && !isEffortLevel(effort)) throw new JobError(400, 'invalid effort')
@@ -168,14 +181,46 @@ export function parseStart(body: unknown): StartRequest {
   if (normalized === null) throw new JobError(400, 'invalid refId')
   const canvas = optional(canvasId, 'canvasId')
   const thread = optional(threadId, 'threadId')
+  // 添えた所の名前は、1 行にして MAX_REF_LABEL_LENGTH 文字で切る（画面に出すだけなので、長くても断らない。文字でなければ 400）
+  if (refLabel !== undefined && refLabel !== null && typeof refLabel !== 'string') throw new JobError(400, 'invalid refLabel')
+  const label = typeof refLabel === 'string' ? refLabel.replace(/\s+/g, ' ').trim() : undefined
+  const name = label && Array.from(label).length > MAX_REF_LABEL_LENGTH ? `${Array.from(label).slice(0, MAX_REF_LABEL_LENGTH - 1).join('')}…` : label
+  const imported = parseImports(imports)
   return {
     prompt,
     ...(normalized ? { refId: normalized } : {}),
+    ...(normalized && name ? { refLabel: name } : {}),
+    ...(imported.length > 0 ? { imports: imported } : {}),
     ...(canvas ? { canvasId: canvas } : {}),
     ...(thread ? { threadId: thread } : {}),
     ...(isModelName(model) ? { model } : {}),
     ...(isEffortLevel(effort) ? { effort } : {}),
   }
+}
+
+// 取り込む付箋の質問と答え（MAX_IMPORTS まで）。質問と答えが長すぎれば 400（答えは付箋の答えの上限まで）。名前は 1 行にして切る
+function parseImports(value: unknown): ImportedQuestion[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value) || value.length > MAX_IMPORTS) throw new JobError(400, `invalid imports（${MAX_IMPORTS} つまで）`)
+  return value.map((item): ImportedQuestion => {
+    const { label, question, answer, noteId, canvasId, questionId } = (typeof item === 'object' && item !== null ? item : {}) as Record<string, unknown>
+    if (typeof question !== 'string' || !question.trim() || typeof answer !== 'string' || !answer.trim()) throw new JobError(400, 'invalid imports')
+    if (question.length > MAX_IMPORT_QUESTION_LENGTH) throw new JobError(400, `取り込む質問が長すぎます（${MAX_IMPORT_QUESTION_LENGTH} 文字まで）`)
+    if (answer.length > MAX_IMPORT_ANSWER_LENGTH) throw new JobError(400, `取り込む答えが長すぎます（${MAX_IMPORT_ANSWER_LENGTH} 文字まで）`)
+    if (noteId !== undefined && (typeof noteId !== 'string' || !/^node:[A-Za-z0-9_-]{1,64}$/.test(noteId))) throw new JobError(400, 'invalid imports')
+    if (canvasId !== undefined && (typeof canvasId !== 'string' || !/^canvas:[A-Za-z0-9_-]{1,64}$/.test(canvasId))) throw new JobError(400, 'invalid imports')
+    if (questionId !== undefined && (typeof questionId !== 'string' || !/^[0-9a-f-]{36}$/.test(questionId))) throw new JobError(400, 'invalid imports')
+    const line = (typeof label === 'string' ? label : '').replace(/\s+/g, ' ').trim()
+    const chars = Array.from(line)
+    return {
+      label: (chars.length > MAX_IMPORT_LABEL_LENGTH ? `${chars.slice(0, MAX_IMPORT_LABEL_LENGTH - 1).join('')}…` : line) || '（質問）',
+      question: question.trim(),
+      answer: answer.trim(),
+      ...(noteId !== undefined ? { noteId } : {}),
+      ...(canvasId !== undefined ? { canvasId } : {}),
+      ...(questionId !== undefined ? { questionId } : {}),
+    }
+  })
 }
 
 function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJobs, questions: RunningQuestions | null): void {

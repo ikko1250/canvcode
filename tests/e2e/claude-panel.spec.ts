@@ -149,8 +149,32 @@ test('keys pressed in the panel do not reach the canvas shortcuts', async ({ pag
   await page.locator('.claude-log').click({ position: { x: 5, y: 5 } })
   await page.keyboard.press('ControlOrMeta+a')
   expect(await selectedIds(page)).toEqual([id])
-  // 改行の数はブラウザで違う
-  expect(await textSelection(page)).toMatch(/^question\s+Answer from Claude\s+完了$/)
+  // 改行の数はブラウザで違う。答えの下の操作（コピー・モデルの札）も入る
+  expect(await textSelection(page)).toMatch(/^question\s+Answer from Claude\s/)
+})
+
+test('the focus ring of the prompt box goes around the whole composer card, and 質問 mode thickens its border (claude-chat-tab-plan 4)', async ({ page }) => {
+  await openApp(page)
+  const ring = (selector: string) =>
+    page.locator(selector).evaluate((el) => {
+      const style = getComputedStyle(el)
+      return { outline: `${style.outlineStyle} ${style.outlineWidth}`, border: `${style.borderTopWidth} ${style.borderTopColor}` }
+    })
+  await promptBox(page).click()
+  // 文の欄そのものには出さず、札・ボタンと一緒に囲む外側に、DADS のフォーカスの枠を出す
+  expect((await ring('.claude-compose textarea')).outline).toMatch(/^none /)
+  expect((await ring('.claude-compose')).outline).toBe('solid 4px')
+  const chat = await ring('.claude-compose')
+  // 「質問」にすると、枠が主な色の 2px になる（会話に入らないことが分かるように）
+  await page.getByRole('radio', { name: '質問' }).click()
+  await promptBox(page).click()
+  const question = await ring('.claude-compose')
+  expect(chat.border).toMatch(/^1px /)
+  expect(question.border).toMatch(/^2px /)
+  expect(question.border).not.toBe(chat.border.replace(/^1px/, '2px'))
+  // フォーカスを外すと、枠は消える
+  await page.locator('.claude-log').click({ position: { x: 5, y: 5 } })
+  expect((await ring('.claude-compose')).outline).toMatch(/^none /)
 })
 
 test('arrow keys move the caret in the prompt box without moving the canvas node', async ({ page }) => {
@@ -218,13 +242,23 @@ test('lists background tasks, stops one or all of them, and shows the turn Claud
   // 作業が終わって Claude が続けたジョブは、吹き出しでなく小さく出る
   await expect(page.locator('.claude-wake')).toHaveText('バックグラウンドの作業「見張り」が終わりました。Claude が続けました')
   await expect(page.locator('.claude-prompt')).toHaveCount(1)
+  // 作業の知らせは「▸ 作業 1件」にたたみ、押すと開く
+  await expect(page.locator('.claude-tools-toggle')).toHaveText('▸ 作業 1件')
+  await expect(page.locator('.claude-tool.task')).toHaveCount(0)
+  await page.locator('.claude-tools-toggle').click()
   await expect(page.locator('.claude-tool.task')).toHaveText('終わりました：見張り')
 
-  // 作業の一覧。作業があるあいだは、消せないが送れる
+  // 作業は「⚙ 動作中の作業 2件 ▾」の 1 行。押すと一覧。作業があるあいだは、消せないが送れる
+  await expect(page.locator('.claude-tasks-title')).toHaveText('⚙ 動作中の作業 2件')
+  await expect(page.locator('.claude-task-name')).toHaveCount(0)
+  await page.locator('.claude-tasks-toggle').click()
   await expect(page.locator('.claude-task-name')).toHaveText(['サブエージェント：論文を探す', 'コマンド：ping 90 times'])
-  await expect(page.locator('.claude-tasks-header')).toContainText('バックグラウンドで動いている作業（2）')
   await expect(page.locator('.claude-toggle')).toHaveClass(/running/)
-  await expect(page.getByRole('button', { name: '削除' })).toBeDisabled()
+  await page.getByRole('button', { name: 'この会話のメニュー' }).click()
+  await expect(page.getByRole('menuitem', { name: 'この会話を消す' })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menuitem')).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
   await page.locator('.claude-compose textarea').fill('その間に')
   await expect(page.locator('.claude-send')).toBeEnabled()
 
@@ -284,8 +318,9 @@ test('shows the questions waiting for an answer, answers them with JSON, and mar
     return route.fulfill({ status: 204 })
   })
 
+  // 見出しの帯は出さず、数は読み上げの名前に入れる（1 つずつ警告の色のカード）
   const list = page.locator('.claude-permissions')
-  await expect(list.locator('.claude-permissions-header')).toHaveText('許可を待っています（2）')
+  await expect(page.getByRole('region', { name: '許可を待っています（2）' })).toBeVisible()
   const items = list.locator('.claude-permission')
   // コマンドは切らずに全部出す。説明・サブエージェント・わけ・残りの時間
   await expect(items.nth(0).locator('.claude-permission-detail')).toHaveText(build)
@@ -298,15 +333,19 @@ test('shows the questions waiting for an answer, answers them with JSON, and mar
   // 許可のボタンにはフォーカスを置かない（1 つのキーで許可させない）
   expect(await page.evaluate(() => document.activeElement?.classList.contains('claude-allow') ?? false)).toBe(false)
   // ジョブの中の出来事と、待っているあいだの言葉。会話の一覧と Claude のボタンにも印
+  // 動いているジョブの最後のまとまりは、たたんでも最後の 1 行を出す
   await expect(page.locator('.claude-tool.ask')).toContainText('許可を求めました：')
   await expect(page.locator('.claude-status.running')).toContainText('許可を待っています…')
-  await expect(page.locator('.claude-thread-select option[value="t1"]')).toHaveText(/・許可待ち$/)
+  await page.locator('.claude-thread-button').click()
+  await expect(page.getByRole('option', { name: /hello/ })).toContainText('許可待ち')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect(page.locator('.claude-toggle')).toHaveClass(/waiting/)
 
   await items.nth(0).getByRole('button', { name: '許可する' }).click()
   await expect.poll(() => answers).toEqual([{ url: '/api/claude/threads/t1/permissions/p1', type: 'application/json', body: '{"decision":"allow"}' }])
   // SSE で一覧が変わると、答えたものが消える
-  await expect(list.locator('.claude-permissions-header')).toHaveText('許可を待っています（1）')
+  await expect(page.getByRole('region', { name: '許可を待っています（1）' })).toBeVisible()
   await items.nth(0).getByRole('button', { name: '断る' }).click()
   await expect.poll(() => answers.map((answer) => answer.body)).toEqual(['{"decision":"allow"}', '{"decision":"deny"}'])
   await expect(items.nth(0).getByRole('button', { name: '断る' })).toBeDisabled()
@@ -340,6 +379,9 @@ test('shows how each question ended in the job, and one left unanswered when the
       },
     ],
   })
+  // 許可の出来事は「▸ 動かした 3件（1 件は断った）」にたたむ（誤りは、たたまない）
+  await expect(page.locator('.claude-tools-toggle').last()).toHaveText('▸ 動かした 3件（1 件は断った）')
+  await page.locator('.claude-tools-toggle').last().click()
   await expect(page.locator('.claude-tool.answer')).toHaveText(['許可しました', '時間切れで断りました'])
   await expect(page.locator('.claude-tool.ask')).toHaveText([
     '許可を求めました：make',
@@ -561,10 +603,12 @@ test('chooses the model and effort next to the send button, per thread (MAI-106)
   await page.getByRole('button', { name: '送る' }).click()
   await expect.poll(() => sent.length).toBe(1)
   expect(sent[0]).toMatchObject({ prompt: '続き', threadId: 't1', model: 'opus', effort: 'xhigh' })
-  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45・Opus 5.5 · XHigh）')
+  // 答えの右に、頼んだモデルと effort の札。かかった時間と費用はツールチップ
+  await expect(page.locator('.claude-answer-model').last()).toHaveText('Opus 5.5 · XHigh')
+  await expect(page.locator('.claude-answer-model').last()).toHaveAttribute('title', '1.2 秒・$0.45')
 
   // 新しい会話は、最後に選んだ値から始める（ブラウザに覚える）
-  await page.getByRole('button', { name: '新規' }).click()
+  await page.getByRole('button', { name: '新しい会話' }).click()
   await expect(button).toHaveText('Opus 5.5 · XHigh')
   await button.click()
   // 「既定に戻す」で、モデルも effort も既定に（既定なら出さない）
@@ -579,7 +623,8 @@ test('chooses the model and effort next to the send button, per thread (MAI-106)
   await expect.poll(() => sent.length).toBe(2)
   expect(sent[1]).not.toHaveProperty('model')
   expect(sent[1]).not.toHaveProperty('effort')
-  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45）')
+  await expect(page.locator('.claude-answer-model').last()).toHaveText('既定（Opus 5.5）')
+  await expect(page.locator('.claude-answer-model').last()).toHaveAttribute('title', '1.2 秒・$0.45')
 })
 
 test('restores the model and effort of a thread when it is opened again (MAI-106)', async ({ page }) => {
@@ -595,10 +640,12 @@ test('restores the model and effort of a thread when it is opened again (MAI-106
   await page.route('**/api/claude/threads/t2', (route) => route.fulfill({ json: { jobs: [] } }))
   await page.reload()
   await openChat(page)
-  await expect(page.locator('.claude-thread-select option', { hasText: 'older' })).toHaveCount(1)
-  await page.locator('.claude-thread-select').selectOption('t2')
+  await page.locator('.claude-thread-button').click()
+  await page.getByRole('option', { name: 'older' }).click()
+  await expect(page.locator('.claude-thread-name')).toHaveText('older')
   await expect(page.locator('.claude-model-button')).toHaveText('Opus 4.6 · Low')
-  await page.locator('.claude-thread-select').selectOption('t1')
+  await page.locator('.claude-thread-button').click()
+  await page.getByRole('option', { name: 'hello' }).click()
   // 既定で動くモデルがわからなければ「既定」だけ
   await expect(page.locator('.claude-model-button')).toHaveText('既定')
   // 一覧を Claude Code に聞けなかったときは、そう書く。既定で動くモデルの段がわからなければ、つまみを出さない
@@ -692,7 +739,7 @@ test('moves the panel between the canvas and the file editor without closing it 
   await expect(promptBox(page)).toHaveValue('kept')
 
   // 「選んでいる所を添える」と Ctrl+Alt+Enter は、エディタで選んでいる行を添える（エディタは閉じない）
-  await page.getByRole('button', { name: '＋ 選んでいる所を添える' }).click()
+  await page.getByRole('button', { name: '選んでいる所を添える' }).click()
   await expect(page.locator('.claude-attachment')).toContainText('Input test の 1〜1 行')
   await page.locator('.claude-attachment button').click()
   await page.locator('.file-editor .cm-content').click()
@@ -735,7 +782,7 @@ test('keeps the scroll of the conversation, and the keys of the panel, when the 
   await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(300)
 
   // パネルの中のボタンの上の Ctrl+Enter では、エディタを閉じない
-  await page.getByRole('button', { name: '新規' }).focus()
+  await page.getByRole('button', { name: '新しい会話' }).focus()
   await page.keyboard.press('ControlOrMeta+Enter')
   await expect(page.locator('.file-editor')).toBeVisible()
 
@@ -842,6 +889,8 @@ test('keeps the panel within the right half of the file editor when the conversa
   await openFileEditor(page)
   await page.getByRole('button', { name: 'Claude に頼む', exact: true }).click()
   await expect(panel(page)).toBeVisible()
+  // たたんだ作業を開く
+  await page.locator('.claude-tools-toggle').click()
   await expect(page.locator('.claude-tool-detail')).toHaveText(command)
 
   // パネルは右半分に収まる
@@ -900,4 +949,184 @@ test('shows the whole model popover when the right half of the file editor is na
       y: popoverBox.y + popoverBox.height / 2,
     }),
   ).toBe(true)
+})
+
+test('cuts an answer of the chat into an AI note, sends the chat answer with it, and the chip goes back to the job (claude-chat-tab-plan 5)', async ({ page }) => {
+  await openApp(page)
+  const asked: Record<string, unknown>[] = []
+  await page.route('**/api/claude/answer', (route) => {
+    asked.push(route.request().postDataJSON() as Record<string, unknown>)
+    return route.fulfill({ json: { body: '続きの答え', related: [], model: 'claude-sonnet-5-5' } })
+  })
+  const before = await page.evaluate(() => (window as any).canvcode.editor.index.allIds().length)
+
+  // 答えにマウスを乗せると「📌 付箋に切り出す」「コピー」が出る
+  const actions = page.locator('.claude-answer-actions').first()
+  await expect(actions).toHaveCSS('opacity', '0')
+  await page.locator('.claude-job').first().hover()
+  await expect(actions).toHaveCSS('opacity', '1')
+  await actions.getByRole('button', { name: '📌 付箋に切り出す' }).click()
+
+  // 画面の真ん中に、会話の札を添えた AI 付箋を置き、文字の編集を始める（会話には何も足さない）
+  const placed = await page.evaluate((count) => {
+    const editor = (window as any).canvcode.editor
+    const ids: string[] = editor.index.allIds()
+    if (ids.length !== count + 1) return null
+    const id = ids.find((id) => editor.getNode(id)?.meta?.ai)
+    return { id, ai: editor.getNode(id).meta.ai, editing: editor.session.get().editingId }
+  }, before)
+  expect(placed).toMatchObject({
+    ai: { contexts: [{ kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「hello」の答え', turns: [{ question: 'question', answer: 'Answer from Claude' }] }] },
+  })
+  expect(placed!.editing).toBe(placed!.id)
+  await expect(page.locator('.claude-prompt')).toHaveCount(1)
+  await expect(page.locator('.ai-note-chip.chat')).toContainText('💬 会話「hello」の答え')
+
+  // 書いて Ctrl+Enter で送ると、前の答えとして会話の答えを渡す
+  await page.keyboard.type('つまりどういうこと？')
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect.poll(() => asked.length).toBe(1)
+  expect(asked[0]).toMatchObject({ question: 'つまりどういうこと？', previous: [{ question: 'question', answer: 'Answer from Claude' }] })
+
+  // 質問のタブに移ってから、札の ↗ で会話のそのジョブへ戻る（少しのあいだ色が付く）
+  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await expect(panel(page)).toBeHidden()
+  await page.locator('.ai-note-chip.chat').getByRole('button', { name: '↗ 会話へ' }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(page.locator('.claude-job[data-job-id="j1"]')).toHaveClass(/highlighted/)
+  await expect(page.locator('.claude-job[data-job-id="j1"]')).not.toHaveClass(/highlighted/, { timeout: 5000 })
+})
+
+// openApp で置いた付箋を、答えを持つ AI 付箋にする。付箋の id を返す
+async function answerTheNote(page: Page, question: string, body: string) {
+  return page.evaluate(
+    ({ question, body }) => {
+      const editor = (window as any).canvcode.editor
+      const id = editor.index.allIds().find((id: string) => editor.getNode(id)?.type === 'note')
+      editor.transact('answer', (tx: any) => {
+        const node = editor.getNode(id)
+        tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [], answer: { body, related: [], model: 'claude-sonnet-5-5', question, answeredAt: Date.now() } } } })
+      })
+      return id as string
+    },
+    { question, body },
+  )
+}
+
+test('continues a question asked with a note in the chat: the chip waits above the prompt box and goes with the next prompt (claude-chat-tab-plan 6)', async ({ page }) => {
+  await openApp(page)
+  const noteId = await answerTheNote(page, 'コンテキストとは？', '答えの本文')
+  const sent: Record<string, unknown>[] = []
+  await page.route('**/api/claude/jobs', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    sent.push(body)
+    const job = { id: 'j2', threadId: 't1', prompt: body.prompt, imports: body.imports, status: 'done', createdAt: Date.now(), eventCount: 1, events: [{ kind: 'text', text: 'わかりました' }] }
+    await route.fulfill({ status: 201, json: { job } })
+  })
+
+  // 質問のタブで答えを開き、「会話で続ける」→「いまの会話「hello」に入れる」
+  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await answerPanel(page).locator('.question-row-main', { hasText: 'コンテキストとは？' }).click()
+  await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
+  const menu = answerPanel(page).getByRole('menu')
+  await expect(menu.getByRole('menuitem')).toHaveText(['いまの会話「hello」に入れる', '新しい会話にする'])
+  // Esc はメニューだけを閉じる
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await expect(answerPanel(page)).toBeVisible()
+  await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
+  await menu.getByRole('menuitem', { name: 'いまの会話「hello」に入れる' }).click()
+
+  // 会話のタブに移り、入力欄の上に札を置いて、入力欄にフォーカスする（取り込むだけでは送らない）
+  await expect(panel(page)).toBeVisible()
+  await expect(page.locator('.claude-import-chip')).toHaveText(/付箋の質問を取り込みます「コンテキストとは？」/)
+  await expect(promptBox(page)).toBeFocused()
+  await expect(page.locator('.claude-send')).toBeDisabled()
+  expect(sent).toEqual([])
+
+  // 次に送る文と一緒に渡す。頼んだ文（吹き出し）はユーザーが書いた文だけで、その上にカードが出る
+  await page.keyboard.type('もっと詳しく')
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect.poll(() => sent.length).toBe(1)
+  expect(sent[0]).toMatchObject({
+    prompt: 'もっと詳しく',
+    threadId: 't1',
+    imports: [{ label: 'コンテキストとは？', question: 'コンテキストとは？', answer: '答えの本文', noteId, canvasId: 'canvas:input-test' }],
+  })
+  await expect(page.locator('.claude-import-chip')).toHaveCount(0)
+  const card = page.locator('.claude-job[data-job-id="j2"] .claude-import-card')
+  await expect(card).toContainText('付箋の質問を取り込みました「コンテキストとは？」とその答え')
+  await expect(page.locator('.claude-job[data-job-id="j2"] .claude-prompt-text')).toHaveText('もっと詳しく')
+
+  // 閉じて開き直しても、使った札は戻らない（もう一度取り込まない）
+  await page.locator('.claude-log').click({ position: { x: 5, y: 5 } })
+  await page.keyboard.press('Escape')
+  await expect(panel(page)).toHaveCount(0)
+  await openChat(page)
+  await expect(page.locator('.claude-job[data-job-id="j2"]')).toBeVisible()
+  await expect(page.locator('.claude-import-chip')).toHaveCount(0)
+
+  // カードの ↗ で、付箋の横に答えを開く
+  await card.getByRole('button', { name: '↗ 付箋へ' }).click()
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  await expect(page.locator('.answer-popover')).toContainText('答えの本文')
+})
+
+test('asks one question from the prompt box without adding it to the chat, and shows it as a card and in the questions tab (claude-chat-tab-plan 7)', async ({ page }) => {
+  await openApp(page)
+  const id = '00000000-0000-4000-8000-0000000000a1'
+  const asked: Record<string, unknown>[] = []
+  const now = Date.now()
+  const stored = { id, threadId: 't1', question: 'コンテキストとは？', previous: [{ question: 'question', answer: 'Answer from Claude' }], body: '**会話の外**の答え', model: 'claude-sonnet-5-5', effort: 'medium', status: 'done', createdAt: now + 1000, answeredAt: now + 2000 }
+  let answered = false
+  await page.route('**/api/claude/answer', (route) => {
+    asked.push(route.request().postDataJSON() as Record<string, unknown>)
+    answered = true
+    const lines = [{ type: 'start', id }, { type: 'answer', answer: { body: stored.body, related: [], model: stored.model } }]
+    return route.fulfill({ body: lines.map((line) => JSON.stringify(line)).join('\n') + '\n', contentType: 'application/x-ndjson' })
+  })
+  await page.route('**/api/claude/threads/t1', (route) =>
+    route.fulfill({ json: { jobs: [{ id: 'j1', threadId: 't1', prompt: 'question', status: 'done', createdAt: now, eventCount: 1, events: [{ kind: 'text', text: 'Answer from Claude' }] }], questions: answered ? [stored] : [] } }),
+  )
+  await page.route(`**/api/claude/questions/chat/${id}`, (route) => route.fulfill({ json: { kind: 'chat', threadTitle: 'hello', ...stored } }))
+  await page.route('**/api/claude/questions?*', (route) => route.fulfill({ json: { questions: [] } }))
+  await page.route('**/api/claude/questions', (route) =>
+    route.fulfill({ json: { questions: answered ? [{ kind: 'chat', id, threadId: 't1', threadTitle: 'hello', question: 'コンテキストとは？', model: stored.model, effort: 'medium', answeredAt: stored.answeredAt }] : [] } }),
+  )
+
+  // 「質問」にすると、入力欄の言い方が変わる
+  const mode = page.getByRole('radiogroup', { name: '送り方' })
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  await mode.getByRole('radio', { name: '質問' }).click()
+  await expect(promptBox(page)).toHaveAttribute('placeholder', 'この 1 つだけ、会話に入れずに聞く…')
+  await promptBox(page).fill('コンテキストとは？')
+  await page.getByRole('button', { name: '送る' }).click()
+
+  // 付箋で聞くのと同じ API に、会話の最後の答えを前の答えとして添えて頼む。送ったら「会話」に戻す
+  await expect.poll(() => asked.length).toBe(1)
+  expect(asked[0]).toMatchObject({ question: 'コンテキストとは？', previous: [{ question: 'question', answer: 'Answer from Claude' }], source: { kind: 'chat', threadId: 't1', label: 'コンテキストとは？' } })
+  expect(asked[0]).not.toHaveProperty('candidates')
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  await expect(promptBox(page)).toHaveValue('')
+
+  // 会話の欄に、点線のカードが出る（会話のジョブは増えない）
+  const card = page.locator(`.claude-side-question[data-question-id="${id}"]`)
+  await expect(card).toContainText('別枠の質問（会話には入れていない）')
+  await expect(card).toContainText('「コンテキストとは？」')
+  await expect(page.locator('.claude-prompt')).toHaveCount(1)
+
+  // 「答えを見る →」で質問のタブを開き、その答えを出す
+  await card.getByRole('button', { name: '答えを見る →' }).click()
+  await expect(answerPanel(page)).toBeVisible()
+  await expect(answerPanel(page).locator('.question-detail-title')).toHaveText('「コンテキストとは？」')
+  await expect(answerPanel(page).locator('.question-detail-meta')).toContainText('会話「hello」')
+  await expect(answerPanel(page).locator('.answer-view-body strong')).toHaveText('会話の外')
+  // 一覧にも、会話の質問として出る
+  await answerPanel(page).getByRole('button', { name: '← 一覧' }).click()
+  await expect(answerPanel(page).locator('.question-row.chat')).toContainText('会話「hello」')
+  await answerPanel(page).locator('.question-row.chat .question-row-main').click()
+  // 「↗ 会話へ移動」で、会話のタブのそのカードへ戻る
+  await answerPanel(page).getByRole('button', { name: '↗ 会話へ移動' }).click()
+  await expect(panel(page)).toBeVisible()
+  await expect(card).toHaveClass(/highlighted/)
 })

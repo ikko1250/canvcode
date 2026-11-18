@@ -4,7 +4,7 @@ import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
 import { isEffortLevel, isModelName } from './models.ts'
 import { STRUCTURED_OUTPUT_TOOL, type ClaudeOnce } from './once.ts'
-import { parseQuestionSource, type QuestionSource, type RunningQuestions } from './questions.ts'
+import { parseQuestionSource, type ChatQuestionStore, type QuestionSource, type RunningQuestions } from './questions.ts'
 
 // キャンバスの AI：付箋で聞き、答えは付箋の横のパネルで見る（docs/canvas-answer-panel-plan.md）。
 // - 質問（付箋の文字。付箋の Markdown）を渡し、答えの本文（Markdown）と、関連する付箋（画面が送った候補の id）を返させる。
@@ -26,9 +26,12 @@ import { parseQuestionSource, type QuestionSource, type RunningQuestions } from 
 // - 続きの質問（答えの「続けて聞く」で置いた付箋）は、前の質問と答え（previous。古い方から 3 つまで）も渡し、踏まえて答えさせる
 // - 質問した人がキャンバスの一部を添えたら（refs）、ref の中身（MCP の resolve_reference と同じ JSON）を読んで、材料として渡す
 // - NDJSON で頼むとき、どの付箋の質問か（source）を添えると、動いている質問の一覧（claude/questions.ts）に載せ、すべてのタブに流す。
-//   最初の行で、その id を返す。答えを渡したら placing にし、画面が付箋に書いたと知らせて（POST /api/claude/questions/<id>/finish）終わる
+//   最初の行で、その id を返す。答えを渡したら placing にし、画面が付箋に書いたと知らせて（POST /api/claude/questions/<id>/finish）終わる。
+//   会話の質問（source が { kind: 'chat', threadId?, label }。docs/claude-chat-tab-plan.md の 7）は、付箋がないので、始めたときに claude.db に書き、
+//   答えを表に書いてから done で終える（placing はない）
 // - POST /api/claude/answer { question, previous?, refs?, candidates?, source?, model?, effort? }：previous の項目は { question, answer }、
-//   refs の項目は { label, refId }、candidates の項目は { id, text }（質問の付箋の近くの付箋）、source は { noteId, canvasId, label }。
+//   refs の項目は { label, refId }、candidates の項目は { id, text }（質問の付箋の近くの付箋）、source は { noteId, canvasId, label }
+//   （kind: 'note' は省ける）か { kind: 'chat', threadId?, label }。
 //   200 { body, related, model }。content-type は application/json だけ受ける（415）。
 //   Accept が application/x-ndjson なら、NDJSON で返す：{type:'start', id}（source を添えたとき）、{type:'step', step} と
 //   Claude の考えている中身 {type:'thinking', text} が続き、最後に {type:'answer', answer} か {type:'error', status, error}
@@ -421,18 +424,25 @@ function parseCandidates(value: unknown): AnswerCandidate[] {
   })
 }
 
-// questions は、動いている質問の一覧（渡さなければ、source を添えても載せない）
-export function handleAnswer(req: IncomingMessage, res: ServerResponse, path: string, writer: AnswerWriter | null, questions: RunningQuestions | null = null): boolean {
+// questions は、動いている質問の一覧（渡さなければ、source を添えても載せない）。chat は、会話の質問の置き場所（claude.db）
+export function handleAnswer(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  writer: AnswerWriter | null,
+  questions: RunningQuestions | null = null,
+  chat: ChatQuestionStore | null = null,
+): boolean {
   if (path !== ANSWER_PATH || !writer) return false
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'method not allowed' })
     return true
   }
-  void respond(req, res, writer, questions)
+  void respond(req, res, writer, questions, chat)
   return true
 }
 
-async function respond(req: IncomingMessage, res: ServerResponse, writer: AnswerWriter, questions: RunningQuestions | null): Promise<void> {
+async function respond(req: IncomingMessage, res: ServerResponse, writer: AnswerWriter, questions: RunningQuestions | null, chat: ChatQuestionStore | null): Promise<void> {
   try {
     const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
     if (type !== 'application/json') throw new JobError(415, 'content-type must be application/json')
@@ -442,7 +452,7 @@ async function respond(req: IncomingMessage, res: ServerResponse, writer: Answer
     res.on('close', () => {
       if (!res.writableFinished) controller.abort()
     })
-    if ((req.headers.accept ?? '').includes('application/x-ndjson')) return await stream(res, writer, request, controller, questions)
+    if ((req.headers.accept ?? '').includes('application/x-ndjson')) return await stream(res, writer, request, controller, questions, chat)
     sendJson(res, 200, await writer.answer(request, { signal: controller.signal }))
   } catch (error) {
     if (res.destroyed || res.headersSent) return
@@ -451,17 +461,44 @@ async function respond(req: IncomingMessage, res: ServerResponse, writer: Answer
 }
 
 // NDJSON で返す：動いている質問の id（source を添えたとき）、進み具合と考えている中身（THINKING_FLUSH_MS ごとにまとめる）、最後に答えか誤り。
-// 動いている質問の一覧にも、同じものを流す
-async function stream(res: ServerResponse, writer: AnswerWriter, request: AnswerRequest, controller: AbortController, questions: RunningQuestions | null): Promise<void> {
+// 動いている質問の一覧にも、同じものを流す。会話の質問は、claude.db にも書く
+async function stream(
+  res: ServerResponse,
+  writer: AnswerWriter,
+  request: AnswerRequest,
+  controller: AbortController,
+  questions: RunningQuestions | null,
+  chat: ChatQuestionStore | null,
+): Promise<void> {
   if (writer.full) throw new JobError(429, `Claude が書いている答えが多すぎます（同時に ${MAX_RUNNING_ANSWERS} つまで）。終わるまで待ってください`)
+  // 会話の質問は、会話がまだあるか確かめる（消した会話には足さない）
+  const asked = request.source?.kind === 'chat' ? request.source : null
+  // （404 は、画面が「このサーバーでは使えません」と読むので 409 にする）
+  if (asked?.threadId && chat && !chat.thread(asked.threadId)) throw new JobError(409, 'その会話はもうありません')
+  const setting = { model: request.model ?? writer.model, effort: request.effort ?? DEFAULT_ANSWER_EFFORT }
+  const id = request.source && questions ? questions.start(request.source, setting, () => controller.abort()) : null
+  // 会話の質問の行（答えを作っている間も、会話の欄と質問のタブに出す）。書けなければ、返し始める前に終える
+  const row = id && asked && chat ? id : null
+  if (row) {
+    try {
+      chat!.insertQuestion({
+        id: row,
+        ...(asked!.threadId ? { threadId: asked!.threadId } : {}),
+        question: request.question,
+        previous: request.previous ?? [],
+        ...setting,
+        status: 'running',
+        createdAt: Date.now(),
+      })
+    } catch (error) {
+      questions!.end(row, 'failed', error instanceof Error ? error.message : String(error))
+      throw error
+    }
+  }
   res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' })
   const send = (message: Record<string, unknown>) => {
     if (!res.destroyed) res.write(`${JSON.stringify(message)}\n`)
   }
-  const id =
-    request.source && questions
-      ? questions.start(request.source, { model: request.model ?? writer.model, effort: request.effort ?? DEFAULT_ANSWER_EFFORT }, () => controller.abort())
-      : null
   if (id) send({ type: 'start', id })
   let pending = ''
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -487,8 +524,11 @@ async function stream(res: ServerResponse, writer: AnswerWriter, request: Answer
   try {
     const answer = await writer.answer(request, { signal: controller.signal, onThinking, onStep })
     flush()
+    // 会話の質問は、答えを表に書いてから終える。付箋の質問は、画面が付箋に書くのを待つ
+    if (row) chat!.finishQuestion(row, { status: 'done', body: answer.body, model: answer.model, answeredAt: Date.now() })
     send({ type: 'answer', answer })
-    if (id) questions!.placing(id, answer.model)
+    if (id && asked) questions!.end(id, 'done')
+    else if (id) questions!.placing(id, answer.model)
   } catch (error) {
     flush()
     if (!(error instanceof JobError)) console.error('a Claude answer failed', error)
@@ -496,6 +536,7 @@ async function stream(res: ServerResponse, writer: AnswerWriter, request: Answer
     const message = error instanceof Error ? error.message : String(error)
     send({ type: 'error', status, error: message })
     // 499 は、やめた（頼んだ画面が切った・ほかのタブで止めた）
+    if (row) chat!.finishQuestion(row, { status: status === 499 ? 'cancelled' : 'failed', ...(status === 499 ? {} : { error: message }), answeredAt: Date.now() })
     if (id) questions!.end(id, status === 499 ? 'cancelled' : 'failed', status === 499 ? undefined : message)
   } finally {
     res.end()

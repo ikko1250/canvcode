@@ -39,8 +39,11 @@ export function AnswerPopover(props: {
   onContinue(): void
   onKeep(): void
   onStop?(): void
+  // 会話で続ける（Claude を使えないときは渡さない）。chatTitle は、いま会話のタブで選んでいる会話の題
+  onChat?(newThread: boolean): void
+  chatTitle?: string | null
 }) {
-  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onSeen, onFocusChange, onRelated, onContinue, onKeep, onStop } = props
+  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onSeen, onFocusChange, onRelated, onContinue, onKeep, onStop, onChat, chatTitle } = props
   const rootRef = useRef<HTMLElement>(null)
   // 付箋（と関連する付箋）が変わったら読み直す
   useNodesVersion(editor)
@@ -133,6 +136,7 @@ export function AnswerPopover(props: {
         onContinue={onContinue}
         onKeep={onKeep}
         {...(onStop ? { onStop } : {})}
+        {...(onChat && answer ? { onChat, chatTitle: chatTitle ?? null } : {})}
       />
     </aside>
   )

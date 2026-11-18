@@ -136,15 +136,14 @@ const plot = new Plotter({ workspace: WORKSPACE, files, ...(process.env.CANVCODE
 const converter = new FileConverter({ files, assets, ...(process.env.CANVCODE_PANDOC ? { pandoc: process.env.CANVCODE_PANDOC } : {}) })
 // AI の編集に使うワークスペース（最初に頼まれたときに作り、しばらく使わなければ捨てる）
 const agent = new AgentHost({ records, sync, files })
-// 画面から頼む Claude Code
-const claude =
-  process.env.CANVCODE_CLAUDE === '0'
-    ? null
-    : new ClaudeJobs({
+// 画面から頼む Claude Code。会話（と会話の質問）は .canvcode/claude.db に残す（再起動しても続けられる）
+const claudeStore = process.env.CANVCODE_CLAUDE === '0' ? null : new ClaudeStore(DATA_DIR)
+const claude = !claudeStore
+  ? null
+  : new ClaudeJobs({
         workspace: WORKSPACE,
         mcpUrl: `http://${HOST}:${PORT}${MCP_PATH}`,
-        // 会話は .canvcode/claude.db に残す（再起動しても続けられる）
-        store: new ClaudeStore(DATA_DIR),
+        store: claudeStore,
         ...(process.env.CANVCODE_CLAUDE_MODEL ? { model: process.env.CANVCODE_CLAUDE_MODEL } : {}),
         ...claudeLimitsFromEnv(process.env),
       })
@@ -270,8 +269,8 @@ const server = createServer(async (req, res) => {
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (handleMemo(req, res, url.pathname, memo)) return
   if (handleLookup(req, res, url.pathname, lookup)) return
-  if (handleAnswer(req, res, url.pathname, answer, questions)) return
-  if (handleQuestions(req, res, url.pathname, questions, answeredNotes)) return
+  if (handleAnswer(req, res, url.pathname, answer, questions, claudeStore)) return
+  if (handleQuestions(req, res, url.pathname, questions, answeredNotes, claudeStore)) return
   if (handleCite(req, res, url.pathname, cite)) return
   if (handleClaude(req, res, url.pathname, claude, questions)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return

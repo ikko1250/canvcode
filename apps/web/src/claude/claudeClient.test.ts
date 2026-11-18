@@ -4,8 +4,10 @@ import {
   ClaudeClient,
   KEPT_FINISHED_QUESTIONS,
   jobsOfThread,
+  questionsOfThread,
   threadAsking,
   threadBusy,
+  type ChatQuestion,
   type ClaudeJob,
   type ClaudeState,
   type PendingPermission,
@@ -40,6 +42,7 @@ const state = (extra: Partial<ClaudeState> = {}): ClaudeState => ({
   threads: [],
   jobs: new Map(),
   loaded: new Set(),
+  chatQuestions: new Map(),
   questions: [],
   finishedQuestions: new Map(),
   ...extra,
@@ -166,6 +169,72 @@ describe('jobsOfThread', () => {
   it('returns the jobs of a thread, oldest first', () => {
     const s = state({ jobs: new Map([['b2', job('b2', { threadId: 'b', createdAt: 4 })], ['a', job('a', { createdAt: 1 })], ['b', job('b', { createdAt: 2 })]]) })
     expect(jobsOfThread(s, 'b').map((j) => j.id)).toEqual(['b', 'b2'])
+  })
+})
+
+describe('questions of a thread (asked from the chat without adding them to it)', () => {
+  const stored = (id: string, extra: Partial<ChatQuestion> = {}): ChatQuestion => ({ id, threadId: 't', question: id, previous: [], status: 'done', createdAt: 0, ...extra })
+
+  it('mixes the stored questions with the running ones of the thread, oldest first', () => {
+    const s = state({
+      chatQuestions: new Map([
+        ['q2', stored('q2', { createdAt: 5 })],
+        ['q1', stored('q1', { createdAt: 1 })],
+        ['other', stored('other', { threadId: 'u' })],
+      ]),
+      questions: [
+        question('q3', { kind: 'chat', threadId: 't', label: '答えを作っている', startedAt: 3 }),
+        // 読み直した後の、まだ動いているもの（stored に q2 がある）は重ねない
+        question('q2', { kind: 'chat', threadId: 't', label: 'q2', startedAt: 5 }),
+        question('note', { startedAt: 2 }),
+      ],
+    })
+    expect(questionsOfThread(s, 't').map((q) => [q.id, q.status])).toEqual([
+      ['q1', 'done'],
+      ['q3', 'running'],
+      ['q2', 'done'],
+    ])
+    // 答えを作っている間に読んだもの（running）は、終わったと届いたら、その終わり方にする
+    const ended = state({ chatQuestions: new Map([['q4', stored('q4', { status: 'running' })]]), finishedQuestions: new Map([['q4', 'cancelled']]) })
+    expect(questionsOfThread(ended, 't')[0]!.status).toBe('cancelled')
+  })
+
+  it('reads the questions with the thread, and reads them again when one of them ends', async () => {
+    const replies = [
+      { jobs: [job('j1', { threadId: 't', status: 'done' })], questions: [stored('q1', { status: 'running' })] },
+      { thread: {}, jobs: [], questions: [stored('q1', { body: '答え' })] },
+    ]
+    const fetch = vi.fn(async () => new Response(JSON.stringify(replies.shift())))
+    vi.stubGlobal('fetch', fetch)
+    const client = Object.create(ClaudeClient.prototype) as ClaudeClient
+    Object.assign(client, { snapshot: state(), loading: new Set(), listeners: new Set() })
+    await client.loadThread('t')
+    expect(client.state.chatQuestions.get('q1')).toMatchObject({ status: 'running' })
+    expect(client.state.loaded.has('t')).toBe(true)
+    await client.reloadQuestions('t')
+    expect(client.state.chatQuestions.get('q1')).toMatchObject({ status: 'done', body: '答え' })
+    expect(fetch.mock.calls.map((call) => (call as unknown[])[0])).toEqual(['/api/claude/threads/t', '/api/claude/threads/t'])
+  })
+
+  it('keeps a finished question from the chat as a placeholder until it is read again, so its card does not vanish', () => {
+    const s = state({ questions: [question('q9', { kind: 'chat', threadId: 't', label: 'まだ読んでいない', startedAt: 7 })] })
+    const next = applyStreamMessage(s, { type: 'question-done', id: 'q9', status: 'failed', error: 'だめ' }).state
+    expect(questionsOfThread(next, 't')).toEqual([expect.objectContaining({ id: 'q9', question: 'まだ読んでいない', status: 'failed', error: 'だめ', createdAt: 7 })])
+    // 付箋の質問には置かない
+    expect(applyStreamMessage(state({ questions: [question('n1')] }), { type: 'question-done', id: 'n1', status: 'done' }).state.chatQuestions.size).toBe(0)
+  })
+
+  it('keeps the imported question of a job when a later change comes without it (the server sends it only when the job begins)', () => {
+    const imports = [{ label: 'q', question: 'q', answer: 'a', noteId: 'node:n' }]
+    const s = state({ jobs: new Map([['j', job('j', { threadId: 't', imports })]]) })
+    const { events: _events, imports: _imports, ...summary } = job('j', { threadId: 't', eventCount: 1 })
+    const next = applyStreamMessage(s, { type: 'job', job: summary, events: [{ kind: 'text', text: 'x' }], from: 0, thread: thread('t', 1) }).state
+    expect(next.jobs.get('j')).toMatchObject({ imports, events: [{ kind: 'text', text: 'x' }] })
+  })
+
+  it('forgets the questions of a deleted thread', () => {
+    const s = state({ chatQuestions: new Map([['q1', stored('q1')], ['q2', stored('q2', { threadId: 'u' })]]) })
+    expect([...applyStreamMessage(s, { type: 'thread-deleted', threadId: 't' }).state.chatQuestions.keys()]).toEqual(['q2'])
   })
 })
 

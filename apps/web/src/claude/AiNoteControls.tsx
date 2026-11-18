@@ -7,13 +7,15 @@ import { ModelPicker } from './ModelPicker.tsx'
 import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 
 // AI 付箋（meta.ai。Claude に聞く付箋）のまわり（docs/canvas-answer-panel-plan.md の 5）。カメラに付いて動く。
-// - 付箋の下の欄：左にコンテキストを選ぶアイコン（範囲で囲む絵。横に添えた数）、右にモデルの札と送信（紙飛行機）。
+// - 付箋の下の欄：左にコンテキストを選ぶアイコン（範囲で囲む絵。横に添えた数）、右にモデルの札と送信（➤）。枠で囲まず、付箋の下に並べる。
 //   出すのは、選んでいるものに AI 付箋がちょうど 1 枚あるとき（ほかと一緒でもよい）・その付箋の文字の編集中・
 //   その付箋の答えのパネルにフォーカスがあるとき・添える所を選んでいる間だけ
 // - コンテキストを選ぶアイコン：付箋と一緒にほかのノードを選んでいれば、それをすぐ添える。付箋だけなら「添える所を選ぶ」状態にし、
 //   キャンバスで範囲をドラッグするかノードをクリックしたら添えて、付箋を選び直す（Esc かもう一度押すとやめる）。
 //   添えた数を押すと、添えたものの一覧（× で外す）
-// - 付箋の上の札：前の答え（続き）を添えた付箋には、いつも出す（「『質問』の答え」と、元の付箋へ移る ↗）
+// - 付箋の上の札：前の答え（続き）を添えた付箋には、いつも出す（「「質問」の答え」と、元の付箋へ移る ↗）。
+//   会話の答え（会話のタブの「付箋に切り出す」）を添えた付箋には「💬 会話「題」の答え」と、会話のそのジョブへ戻る「↗ 会話へ」
+//   （docs/claude-chat-tab-plan.md の 5）。両方あれば、上下に並べる
 // - 答えを作っている間は、送信を押せない（角の三角が点滅している）。文字の編集中は Ctrl+Enter でも送る
 // - 小さく表示しているときは出さない
 const MIN_ZOOM = 0.3
@@ -32,10 +34,12 @@ export function AiNoteControls(props: {
   onSend(noteId: string): void
   // 前の答えの札の ↗：元の付箋へ移る
   onOpenContext(canvasId: string, noteId: string): void
+  // 会話の答えの札の ↗：会話のそのジョブ（会話の質問なら、そのカード）へ戻る（Claude を使えないときは渡さない）
+  onOpenChat?(target: { threadId: string; jobId?: string; questionId?: string }): void
   canvasTitle(canvasId: string): string
   notify(message: string): void
 }) {
-  const { editor, view, session, claude, busy, focusedNoteId, onSend, onOpenContext, canvasTitle, notify } = props
+  const { editor, view, session, claude, busy, focusedNoteId, onSend, onOpenContext, onOpenChat, canvasTitle, notify } = props
   const { camera } = session
   const notes = useAiNotes(editor)
   const { models } = useClaudeState(claude)
@@ -101,23 +105,43 @@ export function AiNoteControls(props: {
   return (
     <>
       {notes.map((node) => {
-        // 付箋の上の札：前の答え（続き）
-        const context = aiNoteMeta(node)?.contexts.find((item) => item.kind === 'answer')
+        // 付箋の上の札：会話の答えと、前の答え（続き）
+        const contexts = aiNoteMeta(node)?.contexts ?? []
+        const chat = contexts.find((item) => item.kind === 'chat')
+        const answer = contexts.find((item) => item.kind === 'answer')
         const box = editor.index.get(node.id)?.worldBounds
-        if (!context || context.kind !== 'answer' || !box) return null
-        const here = context.canvasId === editor.canvasId
+        if ((!chat && !answer) || !box) return null
         return (
           <div
             key={`chip:${node.id}`}
-            className="ai-note-chip"
-            style={{ ...screen(box.x, box.y), maxWidth: Math.max(MIN_WIDTH, box.w * camera.zoom) }}
+            className="ai-note-chips"
+            style={{ ...screen(box.x, box.y), width: Math.max(MIN_WIDTH, box.w * camera.zoom) }}
             onPointerDown={(e) => e.stopPropagation()}
-            title="前の質問と答えを踏まえて答えます"
           >
-            <span className="ai-note-chip-label">📎 「{context.label}」の答え</span>
-            <button type="button" onClick={() => onOpenContext(context.canvasId, context.noteId)} title="元の付箋へ移る">
-              ↗ {here ? '元の付箋' : canvasTitle(context.canvasId)}
-            </button>
+            {chat?.kind === 'chat' && (
+              <div className="ai-note-chip chat" title="会話の答えを踏まえて答えます（会話には何も足しません）">
+                <span className="ai-note-chip-label">💬 {chat.label}</span>
+                {onOpenChat && chat.threadId && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenChat({ threadId: chat.threadId!, ...(chat.jobId ? { jobId: chat.jobId } : {}), ...(chat.questionId ? { questionId: chat.questionId } : {}) })
+                    }
+                    title="会話のこの答えへ戻る"
+                  >
+                    ↗ 会話へ
+                  </button>
+                )}
+              </div>
+            )}
+            {answer?.kind === 'answer' && (
+              <div className="ai-note-chip" title="前の質問と答えを踏まえて答えます">
+                <span className="ai-note-chip-label">📎 「{answer.label}」の答え</span>
+                <button type="button" onClick={() => onOpenContext(answer.canvasId, answer.noteId)} title="元の付箋へ移る">
+                  ↗ {answer.canvasId === editor.canvasId ? '元の付箋' : canvasTitle(answer.canvasId)}
+                </button>
+              </div>
+            )}
           </div>
         )
       })}
@@ -197,7 +221,7 @@ export function AiNoteControls(props: {
                   }}
                   title={answering ? 'Claude が答えを作っています' : 'Claude に送る（文字の編集中は Ctrl+Enter）'}
                 >
-                  <PlaneIcon />
+                  <span aria-hidden="true">➤</span>
                 </button>
               </div>
               {listing === target && places.length > 0 && (
@@ -229,14 +253,6 @@ function AreaIcon() {
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
       <rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" />
       <path d="M8 5.5v5M5.5 8h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function PlaneIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M2 7.6 14 2 9.4 14l-1.9-4.6L2 7.6Z" fill="currentColor" />
     </svg>
   )
 }
@@ -286,6 +302,7 @@ function selectionContext(editor: Editor, view: CanvasView, noteId: string): AiC
 
 function sameContext(a: AiContext, b: AiContext): boolean {
   if (a.kind === 'answer' && b.kind === 'answer') return a.noteId === b.noteId
+  if (a.kind === 'chat' && b.kind === 'chat') return a.jobId === b.jobId && a.questionId === b.questionId
   if (a.kind !== 'canvas' || b.kind !== 'canvas') return false
   const ids = (context: typeof a) => context.target.nodes.map((node) => node.id).sort().join(',')
   return ids(a) === ids(b) && JSON.stringify(a.target.rect) === JSON.stringify(b.target.rect)

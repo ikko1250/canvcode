@@ -49,6 +49,21 @@ async function openApp(page: Page) {
   await expect(canvasRoot(page)).toBeVisible()
 }
 
+
+// 答えを持つ AI 付箋を置き（会話の答えの札も添える）、画面の真ん中に寄せる。付箋の id を返す（docs/claude-chat-tab-plan.md の 9）
+async function addAiNote(page: Page): Promise<string> {
+  const id = await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const node = editor.makeNode('note', { x: 860, y: 140, props: { paragraphs: [{ runs: [{ text: 'コンテキストとは？' }] }] } })
+    const answer = { body: '前提：LLM\n\n**コンテキスト**は、モデルに渡す文の全体です。', related: [], model: 'claude-sonnet-5-5', effort: 'medium', question: 'コンテキストとは？', answeredAt: Date.now() }
+    const chat = { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「会話」の答え', turns: [{ question: '整理して', answer: '整理しました' }] }
+    editor.transact('AI 付箋', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [chat], answer } } }))
+    return node.id as string
+  })
+  await page.evaluate((id) => (window as any).canvcode.view.focusNode(id), id)
+  return id
+}
+
 const canvasRoot = (page: Page) => page.locator('.canvas-container > div[tabindex]')
 
 async function clickWorld(page: Page, x: number, y: number, button: 'left' | 'right' = 'left') {
@@ -165,9 +180,11 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
   await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
   const claude = page.locator('.claude-panel')
   await expect(claude).toBeVisible()
-  await claude.locator('.claude-thread-select').selectOption('t1')
+  await expect(claude.locator('.claude-thread-name')).toHaveText('会話')
   await expect(claude.locator('.claude-text')).toBeVisible()
-  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail)/ })
+  // たたんだ作業を開く（ツールの行の文字も調べる）
+  await claude.locator('.claude-tools-toggle').click()
+  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail|pre\.claude-permission-detail)/ })
   for (const selector of ['.claude-prompt-text', '.claude-text p', '.claude-compose textarea']) {
     const [style] = await textStyles(claude.locator(selector).first())
     expect(style.size, selector).toBe(16)
@@ -200,4 +217,42 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
   await expect
     .poll(() => page.evaluate(() => [...document.fonts].some((face) => face.family.replace(/["']/g, '') === 'Noto Sans JP Variable' && face.status === 'loaded')))
     .toBe(true)
+})
+
+test('the questions tab, the answer panel by a note, the AI note controls and the chat menus use 14px or larger Noto Sans JP (claude-chat-tab-plan 0)', async ({ page }) => {
+  await openApp(page)
+  const noteId = await addAiNote(page)
+  // 等幅（Noto Sans Mono）は、答えの中のコードだけ（モデルの札は本文と同じ書体）
+  const mono = /^code/
+  await page.evaluate((id) => (window as any).canvcode.editor.setSelection([id]), noteId)
+  await expect(page.locator('.ai-note-controls')).toBeVisible()
+  await expectDadsText(page.locator('.ai-note-controls'))
+  await expectDadsText(page.locator('.ai-note-chips'))
+  await page.locator('.claude-toggle').click()
+  const questions = page.locator('.question-panel')
+  await expect(questions.locator('.question-row-main')).toHaveCount(1)
+  await expectDadsText(questions)
+  await questions.locator('.question-row-main').click()
+  await expect(questions.locator('.answer-view-body')).toBeVisible()
+  await expectDadsText(questions, { mono })
+  // 答えの本文は、会話と同じ読む文の文字（16px・行間 1.5 以上）
+  const [body] = await textStyles(questions.locator('.answer-view-body p').first())
+  expect(body.size).toBe(16)
+  expect(body.lineHeight / body.size).toBeGreaterThanOrEqual(1.5)
+  await questions.getByRole('button', { name: '会話で続ける' }).click()
+  await expectDadsText(questions.getByRole('menu'))
+  await page.keyboard.press('Escape')
+  await questions.getByRole('button', { name: '↗ 付箋へ移動' }).click()
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  await expectDadsText(page.locator('.answer-popover'), { mono })
+  await page.keyboard.press('Escape')
+  await questions.getByRole('tab', { name: '会話' }).click()
+  const claude = page.locator('.claude-panel')
+  await claude.locator('.claude-job').first().hover()
+  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail)/ })
+  await claude.locator('.claude-thread-button').click()
+  await expectDadsText(claude.locator('.claude-thread-menu'))
+  await page.keyboard.press('Escape')
+  await claude.getByRole('button', { name: 'この会話のメニュー' }).click()
+  await expectDadsText(claude.locator('.claude-more-menu'))
 })

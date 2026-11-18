@@ -4,6 +4,8 @@ import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRe
 import {
   CanvasView,
   aiNoteMeta,
+  chatContext,
+  firstLine,
   followUpContext,
   placeAnswerText,
   placeFollowUpAt,
@@ -79,12 +81,12 @@ import { DesignPanel } from './design/DesignPanel.tsx'
 import { TextFormatToolbar } from './design/TextFormatToolbar.tsx'
 import { loadDesignPanelOpen, saveDesignPanelOpen } from './design/storage.ts'
 import { AgentToasts } from './workspace/AgentToasts.tsx'
-import { ClaudePanel, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
+import { ClaudePanel, type ChatAnswerCut, type ChatImportRequest, type ChatReveal, type ClaudeAttachment } from './claude/ClaudePanel.tsx'
 import { ClaudeTabs } from './claude/ClaudeTabs.tsx'
-import { QuestionPanel } from './claude/QuestionPanel.tsx'
+import { QuestionPanel, type QuestionOpenRequest } from './claude/QuestionPanel.tsx'
 import { SeenAnswers } from './claude/seenAnswers.ts'
 import { AnswerPopover } from './claude/AnswerPopover.tsx'
-import { ClaudeClient, threadAsking, threadBusy, useClaudeState } from './claude/claudeClient.ts'
+import { ClaudeClient, threadAsking, threadBusy, useClaudeState, type ChatQuestionDetail, type ImportedQuestion } from './claude/claudeClient.ts'
 import { memoParagraphs, memoSource, requestMemo } from './claude/memo.ts'
 import { lookupMemo, requestLookup } from './claude/lookup.ts'
 import { citationParagraphs, citeSourceOf, requestCitation } from './claude/cite.ts'
@@ -473,13 +475,24 @@ export function App(props: { initial: InitialRecords }) {
   useLayoutEffect(() => {
     claudeViewRef.current = claudeView
   }, [claudeView])
+  // パネルに渡す 1 回だけの頼み（docs/claude-chat-tab-plan.md）：会話のそのジョブへ戻る・付箋の質問を取り込む・質問のタブで会話の質問を開く。
+  // パネルは閉じると描き直すので、閉じるときに消す（開き直したときに、もう一度効かないように）
+  const [chatReveal, setChatReveal] = useState<ChatReveal | null>(null)
+  const [chatImport, setChatImport] = useState<ChatImportRequest | null>(null)
+  const [questionOpen, setQuestionOpen] = useState<QuestionOpenRequest | null>(null)
+  const forgetClaudeRequests = useCallback(() => {
+    setClaudeDraft(null)
+    setChatReveal(null)
+    setChatImport(null)
+    setQuestionOpen(null)
+  }, [])
   // パネルを閉じる（× と Esc）。開き直したときに、使い終わった下書きをもう一度入れない
   const closeClaude = useCallback(() => {
     setClaudeView(null)
-    setClaudeDraft(null)
+    forgetClaudeRequests()
     if (fileEditorRef.current) fileEditorRef.current.focus()
     else viewRef.current?.root.focus({ preventScroll: true })
-  }, [])
+  }, [forgetClaudeRequests])
 
   // CSV からグラフを作るダイアログ（plot/PlotDialog.tsx）。表のカードから作る（tableNodeId）か、グラフの画像の作り方を変える（imageNodeId）
   const [plotTarget, setPlotTarget] = useState<PlotTarget | null>(null)
@@ -1193,6 +1206,88 @@ export function App(props: { initial: InitialRecords }) {
     },
     [keepAnswer, notify],
   )
+  // 会話の答えを付箋に切り出す（会話のタブの「📌 付箋に切り出す」。docs/claude-chat-tab-plan.md の 5）：いま開いている Canvas の画面の真ん中に、
+  // 会話の札（kind: 'chat'。頼んだ文と答えの写し）を添えた AI 付箋を置き、文字の編集を始める（置くことと書いた文字で Undo 1 回）。会話には何も足さない
+  const cutChatAnswer = useCallback(
+    (cut: ChatAnswerCut) => {
+      const view = viewRef.current
+      if (!view) return
+      const editor = view.editor
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const tx = editor.begin('会話の答えを付箋に切り出す')
+      const placed = placeFollowUpAt(editor, tx, viewCenter(view), chatContext(cut))
+      tx.flush()
+      view.textEditor.start(placed, { tx })
+    },
+    [notify],
+  )
+  // 会話の札の ↗：会話のタブを開き、その会話を選んで、そのジョブまでスクロールして色を付ける（ClaudePanel の reveal）
+  const openChatAnswer = useCallback((target: { threadId: string; jobId?: string; questionId?: string }) => {
+    setClaudeView('chat')
+    setEditorClaudeHidden(false)
+    setChatReveal({ ...target, n: Date.now() })
+  }, [])
+  // 会話のタブで選んでいる会話（答えの「会話で続ける」のメニューに、いまの会話の題を出す）
+  const [chatThread, setChatThread] = useState<{ threadId: string; title: string } | null>(null)
+  // 付箋の質問を会話に取り込む（答えの「会話で続ける」。docs/claude-chat-tab-plan.md の 6）：会話のタブを開き（新しい会話なら新しい会話にして）、
+  // 入力欄の上に札を置いて、入力欄にフォーカスする。送るのは、次に文を書いて送ったとき
+  const importToChat = useCallback(
+    (item: ImportedQuestion, newThread: boolean) => {
+      closeAnswer()
+      setClaudeView('chat')
+      setEditorClaudeHidden(false)
+      setClaudeFocus((n) => n + 1)
+      setChatImport({ item, newThread, ...(!newThread && chatThread ? { threadId: chatThread.threadId } : {}), n: Date.now() })
+    },
+    [closeAnswer, chatThread],
+  )
+  // 会話の質問を質問のタブで開く（会話の欄の「答えを見る →」・取り込んだ会話の質問のカードの ↗）
+  const openChatQuestion = useCallback((id: string) => {
+    setClaudeView('answers')
+    setClaudeFocus((n) => n + 1)
+    setQuestionOpen({ id, n: Date.now() })
+  }, [])
+  // 会話の欄の、取り込んだ質問のカードの ↗：付箋の質問なら、その Canvas に移って付箋の横に答えを開く。会話の質問なら、質問のタブで開く
+  const openImport = useCallback(
+    (item: ImportedQuestion) => {
+      if (item.questionId) return openChatQuestion(item.questionId)
+      if (item.noteId && item.canvasId) void openNoteAnswer(item.canvasId, item.noteId)
+    },
+    [openChatQuestion, openNoteAnswer],
+  )
+  // 質問のタブの、会話の質問の「続けて聞く」：画面の真ん中に、会話の札（添えた前の答えと、この質問と答えの写し）を添えた AI 付箋を置き、書き始める
+  const continueChatQuestion = useCallback(
+    (question: ChatQuestionDetail) => {
+      const view = viewRef.current
+      if (!view || question.body === undefined) return
+      const editor = view.editor
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const context = chatContext({
+        ...(question.threadId ? { threadId: question.threadId } : {}),
+        questionId: question.id,
+        ...(question.threadTitle ? { title: question.threadTitle } : {}),
+        question: question.question,
+        answer: question.body,
+        previous: question.previous,
+      })
+      const tx = editor.begin('続けて聞く')
+      const placed = placeFollowUpAt(editor, tx, viewCenter(view), context)
+      tx.flush()
+      view.textEditor.start(placed, { tx })
+    },
+    [notify],
+  )
+  // 質問のタブの、会話の質問の「Canvasに残す」：画面の真ん中に置く
+  const keepChatQuestion = useCallback(
+    (body: string) => {
+      const view = viewRef.current
+      if (!view) return
+      if (view.editor.store.activeTransaction) return notify('編集を終えてから押してください')
+      const placed = placeAnswerText(view.editor, body, { center: viewCenter(view) })
+      if (placed) view.editor.setSelection([placed])
+    },
+    [notify],
+  )
   const openAnswerRef = useRef(openAnswer)
   useLayoutEffect(() => {
     openAnswerRef.current = openAnswer
@@ -1203,7 +1298,7 @@ export function App(props: { initial: InitialRecords }) {
   useEffect(() => {
     const ids = new Set([
       ...answering.flatMap((job) => (job.canvasId === editor.canvasId ? job.anchorIds.slice(0, 1) : [])),
-      ...answeringQuestions.flatMap((question) => (question.canvasId === editor.canvasId ? [question.noteId] : [])),
+      ...answeringQuestions.flatMap((question) => (question.noteId && question.canvasId === editor.canvasId ? [question.noteId] : [])),
     ])
     const current = editor.session.get().answeringIds
     if (ids.size !== current.size || [...ids].some((id) => !current.has(id))) editor.session.set({ answeringIds: ids })
@@ -2522,7 +2617,7 @@ export function App(props: { initial: InitialRecords }) {
               onClick={() => {
                 if (!claudeView) return showAnswers()
                 setClaudeView(null)
-                setClaudeDraft(null)
+                forgetClaudeRequests()
               }}
               // C はこのボタンと違って閉じないので、aria-keyshortcuts は付けず、ここに書く（MAI-91）
               title="付箋で聞いた質問（どの Canvas のものも）と、Claude との会話のパネルを開け閉めする（C で開き、もう一度 C で会話の入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて会話を開く）"
@@ -2569,6 +2664,7 @@ export function App(props: { initial: InitialRecords }) {
             focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
             onSend={(noteId) => void askWithNotes([noteId])}
             onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
+            onOpenChat={openChatAnswer}
             canvasTitle={canvasTitle}
             notify={notify}
           />
@@ -2600,6 +2696,15 @@ export function App(props: { initial: InitialRecords }) {
                 onContinue={() => continueAnswer(noteId)}
                 onKeep={() => keepAnswer(noteId)}
                 {...(progress ? { onStop: () => stopAnswer(noteId) } : {})}
+                {...(claudeState.availability === 'on'
+                  ? {
+                      onChat: (newThread: boolean) => {
+                        const answer = aiNoteMeta(editor.getNode(noteId))?.answer
+                        if (answer) importToChat({ label: firstLine(answer.question), question: answer.question, answer: answer.body, noteId, canvasId }, newThread)
+                      },
+                      chatTitle: chatThread?.title ?? null,
+                    }
+                  : {})}
               />
             )
           })()}
@@ -2749,6 +2854,12 @@ export function App(props: { initial: InitialRecords }) {
               onContinue={continueQuestion}
               onKeep={keepQuestion}
               onClose={closeClaude}
+              open={questionOpen}
+              onChat={importToChat}
+              chatTitle={chatThread?.title ?? null}
+              onOpenChat={openChatAnswer}
+              onContinueChat={continueChatQuestion}
+              onKeepChat={keepChatQuestion}
             />
             <ClaudePanel
               client={claude}
@@ -2761,8 +2872,11 @@ export function App(props: { initial: InitialRecords }) {
               // 全画面のエディタでは、選んでいる行を添える
               onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
               onClearAttachment={() => setClaudeAttachment(null)}
-              // 全画面のエディタでは、チャットだけを出す（質問のタブに移るのは、キャンバスでだけ）
-              {...(claudeInEditor ? {} : { tabs: claudeTabs('chat') })}
+              // 全画面のエディタでは、チャットだけを出す（質問のタブに移るのは、キャンバスでだけ。付箋に切り出すのも、キャンバスでだけ）
+              {...(claudeInEditor ? {} : { tabs: claudeTabs('chat'), onCutToNote: cutChatAnswer, onOpenImport: openImport, onOpenQuestion: openChatQuestion })}
+              reveal={chatReveal}
+              importRequest={chatImport}
+              onThreadChange={setChatThread}
               onClose={closeClaude}
             />
           </>,
