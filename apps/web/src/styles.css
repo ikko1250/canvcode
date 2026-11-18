@@ -1644,16 +1644,20 @@ body {
   display: none;
 }
 
+/* 置き場所では切らない（パネルは下の min-width: 0 で右半分に収まる）。右半分が狭いと、モデルを選ぶ欄はパネルの左へ
+   はみ出して開くので、切ると左の端（「Model ›」）が見えず、押せなかった（キャンバスの右の置き場所も切らない） */
 .file-editor-claude {
   display: flex;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
 }
 
+/* 幅は右半分に合わせる。min-width: 0 がないと、flex の子の最小の幅が中身の折り返せない一番長い行（長いツールの行や
+   コードブロック）の幅になり、パネルが右半分より広がって、はみ出した右側（送るボタン）が切れていた */
 .file-editor-claude .claude-panel {
   flex: 1;
   width: auto;
+  min-width: 0;
   border-left: none;
 }
 
@@ -3619,10 +3623,12 @@ button.pdf-page-number:hover {
   padding-left: 16px;
 }
 
+/* 区切れない長い語（パスなど）も折り返す（会話の欄が横にスクロールし、入力欄の下のエラーは切れていた） */
 .claude-error {
   margin: 6px 0;
   color: var(--color-error-strong);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .claude-status {
