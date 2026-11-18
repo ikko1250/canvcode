@@ -25,7 +25,7 @@ import { useNodesVersion } from './useNodesVersion.ts'
 //   答えを作っている間は、進み具合と考えている中身と「やめる」。開いたら、その答えを見たことにする
 // - ③ この場で続けて聞く：「続けて聞く」「Canvasに残す」は、元の付箋がいま開いている Canvas になければ、画面の真ん中に置く（App）
 // - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）も混ぜて出す。
-//   一覧の 1 行は、質問と「会話『題』・時刻」（会話がなければ「会話の外」）。答えは「↗ 付箋へ移動」の代わりに「↗ 会話へ移動」（会話がなければ出さない）。
+//   一覧の 1 行は、質問と「会話「題」・時刻」（会話がなければ「会話の外」）。答えは「↗ 付箋へ移動」の代わりに「↗ 会話へ移動」（会話がなければ出さない）。
 //   「続けて聞く」は、画面の真ん中に会話の札（添えた前の答えと、この質問と答えの写し）を添えた AI 付箋を置く。まだ見ていない印は chat:<id> で覚える
 // - パネルの中のキー入力は、キャンバスに渡さない。Esc で閉じる（答えを見ていれば一覧に戻る）
 
@@ -165,7 +165,7 @@ export function QuestionPanel(props: {
   }
   const chatPlace = (threadId: string | undefined, fallback?: string) => {
     const title = threadTitle(threadId, fallback)
-    return title ? `会話『${title}』` : '会話の外'
+    return title ? `会話「${title}」` : '会話の外'
   }
 
   // 見ている答え
@@ -332,10 +332,15 @@ export function QuestionPanel(props: {
         </div>
       ) : (
         <div className="question-list">
-          <select className="question-filter" value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'here')} aria-label="どの Canvas の質問を出すか">
-            <option value="all">すべてのキャンバス</option>
-            <option value="here">いま開いているキャンバス</option>
-          </select>
+          <span className="question-filter">
+            <select value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'here')} aria-label="どの Canvas の質問を出すか">
+              <option value="all">すべてのキャンバス</option>
+              <option value="here">いま開いているキャンバス</option>
+            </select>
+            <span className="question-filter-caret" aria-hidden="true">
+              ▾
+            </span>
+          </span>
           {running.length === 0 && shown.length === 0 && (
             <p className="claude-hint">
               付箋で聞いた質問は、まだありません。付箋に書いて送るか、付箋を右クリックして「Claude に聞く」を選ぶと、ここに並びます（どの Canvas
@@ -360,7 +365,9 @@ export function QuestionPanel(props: {
                       <span className="question-row-meta">
                         {question.kind === 'chat' ? chatPlace(question.threadId) : canvasTitle(question.canvasId ?? '')} ・ {elapsedLabel(question.startedAt, now)}
                       </span>
-                      <span className="question-row-steps">{stepsLabel(question)}</span>
+                      <span className="question-row-steps">
+                        <StepsLabel question={question} />
+                      </span>
                     </span>
                   </button>
                   <button type="button" className="question-row-stop" onClick={() => void claude.cancelQuestion(question.id).catch(() => undefined)} title="やめる" aria-label="やめる">
@@ -420,17 +427,30 @@ function modelLabel(catalog: Parameters<typeof settingLabel>[0], source: { model
   return settingLabel(catalog, { model: source.model, ...(source.effort ? { effort: source.effort as Effort } : {}) })
 }
 
-// ✓ 読む → ● 調べる → 書く（調べなかったら「調べる」は出さない）
-function stepsLabel(question: RunningQuestion): string {
+// ✓ 読む → ● 調べる → 書く（調べなかったら「調べる」は出さない）。済んだもの・今・まだを、色で分ける
+function StepsLabel(props: { question: RunningQuestion }) {
+  const { question } = props
   const order = ['read', 'search', 'write'] as const
   const labels = { read: '読む', search: '調べる', write: '書く' }
   const current = order.indexOf(question.step)
-  return order
-    .flatMap((step, i) => {
-      if (step === 'search' && !question.searched && current > i) return []
-      return [`${i < current ? '✓ ' : i === current ? '● ' : ''}${labels[step]}`]
-    })
-    .join(' → ')
+  const steps = order.filter((step, i) => !(step === 'search' && !question.searched && current > i))
+  return (
+    <>
+      {steps.map((step, i) => {
+        const at = order.indexOf(step)
+        const state = at < current ? 'done' : at === current ? 'current' : 'todo'
+        return (
+          <span key={step}>
+            {i > 0 && ' → '}
+            <span className={`question-step ${state}`}>
+              {state === 'done' ? '✓ ' : state === 'current' ? '● ' : ''}
+              {labels[step]}
+            </span>
+          </span>
+        )
+      })}
+    </>
+  )
 }
 
 // 経過時間（「たった今」「2分前」「1時間前」）

@@ -501,8 +501,7 @@ function PermissionList(props: {
     return () => window.clearInterval(timer)
   }, [])
   return (
-    <div className="claude-permissions" role="region" aria-label="許可を待っています">
-      <div className="claude-permissions-header">許可を待っています（{permissions.length}）</div>
+    <div className="claude-permissions" role="region" aria-label={`許可を待っています（${permissions.length}）`}>
       {permissions.map((permission) => (
         <div key={permission.id} className="claude-permission">
           <div className="claude-permission-title">
@@ -547,7 +546,6 @@ function TaskDrawer(props: {
   return (
     <div className={`claude-tasks${open ? ' open' : ''}`} role="region" aria-label="バックグラウンドの作業">
       <button type="button" className="claude-tasks-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <span className="claude-spinner" aria-hidden="true" />
         <span className="claude-tasks-title">⚙ 動作中の作業 {tasks.length}件</span>
         <span aria-hidden="true">{open ? '▴' : '▾'}</span>
       </button>

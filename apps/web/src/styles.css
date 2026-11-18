@@ -249,11 +249,13 @@ body {
    - キャンバスの上で文字を編集する DOM（.canvcode-text-editor。packages/canvas/src/textEditor.ts）。描いた文字と重ねるので、
      枠を出すと文字の位置に枠が浮く。編集中であることは、キャンバスの側で見せる
    - CodeMirror の本文（.cm-content）。カードの上のエディタと全画面のエディタ。CodeMirror が自分でフォーカスの見た目を持つ
-   - デザインパネルの数字の欄の中の入力（.design-number > input）。欄の形は外側の .design-number なので、枠はそちらに出す */
+   - デザインパネルの数字の欄の中の入力（.design-number > input）。欄の形は外側の .design-number なので、枠はそちらに出す
+   - Claude の会話の入力欄の文の欄（.claude-compose textarea）。枠は、札・ボタンと一緒に囲む外側の .claude-compose に出す */
 :focus-visible:not(
-    :where(.canvas-container > div[tabindex], .claude-panel, .dialog, .canvcode-text-editor, .cm-content, .design-number > input)
+    :where(.canvas-container > div[tabindex], .claude-panel, .dialog, .canvcode-text-editor, .cm-content, .design-number > input, .claude-compose textarea)
   ),
-.design-number:has(> input:focus-visible) {
+.design-number:has(> input:focus-visible),
+.claude-compose:has(textarea:focus-visible) {
   outline: 4px solid var(--focus-ring-outer) !important;
   outline-offset: 2px !important;
   box-shadow: var(--focus-ring-shadow, 0 0 0 2px var(--focus-ring-inner)) !important;
@@ -3295,12 +3297,6 @@ button.pdf-page-number:hover {
   flex-direction: column;
   gap: 6px;
   box-sizing: border-box;
-  padding: 6px;
-  /* キャンバスの上に浮かぶので、枠は 3:1（MAI-110） */
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-panel);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-menu);
   color: var(--color-text);
   font: var(--font-control);
 }
@@ -3371,9 +3367,10 @@ button.pdf-page-number:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 3px 5px;
-  border-color: transparent;
-  background: none;
+  padding: 3px 6px;
+  border-color: var(--color-selected-border);
+  border-radius: var(--radius-control);
+  background: var(--color-accent-soft);
   color: var(--color-text-sub);
 }
 
@@ -3396,6 +3393,9 @@ button.pdf-page-number:hover {
 
 .ai-note-picking {
   overflow: hidden;
+  padding: 2px 8px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
   color: var(--color-accent);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3416,11 +3416,11 @@ button.pdf-page-number:hover {
 }
 
 .ai-note-controls .claude-model-button {
-  border: none;
+  border-color: var(--color-selected-border);
   border-radius: 999px;
-  background: var(--color-surface-sub);
+  background: var(--color-accent-soft);
   color: var(--color-text-sub);
-  font: var(--font-code-control);
+  font: var(--font-control);
 }
 
 /* 送信（紙飛行機）は 1 段目の右端 */
@@ -3428,11 +3428,13 @@ button.pdf-page-number:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 3px 12px;
+  min-width: 48px;
+  padding: 3px 14px;
   border-color: var(--color-accent);
   border-radius: 999px;
   background: var(--color-accent);
   color: var(--color-text-on-fill);
+  font: var(--font-icon);
 }
 
 /* 押せない送信。DADS の無効のボタン（地は Solid Gray-300 相当の淡い灰、文字は無効の文字の色） */
@@ -3449,8 +3451,9 @@ button.pdf-page-number:hover {
   z-index: 5;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 6px;
+  box-sizing: border-box;
   transform: translateY(calc(-100% - 6px));
 }
 
@@ -3458,12 +3461,12 @@ button.pdf-page-number:hover {
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: 100%;
+  min-width: 0;
   box-sizing: border-box;
   padding: 2px 4px 2px 8px;
   /* キャンバスの上に浮かぶので、枠は 3:1（MAI-110） */
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-small);
   background: var(--color-accent-soft);
   color: var(--color-accent);
   font: var(--font-control);
@@ -3471,10 +3474,6 @@ button.pdf-page-number:hover {
 }
 
 /* 会話の答えの札（会話のタブの「付箋に切り出す」）。白の地で、前の答えの札と見分ける */
-.ai-note-chip.chat {
-  background: var(--color-surface);
-}
-
 /* 上の札の当たりは、下の札の手前まで（札の間 6px の半分と、余白・枠） */
 .ai-note-chip:not(:last-child) button {
   --target-reach-bottom: 6px;
@@ -3485,6 +3484,7 @@ button.pdf-page-number:hover {
 }
 
 .ai-note-chip-label {
+  flex: 1;
   min-width: 0;
   padding-block: 2px;
   margin-block: -2px;
@@ -3549,13 +3549,19 @@ button.pdf-page-number:hover {
 
 /* モデルの札（答えのパネル・質問のタブ・会話の答え） */
 .answer-popover-model,
-.question-model,
-.claude-answer-model {
-  padding: 2px 10px;
+.question-model {
+  padding: 3px 12px;
   border-radius: 999px;
-  background: var(--color-surface-sub);
+  background: var(--color-accent-soft);
   color: var(--color-text-sub);
-  font: var(--font-code-control);
+  font: var(--font-control);
+  white-space: nowrap;
+}
+
+/* 会話の答えの右のモデル（札にせず、文字だけ） */
+.claude-answer-model {
+  color: var(--color-text-sub);
+  font: var(--font-control);
   white-space: nowrap;
 }
 
@@ -3627,7 +3633,7 @@ button.pdf-page-number:hover {
   position: relative;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--color-border-subtle);
@@ -3635,10 +3641,10 @@ button.pdf-page-number:hover {
 
 .answer-view-actions button,
 .answer-view-stop {
-  /* 当たり（MAI-113）：見た目で高さ 27px ある。並んだボタンの間（8px）の半分まで（狭いと 2 段に折り返すので、上下も間の半分まで） */
-  --target-reach-x: 5px;
+  /* 当たり（MAI-113）：見た目で高さ 27px ある。並んだボタンの間（6px）の半分まで（狭いと 2 段に折り返すので、上下も間の半分まで。枠の 1px を足して書く） */
+  --target-reach-x: 4px;
   --target-reach-y: 4px;
-  padding: 4px 12px;
+  padding: 4px 10px;
   border: 1px solid transparent;
   border-radius: 999px;
   font: var(--font-control);
@@ -3786,7 +3792,8 @@ button.pdf-page-number:hover {
   width: 380px;
   flex-shrink: 0;
   min-height: 0;
-  background: var(--color-surface-sub);
+  /* 地は白（docs/claude-chat-tab-plan.md のモック。もとは Gray-50） */
+  background: var(--color-surface);
   border-left: 1px solid var(--color-border-subtle);
 }
 
@@ -3854,11 +3861,12 @@ button.pdf-page-number:hover {
 
 /* 文字で描いたアイコンのボタン（＋・⋯・×） */
 .claude-panel .claude-icon-button {
-  min-width: 28px;
-  padding: 3px 6px;
+  min-width: 32px;
+  padding: 2px 6px;
   border-color: transparent;
   background: transparent;
-  font: var(--font-icon);
+  color: var(--color-text-sub);
+  font: var(--font-icon-large);
 }
 
 .claude-panel .claude-icon-button:hover:not(:disabled) {
@@ -3916,11 +3924,12 @@ button.pdf-page-number:hover {
   gap: 6px;
   max-width: 100%;
   min-width: 0;
-  padding: 3px 6px;
+  padding: 2px 6px;
+  margin-left: -6px;
   border-color: transparent;
   background: transparent;
-  font: var(--font-control);
-  font-weight: var(--font-weight-700);
+  font: var(--font-subheading);
+  letter-spacing: var(--letter-spacing-heading);
   text-align: left;
 }
 
@@ -4138,8 +4147,8 @@ button.pdf-page-number:hover {
   max-width: 85%;
   box-sizing: border-box;
   margin-bottom: 8px;
-  padding: 8px 12px;
-  border-radius: var(--radius-large) var(--radius-large) var(--radius-small) var(--radius-large);
+  padding: 10px 16px;
+  border-radius: var(--radius-large);
   background: var(--color-accent-soft);
   font: var(--font-body);
   letter-spacing: var(--letter-spacing-body);
@@ -4152,17 +4161,11 @@ button.pdf-page-number:hover {
 
 /* 添えた所の札（「📍 授業_2026秋 の範囲」） */
 .claude-prompt-ref {
-  display: inline-block;
-  max-width: 100%;
-  box-sizing: border-box;
-  margin-top: 6px;
-  padding: 2px 8px;
+  display: block;
+  margin-top: 2px;
   overflow: hidden;
-  border: 1px solid var(--color-selected-border);
-  border-radius: 999px;
-  background: var(--color-surface);
   color: var(--color-accent);
-  font: var(--font-control);
+  font: var(--font-ui);
   letter-spacing: var(--letter-spacing-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4345,9 +4348,14 @@ button.pdf-page-number:hover {
 .claude-panel .claude-answer-actions button {
   --target-reach-y: 2px;
   --target-reach-x: 3px;
-  padding: 2px 8px;
+  padding: 3px 12px;
   border-radius: 999px;
   color: var(--color-text-sub);
+}
+
+.claude-panel .claude-answer-actions .claude-answer-cut {
+  border-color: var(--color-selected-border);
+  color: var(--color-accent);
 }
 
 .claude-panel .claude-answer-actions button:hover {
@@ -4367,9 +4375,9 @@ button.pdf-page-number:hover {
 .claude-side-question {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 8px 0;
-  padding: 8px 10px;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 10px 14px;
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-surface);
@@ -4386,14 +4394,18 @@ button.pdf-page-number:hover {
 }
 
 .claude-side-question-text {
+  color: var(--color-text);
+  font: var(--font-body);
   font-weight: var(--font-weight-700);
+  letter-spacing: var(--letter-spacing-body);
   overflow-wrap: anywhere;
 }
 
 .claude-side-question-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 10px;
   min-height: 24px;
   color: var(--color-text-sub);
 }
@@ -4410,22 +4422,27 @@ button.pdf-page-number:hover {
 /* 取り込んだ付箋の質問のカード（そのジョブの頼んだ文の上） */
 .claude-import-card {
   display: flex;
-  align-items: center;
-  align-self: flex-end;
-  gap: 8px;
-  max-width: 85%;
-  box-sizing: border-box;
-  margin-bottom: 6px;
-  padding: 4px 10px;
-  border: 1px dashed var(--color-selected-border);
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-selected-border);
   border-radius: var(--radius-panel);
-  background: var(--color-surface);
+  background: var(--color-accent-soft);
   color: var(--color-text-sub);
 }
 
 .claude-import-card-text {
   min-width: 0;
+  color: var(--color-text);
   overflow-wrap: anywhere;
+}
+
+.claude-import-card-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
 }
 
 .claude-import-card .claude-link {
@@ -4485,14 +4502,16 @@ button.pdf-page-number:hover {
   gap: 6px;
   max-height: 30%;
   overflow-y: auto;
-  padding: 6px 12px;
-  border-top: 1px solid var(--color-border-subtle);
-  color: var(--color-text-sub);
+  margin: 0 12px 8px;
+  padding: 4px 10px;
+  border-radius: var(--radius-panel);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
 }
 
 .claude-panel .claude-tasks-toggle {
-  /* 当たり（MAI-113）：上下は欄の余白（6px）まで */
-  --target-reach-y: 6px;
+  /* 当たり（MAI-113）：上下は帯の余白（4px）まで */
+  --target-reach-y: 4px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4500,7 +4519,7 @@ button.pdf-page-number:hover {
   margin-left: -4px;
   border: none;
   background: transparent;
-  color: var(--color-text-sub);
+  color: var(--color-accent);
   text-align: left;
 }
 
@@ -4592,8 +4611,11 @@ button.pdf-page-number:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--color-border-subtle);
+  margin: 0 12px calc(12px + env(safe-area-inset-bottom));
+  padding: 8px 10px;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-large);
+  background: var(--color-surface);
 }
 
 /* 「質問」で送るときは、入力欄の枠を主な色にする（会話に入らないことが分かるように） */
@@ -4645,14 +4667,19 @@ button.pdf-page-number:hover {
 
 .claude-compose textarea {
   resize: vertical;
-  min-height: 56px;
-  padding: 8px;
-  border: 1px solid var(--color-border-field);
-  border-radius: var(--radius-control);
+  min-height: 44px;
+  padding: 2px;
+  border: none;
+  background: transparent;
   /* 会話と同じ読む文の文字（16px）。iOS で入力欄にフォーカスしたときに拡大しないよう、16px より小さくしない。
      もとはマウスの端末（pointer: fine）で 13px にしていたが、会話の文字が 16px になったので、どの端末でも 16px にする（MAI-112） */
   font: var(--font-body);
   letter-spacing: var(--letter-spacing-body);
+}
+
+/* 文の欄は枠を持たないので、フォーカスは入力欄の枠に出す（冒頭のフォーカスの枠の規則でも、文の欄そのものには出さない） */
+.claude-compose textarea:focus {
+  outline: none;
 }
 
 /* 下の並び：📎、「会話｜質問」、（あき）、モデルの札、➤ */
@@ -4667,11 +4694,11 @@ button.pdf-page-number:hover {
   flex: 1;
 }
 
-/* 当たり（MAI-113）：送る・添える・モデルは欄の最後の行なので、下は欄の余白（12px）まで（モデルの欄の中のボタンは含めない） */
+/* 当たり（MAI-113）：送る・添える・モデルは枠の中の最後の行なので、下は枠の余白（8px）まで（モデルの欄の中のボタンは含めない） */
 .claude-compose-actions > button,
 .claude-mode > button,
 .claude-model > .claude-model-button {
-  --target-reach-bottom: 12px;
+  --target-reach-bottom: 8px;
 }
 
 .claude-panel .claude-attach {
@@ -4693,36 +4720,49 @@ button.pdf-page-number:hover {
   flex: none;
   gap: 2px;
   padding: 2px;
-  border-radius: var(--radius-panel);
-  background: var(--color-code);
+  border-radius: 999px;
+  background: var(--color-surface-sub);
 }
 
 .claude-panel .claude-mode button {
   --target-reach-x: 1px;
   --target-reach-top: 5px;
-  padding: 3px 10px;
-  border: none;
-  border-radius: var(--radius-control);
+  padding: 2px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   background: transparent;
   color: var(--color-text-sub);
 }
 
 .claude-panel .claude-mode button[aria-checked='true'] {
+  border-color: var(--color-border-subtle);
   background: var(--color-surface);
   color: var(--color-text);
-  font-weight: var(--font-weight-700);
-  box-shadow: var(--shadow-menu);
 }
 
 /* 送る（➤）。主な色の丸いボタン */
 .claude-panel .claude-send {
-  min-width: 32px;
-  padding: 3px 8px;
+  flex: none;
+  min-width: 48px;
+  padding: 3px 14px;
   border-color: var(--color-accent);
   border-radius: 999px;
   background: var(--color-accent);
   color: var(--color-text-on-fill);
   font: var(--font-icon);
+}
+
+/* 入力欄のモデルの札（枠のない、淡い地の札）。並びが狭ければ、名前を省略記号で切って縮む（送るに重ならないように。
+   後ろの :is(.claude-panel, .ai-note-controls) .claude-model-button の max-width: 200px より強くする） */
+.claude-compose .claude-model {
+  flex: 0 1 auto;
+}
+
+.claude-compose .claude-model > .claude-model-button {
+  max-width: 100%;
+  border-color: transparent;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
 }
 
 .claude-panel .claude-danger {
@@ -4966,11 +5006,11 @@ button.pdf-page-number:hover {
 .claude-toggle {
   /* 当たり（MAI-113）：.backup-status と同じ */
   --target-reach-x: 4px;
-  padding: 3px 10px;
+  padding: 3px 12px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  background: var(--color-surface);
-  color: var(--color-text);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
   font: var(--font-control);
   cursor: pointer;
   pointer-events: auto;
@@ -5000,40 +5040,31 @@ button.pdf-page-number:hover {
   max-height: 45%;
   overflow-y: auto;
   margin: 0 12px 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-panel);
-  background: var(--color-warning-bg);
-}
-
-.claude-permissions-header {
-  color: var(--color-warning-strong);
-  font-weight: var(--font-weight-700);
 }
 
 .claude-permission {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 10px 12px;
   border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
+  border-radius: var(--radius-panel);
+  background: var(--color-warning-bg);
 }
 
 .claude-permission-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px 10px;
 }
 
 .claude-permission-title > strong {
-  flex: 1;
-  min-width: 0;
+  flex: none;
 }
 
 .claude-permission-left {
-  color: var(--color-text-sub);
+  color: var(--color-warning-strong);
   white-space: nowrap;
 }
 
@@ -5041,9 +5072,9 @@ button.pdf-page-number:hover {
   max-height: 8em;
   margin: 0;
   overflow: auto;
-  padding: 4px 6px;
+  padding: 6px 10px;
   border-radius: var(--radius-small);
-  background: var(--color-surface-sub);
+  background: var(--color-surface);
   font: var(--font-code);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -5060,9 +5091,14 @@ button.pdf-page-number:hover {
   gap: 6px;
 }
 
+.claude-permission-actions button {
+  padding: 3px 16px;
+  border-radius: 999px;
+}
+
 .claude-panel .claude-allow {
-  border-color: var(--color-success);
-  background: var(--color-success);
+  border-color: var(--color-accent);
+  background: var(--color-accent);
   color: var(--color-text-on-fill);
 }
 
@@ -5083,8 +5119,8 @@ button.pdf-page-number:hover {
   gap: 2px;
   margin-right: auto;
   padding: 2px;
-  border-radius: var(--radius-panel);
-  background: var(--color-code);
+  border-radius: 999px;
+  background: var(--color-surface-sub);
 }
 
 .claude-panel-header .claude-tabs button,
@@ -5092,9 +5128,9 @@ button.pdf-page-number:hover {
   /* 当たり（MAI-113）：タブの間（2px）の半分。上下は見出しの帯の余白（8px）と切り替えの地の余白（2px）まで */
   --target-reach-x: 1px;
   --target-reach-y: 10px;
-  padding: 4px 12px;
-  border: none;
-  border-radius: var(--radius-control);
+  padding: 4px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   background: transparent;
   color: var(--color-text-sub);
   font: var(--font-control);
@@ -5102,10 +5138,9 @@ button.pdf-page-number:hover {
 
 .claude-panel-header .claude-tabs button[aria-selected='true'],
 .question-panel .claude-tabs button[aria-selected='true'] {
+  border-color: var(--color-border-subtle);
   background: var(--color-surface);
   color: var(--color-text);
-  font-weight: var(--font-weight-700);
-  box-shadow: var(--shadow-menu);
 }
 
 .claude-tab-count,
@@ -5127,13 +5162,28 @@ button.pdf-page-number:hover {
 }
 
 .question-panel .question-filter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   align-self: flex-start;
-  padding: 3px 8px;
-  border: 1px solid var(--color-border-field);
-  border-radius: var(--radius-control);
-  background: var(--color-field);
-  color: var(--color-text);
+}
+
+.question-panel .question-filter select {
+  appearance: none;
+  padding: 4px 30px 4px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
   font: var(--font-control);
+  cursor: pointer;
+}
+
+.question-filter-caret {
+  position: absolute;
+  right: 12px;
+  color: var(--color-accent);
+  pointer-events: none;
 }
 
 .question-section {
@@ -5150,6 +5200,14 @@ button.pdf-page-number:hover {
   display: flex;
   align-items: flex-start;
   gap: 6px;
+  border-radius: var(--radius-panel);
+}
+
+/* 動作中のカード（止めるボタンもカードの中） */
+.question-row.running {
+  padding-right: 8px;
+  border: 1px solid var(--color-selected-border);
+  background: var(--color-accent-soft);
 }
 
 .question-panel .question-row-main {
@@ -5174,8 +5232,8 @@ button.pdf-page-number:hover {
 }
 
 .question-row.running .question-row-main {
-  border-color: var(--color-selected-border);
-  background: var(--color-accent-soft);
+  border-color: transparent;
+  background: transparent;
 }
 
 .question-row .claude-spinner {
@@ -5205,9 +5263,13 @@ button.pdf-page-number:hover {
   padding-block: 2px;
   margin-block: -2px;
   overflow: hidden;
-  font-weight: var(--font-weight-700);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.question-row.unread .question-row-label,
+.question-row.running .question-row-label {
+  font-weight: var(--font-weight-700);
 }
 
 .question-row-meta,
@@ -5216,7 +5278,20 @@ button.pdf-page-number:hover {
 }
 
 .question-row-steps {
+  color: var(--color-text-sub);
+}
+
+.question-step.done {
+  color: var(--color-text-sub);
+}
+
+.question-step.current {
   color: var(--color-accent);
+  font-weight: var(--font-weight-700);
+}
+
+.question-step.todo {
+  color: var(--color-text-disabled);
 }
 
 .question-panel .question-row-stop {
@@ -5225,9 +5300,11 @@ button.pdf-page-number:hover {
   flex: none;
   min-width: 28px;
   min-height: 28px;
-  margin-top: 6px;
+  margin-top: 8px;
   padding: 2px 6px;
+  border-color: var(--color-border-subtle);
   border-radius: 50%;
+  background: var(--color-surface);
   color: var(--color-text-sub);
   font: var(--font-control);
 }
@@ -5251,16 +5328,17 @@ button.pdf-page-number:hover {
   /* 当たり：上は欄の余白（10px）まで */
   --target-reach-top: 10px;
   --target-reach-x: 3px;
+  padding: 3px 4px;
+  margin-left: -4px;
   border-color: transparent;
   background: transparent;
-  color: var(--color-text-sub);
+  color: var(--color-accent);
 }
 
 .question-detail-title {
   margin-top: 8px;
-  font: var(--font-body);
-  font-weight: var(--font-weight-700);
-  letter-spacing: var(--letter-spacing-body);
+  font: var(--font-heading);
+  letter-spacing: var(--letter-spacing-heading);
   overflow-wrap: anywhere;
 }
 
@@ -5274,11 +5352,12 @@ button.pdf-page-number:hover {
 }
 
 .question-panel .question-open-note {
-  /* 当たり：上下は、まわりの間（8px・4px）のうち 4px まで */
+  /* 当たり：上下は、まわりの間（8px）の半分まで */
   --target-reach-y: 4px;
   align-self: flex-start;
-  margin-top: 8px;
-  border-color: var(--color-selected-border);
+  margin: 8px 0 4px;
+  padding: 4px 16px;
+  border-color: var(--color-accent);
   border-radius: 999px;
   color: var(--color-accent);
 }
@@ -5288,7 +5367,13 @@ button.pdf-page-number:hover {
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  margin-top: 4px;
+  margin-top: 8px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* 質問のタブの答えの操作は、一回り大きいボタン */
+.question-panel .answer-view-actions button {
+  padding: 6px 12px;
 }
 
 .question-panel .answer-view-continue {

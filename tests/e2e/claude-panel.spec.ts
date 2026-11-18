@@ -294,8 +294,9 @@ test('shows the questions waiting for an answer, answers them with JSON, and mar
     return route.fulfill({ status: 204 })
   })
 
+  // 見出しの帯は出さず、数は読み上げの名前に入れる（1 つずつ警告の色のカード）
   const list = page.locator('.claude-permissions')
-  await expect(list.locator('.claude-permissions-header')).toHaveText('許可を待っています（2）')
+  await expect(page.getByRole('region', { name: '許可を待っています（2）' })).toBeVisible()
   const items = list.locator('.claude-permission')
   // コマンドは切らずに全部出す。説明・サブエージェント・わけ・残りの時間
   await expect(items.nth(0).locator('.claude-permission-detail')).toHaveText(build)
@@ -320,7 +321,7 @@ test('shows the questions waiting for an answer, answers them with JSON, and mar
   await items.nth(0).getByRole('button', { name: '許可する' }).click()
   await expect.poll(() => answers).toEqual([{ url: '/api/claude/threads/t1/permissions/p1', type: 'application/json', body: '{"decision":"allow"}' }])
   // SSE で一覧が変わると、答えたものが消える
-  await expect(list.locator('.claude-permissions-header')).toHaveText('許可を待っています（1）')
+  await expect(page.getByRole('region', { name: '許可を待っています（1）' })).toBeVisible()
   await items.nth(0).getByRole('button', { name: '断る' }).click()
   await expect.poll(() => answers.map((answer) => answer.body)).toEqual(['{"decision":"allow"}', '{"decision":"deny"}'])
   await expect(items.nth(0).getByRole('button', { name: '断る' })).toBeDisabled()
@@ -951,11 +952,11 @@ test('cuts an answer of the chat into an AI note, sends the chat answer with it,
     return { id, ai: editor.getNode(id).meta.ai, editing: editor.session.get().editingId }
   }, before)
   expect(placed).toMatchObject({
-    ai: { contexts: [{ kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『hello』の答え', turns: [{ question: 'question', answer: 'Answer from Claude' }] }] },
+    ai: { contexts: [{ kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「hello」の答え', turns: [{ question: 'question', answer: 'Answer from Claude' }] }] },
   })
   expect(placed!.editing).toBe(placed!.id)
   await expect(page.locator('.claude-prompt')).toHaveCount(1)
-  await expect(page.locator('.ai-note-chip.chat')).toContainText('💬 会話『hello』の答え')
+  await expect(page.locator('.ai-note-chip.chat')).toContainText('💬 会話「hello」の答え')
 
   // 書いて Ctrl+Enter で送ると、前の答えとして会話の答えを渡す
   await page.keyboard.type('つまりどういうこと？')
@@ -999,18 +1000,18 @@ test('continues a question asked with a note in the chat: the chip waits above t
     await route.fulfill({ status: 201, json: { job } })
   })
 
-  // 質問のタブで答えを開き、「会話で続ける」→「いまの会話『hello』に入れる」
+  // 質問のタブで答えを開き、「会話で続ける」→「いまの会話「hello」に入れる」
   await panel(page).getByRole('tab', { name: '質問' }).click()
   await answerPanel(page).locator('.question-row-main', { hasText: 'コンテキストとは？' }).click()
   await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
   const menu = answerPanel(page).getByRole('menu')
-  await expect(menu.getByRole('menuitem')).toHaveText(['いまの会話『hello』に入れる', '新しい会話にする'])
+  await expect(menu.getByRole('menuitem')).toHaveText(['いまの会話「hello」に入れる', '新しい会話にする'])
   // Esc はメニューだけを閉じる
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
   await expect(answerPanel(page)).toBeVisible()
   await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
-  await menu.getByRole('menuitem', { name: 'いまの会話『hello』に入れる' }).click()
+  await menu.getByRole('menuitem', { name: 'いまの会話「hello」に入れる' }).click()
 
   // 会話のタブに移り、入力欄の上に札を置いて、入力欄にフォーカスする（取り込むだけでは送らない）
   await expect(panel(page)).toBeVisible()
@@ -1094,11 +1095,11 @@ test('asks one question from the prompt box without adding it to the chat, and s
   await card.getByRole('button', { name: '答えを見る →' }).click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(answerPanel(page).locator('.question-detail-title')).toHaveText('「コンテキストとは？」')
-  await expect(answerPanel(page).locator('.question-detail-meta')).toContainText('会話『hello』')
+  await expect(answerPanel(page).locator('.question-detail-meta')).toContainText('会話「hello」')
   await expect(answerPanel(page).locator('.answer-view-body strong')).toHaveText('会話の外')
   // 一覧にも、会話の質問として出る
   await answerPanel(page).getByRole('button', { name: '← 一覧' }).click()
-  await expect(answerPanel(page).locator('.question-row.chat')).toContainText('会話『hello』')
+  await expect(answerPanel(page).locator('.question-row.chat')).toContainText('会話「hello」')
   await answerPanel(page).locator('.question-row.chat .question-row-main').click()
   // 「↗ 会話へ移動」で、会話のタブのそのカードへ戻る
   await answerPanel(page).getByRole('button', { name: '↗ 会話へ移動' }).click()

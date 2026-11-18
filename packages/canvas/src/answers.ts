@@ -167,7 +167,7 @@ export function previousTurnsOf(meta: AiNoteMeta | null): PreviousTurn[] {
 }
 
 // 会話の答えの札（会話のタブの「付箋に切り出す」・会話の質問の「続けて聞く」）。title は会話の題、question と answer は頼んだ文と答え（Markdown）、
-// previous はその前の質問と答え（会話の質問に添えた前の答え）。名前は「会話『題』の答え」（会話がなければ「『質問』の答え」）、
+// previous はその前の質問と答え（会話の質問に添えた前の答え）。名前は「会話「題」の答え」（会話がなければ「「質問」の答え」）、
 // 写しは FOLLOW_UP_TURNS 個・FOLLOW_UP_LENGTH 文字に収める
 export function chatContext(chat: {
   threadId?: string
@@ -184,7 +184,7 @@ export function chatContext(chat: {
     ...(chat.threadId ? { threadId: chat.threadId } : {}),
     ...(chat.jobId ? { jobId: chat.jobId } : {}),
     ...(chat.questionId ? { questionId: chat.questionId } : {}),
-    label: title ? `会話『${clip(title, CHAT_TITLE_LENGTH)}』の答え` : `「${firstLine(chat.question, CONTEXT_LABEL_LENGTH)}」の答え`,
+    label: title ? `会話「${clip(title, CHAT_TITLE_LENGTH)}」の答え` : `「${firstLine(chat.question, CONTEXT_LABEL_LENGTH)}」の答え`,
     turns: fitTurns([...(chat.previous ?? []), { question: chat.question, answer: chat.answer }]),
   }
 }

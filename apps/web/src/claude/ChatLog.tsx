@@ -78,8 +78,8 @@ function SideQuestionCard(props: { question: ChatQuestion; onStop?(): void; onOp
   return (
     <div className={`claude-side-question ${question.status}`} data-question-id={question.id}>
       <div className="claude-side-question-head">別枠の質問（会話には入れていない）</div>
-      <div className="claude-side-question-text">「{firstLine(question.question, 60)}」</div>
       <div className="claude-side-question-foot">
+        <span className="claude-side-question-text">「{firstLine(question.question, 60)}」</span>
         {question.status === 'running' ? (
           <>
             <span className="claude-spinner" aria-hidden="true" />
@@ -112,14 +112,17 @@ function ImportCard(props: { item: ImportedQuestion; onOpen?(): void }) {
   const chat = !!item.questionId
   return (
     <div className="claude-import-card">
-      <span className="claude-import-card-text">
-        {chat ? '別枠の質問を取り込みました' : '付箋の質問を取り込みました'}「{item.label}」とその答え
-      </span>
-      {onOpen && (
+      <div className="claude-import-card-head">{chat ? '別枠の質問を取り込みました' : '付箋の質問を取り込みました'}</div>
+      <div className="claude-import-card-line">
+        <span className="claude-import-card-text">
+          <strong>「{item.label}」</strong>とその答え
+        </span>
+        {onOpen && (
         <button type="button" className="claude-link" onClick={onOpen} title={chat ? '質問のタブで、この答えを見る' : 'その Canvas に移って、付箋の横に答えを開く'}>
           ↗ {chat ? '質問へ' : '付箋へ'}
-        </button>
-      )}
+          </button>
+        )}
+      </div>
     </div>
   )
 }

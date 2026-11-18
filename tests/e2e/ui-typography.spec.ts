@@ -56,7 +56,7 @@ async function addAiNote(page: Page): Promise<string> {
     const editor = (window as any).canvcode.editor
     const node = editor.makeNode('note', { x: 860, y: 140, props: { paragraphs: [{ runs: [{ text: 'コンテキストとは？' }] }] } })
     const answer = { body: '前提：LLM\n\n**コンテキスト**は、モデルに渡す文の全体です。', related: [], model: 'claude-sonnet-5-5', effort: 'medium', question: 'コンテキストとは？', answeredAt: Date.now() }
-    const chat = { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『会話』の答え', turns: [{ question: '整理して', answer: '整理しました' }] }
+    const chat = { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「会話」の答え', turns: [{ question: '整理して', answer: '整理しました' }] }
     editor.transact('AI 付箋', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [chat], answer } } }))
     return node.id as string
   })
@@ -184,7 +184,7 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
   await expect(claude.locator('.claude-text')).toBeVisible()
   // たたんだ作業を開く（ツールの行の文字も調べる）
   await claude.locator('.claude-tools-toggle').click()
-  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail|span\.claude-answer-model)/ })
+  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail|pre\.claude-permission-detail)/ })
   for (const selector of ['.claude-prompt-text', '.claude-text p', '.claude-compose textarea']) {
     const [style] = await textStyles(claude.locator(selector).first())
     expect(style.size, selector).toBe(16)
@@ -222,11 +222,11 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
 test('the questions tab, the answer panel by a note, the AI note controls and the chat menus use 14px or larger Noto Sans JP (claude-chat-tab-plan 0)', async ({ page }) => {
   await openApp(page)
   const noteId = await addAiNote(page)
-  // モデルの札は等幅（Noto Sans Mono。付箋の下の欄では、札のボタンの中の名前）
-  const mono = /^(span\.answer-popover-model|span\.question-model|code)/
+  // 等幅（Noto Sans Mono）は、答えの中のコードだけ（モデルの札は本文と同じ書体）
+  const mono = /^code/
   await page.evaluate((id) => (window as any).canvcode.editor.setSelection([id]), noteId)
   await expect(page.locator('.ai-note-controls')).toBeVisible()
-  await expectDadsText(page.locator('.ai-note-controls'), { mono: /^span\. / })
+  await expectDadsText(page.locator('.ai-note-controls'))
   await expectDadsText(page.locator('.ai-note-chips'))
   await page.locator('.claude-toggle').click()
   const questions = page.locator('.question-panel')
@@ -249,7 +249,7 @@ test('the questions tab, the answer panel by a note, the AI note controls and th
   await questions.getByRole('tab', { name: '会話' }).click()
   const claude = page.locator('.claude-panel')
   await claude.locator('.claude-job').first().hover()
-  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail|span\.claude-answer-model)/ })
+  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail)/ })
   await claude.locator('.claude-thread-button').click()
   await expectDadsText(claude.locator('.claude-thread-menu'))
   await page.keyboard.press('Escape')

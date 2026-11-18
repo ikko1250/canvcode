@@ -10,7 +10,7 @@ import type { RunningQuestion } from './claudeClient.ts'
 // - 質問の付箋の文字が送ったときと違えば、本文の上に知らせる
 // - 関連する付箋：↗ と 1 行目。押すと、その付箋へ移る
 // - 下に「続けて聞く」「会話で続ける」「Canvasに残す」（付箋を置けないとき（全画面のエディタ）は出さない）。
-//   「会話で続ける」は小さなメニュー：「いまの会話『題』に入れる」（会話を選んでいれば）・「新しい会話にする」（docs/claude-chat-tab-plan.md の 6）
+//   「会話で続ける」は小さなメニュー：「いまの会話「題」に入れる」（会話を選んでいれば）・「新しい会話にする」（docs/claude-chat-tab-plan.md の 6）
 // - 答えを作っている間は、本文の代わりに、進み具合（読む → 調べる → 書く）と考えている中身と「やめる」
 // - 失敗したら、前の答えがあればそれを出し、上に失敗のわけを 1 行出す
 
@@ -130,7 +130,7 @@ function ChatMenu(props: { title: string | null; onChoose(newThread: boolean): v
     <div ref={menuRef} className="answer-view-chat-menu" role="menu" onKeyDown={onKeyDown}>
       {title !== null && (
         <button type="button" role="menuitem" onClick={() => onChoose(false)}>
-          <span>いまの会話『{oneLine(title)}』に入れる</span>
+          <span>いまの会話「{oneLine(title)}」に入れる</span>
         </button>
       )}
       <button type="button" role="menuitem" onClick={() => onChoose(true)}>

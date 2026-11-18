@@ -85,7 +85,7 @@ async function addAiNote(page: Page): Promise<string> {
     const editor = (window as any).canvcode.editor
     const node = editor.makeNode('note', { x: 860, y: 140, props: { paragraphs: [{ runs: [{ text: 'コンテキストとは？' }] }] } })
     const answer = { body: '前提：LLM\n\n**コンテキスト**は、モデルに渡す文の全体です。', related: [], model: 'claude-sonnet-5-5', effort: 'medium', question: 'コンテキストとは？', answeredAt: Date.now() }
-    const chat = { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話『会話』の答え', turns: [{ question: '整理して', answer: '整理しました' }] }
+    const chat = { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「会話」の答え', turns: [{ question: '整理して', answer: '整理しました' }] }
     editor.transact('AI 付箋', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { contexts: [chat], answer } } }))
     return node.id as string
   })
