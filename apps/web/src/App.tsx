@@ -1071,7 +1071,7 @@ export function App(props: { initial: InitialRecords }) {
     [editors, sync, workspace, getEditor],
   )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
-  const { answering, ask: askWithNotes } = useCanvasAnswers({ viewRef, log: answerLog, notify, answerEditor, canvasTitle })
+  const { answering, ask: askWithNotes } = useCanvasAnswers({ viewRef, claude, log: answerLog, notify, answerEditor, canvasTitle })
   const answerEntries = useSyncExternalStore(answerLog.subscribe, answerLog.getSnapshot)
   // 付箋の答えのパネルの「答えへ移る」：答えの Canvas に移り、答えを書いた付箋を見せる
   const jumpToAnswer = useCallback(
@@ -2393,7 +2393,7 @@ export function App(props: { initial: InitialRecords }) {
             <button
               type="button"
               // waiting は、どれかの会話が画面で許可を待っている（パネルが閉じていても気づけるように、印を出す）
-              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) || answering.length > 0 ? ' running' : ''}${claudeState.threads.some(threadAsking) ? ' waiting' : ''}`}
+              className={`claude-toggle${[...claudeState.jobs.values()].some((job) => job.status === 'running') || claudeState.threads.some(threadBusy) || answering.length > 0 || claudeState.questions.length > 0 ? ' running' : ''}${claudeState.threads.some(threadAsking) ? ' waiting' : ''}`}
               onClick={() => {
                 if (!claudeView) return showAnswers()
                 setClaudeView(null)

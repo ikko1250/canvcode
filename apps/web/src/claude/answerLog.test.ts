@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { requestAnswer } from './answer.ts'
+import { AnswerError, requestAnswer } from './answer.ts'
 import { AnswerLog, KEPT_ANSWERS, KEPT_THINKING, thinkingBlocks } from './answerLog.ts'
 
 // 付箋で聞いた答え（キャンバスの AI）の記録と、考えている中身の受け取り
@@ -105,6 +105,15 @@ describe('requestAnswer', () => {
     const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.headers).toMatchObject({ accept: 'application/x-ndjson' })
     expect(JSON.parse(init.body as string)).toEqual({ question: 'q', model: 'opus' })
+  })
+
+  it('passes the id of the running question from the first line, and throws the status of an error line', async () => {
+    vi.stubGlobal('fetch', async () => ndjson([`{"type":"start","id":"q-1"}\n{"type":"error","status":499,"error":"頼むのをやめました"}\n`]))
+    const started: string[] = []
+    const failure = await requestAnswer({ question: 'q', source: { noteId: 'node:a', canvasId: 'canvas:b', label: 'q' } }, {}, { onStart: (id) => started.push(id) }).catch((error: unknown) => error)
+    expect(started).toEqual(['q-1'])
+    expect(failure).toBeInstanceOf(AnswerError)
+    expect(failure).toMatchObject({ status: 499, message: '頼むのをやめました' })
   })
 
   it('throws the error line, an error status, or a stream that ends without an answer', async () => {

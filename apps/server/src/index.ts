@@ -17,6 +17,7 @@ import { handleMemo, MemoWriter } from './claude/memo.ts'
 import { AnswerWriter, handleAnswer } from './claude/answer.ts'
 import { CitationWriter, handleCite } from './claude/cite.ts'
 import { handleLookup, WordLookup } from './claude/lookup.ts'
+import { handleQuestions, RunningQuestions } from './claude/questions.ts'
 import { ClaudeOnce } from './claude/once.ts'
 import { FileConverter } from './fileConvert.ts'
 import { FileStore, type FileEvent } from './files.ts'
@@ -52,7 +53,8 @@ import { ThumbnailStore } from './thumbnails.ts'
 //   モデルは既定で Haiku（CANVCODE_LOOKUP_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - キャンバスの AI：付箋で聞き、答えの本文（Markdown）と関連する付箋を返す。画面が答えを付箋に持たせ、付箋の横のパネルに出す
 //   （/api/claude/answer。claude/answer.ts）。同じ claude/once.ts を使う。モデルは画面が送ったもの（AI 付箋の欄か Claude のパネルで最後に選んだもの）か、
-//   既定で Sonnet（CANVCODE_ANSWER_MODEL で変える）
+//   既定で Sonnet（CANVCODE_ANSWER_MODEL で変える）。答えを作っている質問は、動いている質問の一覧（claude/questions.ts）に載せ、
+//   Claude のパネルの SSE ですべてのタブに流す（止める・付箋に書いたと知らせるのは /api/claude/questions/<id>/cancel・finish）
 // - アイテム（PDF・リンクカード・Markdown のカード）の APA の引用を作る（/api/claude/cite。claude/cite.ts。MAI-98）。同じ claude/once.ts を使い、
 //   Web で項目を確かめさせる。モデルは既定で Sonnet（CANVCODE_CITE_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
@@ -157,6 +159,8 @@ const answer = once
       ...(process.env.CANVCODE_ANSWER_WEB === '0' ? { web: false } : {}),
     })
   : null
+// 付箋で聞いている、動いている質問（claude/questions.ts）。Claude のパネルの SSE で、すべてのタブに流す
+const questions = answer ? new RunningQuestions() : null
 const cite = once
   ? new CitationWriter({ once, deps: { records, files, dataDir: DATA_DIR }, ...(process.env.CANVCODE_CITE_MODEL ? { model: process.env.CANVCODE_CITE_MODEL } : {}) })
   : null
@@ -256,9 +260,10 @@ const server = createServer(async (req, res) => {
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (handleMemo(req, res, url.pathname, memo)) return
   if (handleLookup(req, res, url.pathname, lookup)) return
-  if (handleAnswer(req, res, url.pathname, answer)) return
+  if (handleAnswer(req, res, url.pathname, answer, questions)) return
+  if (handleQuestions(req, res, url.pathname, questions)) return
   if (handleCite(req, res, url.pathname, cite)) return
-  if (handleClaude(req, res, url.pathname, claude)) return
+  if (handleClaude(req, res, url.pathname, claude, questions)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return
   if (await assets.handle(req, res, url.pathname, url.searchParams)) return

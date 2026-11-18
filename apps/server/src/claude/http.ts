@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { normalizeRefId } from '@canvcode/core'
 import { JobError, type ClaudeJobs, type StartRequest } from './jobs.ts'
 import { isEffortLevel, isModelName } from './models.ts'
+import type { RunningQuestions } from './questions.ts'
 
 // 画面から Claude Code に頼む API（claude/jobs.ts）。
 // - GET /api/claude/threads：会話の一覧（最後に動いたものから）{ threads }
@@ -16,9 +17,11 @@ import { isEffortLevel, isModelName } from './models.ts'
 //   model・effort がなければ既定）。201 { job }
 // - GET /api/claude/jobs/<id>：1 つのジョブ
 // - POST /api/claude/jobs/<id>/cancel：止める（そのターンだけ。バックグラウンドの作業は残る）
-// - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running }（running は動いているジョブ）、
+// - GET /api/claude/events：変化を SSE で送る。つないだときに { type: 'snapshot', threads, running, questions }（running は動いているジョブ、
+//   questions は付箋で聞いている動いている質問。claude/questions.ts）、
 //   そのあと変わるたびに { type: 'job', job, events, from, thread }（events はジョブの from 番目からの出来事）か、
-//   { type: 'thread', thread }（バックグラウンドの作業の一覧が変わった）か、{ type: 'thread-deleted', threadId }
+//   { type: 'thread', thread }（バックグラウンドの作業の一覧が変わった）か、{ type: 'thread-deleted', threadId }か、
+//   動いている質問の変化（claude/questions.ts の QuestionChange）
 // 会話（thread）には、動いているバックグラウンドの作業 tasks: { id, description, type }[] と、
 // 画面で答えを待っている問い合わせ permissions（claude/jobs.ts の PendingPermission）が付く
 // jobs がなければ（CANVCODE_CLAUDE=0）、どれも 404 を返す。画面はそれを見て入口を出さない
@@ -30,7 +33,7 @@ const HEARTBEAT_MS = 25_000
 // バックグラウンドの作業の id（Claude Code の task_id）
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/
 
-export function handleClaude(req: IncomingMessage, res: ServerResponse, path: string, jobs: ClaudeJobs | null): boolean {
+export function handleClaude(req: IncomingMessage, res: ServerResponse, path: string, jobs: ClaudeJobs | null, questions: RunningQuestions | null = null): boolean {
   if (path !== PREFIX && !path.startsWith(`${PREFIX}/`)) return false
   if (!jobs) {
     sendJson(res, 404, { error: 'Claude Code from the screen is disabled (CANVCODE_CLAUDE=0)' })
@@ -38,7 +41,7 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
   }
   if (path === `${PREFIX}/events`) {
     if (req.method !== 'GET') return methodNotAllowed(res)
-    streamEvents(req, res, jobs)
+    streamEvents(req, res, jobs, questions)
     return true
   }
   if (path === `${PREFIX}/threads`) {
@@ -175,7 +178,7 @@ export function parseStart(body: unknown): StartRequest {
   }
 }
 
-function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJobs): void {
+function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJobs, questions: RunningQuestions | null): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-store',
@@ -184,13 +187,15 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, jobs: ClaudeJob
     'x-accel-buffering': 'no',
   })
   const send = (data: unknown) => res.write(`data: ${JSON.stringify(data)}\n\n`)
-  send({ type: 'snapshot', threads: jobs.threads(), running: jobs.runningJobs() })
-  const unsubscribe = jobs.subscribe(send)
+  send({ type: 'snapshot', threads: jobs.threads(), running: jobs.runningJobs(), questions: questions?.list() ?? [] })
+  const unsubscribeJobs = jobs.subscribe(send)
+  const unsubscribeQuestions = questions?.subscribe(send)
   const heartbeat = setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS)
   heartbeat.unref()
   req.on('close', () => {
     clearInterval(heartbeat)
-    unsubscribe()
+    unsubscribeJobs()
+    unsubscribeQuestions?.()
   })
 }
 

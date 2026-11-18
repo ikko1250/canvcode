@@ -2,12 +2,13 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 
 // キャンバスの AI：付箋の右クリックの「Claude に聞く」か AI 付箋の「送信」で、答え（サーバーの /api/claude/answer。ここでは差し替え）を
 // 質問の付箋の meta.ai.answer に書く（キャンバスには何も置かない）。近くの付箋を関連する付箋の候補として送り、
-// 続きの付箋は、添えた前の質問と答えを送る（docs/canvas-answer-panel-plan.md）
+// 続きの付箋は、添えた前の質問と答えを送る。どの付箋の質問かも送り（サーバーの動いている質問の一覧に載る）、付箋に書いたら finish で知らせる。
+// ほかのタブで止められたら（SSE の question-done が cancelled）、付箋に書かない（docs/canvas-answer-panel-plan.md）
 
 const QUESTION = 'swiftの開発環境ってどうやって整えたら良いの?'
 const ANSWER = { body: '前提：iOS アプリを作る\n\n**Xcode** を入れれば、開発環境はほぼ整う。\n\n- まず App Store から `Xcode` を入れる', related: [] as string[], model: 'claude-sonnet-5-5' }
 
-async function openApp(page: Page, answer: (route: Route) => Promise<void>): Promise<string> {
+async function openApp(page: Page, answer: (route: Route) => Promise<void>, events?: (route: Route) => Promise<void>): Promise<string> {
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto')
   await page.waitForFunction(() => Boolean((window as any).canvasInputFixture))
   const { records, noteId } = await page.evaluate((text) => {
@@ -20,7 +21,7 @@ async function openApp(page: Page, answer: (route: Route) => Promise<void>): Pro
   await page.route('**/api/files', (route) => route.fulfill({ json: { files: [file] } }))
   await page.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: '# Card', headers: { etag: '"test"' } }))
   await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [] } }))
-  await page.route('**/api/claude/events', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/api/claude/events', events ?? ((route) => route.fulfill({ status: 204 })))
   await page.route('**/api/claude/answer', answer)
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()
@@ -51,6 +52,21 @@ const addNote = (page: Page, text: string, at: { x: number; y: number }, ai?: un
     },
     { text, at, ai },
   )
+
+// NDJSON の答え（行を並べる）
+const ndjson = (route: Route, lines: unknown[]) => route.fulfill({ body: lines.map((line) => JSON.stringify(line)).join('\n') + '\n', contentType: 'application/x-ndjson' })
+
+// 付箋で聞いている質問の終わりの知らせ（POST /api/claude/questions/<id>/finish）を集める
+async function finishes(page: Page): Promise<{ id: string; body: unknown }[]> {
+  const sent: { id: string; body: unknown }[] = []
+  await page.route('**/api/claude/questions/*/finish', async (route) => {
+    sent.push({ id: route.request().url().split('/').at(-2)!, body: route.request().postDataJSON() })
+    await route.fulfill({ status: 204 })
+  })
+  return sent
+}
+
+const canvasIdOf = (page: Page) => page.evaluate(() => (window as any).canvcode.editor.canvasId as string)
 
 // 付箋の meta.ai.answer
 const answerOf = (page: Page, id: string) => page.evaluate((id) => (window as any).canvcode.editor.getNode(id)?.meta?.ai?.answer ?? null, id)
@@ -84,7 +100,11 @@ test('付箋で聞くと、答えを付箋に書く（キャンバスには置�
 
   await expect(page.getByText('Claude が答えを書いています')).toBeVisible()
   await expect.poll(() => Boolean(release)).toBe(true)
-  expect(sent[0]).toEqual({ question: QUESTION, candidates: [{ id: nearId, text: '近くの付箋' }] })
+  expect(sent[0]).toEqual({
+    question: QUESTION,
+    candidates: [{ id: nearId, text: '近くの付箋' }],
+    source: { noteId, canvasId: await canvasIdOf(page), label: QUESTION },
+  })
   release!()
 
   await expect.poll(() => answerOf(page, noteId)).toMatchObject({ body: ANSWER.body, related: [nearId], model: ANSWER.model, question: QUESTION })
@@ -97,12 +117,13 @@ test('付箋で聞くと、答えを付箋に書く（キャンバスには置�
   await expect.poll(() => answerOf(page, noteId)).toBeNull()
 })
 
-test('答えが届いたとき付箋の文字を編集していたら、編集を終えてから書く', async ({ page }) => {
+test('答えが届いたとき付箋の文字を編集していたら、編集を終えてから書き、書いたことをサーバーに知らせる', async ({ page }) => {
   let release: (() => void) | undefined
   const noteId = await openApp(page, async (route) => {
     await new Promise<void>((resolve) => (release = resolve))
-    await route.fulfill({ json: ANSWER })
+    await ndjson(route, [{ type: 'start', id: 'q-1' }, { type: 'answer', answer: ANSWER }])
   })
+  const finished = await finishes(page)
   await askWithMenu(page, noteId)
   await expect.poll(() => Boolean(release)).toBe(true)
   const note = await centerOf(page, noteId)
@@ -111,8 +132,43 @@ test('答えが届いたとき付箋の文字を編集していたら、編集�
   release!()
   await expect(page.getByText('Claude の答えができました。編集を終えると付箋に書きます')).toBeVisible()
   expect(await answerOf(page, noteId)).toBeNull()
+  expect(finished).toEqual([])
   await page.keyboard.press('Escape')
   await expect.poll(() => answerOf(page, noteId)).toMatchObject({ body: ANSWER.body, question: QUESTION })
+  await expect.poll(() => finished).toEqual([{ id: 'q-1', body: { status: 'done' } }])
+})
+
+test('付箋に書く前に、ほかのタブで止められたら（SSE の question-done が cancelled）、書かない', async ({ page }) => {
+  let release: (() => void) | undefined
+  let stop: (() => void) | undefined
+  const stopped = new Promise<void>((resolve) => (stop = resolve))
+  const noteId = await openApp(
+    page,
+    async (route) => {
+      await new Promise<void>((resolve) => (release = resolve))
+      await ndjson(route, [{ type: 'start', id: 'q-2' }, { type: 'answer', answer: ANSWER }])
+    },
+    async (route) => {
+      // つないだ SSE に、止めた知らせを流す（そのあとは閉じる）
+      await stopped
+      const messages = [{ type: 'snapshot', threads: [], running: [], questions: [] }, { type: 'question-done', id: 'q-2', status: 'cancelled' }]
+      await route.fulfill({ body: messages.map((m) => `data: ${JSON.stringify(m)}\n\n`).join(''), contentType: 'text/event-stream', headers: { 'cache-control': 'no-store' } })
+    },
+  )
+  const finished = await finishes(page)
+  await askWithMenu(page, noteId)
+  await expect.poll(() => Boolean(release)).toBe(true)
+  // 文字を編集している間に答えが届き、付箋に書くのを待っている
+  const note = await centerOf(page, noteId)
+  await page.mouse.dblclick(note.x, note.y)
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  release!()
+  await expect(page.getByText('Claude の答えができました。編集を終えると付箋に書きます')).toBeVisible()
+  stop!()
+  await expect(page.getByText('Claude に頼むのをやめました')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect.poll(() => finished).toEqual([{ id: 'q-2', body: { status: 'cancelled' } }])
+  expect(await answerOf(page, noteId)).toBeNull()
 })
 
 test('続きの付箋は前の質問と答えを送り、答えをその付箋に書く。付箋の答えのパネルで考えた中身を見て、付箋へ移る', async ({ page }) => {
@@ -134,7 +190,7 @@ test('続きの付箋は前の質問と答えを送り、答えをその付箋�
     ]
     await route.fulfill({ body: lines.map((line) => JSON.stringify(line)).join('\n') + '\n', contentType: 'application/x-ndjson' })
   })
-  const canvasId = await page.evaluate(() => (window as any).canvcode.editor.canvasId as string)
+  const canvasId = await canvasIdOf(page)
   const turns = [{ question: QUESTION, answer: ANSWER.body }]
   const followId = await addNote(page, 'Xcode は無料？', { x: 300, y: 600 }, { contexts: [{ kind: 'answer', noteId, canvasId, label: 'swiftの開発環境', turns }] })
   const before = await nodeTypes(page)
@@ -167,7 +223,12 @@ test('続きの付箋は前の質問と答えを送り、答えをその付箋�
   await page.locator('.ai-note-send').click()
 
   await expect.poll(() => answerOf(page, followId)).toMatchObject({ body: 'Xcode は無料です。', question: 'Xcode は無料？' })
-  expect(sent[0]).toEqual({ question: 'Xcode は無料？', previous: turns, candidates: [{ id: noteId, text: QUESTION }] })
+  expect(sent[0]).toEqual({
+    question: 'Xcode は無料？',
+    previous: turns,
+    candidates: [{ id: noteId, text: QUESTION }],
+    source: { noteId: followId, canvasId, label: 'Xcode は無料？' },
+  })
   // 答えを書いても AI 付箋のまま（前の答えの札も残る）
   expect(await page.evaluate((id) => (window as any).canvcode.editor.getNode(id).meta.ai.contexts.length, followId)).toBe(1)
   expect(await nodeTypes(page)).toEqual(before)

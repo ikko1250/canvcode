@@ -4,6 +4,7 @@ import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
 import { isEffortLevel, isModelName } from './models.ts'
 import { STRUCTURED_OUTPUT_TOOL, type ClaudeOnce } from './once.ts'
+import { parseQuestionSource, type QuestionSource, type RunningQuestions } from './questions.ts'
 
 // キャンバスの AI：付箋で聞き、答えは付箋の横のパネルで見る（docs/canvas-answer-panel-plan.md）。
 // - 質問（付箋の文字。付箋の Markdown）を渡し、答えの本文（Markdown）と、関連する付箋（画面が送った候補の id）を返させる。
@@ -24,11 +25,14 @@ import { STRUCTURED_OUTPUT_TOOL, type ClaudeOnce } from './once.ts'
 // - 同時に書ける答えは MAX_RUNNING_ANSWERS まで（once の上限は語を調べる・引用と分け合うので、長い答えで埋めない）
 // - 続きの質問（答えの「続けて聞く」で置いた付箋）は、前の質問と答え（previous。古い方から 3 つまで）も渡し、踏まえて答えさせる
 // - 質問した人がキャンバスの一部を添えたら（refs）、ref の中身（MCP の resolve_reference と同じ JSON）を読んで、材料として渡す
-// - POST /api/claude/answer { question, previous?, refs?, candidates?, model?, effort? }：previous の項目は { question, answer }、
-//   refs の項目は { label, refId }、candidates の項目は { id, text }（質問の付箋の近くの付箋）。
+// - NDJSON で頼むとき、どの付箋の質問か（source）を添えると、動いている質問の一覧（claude/questions.ts）に載せ、すべてのタブに流す。
+//   最初の行で、その id を返す。答えを渡したら placing にし、画面が付箋に書いたと知らせて（POST /api/claude/questions/<id>/finish）終わる
+// - POST /api/claude/answer { question, previous?, refs?, candidates?, source?, model?, effort? }：previous の項目は { question, answer }、
+//   refs の項目は { label, refId }、candidates の項目は { id, text }（質問の付箋の近くの付箋）、source は { noteId, canvasId, label }。
 //   200 { body, related, model }。content-type は application/json だけ受ける（415）。
-//   Accept が application/x-ndjson なら、NDJSON で返す：{type:'step', step} と Claude の考えている中身 {type:'thinking', text} が続き、
-//   最後に {type:'answer', answer} か {type:'error', status, error}（始める前の誤りは、ふつうの JSON と状態コード）
+//   Accept が application/x-ndjson なら、NDJSON で返す：{type:'start', id}（source を添えたとき）、{type:'step', step} と
+//   Claude の考えている中身 {type:'thinking', text} が続き、最後に {type:'answer', answer} か {type:'error', status, error}
+//   （始める前の誤りは、ふつうの JSON と状態コード）
 
 export const ANSWER_PATH = '/api/claude/answer'
 export const DEFAULT_ANSWER_MODEL = 'sonnet'
@@ -91,6 +95,8 @@ export interface AnswerRequest {
   // 添えたキャンバスの一部（ref。label は画面に出した名前）
   refs?: { label: string; refId: string }[]
   candidates?: AnswerCandidate[]
+  // どの付箋の質問か（NDJSON のとき、動いている質問の一覧に載せる）
+  source?: QuestionSource
   model?: string
   effort?: EffortLevel
 }
@@ -352,7 +358,7 @@ function clip(text: string, length: number): string {
 
 export function parseAnswerRequest(body: unknown): AnswerRequest {
   if (typeof body !== 'object' || body === null) throw new JobError(400, 'invalid body')
-  const { question, model, effort, previous, refs, candidates } = body as Record<string, unknown>
+  const { question, model, effort, previous, refs, candidates, source } = body as Record<string, unknown>
   if (typeof question !== 'string' || question.trim() === '') throw new JobError(400, 'question がありません')
   const text = question.trim()
   if (text.length > MAX_QUESTION_LENGTH) throw new JobError(413, `質問が長すぎます（${MAX_QUESTION_LENGTH} 文字まで）`)
@@ -361,11 +367,13 @@ export function parseAnswerRequest(body: unknown): AnswerRequest {
   const turns = parsePrevious(previous)
   const places = parseRefs(refs)
   const nearby = parseCandidates(candidates)
+  const asked = parseQuestionSource(source)
   return {
     question: text,
     ...(turns.length > 0 ? { previous: turns } : {}),
     ...(places.length > 0 ? { refs: places } : {}),
     ...(nearby.length > 0 ? { candidates: nearby } : {}),
+    ...(asked ? { source: asked } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
   }
@@ -413,17 +421,18 @@ function parseCandidates(value: unknown): AnswerCandidate[] {
   })
 }
 
-export function handleAnswer(req: IncomingMessage, res: ServerResponse, path: string, writer: AnswerWriter | null): boolean {
+// questions は、動いている質問の一覧（渡さなければ、source を添えても載せない）
+export function handleAnswer(req: IncomingMessage, res: ServerResponse, path: string, writer: AnswerWriter | null, questions: RunningQuestions | null = null): boolean {
   if (path !== ANSWER_PATH || !writer) return false
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'method not allowed' })
     return true
   }
-  void respond(req, res, writer)
+  void respond(req, res, writer, questions)
   return true
 }
 
-async function respond(req: IncomingMessage, res: ServerResponse, writer: AnswerWriter): Promise<void> {
+async function respond(req: IncomingMessage, res: ServerResponse, writer: AnswerWriter, questions: RunningQuestions | null): Promise<void> {
   try {
     const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase()
     if (type !== 'application/json') throw new JobError(415, 'content-type must be application/json')
@@ -433,7 +442,7 @@ async function respond(req: IncomingMessage, res: ServerResponse, writer: Answer
     res.on('close', () => {
       if (!res.writableFinished) controller.abort()
     })
-    if ((req.headers.accept ?? '').includes('application/x-ndjson')) return await stream(res, writer, request, controller.signal)
+    if ((req.headers.accept ?? '').includes('application/x-ndjson')) return await stream(res, writer, request, controller, questions)
     sendJson(res, 200, await writer.answer(request, { signal: controller.signal }))
   } catch (error) {
     if (res.destroyed || res.headersSent) return
@@ -441,19 +450,28 @@ async function respond(req: IncomingMessage, res: ServerResponse, writer: Answer
   }
 }
 
-// NDJSON で返す：進み具合と考えている中身（THINKING_FLUSH_MS ごとにまとめる）、最後に答えか誤り
-async function stream(res: ServerResponse, writer: AnswerWriter, request: AnswerRequest, signal: AbortSignal): Promise<void> {
+// NDJSON で返す：動いている質問の id（source を添えたとき）、進み具合と考えている中身（THINKING_FLUSH_MS ごとにまとめる）、最後に答えか誤り。
+// 動いている質問の一覧にも、同じものを流す
+async function stream(res: ServerResponse, writer: AnswerWriter, request: AnswerRequest, controller: AbortController, questions: RunningQuestions | null): Promise<void> {
   if (writer.full) throw new JobError(429, `Claude が書いている答えが多すぎます（同時に ${MAX_RUNNING_ANSWERS} つまで）。終わるまで待ってください`)
   res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' })
   const send = (message: Record<string, unknown>) => {
     if (!res.destroyed) res.write(`${JSON.stringify(message)}\n`)
   }
+  const id =
+    request.source && questions
+      ? questions.start(request.source, { model: request.model ?? writer.model, effort: request.effort ?? DEFAULT_ANSWER_EFFORT }, () => controller.abort())
+      : null
+  if (id) send({ type: 'start', id })
   let pending = ''
   let timer: ReturnType<typeof setTimeout> | null = null
   const flush = () => {
     if (timer) clearTimeout(timer)
     timer = null
-    if (pending) send({ type: 'thinking', text: pending })
+    if (pending) {
+      send({ type: 'thinking', text: pending })
+      if (id) questions!.thinking(id, pending)
+    }
     pending = ''
   }
   const onThinking = (text: string) => {
@@ -464,15 +482,21 @@ async function stream(res: ServerResponse, writer: AnswerWriter, request: Answer
   const onStep = (step: AnswerStep) => {
     flush()
     send({ type: 'step', step })
+    if (id) questions!.step(id, step)
   }
   try {
-    const answer = await writer.answer(request, { signal, onThinking, onStep })
+    const answer = await writer.answer(request, { signal: controller.signal, onThinking, onStep })
     flush()
     send({ type: 'answer', answer })
+    if (id) questions!.placing(id, answer.model)
   } catch (error) {
     flush()
     if (!(error instanceof JobError)) console.error('a Claude answer failed', error)
-    send({ type: 'error', status: error instanceof JobError ? error.status : 500, error: error instanceof Error ? error.message : String(error) })
+    const status = error instanceof JobError ? error.status : 500
+    const message = error instanceof Error ? error.message : String(error)
+    send({ type: 'error', status, error: message })
+    // 499 は、やめた（頼んだ画面が切った・ほかのタブで止めた）
+    if (id) questions!.end(id, status === 499 ? 'cancelled' : 'failed', status === 499 ? undefined : message)
   } finally {
     res.end()
   }

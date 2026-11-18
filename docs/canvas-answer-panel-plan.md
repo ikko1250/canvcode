@@ -177,7 +177,8 @@ type AiContext =
 - `POST /api/claude/questions/<id>/finish { status, error? }`：頼んだ画面が、付箋に書いた（書けなかった）ことを知らせる。`placing` のものを終わりにする
   - 知らせが来ないまま `PLACING_TIMEOUT_MS`（10 分）たったら、終わりにする（頼んだ画面を閉じたなど）。そのときは `done` として流す（ほかのタブは読み直して、書けていれば出る）
 - 頼んだ画面が答えを受け取る前に NDJSON を切ったら（タブを閉じた・やめた）、今と同じく Claude を止め、`cancelled` として流す
-- SSE は、今はパネルを初めて開いたときにつないでいる（`ClaudePanel` の `client.connect()`）。三角の点滅と右上の ●N のために、Claude を使えるとわかったらすぐつなぐ
+- SSE は、Claude を使えるとわかったらすぐつないでいる（`claudeClient.ts` の `check()`。許可を待つ問い合わせの印のため）ので、そのまま使える
+- 頼んだ画面は、答えを付箋に書くのを待っている間に、ほかのタブで止められた（SSE の `question-done` が `cancelled`）と知ったら、書くのをやめる（`claudeClient.ts` の `finishedQuestions`）
 
 ## 3. 角の三角（`packages/canvas`）
 
@@ -317,7 +318,7 @@ type AiContext =
 ## 11. 作業の分け方（段階 A）
 
 1. サーバーの答えの形と、`answers.ts` の答えの持ち方（`setAiAnswer`・続きの札・置く関数）。答えのフレームの部分を消す（済み）
-2. 動いている質問（サーバーの `questions.ts` の動いている分・SSE・`claudeClient.ts` の `questions`）
+2. 動いている質問（サーバーの `questions.ts` の動いている分・SSE・`claudeClient.ts` の `questions`）（済み）
 3. 角の三角（`aiCorner.ts`・オーバーレイ・`SelectTool`・`session`）
 4. 付箋のまわり：付箋の横のパネル・上と下の欄・聞く流れ
 5. 右のパネル：タブと質問のタブ（一覧・答え・この場で続けて聞く）、`GET /api/claude/questions`

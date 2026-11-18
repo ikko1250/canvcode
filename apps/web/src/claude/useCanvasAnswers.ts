@@ -10,8 +10,9 @@ import {
   type CanvasView,
   type Editor,
 } from '@canvcode/canvas'
-import { requestAnswer } from './answer.ts'
+import { AnswerError, requestAnswer } from './answer.ts'
 import type { AnswerLog, AnswerLogEntry } from './answerLog.ts'
+import type { ClaudeClient } from './claudeClient.ts'
 import { loadSetting, type ModelSetting } from './modelChoice.ts'
 import type { Effort } from './claudeClient.ts'
 
@@ -22,6 +23,8 @@ import type { Effort } from './claudeClient.ts'
 // - 頼んだものは AnswerLog に記録する（付箋の答えのパネルに、回答中・回答終了と考えている中身を出す）
 // - モデルと effort は、AI 付箋なら付箋に選んだもの、ほかはチャットで最後に選んだもの（なければサーバーの既定）
 // - 続きの付箋なら、付箋に添えた前の質問と答えも送る。関連する付箋を選ばせるため、近くの付箋も送る
+// - どの付箋の質問かも送り、サーバーの動いている質問の一覧に載せる（すべてのタブに流す）。付箋に書いたら（書けなかったら）finish で知らせる。
+//   ほかのタブで止められたら（SSE の question-done が cancelled）、付箋に書くのをやめる
 
 export type AnsweringJob = {
   key: number
@@ -40,6 +43,7 @@ type Outcome = { noteId: string; message?: string } | { problem: string } | { ca
 
 export interface CanvasAnswersDeps {
   viewRef: RefObject<CanvasView | null>
+  claude: ClaudeClient
   log: AnswerLog
   notify: (message: string) => void
   // 答えを書く Canvas の Editor（読み込んでいなければ undefined）
@@ -47,7 +51,7 @@ export interface CanvasAnswersDeps {
   canvasTitle: (canvasId: string) => string
 }
 
-export function useCanvasAnswers({ viewRef, log, notify, answerEditor, canvasTitle }: CanvasAnswersDeps) {
+export function useCanvasAnswers({ viewRef, claude, log, notify, answerEditor, canvasTitle }: CanvasAnswersDeps) {
   const [answering, setAnswering] = useState<AnsweringJob[]>([])
   const answeringIds = useRef(new Set<string>())
 
@@ -85,7 +89,8 @@ export function useCanvasAnswers({ viewRef, log, notify, answerEditor, canvasTit
           notify('Claude に頼むのをやめました')
         }
       } catch (error) {
-        if (signal.aborted) {
+        // 499 は、やめた（ほかのタブで止めたときも）
+        if (signal.aborted || (error instanceof AnswerError && error.status === 499)) {
           log.finish(logId, { status: 'cancelled' })
           return notify('Claude に頼むのをやめました')
         }
@@ -127,37 +132,59 @@ export function useCanvasAnswers({ viewRef, log, notify, answerEditor, canvasTit
       return run(
         job,
         async (signal, onThinking) => {
-          // 選んだ所は、送るときに ref にする（ref は 3 日で消えるので、付箋には範囲を持っておく）
-          const refs = (
-            await Promise.all(places.map(async (place) => ({ label: place.label, refId: await view.saveReference(place.target).catch(() => null) })))
-          ).flatMap((ref) => (ref.refId ? [{ label: ref.label, refId: ref.refId }] : []))
-          const request = {
-            question: asked.question,
-            ...(previous.length > 0 ? { previous } : {}),
-            ...(refs.length > 0 ? { refs } : {}),
-            ...(candidates.length > 0 ? { candidates } : {}),
-          }
-          const answer = await requestAnswer(request, setting, { signal, onThinking })
-          const target = await settle(job, signal)
-          if (target === null) return { cancelled: true }
-          const written =
-            target &&
-            setAiAnswer(target, noteId, {
-              body: answer.body,
-              related: answer.related,
-              model: answer.model,
-              ...(setting.effort ? { effort: setting.effort } : {}),
+          // サーバーの動いている質問の id。ほかのタブで止められたら、ここでもやめる
+          let questionId: string | null = null
+          const unsubscribe = claude.subscribe(() => {
+            if (questionId && claude.state.finishedQuestions.get(questionId) === 'cancelled') job.abort.abort()
+          })
+          try {
+            // 選んだ所は、送るときに ref にする（ref は 3 日で消えるので、付箋には範囲を持っておく）
+            const refs = (
+              await Promise.all(places.map(async (place) => ({ label: place.label, refId: await view.saveReference(place.target).catch(() => null) })))
+            ).flatMap((ref) => (ref.refId ? [{ label: ref.label, refId: ref.refId }] : []))
+            const request = {
               question: asked.question,
-              ...(others.length > 0 ? { questionIds: others } : {}),
-              answeredAt: Date.now(),
-            })
-          if (!written) return { problem: '質問の付箋が見えなくなったので、答えを書けませんでした' }
-          return { noteId, ...(viewRef.current?.editor !== target ? { message: `「${canvasTitle(job.canvasId)}」の付箋に Claude の答えを書きました` } : {}) }
+              ...(previous.length > 0 ? { previous } : {}),
+              ...(refs.length > 0 ? { refs } : {}),
+              ...(candidates.length > 0 ? { candidates } : {}),
+              source: { noteId, canvasId: job.canvasId, label: job.label },
+            }
+            const answer = await requestAnswer(request, setting, { signal, onThinking, onStart: (id) => (questionId = id) })
+            const outcome = await place(answer)
+            // 付箋に書いた（書けなかった・やめた）ことを、サーバーの動いている質問の一覧に知らせる
+            if (questionId) {
+              if ('noteId' in outcome) void claude.finishQuestion(questionId, 'done')
+              else if ('problem' in outcome) void claude.finishQuestion(questionId, 'failed', outcome.problem)
+              else void claude.finishQuestion(questionId, 'cancelled')
+            }
+            return outcome
+          } finally {
+            unsubscribe()
+          }
+
+          // 編集が終わるのを待って、質問の付箋に答えを書く
+          async function place(answer: Awaited<ReturnType<typeof requestAnswer>>): Promise<Outcome> {
+            const target = await settle(job, signal)
+            if (target === null) return { cancelled: true }
+            const written =
+              target &&
+              setAiAnswer(target, noteId, {
+                body: answer.body,
+                related: answer.related,
+                model: answer.model,
+                ...(setting.effort ? { effort: setting.effort } : {}),
+                question: asked!.question,
+                ...(others.length > 0 ? { questionIds: others } : {}),
+                answeredAt: Date.now(),
+              })
+            if (!written) return { problem: '質問の付箋が見えなくなったので、答えを書けませんでした' }
+            return { noteId, ...(viewRef.current?.editor !== target ? { message: `「${canvasTitle(job.canvasId)}」の付箋に Claude の答えを書きました` } : {}) }
+          }
         },
         '答えられませんでした',
       )
     },
-    [viewRef, notify, run, settle, canvasTitle],
+    [viewRef, claude, notify, run, settle, canvasTitle],
   )
 
   return { answering, ask }

@@ -10,6 +10,8 @@ import { useSyncExternalStore } from 'react'
 // - SSE は、使えるとわかったときにつなぐ（パネルを開く前でも、問い合わせを Claude のボタンの印で知らせるため）
 // - 型はサーバーの claude/jobs.ts・claude/store.ts・claude/models.ts と同じ形
 // - 選べるモデルと effort（MAI-106）は、パネルを開いたときに GET /api/claude/models で 1 回だけ読む（読めなければ、次に開いたときに読み直す）
+// - 付箋で聞いている、動いている質問（サーバーの claude/questions.ts）も、同じ SSE で受ける（ほかのタブ・端末で頼んだものも）。
+//   終わった質問は、終わり方を少しだけ覚える（finishedQuestions。頼んだ画面が、ほかのタブで止められたと知るため）
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -86,6 +88,24 @@ export interface BackgroundTask {
   type: string
 }
 
+// 付箋で聞いている、動いている質問（サーバーの claude/questions.ts の RunningQuestion と同じ形）。
+// running：答えを作っている。placing：答えを頼んだ画面に渡し、付箋に書くのを待っている
+export interface RunningQuestion {
+  id: string
+  noteId: string
+  canvasId: string
+  // 質問の 1 行目
+  label: string
+  model?: string
+  effort?: string
+  status: 'running' | 'placing'
+  step: 'read' | 'search' | 'write'
+  thinking: string
+  startedAt: number
+}
+
+export type QuestionStatus = 'done' | 'failed' | 'cancelled'
+
 export interface ThreadSummary {
   threadId: string
   title: string
@@ -101,7 +121,10 @@ export interface ThreadSummary {
 }
 
 export type StreamMessage =
-  | { type: 'snapshot'; threads: ThreadSummary[]; running: ClaudeJob[] }
+  | { type: 'snapshot'; threads: ThreadSummary[]; running: ClaudeJob[]; questions?: RunningQuestion[] }
+  | { type: 'question'; question: Omit<RunningQuestion, 'thinking'> }
+  | { type: 'question-thinking'; id: string; text: string }
+  | { type: 'question-done'; id: string; status: QuestionStatus; error?: string }
   | { type: 'job'; job: Omit<ClaudeJob, 'events'>; events: JobEvent[]; from: number; thread: ThreadSummary }
   | { type: 'thread'; thread: ThreadSummary }
   | { type: 'thread-deleted'; threadId: string }
@@ -128,7 +151,15 @@ export interface ClaudeState {
   loaded: ReadonlySet<string>
   // 選べるモデルと effort（読むまでない。MAI-106）
   models?: ModelCatalog
+  // 付箋で聞いている、動いている質問（古いものから）
+  questions: readonly RunningQuestion[]
+  // 終わった質問の終わり方（新しいものから KEPT_FINISHED_QUESTIONS 個）
+  finishedQuestions: ReadonlyMap<string, QuestionStatus>
 }
+
+// 覚えておく、終わった質問の数と、動いている質問の考えている中身の長さ（サーバーと同じ）
+export const KEPT_FINISHED_QUESTIONS = 50
+const KEPT_QUESTION_THINKING = 20_000
 
 export function useClaudeState(client: ClaudeClient): ClaudeState {
   return useSyncExternalStore(
@@ -142,7 +173,25 @@ const BASE = '/api/claude'
 // SSE のメッセージを状態に当てる。足りない出来事があれば（つなぎ直しの間に抜けた）、そのジョブの id を missing に返す
 export function applyStreamMessage(state: ClaudeState, message: StreamMessage): { state: ClaudeState; missing?: string } {
   if (message.type === 'snapshot') {
-    return { state: { ...state, threads: message.threads, jobs: new Map(message.running.map((job) => [job.id, job])), loaded: new Set() } }
+    return {
+      state: { ...state, threads: message.threads, jobs: new Map(message.running.map((job) => [job.id, job])), loaded: new Set(), questions: message.questions ?? [] },
+    }
+  }
+  if (message.type === 'question') {
+    const known = state.questions.find((question) => question.id === message.question.id)
+    const next = { ...message.question, thinking: known?.thinking ?? '' }
+    return { state: { ...state, questions: known ? state.questions.map((question) => (question === known ? next : question)) : [...state.questions, next] } }
+  }
+  if (message.type === 'question-thinking') {
+    const questions = state.questions.map((question) =>
+      question.id === message.id ? { ...question, thinking: (question.thinking + message.text).slice(0, KEPT_QUESTION_THINKING) } : question,
+    )
+    return { state: { ...state, questions } }
+  }
+  if (message.type === 'question-done') {
+    const earlier = [...state.finishedQuestions].filter(([id]) => id !== message.id)
+    const finished = new Map<string, QuestionStatus>([[message.id, message.status] as const, ...earlier].slice(0, KEPT_FINISHED_QUESTIONS))
+    return { state: { ...state, questions: state.questions.filter((question) => question.id !== message.id), finishedQuestions: finished } }
   }
   if (message.type === 'thread-deleted') {
     const loaded = new Set(state.loaded)
@@ -203,7 +252,7 @@ const MODELS_RETRY_MS = 60_000
 
 export class ClaudeClient {
   // useSyncExternalStore に渡すので、変わったときだけ作り直す
-  private snapshot: ClaudeState = { availability: 'checking', threads: [], jobs: new Map(), loaded: new Set() }
+  private snapshot: ClaudeState = { availability: 'checking', threads: [], jobs: new Map(), loaded: new Set(), questions: [], finishedQuestions: new Map() }
   private source: EventSource | null = null
   private recheck: number | null = null
   private readonly loading = new Set<string>()
@@ -343,6 +392,28 @@ export class ClaudeClient {
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string }
       throw new Error(body.error ?? `HTTP ${res.status}`)
+    }
+  }
+
+  // 付箋で聞いている質問を止める（ほかのタブで頼んだものも）。もう終わっていれば何もしない
+  async cancelQuestion(id: string): Promise<void> {
+    const res = await fetch(`${BASE}/questions/${id}/cancel`, { method: 'POST' })
+    if (!res.ok && res.status !== 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `HTTP ${res.status}`)
+    }
+  }
+
+  // 頼んだ画面が、答えを付箋に書いた（書けなかった・やめた）と知らせる。届かなくても、サーバーがしばらくして終える
+  async finishQuestion(id: string, status: QuestionStatus, error?: string): Promise<void> {
+    try {
+      await fetch(`${BASE}/questions/${id}/finish`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status, ...(error ? { error } : {}) }),
+      })
+    } catch (failure) {
+      console.warn('Failed to tell the server that a question ended', failure)
     }
   }
 
