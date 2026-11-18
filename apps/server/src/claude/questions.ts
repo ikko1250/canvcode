@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { plainTextOf, richTextFromMarkdown, type TextParagraph } from '@canvcode/nodes'
+import type { RecordStore, StoredRecord } from '../records.ts'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
 
@@ -18,6 +20,10 @@ import { JobError } from './jobs.ts'
 // - SSE に流すもの：つないだときの snapshot の questions（動いているものすべて。考えている中身も）、
 //   { type: 'question', question }（始まった・進み具合が変わった・placing になった。考えている中身は入れない）、
 //   { type: 'question-thinking', id, text }（考えている中身の続き）、{ type: 'question-done', id, status, error? }（終わった）
+// - 答えを持つ付箋の一覧（質問のタブの「過去の回答」。2.2）：画面は開いた Canvas の分だけレコードを読むので、ほかの Canvas の答えはここから読む。
+//   GET /api/claude/questions?canvasId=…：答えを持つ付箋（答えた時刻の新しいものから ANSWERED_LIMIT 件。ゴミ箱の中の Canvas のものは除く）。
+//   { questions: AnsweredNote[] }。canvasId を省けば、すべての Canvas
+//   GET /api/claude/questions/<付箋の id>：その付箋の meta.ai（答えと添えたもの）と、関連する付箋の名前。なければ 404
 
 // 答えを画面に渡してから、付箋に書いたと知らせが来るまで待つ時間（ミリ秒）
 export const PLACING_TIMEOUT_MS = 10 * 60_000
@@ -166,11 +172,116 @@ export function parseQuestionSource(value: unknown): QuestionSource | undefined 
   return { noteId, canvasId, label: text || '（質問）' }
 }
 
-const QUESTION_PATH = /^\/api\/claude\/questions\/([0-9a-f-]{36})\/(cancel|finish)$/
+// 答えを持つ付箋の一覧で返す数と、名前（質問・関連する付箋の 1 行目）の長さ
+export const ANSWERED_LIMIT = 100
+const RELATED_LABEL_LENGTH = 30
 
-export function handleQuestions(req: IncomingMessage, res: ServerResponse, path: string, questions: RunningQuestions | null): boolean {
+// 答えを持つ付箋（一覧の 1 行）
+export interface AnsweredNote {
+  noteId: string
+  canvasId: string
+  canvasTitle: string
+  // 質問の 1 行目
+  question: string
+  model: string
+  effort?: string
+  answeredAt: number
+}
+
+export interface AnsweredNoteDetail extends AnsweredNote {
+  // 付箋の meta.ai（答えと添えたもの）
+  ai: Record<string, unknown>
+  // 関連する付箋のうち、まだあるもの（名前は 1 行目）
+  related: { id: string; label: string }[]
+}
+
+export interface AnsweredNotes {
+  list(canvasId?: string): AnsweredNote[]
+  detail(noteId: string): AnsweredNoteDetail | null
+}
+
+// ワークスペースのレコードから読む
+export function answeredNotesOf(records: Pick<RecordStore, 'answeredNotes' | 'get' | 'canvasOf'>): AnsweredNotes {
+  const row = (record: StoredRecord, canvasId: string, canvasTitle: string): AnsweredNote | null => {
+    const answer = aiOf(record)?.answer as Record<string, unknown> | undefined
+    if (!answer || typeof answer.question !== 'string') return null
+    return {
+      noteId: record.id,
+      canvasId,
+      canvasTitle,
+      question: firstLine(answer.question, MAX_LABEL_LENGTH),
+      model: typeof answer.model === 'string' ? answer.model : '',
+      ...(typeof answer.effort === 'string' ? { effort: answer.effort } : {}),
+      answeredAt: typeof answer.answeredAt === 'number' ? answer.answeredAt : 0,
+    }
+  }
+  return {
+    list: (canvasId) => records.answeredNotes(ANSWERED_LIMIT, canvasId).flatMap((item) => row(item.record, item.canvasId, item.canvasTitle) ?? []),
+    detail: (noteId) => {
+      const record = records.get(noteId)
+      const canvasId = record ? records.canvasOf(noteId) : null
+      const canvas = canvasId ? (records.get(canvasId) as (StoredRecord & { title?: unknown; deletedAt?: unknown }) | undefined) : undefined
+      if (!record || !canvasId || !canvas || canvas.deletedAt) return null
+      const found = row(record, canvasId, typeof canvas.title === 'string' ? canvas.title : '')
+      const ai = aiOf(record)
+      if (!found || !ai) return null
+      const related = (Array.isArray((ai.answer as { related?: unknown }).related) ? ((ai.answer as { related: unknown[] }).related as unknown[]) : []).flatMap((id) => {
+        const note = typeof id === 'string' ? records.get(id) : undefined
+        const text = note && (note as { type?: unknown }).type === 'note' ? paragraphsText(note) : ''
+        return note && text ? [{ id: id as string, label: firstLine(text, RELATED_LABEL_LENGTH, true) }] : []
+      })
+      return { ...found, ai, related }
+    },
+  }
+}
+
+function aiOf(record: StoredRecord): Record<string, unknown> | null {
+  if ((record as { type?: unknown }).type !== 'note') return null
+  const ai = (record as { meta?: { ai?: unknown } }).meta?.ai
+  return typeof ai === 'object' && ai !== null ? (ai as Record<string, unknown>) : null
+}
+
+function paragraphsText(record: StoredRecord): string {
+  const paragraphs = (record as { props?: { paragraphs?: unknown } }).props?.paragraphs
+  return Array.isArray(paragraphs) ? plainTextOf(paragraphs as TextParagraph[]) : ''
+}
+
+// 最初の空でない行（plain でなければ、付箋の Markdown の書式の記号を外す）。長ければ切る
+function firstLine(text: string, length: number, plain = false): string {
+  const line = (plain ? text : plainTextOf(richTextFromMarkdown(text))).split('\n').find((part) => part.trim() !== '')?.trim() ?? ''
+  const chars = Array.from(line)
+  return (chars.length > length ? `${chars.slice(0, length - 1).join('')}…` : line) || '（質問）'
+}
+
+const QUESTION_PATH = /^\/api\/claude\/questions\/([0-9a-f-]{36})\/(cancel|finish)$/
+const ANSWERED_PATH = /^\/api\/claude\/questions\/((?:node(?::|%3A))[A-Za-z0-9_-]{1,64})$/i
+
+export function handleQuestions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  questions: RunningQuestions | null,
+  answered: AnsweredNotes | null = null,
+): boolean {
+  if (!questions) return false
+  if (path === '/api/claude/questions' || ANSWERED_PATH.test(path)) {
+    if (!answered) return false
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'method not allowed' })
+      return true
+    }
+    if (path === '/api/claude/questions') {
+      const canvasId = new URL(req.url ?? '/', 'http://x').searchParams.get('canvasId') ?? undefined
+      sendJson(res, 200, { questions: answered.list(canvasId || undefined) })
+      return true
+    }
+    const detail = answered.detail(decodeURIComponent(ANSWERED_PATH.exec(path)![1]!))
+    if (detail) sendJson(res, 200, detail)
+    else sendJson(res, 404, { error: 'question not found' })
+    return true
+  }
   const match = QUESTION_PATH.exec(path)
-  if (!match || !questions) return false
+  if (!match) return false
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'method not allowed' })
     return true

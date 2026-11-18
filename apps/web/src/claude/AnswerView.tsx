@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
 import type { AiAnswer } from '@canvcode/canvas'
-import { thinkingBlocks } from './answerLog.ts'
+import { thinkingBlocks } from './thinking.ts'
 import type { RunningQuestion } from './claudeClient.ts'
 
 // 付箋で聞いた答えの中身（docs/canvas-answer-panel-plan.md の 4）。付箋の横のパネル（AnswerPopover）と、

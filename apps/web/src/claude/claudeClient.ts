@@ -108,6 +108,24 @@ export interface RunningQuestion {
 
 export type QuestionStatus = 'done' | 'failed' | 'cancelled'
 
+// 答えを持つ付箋（質問のタブの「過去の回答」。サーバーの claude/questions.ts の AnsweredNote と同じ形）
+export interface AnsweredNote {
+  noteId: string
+  canvasId: string
+  canvasTitle: string
+  // 質問の 1 行目
+  question: string
+  model: string
+  effort?: string
+  answeredAt: number
+}
+
+// 1 つの付箋の答え（ai は付箋の meta.ai。related は、まだある関連する付箋と、その 1 行目）
+export interface AnsweredNoteDetail extends AnsweredNote {
+  ai: Record<string, unknown>
+  related: { id: string; label: string }[]
+}
+
 export interface ThreadSummary {
   threadId: string
   title: string
@@ -395,6 +413,21 @@ export class ClaudeClient {
       const body = (await res.json().catch(() => ({}))) as { error?: string }
       throw new Error(body.error ?? `HTTP ${res.status}`)
     }
+  }
+
+  // 答えを持つ付箋の一覧（新しいものから）。canvasId を渡せば、その Canvas のものだけ
+  async answeredNotes(canvasId?: string): Promise<AnsweredNote[]> {
+    const res = await fetch(`${BASE}/questions${canvasId ? `?canvasId=${encodeURIComponent(canvasId)}` : ''}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return ((await res.json()) as { questions: AnsweredNote[] }).questions
+  }
+
+  // 1 つの付箋の答え。なければ null
+  async answeredNote(noteId: string): Promise<AnsweredNoteDetail | null> {
+    const res = await fetch(`${BASE}/questions/${encodeURIComponent(noteId)}`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as AnsweredNoteDetail
   }
 
   // 付箋で聞いている質問を止める（ほかのタブで頼んだものも）。もう終わっていれば何もしない

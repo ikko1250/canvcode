@@ -17,7 +17,7 @@ import { handleMemo, MemoWriter } from './claude/memo.ts'
 import { AnswerWriter, handleAnswer } from './claude/answer.ts'
 import { CitationWriter, handleCite } from './claude/cite.ts'
 import { handleLookup, WordLookup } from './claude/lookup.ts'
-import { handleQuestions, RunningQuestions } from './claude/questions.ts'
+import { answeredNotesOf, handleQuestions, RunningQuestions } from './claude/questions.ts'
 import { ClaudeOnce } from './claude/once.ts'
 import { FileConverter } from './fileConvert.ts'
 import { FileStore, type FileEvent } from './files.ts'
@@ -161,6 +161,8 @@ const answer = once
   : null
 // 付箋で聞いている、動いている質問（claude/questions.ts）。Claude のパネルの SSE で、すべてのタブに流す
 const questions = answer ? new RunningQuestions() : null
+// 答えを持つ付箋の一覧（質問のタブの「過去の回答」。ワークスペースのレコードから読む）
+const answeredNotes = answer ? answeredNotesOf(records) : null
 const cite = once
   ? new CitationWriter({ once, deps: { records, files, dataDir: DATA_DIR }, ...(process.env.CANVCODE_CITE_MODEL ? { model: process.env.CANVCODE_CITE_MODEL } : {}) })
   : null
@@ -261,7 +263,7 @@ const server = createServer(async (req, res) => {
   if (handleMemo(req, res, url.pathname, memo)) return
   if (handleLookup(req, res, url.pathname, lookup)) return
   if (handleAnswer(req, res, url.pathname, answer, questions)) return
-  if (handleQuestions(req, res, url.pathname, questions)) return
+  if (handleQuestions(req, res, url.pathname, questions, answeredNotes)) return
   if (handleCite(req, res, url.pathname, cite)) return
   if (handleClaude(req, res, url.pathname, claude, questions)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return

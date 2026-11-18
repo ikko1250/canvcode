@@ -11,7 +11,6 @@ import {
   type Editor,
 } from '@canvcode/canvas'
 import { AnswerError, requestAnswer } from './answer.ts'
-import type { AnswerLog, AnswerLogEntry } from './answerLog.ts'
 import type { ClaudeClient } from './claudeClient.ts'
 import { loadSetting, type ModelSetting } from './modelChoice.ts'
 import type { Effort } from './claudeClient.ts'
@@ -21,7 +20,7 @@ import type { Effort } from './claudeClient.ts'
 // - 待っている間は、質問の付箋の角の三角が点滅する（App が session の answeringIds に立てる）。やめるのは答えのパネルの「やめる」（cancel）。
 //   同じ付箋を重ねて頼まない。待っている間に別の Canvas に移っても、その Canvas の Editor が残っていれば、そこに書く
 // - 答えられなかったわけは、付箋ごとに覚えておく（failures。答えのパネルに出す。次に聞いたら消す）
-// - 頼んだものは AnswerLog に記録する（付箋の答えのパネルに、回答中・回答終了と考えている中身を出す）
+// - 進み具合と考えている中身は、サーバーが動いている質問として流す（質問のタブと答えのパネルは、それを出す）
 // - モデルと effort は、AI 付箋なら付箋に選んだもの、ほかはチャットで最後に選んだもの（なければサーバーの既定）
 // - 続きの付箋なら、付箋に添えた前の質問と答えも送る。関連する付箋を選ばせるため、近くの付箋も送る
 // - どの付箋の質問かも送り、サーバーの動いている質問の一覧に載せる（すべてのタブに流す）。付箋に書いたら（書けなかったら）finish で知らせる。
@@ -34,7 +33,7 @@ export type AnsweringJob = {
   anchorIds: string[]
   busy: string[]
   abort: AbortController
-  kind: AnswerLogEntry['kind']
+  // 質問の 1 行目
   label: string
 }
 
@@ -44,14 +43,13 @@ type Outcome = { noteId: string; message?: string } | { problem: string } | { ca
 export interface CanvasAnswersDeps {
   viewRef: RefObject<CanvasView | null>
   claude: ClaudeClient
-  log: AnswerLog
   notify: (message: string) => void
   // 答えを書く Canvas の Editor（読み込んでいなければ undefined）
   answerEditor: (canvasId: string) => Editor | undefined
   canvasTitle: (canvasId: string) => string
 }
 
-export function useCanvasAnswers({ viewRef, claude, log, notify, answerEditor, canvasTitle }: CanvasAnswersDeps) {
+export function useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvasTitle }: CanvasAnswersDeps) {
   const [answering, setAnswering] = useState<AnsweringJob[]>([])
   const answeringIds = useRef(new Set<string>())
   const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map())
@@ -81,34 +79,26 @@ export function useCanvasAnswers({ viewRef, claude, log, notify, answerEditor, c
   )
 
   const run = useCallback(
-    async (job: AnsweringJob, work: (signal: AbortSignal, onThinking: (text: string) => void) => Promise<Outcome>, failure: string) => {
+    async (job: AnsweringJob, work: (signal: AbortSignal) => Promise<Outcome>, failure: string) => {
       if (job.busy.some((id) => answeringIds.current.has(id))) return notify('いま Claude が書いているところです。終わるまで待つか、× でやめてください')
       for (const id of job.busy) answeringIds.current.add(id)
       setAnswering((list) => [...list, job])
       fail(job.busy, null)
-      const logId = log.start({ canvasId: job.canvasId, kind: job.kind, label: job.label })
       const signal = job.abort.signal
       try {
-        const outcome = await work(signal, (text) => log.appendThinking(logId, text))
+        const outcome = await work(signal)
         if ('noteId' in outcome) {
-          log.finish(logId, { status: 'done', noteId: outcome.noteId })
           if (outcome.message) notify(outcome.message)
         } else if ('problem' in outcome) {
-          log.finish(logId, { status: 'failed', error: outcome.problem })
           fail(job.busy, outcome.problem)
           notify(outcome.problem)
         } else {
-          log.finish(logId, { status: 'cancelled' })
           notify('Claude に頼むのをやめました')
         }
       } catch (error) {
         // 499 は、やめた（ほかのタブで止めたときも）
-        if (signal.aborted || (error instanceof AnswerError && error.status === 499)) {
-          log.finish(logId, { status: 'cancelled' })
-          return notify('Claude に頼むのをやめました')
-        }
+        if (signal.aborted || (error instanceof AnswerError && error.status === 499)) return notify('Claude に頼むのをやめました')
         const message = error instanceof Error ? error.message : String(error)
-        log.finish(logId, { status: 'failed', error: message })
         fail(job.busy, message)
         notify(`${failure}：${message}`)
       } finally {
@@ -116,7 +106,7 @@ export function useCanvasAnswers({ viewRef, claude, log, notify, answerEditor, c
         setAnswering((list) => list.filter((j) => j.key !== job.key))
       }
     },
-    [log, notify, fail],
+    [notify, fail],
   )
 
   // 付箋を質問にして Claude に聞き、答えを質問の付箋に書く（Undo 1 回で消える）。
@@ -139,12 +129,11 @@ export function useCanvasAnswers({ viewRef, claude, log, notify, answerEditor, c
         anchorIds: asked.questionIds,
         busy: asked.questionIds,
         abort: new AbortController(),
-        kind: previous.length > 0 ? 'follow-up' : 'ask',
         label: firstLine(asked.question),
       }
       return run(
         job,
-        async (signal, onThinking) => {
+        async (signal) => {
           // サーバーの動いている質問の id。ほかのタブで止められたら、ここでもやめる
           let questionId: string | null = null
           const unsubscribe = claude.subscribe(() => {
@@ -162,7 +151,7 @@ export function useCanvasAnswers({ viewRef, claude, log, notify, answerEditor, c
               ...(candidates.length > 0 ? { candidates } : {}),
               source: { noteId, canvasId: job.canvasId, label: job.label },
             }
-            const answer = await requestAnswer(request, setting, { signal, onThinking, onStart: (id) => (questionId = id) })
+            const answer = await requestAnswer(request, setting, { signal, onStart: (id) => (questionId = id) })
             const outcome = await place(answer)
             // 付箋に書いた（書けなかった・やめた）ことを、サーバーの動いている質問の一覧に知らせる
             if (questionId) {

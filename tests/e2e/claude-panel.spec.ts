@@ -4,10 +4,10 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 // パネルの中のキー（Delete・矢印・Ctrl+A・Esc）は、キャンバスのショートカットに渡らない。
 // バックグラウンドの作業が並び、1 つずつ・まるごと止められる。
 // 画面で許可を待っている問い合わせが並び、JSON で答えられ、閉じたパネルの Claude のボタンに印が出る。
-// 右上の「Claude」と C で開くのは付箋の答えのパネルで、チャットはその「チャット →」（か、もう一度 C）で開く（MAI-91）
+// 右上の「質問」と C で開くのは質問のタブで、会話は上の「会話」のタブ（か、もう一度 C）で開く（MAI-91・docs/canvas-answer-panel-plan.md）
 
 // claude は、会話 t1 に足すもの（バックグラウンドの作業・待っている問い合わせ・ジョブ）。events は /api/claude/events の差し替え。
-// open が true なら、右上の「Claude」で付箋の答えのパネルを開き、「チャット →」でチャットに移って返す。false なら、パネルを開かずに返す（C で開くのを確かめる）
+// open が true なら、右上の「質問」で質問のタブを開き、「会話」のタブに移って返す。false なら、パネルを開かずに返す（C で開くのを確かめる）
 async function openApp(
   page: Page,
   claude: { tasks?: object[]; permissions?: object[]; jobs?: object[]; events?: Parameters<Page['route']>[1] } = {},
@@ -31,6 +31,7 @@ async function openApp(
   await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [thread] } }))
   await page.route('**/api/claude/threads/t1', (route) => route.fulfill({ json: { jobs: [job, ...(claude.jobs ?? [])] } }))
   await page.route('**/api/claude/events', claude.events ?? ((route) => route.fulfill({ status: 204 })))
+  await page.route('**/api/claude/questions*', (route) => route.fulfill({ json: { questions: [] } }))
   await page.goto('/')
   const root = page.locator('.canvas-container > div[tabindex]')
   await expect(root).toBeVisible()
@@ -55,14 +56,14 @@ async function openApp(
 }
 
 const panel = (page: Page) => page.locator('.claude-panel')
-const answerPanel = (page: Page) => page.locator('.answer-panel')
+const answerPanel = (page: Page) => page.locator('.question-panel')
 
-// 右上の「Claude」で付箋の答えのパネルを開き、「チャット →」でチャットに移る
+// 右上の「質問」で質問のタブを開き、「会話」のタブに移る
 async function openChat(page: Page) {
   await page.locator('.claude-toggle').click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(panel(page)).toBeHidden()
-  await answerPanel(page).getByRole('button', { name: 'チャット →' }).click()
+  await answerPanel(page).getByRole('tab', { name: '会話' }).click()
   await expect(panel(page)).toBeVisible()
   await expect(answerPanel(page)).toBeHidden()
 }
@@ -752,36 +753,38 @@ test('keeps the scroll of the conversation, and the keys of the panel, when the 
 test('the Claude button opens the answers panel, and the chat is one more step (it keeps what was written)', async ({ page }) => {
   await openApp(page, {}, { open: false })
   await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: { refId: 'ref:TEST000001' } }))
-  // 右上の「Claude」では、付箋の答えのパネルだけ（まだ答えがなければ、聞き方を書く）
+  // 右上の「質問」では、質問のタブだけ（まだ質問がなければ、聞き方を書く）
+  await expect(page.locator('.claude-toggle')).toHaveText('質問')
   await page.locator('.claude-toggle').click()
   await expect(answerPanel(page)).toBeVisible()
-  await expect(answerPanel(page)).toContainText('付箋で聞いた答えは、まだありません')
+  await expect(answerPanel(page)).toContainText('付箋で聞いた質問は、まだありません')
+  await expect(answerPanel(page).getByRole('tab', { name: '質問' })).toHaveAttribute('aria-selected', 'true')
   await expect(panel(page)).toBeHidden()
   const viewport = page.viewportSize()!
   const box = (await answerPanel(page).boundingBox())!
   expect(Math.abs(box.x + box.width - viewport.width)).toBeLessThan(2)
 
-  // 「チャット →」でチャット。「←」で付箋の答えに戻っても、書きかけの文は残る
-  await answerPanel(page).getByRole('button', { name: 'チャット →' }).click()
+  // 「会話」のタブで会話。「質問」のタブに戻っても、書きかけの文は残る
+  await answerPanel(page).getByRole('tab', { name: '会話' }).click()
   await expect(panel(page)).toBeVisible()
   await expect(promptBox(page)).toBeFocused()
   await promptBox(page).fill('書きかけ')
-  await panel(page).getByRole('button', { name: '付箋の答えに戻る' }).click()
+  await panel(page).getByRole('tab', { name: '質問' }).click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(answerPanel(page)).toBeFocused()
   await expect(panel(page)).toBeHidden()
-  await answerPanel(page).getByRole('button', { name: 'チャット →' }).click()
+  await answerPanel(page).getByRole('tab', { name: '会話' }).click()
   await expect(promptBox(page)).toBeFocused()
   await expect(promptBox(page)).toHaveValue('書きかけ')
 
-  // 右上の「Claude」で閉じ、もう一度押すと、また付箋の答えから
+  // 右上の「質問」で閉じ、もう一度押すと、また質問のタブから
   await page.locator('.claude-toggle').click()
   await expect(panel(page)).toHaveCount(0)
   await expect(answerPanel(page)).toHaveCount(0)
   await page.locator('.claude-toggle').click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(panel(page)).toBeHidden()
-  // 付箋の答えのパネルの Esc で閉じる
+  // 質問のタブの Esc で閉じる
   await page.keyboard.press('Escape')
   await expect(answerPanel(page)).toHaveCount(0)
 
@@ -795,7 +798,7 @@ test('the Claude button opens the answers panel, and the chat is one more step (
 test('the file editor shows the chat directly, without the answers panel (MAI-102)', async ({ page }) => {
   await openApp(page, {}, { open: false })
   await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
-  // キャンバスで付箋の答えを開いたままエディタを開いても、右半分には出さない（プレビューのまま）
+  // キャンバスで質問のタブを開いたままエディタを開いても、右半分には出さない（プレビューのまま）
   await page.locator('.claude-toggle').click()
   await expect(answerPanel(page)).toBeVisible()
   await openFileEditor(page)
@@ -803,19 +806,19 @@ test('the file editor shows the chat directly, without the answers panel (MAI-10
   await expect(panel(page)).toBeHidden()
   await expect(page.locator('.file-editor-preview')).toBeVisible()
 
-  // 表示の「Claude」は、チャットを直接出す（付箋の答えに戻る「←」はない）
+  // 表示の「Claude」は、チャットを直接出す（「会話｜質問」のタブはない）
   await editorView(page, 'Claude').click()
   await expect(panel(page)).toBeVisible()
   expect(await panelOnTop(page)).toBe(true)
   await expect(promptBox(page)).toBeFocused()
-  await expect(panel(page).getByRole('button', { name: '付箋の答えに戻る' })).toHaveCount(0)
+  await expect(panel(page).getByRole('tab')).toHaveCount(0)
   await expect(answerPanel(page)).toBeHidden()
 
-  // エディタを閉じると、チャットのままキャンバスの右に戻り、「←」で付箋の答えに戻れる
+  // エディタを閉じると、チャットのままキャンバスの右に戻り、「質問」のタブに移れる
   await page.locator('.file-editor-close').click()
   await expect(page.locator('.file-editor')).toHaveCount(0)
   await expect(panel(page)).toBeVisible()
-  await panel(page).getByRole('button', { name: '付箋の答えに戻る' }).click()
+  await panel(page).getByRole('tab', { name: '質問' }).click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(panel(page)).toBeHidden()
 })

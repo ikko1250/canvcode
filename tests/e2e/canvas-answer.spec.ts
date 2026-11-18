@@ -22,6 +22,8 @@ async function openApp(page: Page, answer: (route: Route) => Promise<void>, even
   await page.route('**/api/files/file%3Ainput-test/content', (route) => route.fulfill({ body: '# Card', headers: { etag: '"test"' } }))
   await page.route('**/api/claude/threads', (route) => route.fulfill({ json: { threads: [] } }))
   await page.route('**/api/claude/events', events ?? ((route) => route.fulfill({ status: 204 })))
+  // 答えを持つ付箋の一覧（質問のタブ）。ほかの Canvas のものはない
+  await page.route('**/api/claude/questions*', (route) => route.fulfill({ json: { questions: [] } }))
   await page.route('**/api/claude/answer', answer)
   await page.goto('/')
   await expect(page.locator('.canvas-container > div[tabindex]')).toBeVisible()
@@ -373,7 +375,7 @@ test('答えを作っている間は、三角のパネルに進み具合と「�
   expect(await answerOf(page, noteId)).toBeNull()
 })
 
-test('続きの付箋は前の質問と答えを送る。付箋の答えの記録で考えた中身を見て、付箋へ移ると答えが開く', async ({ page }) => {
+test('質問のタブに、この画面で聞いた質問が「過去の回答」として並ぶ。開くと答えを見て、見た印が付き、「↗ 付箋へ移動」で付箋の答えを開く', async ({ page }) => {
   const sent: any[] = []
   const FOLLOW = { body: 'Xcode は無料です。', related: [], model: 'claude-sonnet-5-5' }
   const noteId = await openApp(page, async (route) => {
@@ -382,11 +384,6 @@ test('続きの付箋は前の質問と答えを送る。付箋の答えの記�
     await ndjson(route, [
       { type: 'step', step: 'read' },
       { type: 'thinking', text: '前の答えで Xcode を勧めた。' },
-      { type: 'thinking', text: '値段を答える。' },
-      { type: 'step', step: 'search' },
-      // サーバーが混ぜる、調べている語・読んでいるページ（間に空の行が入る）
-      { type: 'thinking', text: '\n\n― Web で調べる：Xcode 値段\n\n\n\n― ページを読む：https://developer.apple.com/xcode/\n\n' },
-      { type: 'thinking', text: '無料だとわかった。' },
       { type: 'step', step: 'write' },
       { type: 'answer', answer: FOLLOW },
     ])
@@ -406,21 +403,83 @@ test('続きの付箋は前の質問と答えを送る。付箋の答えの記�
     candidates: [{ id: noteId, text: QUESTION }],
     source: { noteId: followId, canvasId, label: 'Xcode は無料？' },
   })
-  // 答えを書いても AI 付箋のまま（前の答えの札も残る）
+  // 答えを書いても AI 付箋のまま（前の答えの札も残る）。キャンバスには何も置かない
   expect(await page.evaluate((id) => (window as any).canvcode.editor.getNode(id).meta.ai.contexts.length, followId)).toBe(1)
   expect(await nodeTypes(page)).toEqual(before)
 
-  // 右上の「Claude」で開く付箋の答えの記録に、回答終了の行。押すと考えた中身だけを見る。「答えへ移る」で、答えを書いた付箋へ移り、答えを開く
+  // 右上の「質問」で質問のタブ。まだ見ていない答えに青い点
   await page.locator('.claude-toggle').click()
-  await expect(page.locator('.answer-panel')).toBeVisible()
-  const row = page.locator('.answer-row', { hasText: '続き：Xcode は無料？' })
-  await expect(row).toContainText('回答終了')
-  await row.locator('.answer-row-main').click()
-  // 段落と、調べている行のまとまりに分けて出す（間の空の行は詰める）
-  await expect(page.locator('.answer-panel .answer-thinking > p')).toHaveText(['前の答えで Xcode を勧めた。値段を答える。', '無料だとわかった。'])
-  await expect(page.locator('.answer-panel .answer-thinking-tool > div')).toHaveText(['Web で調べる：Xcode 値段', 'ページを読む：https://developer.apple.com/xcode/'])
-  await page.locator('.answer-thinking-head button', { hasText: '← 一覧に戻る' }).click()
-  await row.locator('.answer-row-jump').click()
+  const panel = page.locator('.question-panel')
+  await expect(panel).toBeVisible()
+  const row = panel.locator('.question-row', { hasText: '「Xcode は無料？」' })
+  await expect(row).toHaveClass(/unread/)
+  await row.locator('.question-row-main').click()
+  await expect(panel.locator('.question-detail-title')).toHaveText('「Xcode は無料？」')
+  await expect(panel.locator('.answer-view-body')).toHaveText('Xcode は無料です。')
+  await expect(panel.locator('.question-model')).toHaveText('Sonnet 5.5')
+  await panel.screenshot({ path: test.info().outputPath('question-detail.png') })
+  await panel.locator('.question-back').click()
+  await expect(row).not.toHaveClass(/unread/)
+  // 「↗ 付箋へ移動」で付箋を選び、付箋の横に答えを開く
+  await row.locator('.question-row-main').click()
+  await panel.locator('.question-open-note').click()
   await expect.poll(() => selection(page)).toEqual([followId])
   await expect(page.locator('.answer-popover .answer-view-body')).toHaveText('Xcode は無料です。')
+})
+
+test('ほかのタブ・Canvas の質問も並ぶ。動作中は進み具合と止めるボタン、ほかの Canvas の答えは「続けて聞く」で、いま開いている Canvas に札付きで置く', async ({ page }) => {
+  const running = {
+    id: '00000000-0000-0000-0000-000000000001',
+    noteId: 'node:far1',
+    canvasId: 'canvas:other',
+    label: 'この関数の意味は？',
+    model: 'claude-opus-5-5',
+    effort: 'high',
+    status: 'running',
+    step: 'search',
+    searched: true,
+    thinking: '調べている',
+    startedAt: Date.now() - 125_000,
+  }
+  const past = { noteId: 'node:far2', canvasId: 'canvas:other', canvasTitle: '研究ノート', question: 'Tkrzw-Dict の使い方は？', model: 'claude-opus-5-5', answeredAt: Date.now() - 3_600_000 }
+  const answer = { body: '辞書を引く。', related: [], model: 'claude-opus-5-5', question: 'Tkrzw-Dict の使い方は？', answeredAt: past.answeredAt }
+  await openApp(
+    page,
+    (route) => route.fulfill({ json: ANSWER }),
+    (route) => route.fulfill({ body: `data: ${JSON.stringify({ type: 'snapshot', threads: [], running: [], questions: [running] })}\n\n`, contentType: 'text/event-stream' }),
+  )
+  const cancels: string[] = []
+  await page.route('**/api/claude/questions', (route) => route.fulfill({ json: { questions: [past] } }))
+  await page.route('**/api/claude/questions/node*', (route) => route.fulfill({ json: { ...past, ai: { contexts: [], answer }, related: [] } }))
+  await page.route('**/api/claude/questions/*/cancel', async (route) => {
+    cancels.push(route.request().url().split('/').at(-2)!)
+    await route.fulfill({ status: 204 })
+  })
+  // 右上のボタンに、動いている質問の数
+  await expect(page.locator('.claude-toggle')).toContainText('●1')
+  await page.locator('.claude-toggle').click()
+  const panel = page.locator('.question-panel')
+  await expect(panel.getByRole('tab', { name: /質問/ })).toContainText('●1')
+  const live = panel.locator('.question-row.running')
+  await expect(live).toContainText('「この関数の意味は？」')
+  await expect(live.locator('.question-row-meta')).toContainText('2分前')
+  await expect(live.locator('.question-row-steps')).toHaveText('✓ 読む → ● 調べる → 書く')
+  await panel.screenshot({ path: test.info().outputPath('question-list.png') })
+  await live.locator('.question-row-stop').click()
+  await expect.poll(() => cancels).toEqual([running.id])
+
+  // ほかの Canvas の答え：サーバーから読んで見せる。「続けて聞く」は、いま開いている Canvas の画面の真ん中に、前の答えの札を添えて置く
+  const row = panel.locator('.question-row', { hasText: '「Tkrzw-Dict の使い方は？」' })
+  await expect(row).toContainText('研究ノート')
+  await row.locator('.question-row-main').click()
+  await expect(panel.locator('.answer-view-body')).toHaveText('辞書を引く。')
+  await panel.locator('.answer-view-continue').click()
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  await expect(page.locator('.ai-note-chip')).toContainText('「Tkrzw-Dict の使い方は？」の答え')
+  const placed = await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const id = [...editor.index.nodeIds()].find((child: string) => editor.getNode(child).meta?.ai?.contexts?.[0]?.noteId === 'node:far2') as string
+    return editor.getNode(id).meta.ai.contexts[0]
+  })
+  expect(placed).toEqual({ kind: 'answer', noteId: 'node:far2', canvasId: 'canvas:other', label: 'Tkrzw-Dict の使い方は？', turns: [{ question: 'Tkrzw-Dict の使い方は？', answer: '辞書を引く。' }] })
 })

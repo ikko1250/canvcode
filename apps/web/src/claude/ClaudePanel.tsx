@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { OWN_KEYS_ATTRIBUTE } from '@canvcode/canvas'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
 import {
@@ -16,8 +16,8 @@ import { ModelPicker } from './ModelPicker.tsx'
 import { jobSettingLabel, loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } from './modelChoice.ts'
 
 // 画面から Claude Code に頼むチャット（キャンバスの右に並べる）。
-// - キャンバスでは、右上の「Claude」と C で開くのは付箋の答えのパネル（AnswerPanel）で、チャットはその「チャット」で開く（左上の「←」で戻る）。
-//   「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、チャットを直接開く。付箋の答えは、ここには出さない
+// - キャンバスでは、右上の「質問」と C で開くのは質問のタブ（QuestionPanel）で、会話（このチャット）は上の「会話｜質問」のタブで行き来する。
+//   「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、チャットを直接開く（全画面のエディタでは、タブを出さない）
 // - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（「新規」で切る）。会話はサーバーの SQLite に残り、
 //   上の一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
@@ -57,12 +57,12 @@ interface Props {
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
-  // 付箋の答えのパネルに戻る（キャンバスでだけ渡す。全画面のエディタでは、チャットだけを出す）
-  onShowAnswers?(): void
+  // 上の「会話｜質問」のタブ（キャンバスでだけ渡す。全画面のエディタでは、チャットだけを出す）
+  tabs?: ReactNode
 }
 
 export function ClaudePanel(props: Props) {
-  const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, onAttachSelection, onClearAttachment, onClose, onShowAnswers } = props
+  const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, onAttachSelection, onClearAttachment, onClose, tabs } = props
   const state = useClaudeState(client)
   const { threads } = state
   // 選んだ会話。null は新しい会話
@@ -240,12 +240,7 @@ export function ClaudePanel(props: Props) {
   return (
     <aside className="claude-panel" aria-label="Claude のチャット" hidden={hidden} tabIndex={-1} onKeyDown={onPanelKeyDown} {...{ [OWN_KEYS_ATTRIBUTE]: '' }}>
       <div className="claude-panel-header">
-        {onShowAnswers && (
-          <button type="button" className="claude-back" onClick={onShowAnswers} title="付箋の答えに戻る" aria-label="付箋の答えに戻る">
-            ←
-          </button>
-        )}
-        <strong>チャット</strong>
+        {tabs ?? <strong>チャット</strong>}
         <select
           className="claude-thread-select"
           value={threadId ?? ''}

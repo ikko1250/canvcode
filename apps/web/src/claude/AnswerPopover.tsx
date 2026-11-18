@@ -32,13 +32,15 @@ export function AnswerPopover(props: {
   runningModel?: { model?: string; effort?: string }
   error?: string
   onClose(): void
+  // 答えを見た（質問のタブの青い点を消す）
+  onSeen(noteId: string, answeredAt: number): void
   onFocusChange(focused: boolean): void
   onRelated(id: string): void
   onContinue(): void
   onKeep(): void
   onStop?(): void
 }) {
-  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onFocusChange, onRelated, onContinue, onKeep, onStop } = props
+  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onSeen, onFocusChange, onRelated, onContinue, onKeep, onStop } = props
   const rootRef = useRef<HTMLElement>(null)
   // 付箋（と関連する付箋）が変わったら読み直す
   useNodesVersion(editor)
@@ -51,6 +53,12 @@ export function AnswerPopover(props: {
   useEffect(() => {
     if (gone) onClose()
   }, [gone, onClose])
+
+  // 答えを見たことにする
+  const answeredAt = answer?.answeredAt
+  useEffect(() => {
+    if (answeredAt !== undefined) onSeen(noteId, answeredAt)
+  }, [noteId, answeredAt, onSeen])
 
   // 開いたら（別の付箋に替わったら）、パネルにフォーカスする
   useEffect(() => {

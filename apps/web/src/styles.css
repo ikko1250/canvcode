@@ -3225,10 +3225,10 @@ button.pdf-page-number:hover {
   display: none;
 }
 
-/* Claude のチャット（claude/ClaudePanel.tsx）と、付箋の答えのパネル（claude/AnswerPanel.tsx）。どちらもキャンバスの右に並べる
+/* Claude の会話のタブ（claude/ClaudePanel.tsx）と、質問のタブ（claude/QuestionPanel.tsx）。どちらもキャンバスの右に並べる
    （右上のデザインパネルと重ならない。同時に見えるのは片方だけで、もう片方は hidden で隠す）。狭い画面（スマホ）では、画面いっぱいに重ねる */
 .claude-panel,
-.answer-panel {
+.question-panel {
   display: flex;
   flex-direction: column;
   width: 380px;
@@ -3240,19 +3240,19 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel[hidden],
-.answer-panel[hidden] {
+.question-panel[hidden] {
   display: none;
 }
 
 /* 押したらフォーカスを受ける（キーをキャンバスに渡さないため）が、枠は出さない */
 .claude-panel:focus,
-.answer-panel:focus {
+.question-panel:focus {
   outline: none;
 }
 
 @media (max-width: 720px) {
   .claude-panel,
-  .answer-panel {
+  .question-panel {
     position: fixed;
     inset: 0;
     z-index: 30;
@@ -3274,7 +3274,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel button,
-.answer-panel button,
+.question-panel button,
 .claude-thread-select {
   padding: 3px 8px;
   border: 1px solid var(--panel-border);
@@ -3297,12 +3297,12 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel button:disabled,
-.answer-panel button:disabled {
+.question-panel button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-:is(.claude-panel, .answer-panel) .claude-close {
+:is(.claude-panel, .question-panel) .claude-close {
   border-color: transparent;
   background: transparent;
   font-size: 16px;
@@ -3317,158 +3317,10 @@ button.pdf-page-number:hover {
   padding: 12px;
 }
 
-/* チャットから付箋の答えに戻る（キャンバスでだけ出す） */
-.claude-panel .claude-back {
-  padding: 3px 6px;
-  border-color: transparent;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.claude-panel .claude-back:hover {
-  border-color: var(--panel-border);
-  background: #fff;
-}
-
 .claude-hint {
   margin: 0;
   color: var(--muted);
   line-height: 1.6;
-}
-
-.answer-panel-empty {
-  padding: 12px;
-}
-
-/* 付箋で聞いた答え（キャンバスの AI）の記録。回答中・回答終了の行と、畳んだ「過去の答え」。
-   パネルいっぱいに並べ、考えている中身を見ている間は上の 40% に縮める */
-.answer-strip {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 8px 10px;
-}
-
-.answer-panel.viewing .answer-strip {
-  flex: none;
-  max-height: 40%;
-  border-bottom: 1px solid var(--panel-border);
-  background: #fbfaf4;
-}
-
-.answer-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.answer-panel .answer-row-main {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  border-color: transparent;
-  background: transparent;
-  text-align: left;
-}
-
-.answer-panel .answer-row-main:hover,
-.answer-row-viewing .answer-row-main {
-  border-color: var(--panel-border);
-  background: #fff;
-}
-
-.answer-row-status {
-  flex-shrink: 0;
-  font-weight: 600;
-}
-
-.answer-row-running .answer-row-status {
-  color: #3b5bdb;
-}
-
-.answer-row-done .answer-row-status {
-  color: #2b8a3e;
-}
-
-.answer-row-failed .answer-row-status,
-.answer-row-cancelled .answer-row-status {
-  color: var(--muted);
-}
-
-.answer-row-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.answer-row-time {
-  flex-shrink: 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.answer-past summary {
-  padding: 2px 0;
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.answer-past-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-}
-
-.answer-panel .answer-past-clear {
-  margin-top: 4px;
-  border: none;
-  background: none;
-  color: var(--muted);
-  font-size: 11px;
-  text-decoration: underline;
-}
-
-/* Claude の考えている中身だけを見る（一覧の下） */
-.answer-thinking-view {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  padding: 10px 12px;
-}
-
-.answer-thinking-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.answer-thinking-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.answer-thinking-error {
-  margin: 0 0 8px;
-  color: #c92a2a;
-  font-size: 12px;
 }
 
 .answer-thinking {
@@ -4154,3 +4006,215 @@ button.pdf-page-number:hover {
   line-height: 1.5;
 }
 
+/* 右のパネルの上の「会話｜質問」のタブ（claude/ClaudeTabs.tsx） */
+.claude-tabs {
+  display: flex;
+  gap: 2px;
+  margin-right: auto;
+  padding: 2px;
+  border-radius: 8px;
+  background: #e9ecf2;
+}
+
+.claude-panel-header .claude-tabs button,
+.question-panel .claude-tabs button {
+  padding: 3px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.claude-panel-header .claude-tabs button[aria-selected='true'],
+.question-panel .claude-tabs button[aria-selected='true'] {
+  background: #fff;
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.claude-tab-count,
+.claude-toggle-count {
+  margin-left: 4px;
+  color: #1d4ed8;
+  font-size: 11px;
+}
+
+/* 質問のタブ（claude/QuestionPanel.tsx）：① 一覧 */
+.question-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+}
+
+.question-panel .question-filter {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: #fff;
+  color: #1d4ed8;
+  font: inherit;
+  font-size: 12px;
+}
+
+.question-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question-section-title {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.question-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.question-panel .question-row-main {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-color: var(--panel-border);
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+}
+
+.question-panel .question-row-main:hover {
+  border-color: #b9c6f2;
+}
+
+.question-row.running .question-row-main {
+  border-color: #c9d4f5;
+  background: #f4f7ff;
+}
+
+.question-row .claude-spinner {
+  flex: none;
+  margin-top: 3px;
+}
+
+.question-row-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+}
+
+.question-row.unread .question-row-dot {
+  background: #1d4ed8;
+}
+
+.question-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.question-row-label {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.question-row-meta,
+.question-row-steps {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.question-row-steps {
+  color: #1d4ed8;
+}
+
+.question-panel .question-row-stop {
+  flex: none;
+  margin-top: 8px;
+  padding: 2px 6px;
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+/* 質問のタブ：② 答え */
+.question-detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 12px 12px;
+}
+
+.question-panel .question-back {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.question-detail-title {
+  margin-top: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.question-detail-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.question-model {
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: #eef0fb;
+  color: #3c4257;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.question-panel .question-open-note {
+  align-self: flex-start;
+  margin-top: 8px;
+  border-color: #b9c6f2;
+  border-radius: 999px;
+  color: #1d4ed8;
+}
+
+.question-detail .answer-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 4px;
+}
+
+.question-panel .answer-view-continue {
+  border-color: #1d3fbf;
+  background: #1d3fbf;
+  color: #fff;
+}
+
+.question-panel .answer-view-keep {
+  border-color: #e8eefc;
+  background: #e8eefc;
+  color: #1d3fbf;
+}

@@ -1,10 +1,14 @@
+import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AnswerWriter, handleAnswer } from './answer.ts'
 import { ClaudeOnce, type OnceQuery } from './once.ts'
-import { KEPT_QUESTION_THINKING, RunningQuestions, handleQuestions, parseQuestionSource, type QuestionChange } from './questions.ts'
+import { RecordStore } from '../records.ts'
+import { KEPT_QUESTION_THINKING, RunningQuestions, answeredNotesOf, handleQuestions, parseQuestionSource, type QuestionChange } from './questions.ts'
 
 // 付箋で聞いている、動いている質問（サーバーのメモリに持ち、すべてのタブに流す）
 
@@ -258,5 +262,93 @@ describe('the answer stream and the running questions', () => {
     expect(messages.some((message) => message.type === 'start')).toBe(false)
     await json(`${base}/api/claude/answer`, { question: 'q', source })
     expect(changes).toEqual([])
+  })
+})
+
+describe('answered notes (the past answers of the question tab)', () => {
+  // 答えを持つ付箋・持たない付箋・ゴミ箱の中の Canvas の付箋を置いたワークスペース
+  function workspace() {
+    const dir = mkdtempSync(join(tmpdir(), 'canvcode-answered-'))
+    const records = new RecordStore(dir)
+    cleanups.push(() => {
+      records.close()
+      rmSync(dir, { recursive: true, force: true })
+    })
+    const root = records.rootCanvasId
+    const canvas = (id: string, title: string, deletedAt: number | null = null) => ({
+      typeName: 'canvas',
+      id,
+      title,
+      parentCanvasId: null,
+      ownerNodeId: null,
+      createdAt: 0,
+      updatedAt: 0,
+      deletedAt,
+      trash: null,
+    })
+    const text = (value: string) => [{ runs: [{ text: value }] }]
+    const note = (id: string, parentId: string, paragraphs: unknown, answer?: Record<string, unknown>) => ({
+      typeName: 'node',
+      id,
+      type: 'note',
+      parentId,
+      index: 'a0',
+      x: 0,
+      y: 0,
+      props: { paragraphs },
+      ...(answer ? { meta: { ai: { contexts: [], answer } } } : {}),
+    })
+    const answer = (question: string, answeredAt: number, related: string[] = []) => ({ body: '答え', related, model: 'claude-opus-5-5', effort: 'high', question, answeredAt })
+    records.apply(
+      [
+        canvas('canvas:lab', '研究ノート'),
+        canvas('canvas:trash', '捨てた', 5),
+        note('node:a', root, text('コンテキストとは？'), answer('**コンテキスト**とは？\n二行目', 2, ['node:near', 'node:gone'])),
+        note('node:near', root, text('付箋をインプットとする方向性はよかった。ただ…')),
+        note('node:b', 'canvas:lab', text('Rust で速くなる？'), answer('Rust で速くなる？', 3)),
+        note('node:c', 'canvas:trash', text('捨てた質問'), answer('捨てた質問', 4)),
+      ],
+      [],
+    )
+    return { records, root }
+  }
+
+  it('lists the notes with an answer, newest first, with their canvas, leaving out the trash; or those of one canvas', () => {
+    const { records, root } = workspace()
+    const answered = answeredNotesOf(records)
+    expect(answered.list()).toEqual([
+      { noteId: 'node:b', canvasId: 'canvas:lab', canvasTitle: '研究ノート', question: 'Rust で速くなる？', model: 'claude-opus-5-5', effort: 'high', answeredAt: 3 },
+      { noteId: 'node:a', canvasId: root, canvasTitle: expect.any(String), question: 'コンテキストとは？', model: 'claude-opus-5-5', effort: 'high', answeredAt: 2 },
+    ])
+    expect(answered.list('canvas:lab').map((item) => item.noteId)).toEqual(['node:b'])
+  })
+
+  it('gives the meta.ai of one note, with the related notes that still exist', () => {
+    const { records } = workspace()
+    const answered = answeredNotesOf(records)
+    const detail = answered.detail('node:a')!
+    expect(detail).toMatchObject({ noteId: 'node:a', question: 'コンテキストとは？', related: [{ id: 'node:near', label: '付箋をインプットとする方向性はよかった。ただ…' }] })
+    expect(detail.ai).toMatchObject({ contexts: [], answer: { body: '答え' } })
+    expect(answered.detail('node:near')).toBeNull()
+    expect(answered.detail('node:c')).toBeNull()
+    expect(answered.detail('node:none')).toBeNull()
+  })
+
+  it('serves them over GET', async () => {
+    const { records } = workspace()
+    const questions = new RunningQuestions()
+    const server: Server = createServer((req, res) => {
+      if (handleQuestions(req, res, new URL(req.url!, 'http://x').pathname, questions, answeredNotesOf(records))) return
+      res.writeHead(404)
+      res.end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/claude/questions`
+    const list = (await (await fetch(`${base}?canvasId=canvas%3Alab`)).json()) as { questions: { noteId: string }[] }
+    expect(list.questions.map((q) => q.noteId)).toEqual(['node:b'])
+    expect(((await (await fetch(`${base}/${encodeURIComponent('node:a')}`)).json()) as { noteId: string }).noteId).toBe('node:a')
+    expect((await fetch(`${base}/node%3Agone`)).status).toBe(404)
+    expect((await fetch(base, { method: 'POST' })).status).toBe(405)
   })
 })

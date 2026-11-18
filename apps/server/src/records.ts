@@ -188,6 +188,21 @@ export class RecordStore {
     return rows.map((row) => ({ record: JSON.parse(row.body) as StoredRecord, canvasId: row.canvas_id }))
   }
 
+  // 答えを持つ付箋（キャンバスの AI。meta.ai.answer。claude/questions.ts）と、その所属する Canvas の id と題。
+  // 答えた時刻の新しいものから limit 件。ゴミ箱の中の Canvas のものは除く。canvasId を渡せば、その Canvas のものだけ
+  answeredNotes(limit: number, canvasId?: string): { record: StoredRecord; canvasId: string; canvasTitle: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT n.body AS body, n.canvas_id AS canvas_id, json_extract(c.body, '$.title') AS title
+         FROM records n JOIN records c ON c.id = n.canvas_id AND c.type_name = 'canvas'
+         WHERE n.type_name = 'node' AND n.type = 'note' AND json_extract(n.body, '$.meta.ai.answer') IS NOT NULL
+           AND json_extract(c.body, '$.deletedAt') IS NULL ${canvasId ? 'AND n.canvas_id = ?' : ''}
+         ORDER BY json_extract(n.body, '$.meta.ai.answer.answeredAt') DESC LIMIT ?`,
+      )
+      .all(...(canvasId ? [canvasId, limit] : [limit])) as { body: string; canvas_id: string; title: string | null }[]
+    return rows.map((row) => ({ record: JSON.parse(row.body) as StoredRecord, canvasId: row.canvas_id, canvasTitle: row.title ?? '' }))
+  }
+
   // この変更番号で変わったレコード（known の id は中身を読まない。所属だけ返す）と、消えたレコード
   changesAt(rev: number, known: ReadonlyMap<string, StoredRecord>): ScopedChanges {
     const rows = this.db.prepare('SELECT id, canvas_id FROM records WHERE rev = ?').all(rev) as { id: string; canvas_id: string | null }[]
