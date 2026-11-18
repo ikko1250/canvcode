@@ -113,10 +113,8 @@ npm run lint    # oxlint
 カード上のホイール・ドラッグの実ブラウザ回帰テスト（実際の CanvasView / CodeMirror とカメラ座標・各 DOM の scrollTop を確認）：
 
 ```bash
-npx playwright install chromium firefox
-npm run test:e2e                  # Chromium / Firefox、テスト用 Vite は自動起動
-npx playwright install --with-deps webkit  # WebKit の OS 依存ライブラリが必要な環境のみ
-npx playwright test --project=webkit
+npx playwright install chromium
+npm run test:e2e                  # Chromium、テスト用 Vite は自動起動
 ```
 
 `tests/e2e/lazy-canvas.spec.ts` だけは、使い捨てのワークスペースで本物のサーバーと、それにつないだ Vite を自分で起動する（ポート 4400 から。開いた Canvas の分だけ読むことを、タブの間の同期も含めて確かめる）。

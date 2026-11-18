@@ -51,6 +51,15 @@ describe('resizeFrame', () => {
     expectFrame(resizeFrame(frame, 'n', { x: 0, y: 60 }, free), { x: 100, y: 60, w: 200, h: 140, rotation: 0 })
   })
 
+  it('snaps edge and corner resizes to a square without moving the opposite side', () => {
+    const options = { ...free, squareSnapThreshold: 8 }
+    expectFrame(resizeFrame(frame, 'e', { x: 204, y: 150 }, options), { ...frame, w: 100 })
+    expectFrame(resizeFrame(frame, 'e', { x: 210, y: 150 }, options), { ...frame, w: 110 })
+    expectFrame(resizeFrame(frame, 'nw', { x: 201, y: 105 }, options), { x: 203, y: 103, w: 97, h: 97, rotation: 0 })
+    const centered = resizeFrame(frame, 'e', { x: 248, y: 150 }, { ...options, fromCenter: true })
+    expectFrame(centered, { ...frame, x: 150, w: 100 })
+  })
+
   it('keeps the aspect ratio and resizes from the center', () => {
     const r = resizeFrame(frame, 'se', { x: 500, y: 150 }, { ...free, keepAspect: true })
     expect(r.w / r.h).toBeCloseTo(2, 9)

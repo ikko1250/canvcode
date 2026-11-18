@@ -242,6 +242,23 @@ test('does not undo creating a canvas after another tab put something in it', as
   expect(await canvasOf('node:in-created')).toBe(created)
 })
 
+test('persists a triangle selected in the design panel across reload', async ({ page }) => {
+  const path = `/c/${encodeURIComponent(ids.c)}`
+  await open(page, path)
+  const selectNode = () => page.evaluate(() => (window as any).canvcode.editor.setSelection(['node:c']))
+  const shape = page.getByTestId('design-panel').getByRole('combobox', { name: '形' })
+  await selectNode()
+  await expect(shape).toHaveValue('rect')
+  await shape.selectOption('triangle')
+  await expect(shape).toHaveValue('triangle')
+  await page.waitForFunction(() => !(window as any).canvcode.sync.pending)
+
+  await page.reload()
+  await page.waitForFunction(() => Boolean((window as any).canvcode?.view))
+  await selectNode()
+  await expect(shape).toHaveValue('triangle')
+})
+
 // サーバーを止めるので、最後に置く
 test('refuses to open a canvas that is not loaded while offline, and still moves between loaded ones (review)', async ({ page }) => {
   await open(page, `/c/${encodeURIComponent(ids.a)}`)

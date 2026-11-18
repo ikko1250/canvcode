@@ -11,6 +11,8 @@ export interface GapGuide {
   from: number
   to: number
   at: number
+  // 始点を中心に、線と両端の印を回す角度。
+  rotation?: number
   // ほかの間隔と同じ（強く描く）
   equal: boolean
 }
@@ -182,6 +184,6 @@ export function sameGapGuides(a: readonly GapGuide[], b: readonly GapGuide[]): b
   if (a.length !== b.length) return false
   return a.every((g, i) => {
     const h = b[i]
-    return g.axis === h.axis && g.from === h.from && g.to === h.to && g.at === h.at && g.equal === h.equal
+    return g.axis === h.axis && g.from === h.from && g.to === h.to && g.at === h.at && g.rotation === h.rotation && g.equal === h.equal
   })
 }

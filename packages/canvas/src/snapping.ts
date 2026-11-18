@@ -1,6 +1,6 @@
-import type { Box } from '@canvcode/core'
+import { applyMat, type Box } from '@canvcode/core'
 import type { GapGuide } from './gapSnapping.ts'
-import { handleSides, type Handle } from './transform.ts'
+import { frameMatrix, handleSides, type Frame, type Handle } from './transform.ts'
 
 // 移動中の吸い付き（MAI-53）。tldraw / Figma と同じく、動かしている選択の外接矩形の
 // 左・中央・右（x）と上・中央・下（y）の 6 本の線を、近くのノードの同じ線に合わせる。
@@ -206,6 +206,17 @@ export function snapResize<T extends Box>(
     }
   }
   return { box: snapped, guides, sizes }
+}
+
+// 正方形の幅・高さ。回転していても図形の辺に平行に引く。
+export function squareSizeGuides(frame: Frame, offset: number): GapGuide[] {
+  const matrix = frameMatrix(frame)
+  const width = applyMat(matrix, { x: 0, y: frame.h + offset })
+  const height = applyMat(matrix, { x: frame.w + offset, y: 0 })
+  return [
+    { axis: 'x', from: width.x, to: width.x + frame.w, at: width.y, rotation: frame.rotation, equal: true },
+    { axis: 'y', from: height.y, to: height.y + frame.h, at: height.x, rotation: frame.rotation, equal: true },
+  ]
 }
 
 // 2 つの箱の距離（重なっていれば 0）

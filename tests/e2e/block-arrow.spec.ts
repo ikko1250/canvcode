@@ -71,9 +71,9 @@ async function dragWorld(page: Page, from: { x: number; y: number }, to: { x: nu
 }
 
 // 画面の 1 画素の色（[r, g, b]）。ポインタを外へ動かして、ホバーの枠を消してから測る
-async function pixel(page: Page, x: number, y: number): Promise<number[]> {
+async function pixel(page: Page, x: number, y: number, movePointer = true): Promise<number[]> {
   const p = await screen(page, x, y)
-  await page.mouse.move(5, 5)
+  if (movePointer) await page.mouse.move(5, 5)
   await page.waitForTimeout(50)
   const png = await page.screenshot({ clip: { x: p.x, y: p.y, width: 1, height: 1 } })
   return page.evaluate(async (base64) => {
@@ -193,4 +193,98 @@ test('switches a rectangle to a block arrow with the panel and edits its paramet
   await expect(depth).toHaveValue('50')
   await page.keyboard.press('Control+z')
   await expect(shape).toHaveValue('rect')
+})
+
+test('switches a rectangle to a triangle and draws and selects it by its outline', async ({ page }) => {
+  await openApp(page)
+  await clickWorld(page, 800, 350)
+  const shape = shapeSection(page).getByRole('combobox', { name: '形' })
+  await shape.selectOption({ label: '三角形' })
+  await expect(shape).toHaveValue('triangle')
+  await expect(panel(page).locator('[data-section="corner"]')).toHaveCount(0)
+
+  await page.keyboard.press('Control+z')
+  await expect(shape).toHaveValue('rect')
+  await page.keyboard.press('Control+Shift+z')
+  await expect(shape).toHaveValue('triangle')
+
+  await page.keyboard.press('Escape')
+  await expect(panel(page)).toHaveCount(0)
+  await expectColor(page, 723, 323, 'background', 'outside the triangle')
+  await expectColor(page, 800, 375, BLUE_RGB, 'inside the triangle')
+  await clickWorld(page, 723, 323)
+  await expect(panel(page)).toHaveCount(0)
+  await clickWorld(page, 800, 375)
+  await expect(shape).toHaveValue('triangle')
+})
+
+test('drags the triangle apex to either end without resizing the shape', async ({ page }) => {
+  await openApp(page)
+  await clickWorld(page, 800, 350)
+  await shapeSection(page).getByRole('combobox', { name: '形' }).selectOption('triangle')
+
+  const apex = () => page.evaluate(() => {
+    const { props } = (window as any).canvcode.editor.getNode('node:rect')
+    return { apex: props.triangleApex ?? 0.5, w: props.w, h: props.h }
+  })
+  // 頂点の調整ハンドルを出していても、上辺中央はリサイズに使える。
+  await dragWorld(page, { x: 800, y: 305 }, { x: 800, y: 280 })
+  await expect.poll(async () => (await apex()).h).toBeGreaterThan(100)
+  await page.keyboard.press('Control+z')
+  await expect.poll(apex).toEqual({ apex: 0.5, w: 200, h: 100 })
+
+  await dragWorld(page, { x: 800, y: 316 }, { x: 716, y: 316 })
+  await expect.poll(apex).toEqual({ apex: 0, w: 200, h: 100 })
+  await clickWorld(page, 60, 60)
+  await expectColor(page, 723, 327, BLUE_RGB, 'left right-angle triangle')
+  await expectColor(page, 875, 327, 'background', 'outside the left right-angle triangle')
+  await clickWorld(page, 723, 327)
+  await dragWorld(page, { x: 716, y: 316 }, { x: 884, y: 316 })
+  await expect.poll(apex).toEqual({ apex: 1, w: 200, h: 100 })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(apex).toEqual({ apex: 0, w: 200, h: 100 })
+  await page.keyboard.press('Control+z')
+  await expect.poll(apex).toEqual({ apex: 0.5, w: 200, h: 100 })
+  await page.keyboard.press('Control+Shift+z')
+  await expect.poll(apex).toEqual({ apex: 0, w: 200, h: 100 })
+})
+
+test('snaps rectangle and triangle resizes to a square and releases past the snap distance', async ({ page }) => {
+  await openApp(page)
+  await clickWorld(page, 800, 350)
+  const shape = shapeSection(page).getByRole('combobox', { name: '形' })
+  const size = () => page.evaluate(() => {
+    const { props } = (window as any).canvcode.editor.getNode('node:rect')
+    return { w: props.w, h: props.h }
+  })
+
+  const guideColor = [0xe6, 0x49, 0x80]
+  const hasGuide = async (x: number, y: number) => near(await pixel(page, x, y, false), guideColor)
+  for (const kind of ['rect', 'triangle']) {
+    await shape.selectOption(kind)
+    const handle = await screen(page, 800, 400)
+    await page.mouse.move(handle.x, handle.y)
+    await page.mouse.down()
+    await page.mouse.move(handle.x, handle.y + 95)
+    await expect.poll(size).toEqual({ w: 200, h: 200 })
+    await expect.poll(() => hasGuide(760, 508)).toBe(true)
+    await expect.poll(() => hasGuide(794, 502)).toBe(true)
+    await expect.poll(() => hasGuide(908, 460)).toBe(true)
+    await page.mouse.move(handle.x, handle.y + 110)
+    await expect.poll(size).toEqual({ w: 200, h: 200 })
+    await page.mouse.move(handle.x, handle.y + 120)
+    await expect.poll(size).toEqual({ w: 200, h: 220 })
+    await expect.poll(() => hasGuide(908, 460)).toBe(false)
+    await page.keyboard.down('Control')
+    await page.mouse.move(handle.x, handle.y + 96)
+    await expect.poll(size).toEqual({ w: 200, h: 196 })
+    await page.keyboard.up('Control')
+    await page.mouse.move(handle.x, handle.y + 97)
+    await expect.poll(size).toEqual({ w: 200, h: 200 })
+    await page.mouse.up()
+    await expect.poll(() => hasGuide(760, 508)).toBe(false)
+    await page.keyboard.press('Control+z')
+    await expect.poll(size).toEqual({ w: 200, h: 100 })
+  }
 })

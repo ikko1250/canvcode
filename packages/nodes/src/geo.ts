@@ -1,4 +1,4 @@
-import type { Box, NodeRecord } from '@canvcode/core'
+import type { Box, NodeRecord, Vec } from '@canvcode/core'
 import {
   blockArrowGeometry,
   blockArrowParams,
@@ -53,8 +53,8 @@ import { paragraphsOf, plainTextOf, richTextFromPlain, runColors, type TextParag
 // 読めない値も 8）
 // 文字の縦の揃え（labelVerticalAlign。MAI-115）も版は上げない（足しただけの省略できる値。ないとき・読めない値は上下の中央）。
 // 新しい値を知らない古いアプリは、今までどおり上下の中央に描く
-export type GeoShape = 'rect' | 'ellipse' | BlockArrowShape
-export const GEO_SHAPES: readonly GeoShape[] = ['rect', 'ellipse', 'blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']
+export type GeoShape = 'rect' | 'ellipse' | 'triangle' | BlockArrowShape
+export const GEO_SHAPES: readonly GeoShape[] = ['rect', 'ellipse', 'triangle', 'blockArrow', 'blockArrowBoth', 'blockArrowBent', 'chevron']
 
 // 図形の中の文字（段落と run）と、その既定の書式（テキストの fontSize などに当たる）。ないときは既定（GEO_LABEL_DEFAULTS）
 export interface GeoLabelProps {
@@ -78,6 +78,8 @@ export const GEO_LABEL_SIDES: readonly GeoLabelSide[] = ['top', 'right', 'bottom
 
 export interface GeoProps extends StrokeProps, ShadowProps, BlockArrowProps, GeoLabelProps {
   shape: GeoShape
+  // 三角形の頂点の位置。上辺の左端を 0、右端を 1 とする。
+  triangleApex?: number
   w: number
   h: number
   fill: Fill
@@ -124,10 +126,10 @@ export const geoType = defineNodeType<GeoProps>({
 
   // 線の外側の半分（中央）・全部（外側）は、箱の外へはみ出して描く（MAI-85）。
   // ドロップシャドウ（MAI-86）は、ずらし・ぼかし・広がりの分だけ辺ごとにはみ出す（当たり判定には含めない。Figma と同じ）
-  // ブロック矢印（MAI-87）の線は、とがった角（矢じりの先）で太さの半分より遠くまで出る（miter）
+  // 多角形の線は、とがった角で太さの半分より遠くまで出る（miter）
   renderOutset: (node) => {
-    const arrow = blockArrowOf(node.props)
-    const stroke = strokeOutset(strokeStyleOf(node.props)) * (arrow ? polygonMiterReach(arrow.polygon) : 1)
+    const polygon = geoPolygon(node.props)
+    const stroke = strokeOutset(strokeStyleOf(node.props)) * (polygon ? polygonMiterReach(polygon) : 1)
     const shadow = shadowOutset(shadowsOf(node.props))
     if (shadow.left <= stroke && shadow.top <= stroke && shadow.right <= stroke && shadow.bottom <= stroke) return stroke
     return outsetSides({
@@ -160,14 +162,14 @@ export const geoType = defineNodeType<GeoProps>({
     // 画面上で小さいノード・見えているノードが多いとき（info.noEffects）は描かない（MAI-14）
     const shadows = info.noEffects ? [] : shadowsOf(node.props)
     const shadowOptions = { zoom: info.zoom, screenSize: Math.max(w, h) * info.zoom }
-    const arrow = blockArrowOf(node.props)
+    const polygon = geoPolygon(node.props)
     if (shadows.length > 0) drawShadows(ctx, shadows, 'drop', geoOutline(node.props), shadowOptions)
     ctx.beginPath()
-    // 矩形は角丸（MAI-84）のパス。半径が 0 なら rect と同じ。ブロック矢印（MAI-87）は多角形
-    if (arrow) polygonPath(ctx, arrow.polygon)
+    // 矩形は角丸（MAI-84）のパス。半径が 0 なら rect と同じ。三角形とブロック矢印は多角形
+    if (polygon) polygonPath(ctx, polygon)
     else if (shape === 'rect') roundedRectPath(ctx, { x: 0, y: 0, w, h }, geoCornerRadii(node.props))
     else ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
-    // 画像の塗り（MAI-83）は、このパス（矩形・楕円・角丸・ブロック矢印）で切り抜いて描く。塗りの範囲（グラデーションの位置など）は箱
+    // 画像の塗り（MAI-83）は、このパス（矩形・楕円・角丸・多角形）で切り抜いて描く。塗りの範囲（グラデーションの位置など）は箱
     fillShape(ctx, fillOf(node.props), { x: 0, y: 0, w, h }, info)
     if (shadows.length > 0) drawShadows(ctx, shadows, 'inner', geoOutline(node.props), shadowOptions)
     // 画面上で 0.5 ピクセル未満になる線は、見た目にほぼ影響しないので描かない（MAI-14）
@@ -204,11 +206,11 @@ export const geoType = defineNodeType<GeoProps>({
     return fill?.type === 'image' ? [fill.assetId] : []
   },
 
-  // 楕円と角丸（MAI-84）は、矢印が縁で止まるよう多角形で近似する（MAI-28）。ブロック矢印（MAI-87）はその多角形
+  // 楕円と角丸（MAI-84）は、矢印が縁で止まるよう多角形で近似する（MAI-28）。三角形とブロック矢印はその多角形
   outline(node) {
     const { w, h, shape } = node.props
-    const arrow = blockArrowOf(node.props)
-    if (arrow) return arrow.polygon
+    const polygon = geoPolygon(node.props)
+    if (polygon) return polygon
     if (shape === 'rect') return roundedRectPolygon({ x: 0, y: 0, w, h }, geoCornerRadii(node.props))
     const points = []
     for (let i = 0; i < ELLIPSE_OUTLINE_POINTS; i++) {
@@ -238,24 +240,42 @@ function fillOf(props: GeoProps): Fill {
   return typeof props.fill === 'string' ? toFill(props.fill) : props.fill
 }
 
-// 線と影を描く形（矩形は角丸のパス、楕円、ブロック矢印（MAI-87）は多角形の Path2D）。描くときだけ呼ぶ（Path2D を作る）
+// 線と影を描く形（矩形は角丸のパス、楕円、三角形とブロック矢印は多角形の Path2D）。描くときだけ呼ぶ（Path2D を作る）
 function geoOutline(props: GeoProps): StrokeOutline {
   const box = { x: 0, y: 0, w: props.w, h: props.h }
-  const arrow = blockArrowOf(props)
-  if (arrow) {
-    let outline = pathOutlineCache.get(arrow)
+  const polygon = geoPolygon(props)
+  if (polygon) {
+    let outline = pathOutlineCache.get(polygon)
     if (!outline) {
       const path = new Path2D()
-      polygonPath(path, arrow.polygon)
-      outline = { kind: 'path', path, bounds: polygonBounds(arrow.polygon) }
-      pathOutlineCache.set(arrow, outline)
+      polygonPath(path, polygon)
+      outline = { kind: 'path', path, bounds: polygonBounds(polygon) }
+      pathOutlineCache.set(polygon, outline)
     }
     return outline
   }
   return props.shape === 'rect' ? { kind: 'rect', box, radii: geoCornerRadii(props) } : { kind: 'ellipse', box }
 }
 
-const pathOutlineCache = new WeakMap<BlockArrowGeometry, StrokeOutline>()
+const pathOutlineCache = new WeakMap<readonly Vec[], StrokeOutline>()
+const triangleCache = new WeakMap<GeoProps, Vec[]>()
+
+function geoPolygon(props: GeoProps): Vec[] | null {
+  if (props.shape !== 'triangle') return blockArrowOf(props)?.polygon ?? null
+  let polygon = triangleCache.get(props)
+  if (!polygon) {
+    const { w, h } = props
+    polygon = [{ x: w * triangleApexOf(props), y: 0 }, { x: w, y: h }, { x: 0, y: h }]
+    triangleCache.set(props, polygon)
+  }
+  return polygon
+}
+
+export function triangleApexOf(props: GeoProps): number {
+  const value = props.triangleApex
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5
+}
+
 const arrowCache = new WeakMap<GeoProps, BlockArrowGeometry>()
 
 // ブロック矢印（MAI-87）の形（箱に収めたもの）。ブロック矢印でなければ null。props ごとに覚えておく
@@ -306,8 +326,8 @@ export function geoCornerRadii(props: GeoProps) {
 // 図形の中か。grow だけ外へ広げて（負なら内へ縮めて）判定する
 function insideShape(props: GeoProps, point: { x: number; y: number }, grow: number): boolean {
   const { shape, w, h } = props
-  const arrow = blockArrowOf(props)
-  if (arrow) return insidePolygon(arrow.polygon, point, grow)
+  const polygon = geoPolygon(props)
+  if (polygon) return insidePolygon(polygon, point, grow)
   if (shape === 'rect') return insideRoundedRect({ x: 0, y: 0, w, h }, geoCornerRadii(props), point, grow)
   // 楕円：中心からの正規化距離で判定する
   const rx = w / 2 + grow
@@ -365,6 +385,10 @@ export function geoLabelBox(props: GeoProps): Box {
   const padding = geoLabelPadding(props)
   const arrow = blockArrowOf(props)
   if (arrow) return paddedBox(arrow.textBox, padding)
+  if (props.shape === 'triangle') {
+    const { w, h } = props
+    return paddedBox({ x: w * triangleApexOf(props) / 2, y: h / 2, w: w / 2, h: h / 2 }, padding)
+  }
   return {
     x: padding.left,
     y: padding.top,
