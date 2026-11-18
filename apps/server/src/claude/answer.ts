@@ -473,25 +473,31 @@ async function stream(
   if (writer.full) throw new JobError(429, `Claude が書いている答えが多すぎます（同時に ${MAX_RUNNING_ANSWERS} つまで）。終わるまで待ってください`)
   // 会話の質問は、会話がまだあるか確かめる（消した会話には足さない）
   const asked = request.source?.kind === 'chat' ? request.source : null
-  if (asked?.threadId && chat && !chat.thread(asked.threadId)) throw new JobError(404, 'その会話はもうありません')
+  // （404 は、画面が「このサーバーでは使えません」と読むので 409 にする）
+  if (asked?.threadId && chat && !chat.thread(asked.threadId)) throw new JobError(409, 'その会話はもうありません')
+  const setting = { model: request.model ?? writer.model, effort: request.effort ?? DEFAULT_ANSWER_EFFORT }
+  const id = request.source && questions ? questions.start(request.source, setting, () => controller.abort()) : null
+  // 会話の質問の行（答えを作っている間も、会話の欄と質問のタブに出す）。書けなければ、返し始める前に終える
+  const row = id && asked && chat ? id : null
+  if (row) {
+    try {
+      chat!.insertQuestion({
+        id: row,
+        ...(asked!.threadId ? { threadId: asked!.threadId } : {}),
+        question: request.question,
+        previous: request.previous ?? [],
+        ...setting,
+        status: 'running',
+        createdAt: Date.now(),
+      })
+    } catch (error) {
+      questions!.end(row, 'failed', error instanceof Error ? error.message : String(error))
+      throw error
+    }
+  }
   res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' })
   const send = (message: Record<string, unknown>) => {
     if (!res.destroyed) res.write(`${JSON.stringify(message)}\n`)
-  }
-  const setting = { model: request.model ?? writer.model, effort: request.effort ?? DEFAULT_ANSWER_EFFORT }
-  const id = request.source && questions ? questions.start(request.source, setting, () => controller.abort()) : null
-  // 会話の質問の行（答えを作っている間も、会話の欄と質問のタブに出す）
-  const row = id && asked && chat ? id : null
-  if (row) {
-    chat!.insertQuestion({
-      id: row,
-      ...(asked!.threadId ? { threadId: asked!.threadId } : {}),
-      question: request.question,
-      previous: request.previous ?? [],
-      ...setting,
-      status: 'running',
-      createdAt: Date.now(),
-    })
   }
   if (id) send({ type: 'start', id })
   let pending = ''

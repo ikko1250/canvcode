@@ -695,7 +695,7 @@ export class ClaudeJobs {
     clearTimeout(thread.idleTimer)
     this.store.insertJob(job)
     this.running.set(job.id, job)
-    this.notify(job, 0)
+    this.notify(job, 0, true)
   }
 
   // バックグラウンドの作業が終わって、Claude が自分で始めたターン
@@ -949,10 +949,13 @@ export class ClaudeJobs {
     return { ...thread, tasks: [...(live?.session.tasks ?? [])], permissions: [...(live?.permissions.values() ?? [])].map((entry) => entry.info) }
   }
 
-  private notify(job: StoredJob, from: number): void {
+  // 変化を知らせる。取り込んだ質問と答え（imports。大きい）は、ジョブを始めたとき（begin）にだけ入れる（画面は前に受けたものを残す）
+  private notify(job: StoredJob, from: number, withImports = false): void {
     const thread = this.store.thread(job.threadId)
     if (!thread) return
-    const change: JobChange = { type: 'job', job: summaryOf(job), events: job.events.slice(from), from, thread: this.info(thread) }
+    const { imports, ...rest } = summaryOf(job)
+    const summary = withImports && imports ? { ...rest, imports } : rest
+    const change: JobChange = { type: 'job', job: summary, events: job.events.slice(from), from, thread: this.info(thread) }
     for (const listener of this.listeners) safely(() => listener(change))
   }
 

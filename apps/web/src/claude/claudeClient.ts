@@ -275,7 +275,22 @@ export function applyStreamMessage(state: ClaudeState, message: StreamMessage): 
   if (message.type === 'question-done') {
     const earlier = [...state.finishedQuestions].filter(([id]) => id !== message.id)
     const finished = new Map<string, QuestionStatus>([[message.id, message.status] as const, ...earlier].slice(0, KEPT_FINISHED_QUESTIONS))
-    return { state: { ...state, questions: state.questions.filter((question) => question.id !== message.id), finishedQuestions: finished } }
+    // 会話の質問は、読み直すまで、終わり方の仮の行を置く（会話の欄のカードが、読み直すまで消えないように）
+    const ended = state.questions.find((question) => question.id === message.id)
+    const chatQuestions =
+      ended?.kind === 'chat' && ended.threadId && !state.chatQuestions.has(ended.id)
+        ? new Map(state.chatQuestions).set(ended.id, {
+            id: ended.id,
+            threadId: ended.threadId,
+            question: ended.label,
+            previous: [],
+            status: message.status,
+            ...(message.error ? { error: message.error } : {}),
+            createdAt: ended.startedAt,
+            answeredAt: Date.now(),
+          })
+        : state.chatQuestions
+    return { state: { ...state, questions: state.questions.filter((question) => question.id !== message.id), finishedQuestions: finished, chatQuestions } }
   }
   if (message.type === 'thread-deleted') {
     const loaded = new Set(state.loaded)
@@ -293,12 +308,15 @@ export function applyStreamMessage(state: ClaudeState, message: StreamMessage): 
   const threads = sortThreads([message.thread, ...state.threads.filter((t) => t.threadId !== message.thread.threadId)])
   if (message.type === 'thread') return { state: { ...state, threads } }
   const jobs = new Map(state.jobs)
-  const have = state.jobs.get(message.job.id)?.events ?? []
+  const known = state.jobs.get(message.job.id)
+  const have = known?.events ?? []
+  // 取り込んだ質問と答え（大きい）は、サーバーがジョブの初めにだけ送るので、前に受けたものを残す
+  const job = known?.imports && !message.job.imports ? { ...message.job, imports: known.imports } : message.job
   if (message.from > have.length) {
-    jobs.set(message.job.id, { ...message.job, events: have })
+    jobs.set(message.job.id, { ...job, events: have })
     return { state: { ...state, threads, jobs }, missing: message.job.id }
   }
-  jobs.set(message.job.id, { ...message.job, events: [...have.slice(0, message.from), ...message.events] })
+  jobs.set(message.job.id, { ...job, events: [...have.slice(0, message.from), ...message.events] })
   return { state: { ...state, threads, jobs } }
 }
 

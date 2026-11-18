@@ -18,13 +18,16 @@ export function ThreadMenu(props: {
 }) {
   const { threads, current, onChoose, onClose } = props
   const items: (string | null)[] = [null, ...threads.map((thread) => thread.threadId)]
-  const [active, setActive] = useState(() => Math.max(0, items.indexOf(current)))
+  // 選んでいる行（会話の id。null は「新しい会話」）。消えたら、いちばん上
+  const [activeId, setActiveId] = useState<string | null>(() => (items.includes(current) ? current : null))
+  const active = Math.max(0, items.indexOf(activeId))
+  const setActive = (update: (index: number) => number) => setActiveId(items[update(active)] ?? null)
   const listRef = useRef<HTMLDivElement>(null)
   const optionRefs = useRef<(HTMLDivElement | null)[]>([])
 
   useEffect(() => {
     optionRefs.current[active]?.focus({ preventScroll: false })
-  }, [active])
+  }, [active, activeId])
 
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
@@ -42,8 +45,8 @@ export function ThreadMenu(props: {
     const last = items.length - 1
     if (e.key === 'ArrowDown') setActive((i) => Math.min(last, i + 1))
     else if (e.key === 'ArrowUp') setActive((i) => Math.max(0, i - 1))
-    else if (e.key === 'Home') setActive(0)
-    else if (e.key === 'End') setActive(last)
+    else if (e.key === 'Home') setActive(() => 0)
+    else if (e.key === 'End') setActive(() => last)
     else if (e.key === 'Enter' || e.key === ' ') onChoose(items[active] ?? null)
     else if (e.key === 'Escape' || e.key === 'Tab') onClose(true)
     else return
@@ -68,15 +71,16 @@ export function ThreadMenu(props: {
             aria-selected={id === current}
             className={`claude-thread-option${id === null ? ' new' : ''}`}
             onClick={() => onChoose(id)}
-            onMouseMove={() => i !== active && setActive(i)}
+            onMouseMove={() => i !== active && setActiveId(id)}
           >
             {id === null ? (
               <span className="claude-thread-option-title">＋ 新しい会話</span>
             ) : (
               <>
-                <span className={`claude-thread-option-mark${busy ? ' busy' : ''}`} aria-label={busy ? '動いています' : undefined}>
+                <span className={`claude-thread-option-mark${busy ? ' busy' : ''}`} aria-hidden="true">
                   {busy ? '●' : ''}
                 </span>
+                {busy && <span className="claude-sr-only">動いています</span>}
                 <span className="claude-thread-option-title">{truncate(thread?.title ?? '', TITLE_LENGTH)}</span>
                 {asking && <span className="claude-thread-option-asking">許可待ち</span>}
               </>

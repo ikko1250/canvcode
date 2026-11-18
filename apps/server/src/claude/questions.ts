@@ -146,6 +146,13 @@ export class RunningQuestions {
     return true
   }
 
+  // その会話から聞いている会話の質問を、みな止める（会話を消したとき）
+  cancelThread(threadId: string): void {
+    for (const entry of [...this.entries.values()]) {
+      if (entry.question.kind === 'chat' && entry.question.threadId === threadId) this.cancel(entry.question.id)
+    }
+  }
+
   // 止める。答えを作っている間なら Claude を止め（答えを書く仕組みが cancelled で終える）、placing なら、ここで終える。もうなければ false
   cancel(id: string): boolean {
     const entry = this.entries.get(id)

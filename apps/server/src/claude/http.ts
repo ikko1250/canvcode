@@ -7,7 +7,7 @@ import type { RunningQuestions } from './questions.ts'
 // 画面から Claude Code に頼む API（claude/jobs.ts）。
 // - GET /api/claude/threads：会話の一覧（最後に動いたものから）{ threads }
 // - GET /api/claude/threads/<id>：会話とそのジョブ（出来事も含む）{ thread, jobs }
-// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼かバックグラウンドの作業があれば 409）
+// - DELETE /api/claude/threads/<id>：会話を消す（動いている依頼かバックグラウンドの作業があれば 409。その会話から聞いている質問は止める）
 // - POST /api/claude/threads/<id>/stop：会話のプロセスごと止める（今のターンもバックグラウンドの作業も）。204
 // - POST /api/claude/threads/<id>/tasks/<taskId>/stop：バックグラウンドの作業を 1 つ止める。204（もう動いていなければ 404）
 // - POST /api/claude/threads/<id>/permissions/<permissionId> { decision: 'allow' | 'deny' }：画面で待っている問い合わせに答える。204
@@ -102,6 +102,8 @@ export function handleClaude(req: IncomingMessage, res: ServerResponse, path: st
     } else if (req.method === 'DELETE') {
       jobs.deleteThread(threadId).then(
         () => {
+          // その会話から聞いている質問（会話の質問）も止める（答えを書く行は、会話と一緒に消えている）
+          questions?.cancelThread(threadId)
           res.writeHead(204)
           res.end()
         },
@@ -179,8 +181,9 @@ export function parseStart(body: unknown): StartRequest {
   if (normalized === null) throw new JobError(400, 'invalid refId')
   const canvas = optional(canvasId, 'canvasId')
   const thread = optional(threadId, 'threadId')
-  // 添えた所の名前は、1 行にして MAX_REF_LABEL_LENGTH 文字で切る（画面に出すだけなので、長くても断らない）
-  const label = optional(refLabel, 'refLabel')?.replace(/\s+/g, ' ').trim()
+  // 添えた所の名前は、1 行にして MAX_REF_LABEL_LENGTH 文字で切る（画面に出すだけなので、長くても断らない。文字でなければ 400）
+  if (refLabel !== undefined && refLabel !== null && typeof refLabel !== 'string') throw new JobError(400, 'invalid refLabel')
+  const label = typeof refLabel === 'string' ? refLabel.replace(/\s+/g, ' ').trim() : undefined
   const name = label && Array.from(label).length > MAX_REF_LABEL_LENGTH ? `${Array.from(label).slice(0, MAX_REF_LABEL_LENGTH - 1).join('')}…` : label
   const imported = parseImports(imports)
   return {

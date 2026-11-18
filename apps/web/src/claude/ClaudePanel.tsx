@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { OWN_KEYS_ATTRIBUTE, firstLine } from '@canvcode/canvas'
+import { OWN_KEYS_ATTRIBUTE, firstLine, fitTurns } from '@canvcode/canvas'
 import { AnswerError, requestAnswer, type AnswerRequest } from './answer.ts'
 import { ChatComposer, type ComposeMode } from './ChatComposer.tsx'
 import { ChatHeader } from './ChatHeader.tsx'
@@ -130,7 +130,9 @@ export function ClaudePanel(props: Props) {
   // 「全部止める」を 1 回押した会話（もう 1 回押すと止める）
   const [confirmStop, setConfirmStop] = useState<string | null>(null)
   // 送り方（「会話｜質問」）と、次に送る文と一緒に取り込む付箋の質問
-  const [mode, setMode] = useState<ComposeMode>('chat')
+  const [chosenMode, setMode] = useState<ComposeMode>('chat')
+  // 「会話｜質問」を出さない所（全画面のエディタ）では、いつも会話で送る
+  const mode: ComposeMode = onOpenQuestion ? chosenMode : 'chat'
   const [pendingImport, setPendingImport] = useState<ImportedQuestion | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
@@ -304,10 +306,11 @@ export function ClaudePanel(props: Props) {
   const ask = () => {
     const text = prompt.trim()
     if (!text || sending || attachment?.refId === null) return
-    const last = [...jobs].reverse().find((job) => job.status === 'done' && answerOfEvents(job.events))
+    // 前の答え：会話の最後の終わったジョブ（バックグラウンドから続けたものは、頼んだ文がないので除く）。送る前に長さを収める（大きすぎて 413 にならないように）
+    const last = [...jobs].reverse().find((job) => job.status === 'done' && !job.origin && answerOfEvents(job.events))
     const request: AnswerRequest = {
       question: text,
-      ...(last ? { previous: [{ question: last.prompt, answer: answerOfEvents(last.events) }] } : {}),
+      ...(last ? { previous: fitTurns([{ question: last.prompt, answer: answerOfEvents(last.events) }]) } : {}),
       ...(attachment?.refId ? { refs: [{ label: attachment.label, refId: attachment.refId }] } : {}),
       source: { kind: 'chat', ...(thread ? { threadId: thread.threadId } : {}), label: firstLine(text) },
     }
@@ -331,11 +334,12 @@ export function ClaudePanel(props: Props) {
       })
       .catch((e: unknown) => {
         if (askedIn && started) void client.reloadQuestions(askedIn)
-      // 始まってからの誤り（答えられなかった・やめた）は、会話の欄のカードと質問のタブに出る
-      if (started || (e instanceof AnswerError && e.status === 499)) return
-      setSending(false)
-      fail(e)
-    })
+        if (e instanceof AnswerError && e.status === 499) return setSending(false)
+        // 始まってからの誤り（答えられなかった）は、会話の欄のカードに出る。会話を選んでいなければカードがないので、入力欄の下に出す
+        if (started && askedIn) return
+        setSending(false)
+        fail(e)
+      })
   }
 
   const remove = (id: string) => {
@@ -463,6 +467,7 @@ export function ClaudePanel(props: Props) {
         placeholder={mode === 'question' ? 'この 1 つだけ、会話に入れずに聞く…' : thread ? '続けて頼む…' : 'Claude に頼む…'}
         attachment={attachment}
         importLabel={pendingImport?.label ?? null}
+        importFromChat={!!pendingImport?.questionId}
         onClearImport={() => setPendingImport(null)}
         mode={mode}
         {...(onOpenQuestion ? { onMode: setMode } : {})}

@@ -275,9 +275,10 @@ describe('the answer stream and the running questions', () => {
     const one = await fetch(`${base}/api/claude/questions/chat/${id}`)
     expect(await one.json()).toMatchObject({ kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', previous, body: '答え', status: 'done' })
     expect((await fetch(`${base}/api/claude/questions/chat/00000000-0000-4000-8000-0000000000ff`)).status).toBe(404)
-    // 消した会話には足さない
+    // 消した会話には足さない（404 は「このサーバーでは使えない」と読まれるので 409）
     store.deleteThread(threadId)
-    expect((await ask(base, { question: 'q', source: { kind: 'chat', threadId, label: 'q' } })).status).toBe(404)
+    expect((await ask(base, { question: 'q', source: { kind: 'chat', threadId, label: 'q' } })).status).toBe(409)
+    expect(questions.list()).toEqual([])
   })
 
   it('a question from the chat that fails or is stopped is kept as failed or cancelled', async () => {
@@ -298,6 +299,17 @@ describe('the answer stream and the running questions', () => {
     expect((await fetch(`${base}/api/claude/questions/${id}/cancel`, { method: 'POST' })).status).toBe(204)
     expect((await lines(await response)).at(-1)).toMatchObject({ type: 'error', status: 499 })
     expect(store.question(id)).toMatchObject({ status: 'cancelled' })
+  })
+
+  it('stops the questions asked from a thread when the thread is deleted, leaving the others', async () => {
+    const questions = new RunningQuestions()
+    const aborts: string[] = []
+    const threadId = '00000000-0000-4000-8000-000000000001'
+    questions.start({ kind: 'chat', threadId, label: 'a' }, {}, () => aborts.push('a'))
+    questions.start({ kind: 'chat', label: 'b' }, {}, () => aborts.push('b'))
+    questions.start(source, {}, () => aborts.push('note'))
+    questions.cancelThread(threadId)
+    expect(aborts).toEqual(['a'])
   })
 
   it('another tab can stop it: Claude stops, the asking screen gets a 499 line, and it ends as cancelled', async () => {

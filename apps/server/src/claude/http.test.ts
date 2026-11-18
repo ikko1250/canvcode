@@ -258,6 +258,8 @@ describe('parseStart', () => {
     expect(parseStart({ prompt: 'x', refLabel: '名前だけ' })).toEqual({ prompt: 'x' })
     expect(parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', refLabel: 'あ'.repeat(50) }).refLabel).toBe(`${'あ'.repeat(39)}…`)
     expect(() => parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', refLabel: 1 })).toThrow(/refLabel/)
+    // 長い名前（長い題の Canvas や文書）でも断らない
+    expect(parseStart({ prompt: 'x', refId: 'Ab12Cd34Ef', refLabel: 'い'.repeat(300) }).refLabel).toBe(`${'い'.repeat(39)}…`)
   })
 
   it('takes one imported question and answer, and refuses more, malformed ones or too long ones (claude-chat-tab-plan 6)', () => {

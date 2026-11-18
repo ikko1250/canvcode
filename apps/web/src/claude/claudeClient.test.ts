@@ -216,6 +216,22 @@ describe('questions of a thread (asked from the chat without adding them to it)'
     expect(fetch.mock.calls.map((call) => (call as unknown[])[0])).toEqual(['/api/claude/threads/t', '/api/claude/threads/t'])
   })
 
+  it('keeps a finished question from the chat as a placeholder until it is read again, so its card does not vanish', () => {
+    const s = state({ questions: [question('q9', { kind: 'chat', threadId: 't', label: 'まだ読んでいない', startedAt: 7 })] })
+    const next = applyStreamMessage(s, { type: 'question-done', id: 'q9', status: 'failed', error: 'だめ' }).state
+    expect(questionsOfThread(next, 't')).toEqual([expect.objectContaining({ id: 'q9', question: 'まだ読んでいない', status: 'failed', error: 'だめ', createdAt: 7 })])
+    // 付箋の質問には置かない
+    expect(applyStreamMessage(state({ questions: [question('n1')] }), { type: 'question-done', id: 'n1', status: 'done' }).state.chatQuestions.size).toBe(0)
+  })
+
+  it('keeps the imported question of a job when a later change comes without it (the server sends it only when the job begins)', () => {
+    const imports = [{ label: 'q', question: 'q', answer: 'a', noteId: 'node:n' }]
+    const s = state({ jobs: new Map([['j', job('j', { threadId: 't', imports })]]) })
+    const { events: _events, imports: _imports, ...summary } = job('j', { threadId: 't', eventCount: 1 })
+    const next = applyStreamMessage(s, { type: 'job', job: summary, events: [{ kind: 'text', text: 'x' }], from: 0, thread: thread('t', 1) }).state
+    expect(next.jobs.get('j')).toMatchObject({ imports, events: [{ kind: 'text', text: 'x' }] })
+  })
+
   it('forgets the questions of a deleted thread', () => {
     const s = state({ chatQuestions: new Map([['q1', stored('q1')], ['q2', stored('q2', { threadId: 'u' })]]) })
     expect([...applyStreamMessage(s, { type: 'thread-deleted', threadId: 't' }).state.chatQuestions.keys()]).toEqual(['q2'])

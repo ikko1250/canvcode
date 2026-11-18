@@ -106,15 +106,20 @@ export function AnswerView(props: {
 function ChatMenu(props: { title: string | null; onChoose(newThread: boolean): void; onClose(): void }) {
   const { title, onChoose, onClose } = props
   const menuRef = useRef<HTMLDivElement>(null)
+  // 閉じる関数は描くたびに変わるので、ref から呼ぶ（effect は開いたときに 1 回だけ）
+  const closeRef = useRef(onClose)
+  useEffect(() => {
+    closeRef.current = onClose
+  })
   useEffect(() => {
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
     const onDown = (e: PointerEvent) => {
       if (e.target instanceof Node && menuRef.current?.parentElement?.contains(e.target)) return
-      onClose()
+      closeRef.current()
     }
     window.addEventListener('pointerdown', onDown, true)
     return () => window.removeEventListener('pointerdown', onDown, true)
-  }, [onClose])
+  }, [])
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
     e.preventDefault()

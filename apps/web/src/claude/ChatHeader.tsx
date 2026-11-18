@@ -97,7 +97,7 @@ export function ChatHeader(props: {
               role="menu"
               tabIndex={-1}
               onKeyDown={(e) => {
-                if (e.key !== 'Escape' || e.nativeEvent.isComposing) return
+                if ((e.key !== 'Escape' && e.key !== 'Tab') || e.nativeEvent.isComposing) return
                 e.preventDefault()
                 e.stopPropagation()
                 closeMenu()
@@ -113,6 +113,7 @@ export function ChatHeader(props: {
                   setMenu(false)
                   setConfirmDelete(false)
                   onDelete(thread.threadId)
+                  titleRef.current?.focus({ preventScroll: true })
                 }}
                 title={busy ? '動いている依頼と作業を止めてから消せます' : 'この会話を消す（もう一度押すと消します）'}
               >

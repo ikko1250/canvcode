@@ -22,8 +22,9 @@ export function ChatComposer(props: {
   prompt: string
   placeholder: string
   attachment: ComposerAttachment | null
-  // 取り込む付箋の質問の 1 行目
+  // 取り込む付箋の質問の 1 行目。importFromChat なら別枠の質問（会話の質問）
   importLabel?: string | null
+  importFromChat?: boolean
   mode: ComposeMode
   // 「会話｜質問」の切り替え（渡さなければ出さない）
   onMode?(mode: ComposeMode): void
@@ -40,7 +41,7 @@ export function ChatComposer(props: {
   onSetting(setting: ModelSetting): void
   onSend(): void
 }) {
-  const { inputRef, prompt, placeholder, attachment, importLabel, mode, onMode, catalog, setting, canSend, error } = props
+  const { inputRef, prompt, placeholder, attachment, importLabel, importFromChat = false, mode, onMode, catalog, setting, canSend, error } = props
   const { onPrompt, onKeyDown, onScroll, onAttachSelection, onClearAttachment, onClearImport, onSetting, onSend } = props
   return (
     <div className={`claude-compose${mode === 'question' ? ' question' : ''}`}>
@@ -56,7 +57,9 @@ export function ChatComposer(props: {
           )}
           {importLabel && (
             <span className="claude-attachment claude-import-chip" title="次に送る文と一緒に、付箋の質問と答えを会話に入れます">
-              <span>付箋の質問を取り込みます「{importLabel}」</span>
+              <span>
+                {importFromChat ? '別枠の質問を取り込みます' : '付箋の質問を取り込みます'}「{importLabel}」
+              </span>
               {onClearImport && (
                 <button type="button" onClick={onClearImport} aria-label="取り込むのをやめる" title="取り込むのをやめる">
                   ×
@@ -82,11 +85,24 @@ export function ChatComposer(props: {
           📎
         </button>
         {onMode && (
-          <div className="claude-mode" role="radiogroup" aria-label="送り方">
+          <div
+            className="claude-mode"
+            role="radiogroup"
+            aria-label="送り方"
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+              e.preventDefault()
+              const next = mode === 'chat' ? 'question' : 'chat'
+              onMode(next)
+              e.currentTarget.querySelector<HTMLElement>(`[data-mode="${next}"]`)?.focus()
+            }}
+          >
             <button
               type="button"
               role="radio"
+              data-mode="chat"
               aria-checked={mode === 'chat'}
+              tabIndex={mode === 'chat' ? 0 : -1}
               onClick={() => onMode('chat')}
               title="会話の続きとして頼む（Canvas や文書も編集できる）"
             >
@@ -95,7 +111,9 @@ export function ChatComposer(props: {
             <button
               type="button"
               role="radio"
+              data-mode="question"
               aria-checked={mode === 'question'}
+              tabIndex={mode === 'question' ? 0 : -1}
               onClick={() => onMode('question')}
               title="この 1 つだけ、会話に入れずに聞く（答えは質問のタブにも出る）"
             >

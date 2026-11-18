@@ -1033,6 +1033,14 @@ test('continues a question asked with a note in the chat: the chip waits above t
   await expect(card).toContainText('付箋の質問を取り込みました「コンテキストとは？」とその答え')
   await expect(page.locator('.claude-job[data-job-id="j2"] .claude-prompt-text')).toHaveText('もっと詳しく')
 
+  // 閉じて開き直しても、使った札は戻らない（もう一度取り込まない）
+  await page.locator('.claude-log').click({ position: { x: 5, y: 5 } })
+  await page.keyboard.press('Escape')
+  await expect(panel(page)).toHaveCount(0)
+  await openChat(page)
+  await expect(page.locator('.claude-job[data-job-id="j2"]')).toBeVisible()
+  await expect(page.locator('.claude-import-chip')).toHaveCount(0)
+
   // カードの ↗ で、付箋の横に答えを開く
   await card.getByRole('button', { name: '↗ 付箋へ' }).click()
   await expect(page.locator('.answer-popover')).toBeVisible()

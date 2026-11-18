@@ -291,9 +291,16 @@ describe('ClaudeJobs', () => {
       noteId: 'node:q1',
       canvasId: 'canvas:x',
     }
+    const changes: JobChange[] = []
+    jobs.subscribe((change) => changes.push(change))
     const job = jobs.start({ prompt: '続けて', refId: 'ref:Ab12Cd34Ef', refLabel: '授業 の範囲', imports: [imported] })
     expect(job).toMatchObject({ prompt: '続けて', refLabel: '授業 の範囲', imports: [imported] })
     await finished(jobs, job.id)
+    // 取り込んだもの（大きい）は、ジョブの初めの知らせにだけ入れる
+    const jobChanges = changes.flatMap((change) => (change.type === 'job' && change.job.id === job.id ? [change] : []))
+    expect(jobChanges[0]!.job.imports).toEqual([imported])
+    expect(jobChanges.slice(1).length).toBeGreaterThan(0)
+    expect(jobChanges.slice(1).every((change) => change.job.imports === undefined)).toBe(true)
     const [q] = sdk.queries
     expect(q.sent).toEqual([
       [

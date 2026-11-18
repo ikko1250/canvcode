@@ -4007,6 +4007,16 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
+/* 見せずに読み上げる文（動いている会話の ● など） */
+.claude-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .claude-thread-option-asking {
   flex: none;
   padding: 1px 6px;

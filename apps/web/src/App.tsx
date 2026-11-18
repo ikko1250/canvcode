@@ -475,13 +475,24 @@ export function App(props: { initial: InitialRecords }) {
   useLayoutEffect(() => {
     claudeViewRef.current = claudeView
   }, [claudeView])
+  // パネルに渡す 1 回だけの頼み（docs/claude-chat-tab-plan.md）：会話のそのジョブへ戻る・付箋の質問を取り込む・質問のタブで会話の質問を開く。
+  // パネルは閉じると描き直すので、閉じるときに消す（開き直したときに、もう一度効かないように）
+  const [chatReveal, setChatReveal] = useState<ChatReveal | null>(null)
+  const [chatImport, setChatImport] = useState<ChatImportRequest | null>(null)
+  const [questionOpen, setQuestionOpen] = useState<QuestionOpenRequest | null>(null)
+  const forgetClaudeRequests = useCallback(() => {
+    setClaudeDraft(null)
+    setChatReveal(null)
+    setChatImport(null)
+    setQuestionOpen(null)
+  }, [])
   // パネルを閉じる（× と Esc）。開き直したときに、使い終わった下書きをもう一度入れない
   const closeClaude = useCallback(() => {
     setClaudeView(null)
-    setClaudeDraft(null)
+    forgetClaudeRequests()
     if (fileEditorRef.current) fileEditorRef.current.focus()
     else viewRef.current?.root.focus({ preventScroll: true })
-  }, [])
+  }, [forgetClaudeRequests])
 
   // CSV からグラフを作るダイアログ（plot/PlotDialog.tsx）。表のカードから作る（tableNodeId）か、グラフの画像の作り方を変える（imageNodeId）
   const [plotTarget, setPlotTarget] = useState<PlotTarget | null>(null)
@@ -1211,7 +1222,6 @@ export function App(props: { initial: InitialRecords }) {
     [notify],
   )
   // 会話の札の ↗：会話のタブを開き、その会話を選んで、そのジョブまでスクロールして色を付ける（ClaudePanel の reveal）
-  const [chatReveal, setChatReveal] = useState<ChatReveal | null>(null)
   const openChatAnswer = useCallback((target: { threadId: string; jobId?: string; questionId?: string }) => {
     setClaudeView('chat')
     setEditorClaudeHidden(false)
@@ -1221,7 +1231,6 @@ export function App(props: { initial: InitialRecords }) {
   const [chatThread, setChatThread] = useState<{ threadId: string; title: string } | null>(null)
   // 付箋の質問を会話に取り込む（答えの「会話で続ける」。docs/claude-chat-tab-plan.md の 6）：会話のタブを開き（新しい会話なら新しい会話にして）、
   // 入力欄の上に札を置いて、入力欄にフォーカスする。送るのは、次に文を書いて送ったとき
-  const [chatImport, setChatImport] = useState<ChatImportRequest | null>(null)
   const importToChat = useCallback(
     (item: ImportedQuestion, newThread: boolean) => {
       closeAnswer()
@@ -1233,7 +1242,6 @@ export function App(props: { initial: InitialRecords }) {
     [closeAnswer, chatThread],
   )
   // 会話の質問を質問のタブで開く（会話の欄の「答えを見る →」・取り込んだ会話の質問のカードの ↗）
-  const [questionOpen, setQuestionOpen] = useState<QuestionOpenRequest | null>(null)
   const openChatQuestion = useCallback((id: string) => {
     setClaudeView('answers')
     setClaudeFocus((n) => n + 1)
@@ -2609,7 +2617,7 @@ export function App(props: { initial: InitialRecords }) {
               onClick={() => {
                 if (!claudeView) return showAnswers()
                 setClaudeView(null)
-                setClaudeDraft(null)
+                forgetClaudeRequests()
               }}
               // C はこのボタンと違って閉じないので、aria-keyshortcuts は付けず、ここに書く（MAI-91）
               title="付箋で聞いた質問（どの Canvas のものも）と、Claude との会話のパネルを開け閉めする（C で開き、もう一度 C で会話の入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて会話を開く）"
