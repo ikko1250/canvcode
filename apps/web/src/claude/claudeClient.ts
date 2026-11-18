@@ -68,6 +68,8 @@ export interface ClaudeJob {
   prompt: string
   origin?: 'background'
   refId?: string
+  // 添えた所の名前（送ったときに画面が付けたもの。前のジョブにはない）
+  refLabel?: string
   canvasId?: string
   status: JobStatus
   createdAt: number
@@ -152,6 +154,8 @@ export type StreamMessage =
 export interface StartRequest {
   prompt: string
   refId?: string
+  // 添えた所の名前（画面に出すだけ）
+  refLabel?: string
   canvasId?: string
   threadId?: string
   model?: string

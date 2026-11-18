@@ -283,8 +283,9 @@ test('buttons, sliders and swatches in the main places have targets of 24×24 or
   await page.locator('.claude-toggle').click()
   await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
   const claude = page.locator('.claude-panel')
-  await claude.locator('.claude-thread-select').selectOption('t1')
-  await expect(claude.locator('.claude-task')).toBeVisible()
+  await expect(claude.locator('.claude-thread-name')).toHaveText('会話')
+  await claude.locator('.claude-tasks-toggle').click()
+  await expect(claude.locator('.claude-task').first()).toBeVisible()
   expect(await targetProblems(claude)).toEqual([])
   await claude.locator('.claude-model-button').click()
   await expect(page.locator('.claude-model-popover [role="slider"]').first()).toBeVisible()
@@ -397,8 +398,8 @@ test('pressing just outside a small button presses it, not its neighbor', async 
   // Claude のパネルの作業の「止める」（文字だけ、高さ 17px）：文字の 3px 下を押す（右上の「質問」から、会話のタブに移る）
   await page.locator('.claude-toggle').click()
   await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
-  await page.locator('.claude-thread-select').selectOption('t1')
-  const stop = (await page.locator('.claude-task').getByRole('button', { name: '止める' }).boundingBox())!
+  await page.locator('.claude-tasks-toggle').click()
+  const stop = (await page.locator('.claude-task').getByRole('button', { name: '止める', exact: true }).boundingBox())!
   await page.mouse.click(stop.x + stop.width / 2, stop.y + stop.height + 3)
   await expect.poll(() => stops).toEqual(['/api/claude/threads/t1/tasks/ag1/stop'])
   await page.locator('.claude-panel .claude-close').click()

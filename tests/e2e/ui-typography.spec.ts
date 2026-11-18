@@ -165,9 +165,11 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
   await page.locator('.question-panel').getByRole('tab', { name: '会話' }).click()
   const claude = page.locator('.claude-panel')
   await expect(claude).toBeVisible()
-  await claude.locator('.claude-thread-select').selectOption('t1')
+  await expect(claude.locator('.claude-thread-name')).toHaveText('会話')
   await expect(claude.locator('.claude-text')).toBeVisible()
-  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail)/ })
+  // たたんだ作業を開く（ツールの行の文字も調べる）
+  await claude.locator('.claude-tools-toggle').click()
+  await expectDadsText(claude, { mono: /^(code|span\.claude-tool-detail|span\.claude-answer-model)/ })
   for (const selector of ['.claude-prompt-text', '.claude-text p', '.claude-compose textarea']) {
     const [style] = await textStyles(claude.locator(selector).first())
     expect(style.size, selector).toBe(16)

@@ -149,8 +149,8 @@ test('keys pressed in the panel do not reach the canvas shortcuts', async ({ pag
   await page.locator('.claude-log').click({ position: { x: 5, y: 5 } })
   await page.keyboard.press('ControlOrMeta+a')
   expect(await selectedIds(page)).toEqual([id])
-  // 改行の数はブラウザで違う
-  expect(await textSelection(page)).toMatch(/^question\s+Answer from Claude\s+完了$/)
+  // 改行の数はブラウザで違う。答えの下の操作（コピー・モデルの札）も入る
+  expect(await textSelection(page)).toMatch(/^question\s+Answer from Claude\s/)
 })
 
 test('arrow keys move the caret in the prompt box without moving the canvas node', async ({ page }) => {
@@ -218,13 +218,23 @@ test('lists background tasks, stops one or all of them, and shows the turn Claud
   // 作業が終わって Claude が続けたジョブは、吹き出しでなく小さく出る
   await expect(page.locator('.claude-wake')).toHaveText('バックグラウンドの作業「見張り」が終わりました。Claude が続けました')
   await expect(page.locator('.claude-prompt')).toHaveCount(1)
+  // 作業の知らせは「▸ 作業 1件」にたたみ、押すと開く
+  await expect(page.locator('.claude-tools-toggle')).toHaveText('▸ 作業 1件')
+  await expect(page.locator('.claude-tool.task')).toHaveCount(0)
+  await page.locator('.claude-tools-toggle').click()
   await expect(page.locator('.claude-tool.task')).toHaveText('終わりました：見張り')
 
-  // 作業の一覧。作業があるあいだは、消せないが送れる
+  // 作業は「⚙ 動作中の作業 2件 ▾」の 1 行。押すと一覧。作業があるあいだは、消せないが送れる
+  await expect(page.locator('.claude-tasks-title')).toHaveText('⚙ 動作中の作業 2件')
+  await expect(page.locator('.claude-task-name')).toHaveCount(0)
+  await page.locator('.claude-tasks-toggle').click()
   await expect(page.locator('.claude-task-name')).toHaveText(['サブエージェント：論文を探す', 'コマンド：ping 90 times'])
-  await expect(page.locator('.claude-tasks-header')).toContainText('バックグラウンドで動いている作業（2）')
   await expect(page.locator('.claude-toggle')).toHaveClass(/running/)
-  await expect(page.getByRole('button', { name: '削除' })).toBeDisabled()
+  await page.getByRole('button', { name: 'この会話のメニュー' }).click()
+  await expect(page.getByRole('menuitem', { name: 'この会話を消す' })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menuitem')).toHaveCount(0)
+  await expect(panel(page)).toBeVisible()
   await page.locator('.claude-compose textarea').fill('その間に')
   await expect(page.locator('.claude-send')).toBeEnabled()
 
@@ -298,9 +308,13 @@ test('shows the questions waiting for an answer, answers them with JSON, and mar
   // 許可のボタンにはフォーカスを置かない（1 つのキーで許可させない）
   expect(await page.evaluate(() => document.activeElement?.classList.contains('claude-allow') ?? false)).toBe(false)
   // ジョブの中の出来事と、待っているあいだの言葉。会話の一覧と Claude のボタンにも印
+  // 動いているジョブの最後のまとまりは、たたんでも最後の 1 行を出す
   await expect(page.locator('.claude-tool.ask')).toContainText('許可を求めました：')
   await expect(page.locator('.claude-status.running')).toContainText('許可を待っています…')
-  await expect(page.locator('.claude-thread-select option[value="t1"]')).toHaveText(/・許可待ち$/)
+  await page.locator('.claude-thread-button').click()
+  await expect(page.getByRole('option', { name: /hello/ })).toContainText('許可待ち')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect(page.locator('.claude-toggle')).toHaveClass(/waiting/)
 
   await items.nth(0).getByRole('button', { name: '許可する' }).click()
@@ -340,6 +354,9 @@ test('shows how each question ended in the job, and one left unanswered when the
       },
     ],
   })
+  // 許可の出来事は「▸ 動かした 3件（1 件は断った）」にたたむ（誤りは、たたまない）
+  await expect(page.locator('.claude-tools-toggle').last()).toHaveText('▸ 動かした 3件（1 件は断った）')
+  await page.locator('.claude-tools-toggle').last().click()
   await expect(page.locator('.claude-tool.answer')).toHaveText(['許可しました', '時間切れで断りました'])
   await expect(page.locator('.claude-tool.ask')).toHaveText([
     '許可を求めました：make',
@@ -561,10 +578,12 @@ test('chooses the model and effort next to the send button, per thread (MAI-106)
   await page.getByRole('button', { name: '送る' }).click()
   await expect.poll(() => sent.length).toBe(1)
   expect(sent[0]).toMatchObject({ prompt: '続き', threadId: 't1', model: 'opus', effort: 'xhigh' })
-  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45・Opus 5.5 · XHigh）')
+  // 答えの右に、頼んだモデルと effort の札。かかった時間と費用はツールチップ
+  await expect(page.locator('.claude-answer-model').last()).toHaveText('Opus 5.5 · XHigh')
+  await expect(page.locator('.claude-answer-model').last()).toHaveAttribute('title', '1.2 秒・$0.45')
 
   // 新しい会話は、最後に選んだ値から始める（ブラウザに覚える）
-  await page.getByRole('button', { name: '新規' }).click()
+  await page.getByRole('button', { name: '新しい会話' }).click()
   await expect(button).toHaveText('Opus 5.5 · XHigh')
   await button.click()
   // 「既定に戻す」で、モデルも effort も既定に（既定なら出さない）
@@ -579,7 +598,8 @@ test('chooses the model and effort next to the send button, per thread (MAI-106)
   await expect.poll(() => sent.length).toBe(2)
   expect(sent[1]).not.toHaveProperty('model')
   expect(sent[1]).not.toHaveProperty('effort')
-  await expect(page.locator('.claude-status').last()).toHaveText('完了（1.2 秒・$0.45）')
+  await expect(page.locator('.claude-answer-model').last()).toHaveText('既定（Opus 5.5）')
+  await expect(page.locator('.claude-answer-model').last()).toHaveAttribute('title', '1.2 秒・$0.45')
 })
 
 test('restores the model and effort of a thread when it is opened again (MAI-106)', async ({ page }) => {
@@ -595,10 +615,12 @@ test('restores the model and effort of a thread when it is opened again (MAI-106
   await page.route('**/api/claude/threads/t2', (route) => route.fulfill({ json: { jobs: [] } }))
   await page.reload()
   await openChat(page)
-  await expect(page.locator('.claude-thread-select option', { hasText: 'older' })).toHaveCount(1)
-  await page.locator('.claude-thread-select').selectOption('t2')
+  await page.locator('.claude-thread-button').click()
+  await page.getByRole('option', { name: 'older' }).click()
+  await expect(page.locator('.claude-thread-name')).toHaveText('older')
   await expect(page.locator('.claude-model-button')).toHaveText('Opus 4.6 · Low')
-  await page.locator('.claude-thread-select').selectOption('t1')
+  await page.locator('.claude-thread-button').click()
+  await page.getByRole('option', { name: 'hello' }).click()
   // 既定で動くモデルがわからなければ「既定」だけ
   await expect(page.locator('.claude-model-button')).toHaveText('既定')
   // 一覧を Claude Code に聞けなかったときは、そう書く。既定で動くモデルの段がわからなければ、つまみを出さない
@@ -692,7 +714,7 @@ test('moves the panel between the canvas and the file editor without closing it 
   await expect(promptBox(page)).toHaveValue('kept')
 
   // 「選んでいる所を添える」と Ctrl+Alt+Enter は、エディタで選んでいる行を添える（エディタは閉じない）
-  await page.getByRole('button', { name: '＋ 選んでいる所を添える' }).click()
+  await page.getByRole('button', { name: '選んでいる所を添える' }).click()
   await expect(page.locator('.claude-attachment')).toContainText('Input test の 1〜1 行')
   await page.locator('.claude-attachment button').click()
   await page.locator('.file-editor .cm-content').click()
@@ -735,7 +757,7 @@ test('keeps the scroll of the conversation, and the keys of the panel, when the 
   await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(300)
 
   // パネルの中のボタンの上の Ctrl+Enter では、エディタを閉じない
-  await page.getByRole('button', { name: '新規' }).focus()
+  await page.getByRole('button', { name: '新しい会話' }).focus()
   await page.keyboard.press('ControlOrMeta+Enter')
   await expect(page.locator('.file-editor')).toBeVisible()
 
@@ -842,6 +864,8 @@ test('keeps the panel within the right half of the file editor when the conversa
   await openFileEditor(page)
   await page.getByRole('button', { name: 'Claude に頼む', exact: true }).click()
   await expect(panel(page)).toBeVisible()
+  // たたんだ作業を開く
+  await page.locator('.claude-tools-toggle').click()
   await expect(page.locator('.claude-tool-detail')).toHaveText(command)
 
   // パネルは右半分に収まる

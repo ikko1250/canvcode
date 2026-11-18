@@ -360,7 +360,7 @@ body {
 .design-font-option-name,
 .file-editor-title,
 .file-editor-path,
-.claude-tasks-header > span:nth-child(2),
+.claude-tasks-title,
 .claude-task-name,
 .claude-model-option-description,
 .claude-model-button > span,
@@ -3434,13 +3434,22 @@ button.pdf-page-number:hover {
   cursor: default;
 }
 
-/* 前の答え（続き）・会話の答えを添えた AI 付箋の上の札 */
-.ai-note-chip {
+/* 前の答え（続き）・会話の答えを添えた AI 付箋の上の札。両方あれば、上下に並べる */
+.ai-note-chips {
   position: absolute;
   z-index: 5;
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  transform: translateY(calc(-100% - 6px));
+}
+
+.ai-note-chip {
+  display: flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   box-sizing: border-box;
   padding: 2px 4px 2px 8px;
   /* キャンバスの上に浮かぶので、枠は 3:1（MAI-110） */
@@ -3450,7 +3459,20 @@ button.pdf-page-number:hover {
   color: var(--color-accent);
   font: var(--font-control);
   white-space: nowrap;
-  transform: translateY(calc(-100% - 6px));
+}
+
+/* 会話の答えの札（会話のタブの「付箋に切り出す」）。白の地で、前の答えの札と見分ける */
+.ai-note-chip.chat {
+  background: var(--color-surface);
+}
+
+/* 上の札の当たりは、下の札の手前まで（札の間 6px の半分と、余白・枠） */
+.ai-note-chip:not(:last-child) button {
+  --target-reach-bottom: 6px;
+}
+
+.ai-note-chip:not(:first-child) button {
+  --target-reach-top: 6px;
 }
 
 .ai-note-chip-label {
@@ -3795,6 +3817,197 @@ button.pdf-page-number:hover {
 .claude-panel-header strong {
   margin-right: auto;
 }
+/* 会話のタブの上の並び（claude/ChatHeader.tsx）。1 段目にタブ・＋・⋯・×、2 段目に会話の題と ▾ */
+.claude-chat-header {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 10px 6px 12px;
+}
+
+.claude-panel-header-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.claude-panel-header-row strong {
+  margin-right: auto;
+}
+
+/* 当たり（MAI-113）：1 段目は、上は帯の余白（8px）まで、下は段の間（6px）の半分まで */
+.claude-chat-header .claude-panel-header-row button {
+  --target-reach-top: 8px;
+  --target-reach-bottom: 3px;
+}
+
+.claude-chat-header .claude-tabs button {
+  --target-reach-top: 10px;
+  --target-reach-bottom: 5px;
+}
+
+/* 文字で描いたアイコンのボタン（＋・⋯・×） */
+.claude-panel .claude-icon-button {
+  min-width: 28px;
+  padding: 3px 6px;
+  border-color: transparent;
+  background: transparent;
+  font: var(--font-icon);
+}
+
+.claude-panel .claude-icon-button:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.claude-more {
+  position: relative;
+}
+
+/* ⋯ のメニュー（「この会話を消す」） */
+.claude-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 220px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
+}
+
+.claude-more-menu:focus {
+  outline: none;
+}
+
+.claude-chat-header .claude-more-menu button {
+  --target-reach-y: 8px;
+  --target-reach-x: 8px;
+  text-align: left;
+}
+
+.claude-more-note {
+  color: var(--color-text-sub);
+}
+
+/* 会話の題と ▾。押すと会話の一覧（claude/ThreadMenu.tsx） */
+.claude-thread-title {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.claude-panel .claude-thread-button {
+  /* 当たり：上は段の間（6px）の半分、下は帯の余白（6px）まで */
+  --target-reach-top: 3px;
+  --target-reach-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  border-color: transparent;
+  background: transparent;
+  font: var(--font-control);
+  font-weight: var(--font-weight-700);
+  text-align: left;
+}
+
+.claude-panel .claude-thread-button:hover {
+  background: var(--color-hover);
+}
+
+.claude-thread-name {
+  min-width: 0;
+  padding-block: 2px;
+  margin-block: -2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-thread-caret {
+  flex: none;
+  color: var(--color-text-sub);
+  font-weight: var(--font-weight-400);
+}
+
+.claude-thread-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: min(340px, 100%);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-menu);
+}
+
+.claude-thread-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border-radius: var(--radius-control);
+  font: var(--font-control);
+  cursor: pointer;
+}
+
+.claude-thread-option:focus {
+  outline: none;
+  background: var(--color-hover);
+}
+
+.claude-thread-option:focus-visible {
+  outline: 4px solid var(--focus-ring-outer) !important;
+  outline-offset: -4px !important;
+}
+
+.claude-thread-option[aria-selected='true'] {
+  background: var(--color-selected);
+  color: var(--color-accent);
+}
+
+.claude-thread-option.new {
+  color: var(--color-accent);
+}
+
+.claude-thread-option-mark {
+  flex: none;
+  width: 12px;
+  color: var(--color-accent);
+}
+
+.claude-thread-option-title {
+  flex: 1;
+  min-width: 0;
+  padding-block: 2px;
+  margin-block: -2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-thread-option-asking {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-strong);
+}
 
 /* ボタンの当たり（MAI-113）：パネルの中の部品は 6px の間で並ぶので、その半分ずつ広げる（枠の 1px を足して書く。高さ 25px の
    ボタンは 31px）。場所ごとに、まわりの余白の分だけ広げる所は、それぞれの規則に書く */
@@ -3805,8 +4018,7 @@ button.pdf-page-number:hover {
 }
 
 .claude-panel button,
-.question-panel button,
-.claude-thread-select {
+.question-panel button {
   padding: 3px 8px;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-control);
@@ -3814,12 +4026,6 @@ button.pdf-page-number:hover {
   color: var(--color-text);
   font: var(--font-control);
   cursor: pointer;
-}
-
-.claude-thread-select {
-  min-width: 0;
-  max-width: 170px;
-  border-color: var(--color-border-field);
 }
 
 .claude-panel-header button {
@@ -3897,11 +4103,27 @@ button.pdf-page-number:hover {
   margin-top: 16px;
 }
 
-.claude-prompt {
-  margin-left: 32px;
-  margin-bottom: 8px;
-  padding: 8px 10px;
+/* 会話の欄の 1 つのジョブ（claude/ChatLog.tsx）。頼んだ文は右寄せの吹き出し */
+.claude-job {
+  display: flex;
+  flex-direction: column;
   border-radius: var(--radius-panel);
+  transition: background-color 0.4s, box-shadow 0.4s;
+}
+
+/* 会話の札の ↗ で戻ったジョブ（少しのあいだ色を付ける） */
+.claude-job.highlighted {
+  background: var(--color-selected);
+  box-shadow: 0 0 0 6px var(--color-selected);
+}
+
+.claude-prompt {
+  align-self: flex-end;
+  max-width: 85%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-large) var(--radius-large) var(--radius-small) var(--radius-large);
   background: var(--color-accent-soft);
   font: var(--font-body);
   letter-spacing: var(--letter-spacing-body);
@@ -3912,11 +4134,22 @@ button.pdf-page-number:hover {
   overflow-wrap: anywhere;
 }
 
+/* 添えた所の札（「📍 授業_2026秋 の範囲」） */
 .claude-prompt-ref {
-  margin-top: 4px;
-  color: var(--color-text-sub);
-  font: var(--font-ui);
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 1px solid var(--color-selected-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font: var(--font-control);
   letter-spacing: var(--letter-spacing-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .claude-text {
@@ -4040,10 +4273,84 @@ button.pdf-page-number:hover {
   content: '↳ ';
 }
 
+/* 作業のまとまり（「▸ 読んだ・調べた 4件」。押すと 1 行ずつ開く） */
+.claude-tools {
+  margin: 2px 0;
+  color: var(--color-text-sub);
+}
+
+.claude-panel .claude-tools-toggle {
+  /* 当たり（MAI-113）：文字だけのボタン。上下は、まわりの行の間のうち 4px まで */
+  --target-reach-y: 4px;
+  --target-reach-x: 0px;
+  max-width: 100%;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-sub);
+  text-align: left;
+}
+
+.claude-panel .claude-tools-toggle:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.claude-tools-list,
+.claude-tools > .claude-tool,
+.claude-tools > .claude-error {
+  margin-left: 14px;
+}
+
+/* 答えの操作（「📌 付箋に切り出す」「コピー」と、右にモデルの札）。マウスを乗せたジョブ（キーで中に移ったとき）にだけ出す。
+   タッチの端末（hover: none）では、初めから出す */
+.claude-answer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.claude-job:hover .claude-answer-actions,
+.claude-answer-actions:focus-within {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .claude-answer-actions {
+    opacity: 1;
+  }
+}
+
+.claude-panel .claude-answer-actions button {
+  --target-reach-y: 2px;
+  --target-reach-x: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--color-text-sub);
+}
+
+.claude-panel .claude-answer-actions button:hover {
+  border-color: var(--color-border-hover);
+  color: var(--color-text);
+}
+
+.claude-answer-model {
+  margin-left: auto;
+}
+
+.claude-status-text {
+  min-width: 0;
+}
+
+/* バックグラウンドの作業（「⚙ 動作中の作業 N件 ▾」の 1 行。押すと一覧） */
 .claude-tasks {
   display: flex;
   flex-direction: column;
-  /* 行の間。行（文字の 18px）に並ぶ「止める」（文字だけのボタン）を、隣の行と重ならずに 24px へ広げるため、2px から広げる（MAI-113） */
   gap: 6px;
   max-height: 30%;
   overflow-y: auto;
@@ -4052,14 +4359,46 @@ button.pdf-page-number:hover {
   color: var(--color-text-sub);
 }
 
-.claude-tasks-header,
+.claude-panel .claude-tasks-toggle {
+  /* 当たり（MAI-113）：上下は欄の余白（6px）まで */
+  --target-reach-y: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-sub);
+  text-align: left;
+}
+
+.claude-panel .claude-tasks-toggle:hover {
+  background: var(--color-hover);
+}
+
+.claude-tasks.open .claude-tasks-toggle {
+  --target-reach-bottom: 3px;
+}
+
+.claude-tasks-list {
+  display: flex;
+  flex-direction: column;
+  /* 行の間。行（文字の 18px）に並ぶ「止める」（文字だけのボタン。17px）を、隣の行と重ならずに 24px へ広げるため（MAI-113） */
+  gap: 8px;
+}
+
+.claude-tasks-list .claude-link {
+  --target-reach-y: 4px;
+}
+
 .claude-task {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding-left: 16px;
 }
 
-.claude-tasks-header > span:nth-child(2),
 .claude-task-name {
   flex: 1;
   min-width: 0;
@@ -4068,8 +4407,8 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
-.claude-task {
-  padding-left: 16px;
+.claude-task-all {
+  justify-content: flex-end;
 }
 
 /* 区切れない長い語（パスなど）も折り返す（会話の欄が横にスクロールし、入力欄の下のエラーは切れていた） */
@@ -4126,37 +4465,51 @@ button.pdf-page-number:hover {
   border-top: 1px solid var(--color-border-subtle);
 }
 
+/* 「質問」で送るときは、入力欄の枠を主な色にする（会話に入らないことが分かるように） */
+.claude-compose.question textarea {
+  border-color: var(--color-accent);
+}
+
+/* 入力欄の上の札（添えた所・取り込む付箋の質問） */
+.claude-compose-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
 .claude-attachment {
   display: flex;
   align-items: center;
   gap: 6px;
-  align-self: flex-start;
   max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 2px 4px 2px 10px;
   border-radius: 999px;
   background: var(--color-accent-soft);
+  color: var(--color-accent);
 }
 
 .claude-attachment span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.claude-import-chip {
+  border: 1px dashed var(--color-selected-border);
+}
+
 .claude-panel .claude-attachment button {
-  /* 当たり（MAI-113）：入力の欄の先頭なので、上は欄の余白（10px）まで */
+  /* 当たり（MAI-113）：入力の欄の先頭なので、上は欄の余白（10px）まで。下は札と文の欄の間（6px）の半分まで */
   --target-reach-top: 10px;
+  --target-reach-bottom: 3px;
   padding: 0 6px;
   border: none;
   background: transparent;
-}
-
-.claude-panel .claude-attach {
-  --target-reach-top: 10px;
-  align-self: flex-start;
-  border-style: dashed;
-  background: transparent;
-  color: var(--color-text-sub);
+  color: inherit;
 }
 
 .claude-compose textarea {
@@ -4171,16 +4524,74 @@ button.pdf-page-number:hover {
   letter-spacing: var(--letter-spacing-body);
 }
 
+/* 下の並び：📎、「会話｜質問」、（あき）、モデルの札、➤ */
 .claude-compose-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
-/* 当たり（MAI-113）：送る・止める・モデルは欄の最後の行なので、下は欄の余白（12px）まで（モデルの欄の中のボタンは含めない） */
+.claude-compose-spacer {
+  flex: 1;
+}
+
+/* 当たり（MAI-113）：送る・添える・モデルは欄の最後の行なので、下は欄の余白（12px）まで（モデルの欄の中のボタンは含めない） */
 .claude-compose-actions > button,
+.claude-mode > button,
 .claude-model > .claude-model-button {
   --target-reach-bottom: 12px;
+}
+
+.claude-panel .claude-attach {
+  min-width: 28px;
+  padding: 3px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-sub);
+  font: var(--font-icon);
+}
+
+.claude-panel .claude-attach:hover {
+  background: var(--color-hover);
+}
+
+/* 「会話｜質問」の切り替え（タブと同じ形） */
+.claude-mode {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-panel);
+  background: var(--color-code);
+}
+
+.claude-panel .claude-mode button {
+  --target-reach-x: 1px;
+  --target-reach-top: 5px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-sub);
+}
+
+.claude-panel .claude-mode button[aria-checked='true'] {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: var(--font-weight-700);
+  box-shadow: var(--shadow-menu);
+}
+
+/* 送る（➤）。主な色の丸いボタン */
+.claude-panel .claude-send {
+  min-width: 32px;
+  padding: 3px 8px;
+  border-color: var(--color-accent);
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-text-on-fill);
+  font: var(--font-icon);
 }
 
 .claude-panel .claude-danger {
@@ -4420,12 +4831,6 @@ button.pdf-page-number:hover {
   color: var(--color-text-sub);
 }
 
-.claude-panel .claude-send {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-text-on-fill);
-}
-
 /* 右上の「Claude」を開くボタン（.status-bar の中） */
 .claude-toggle {
   /* 当たり（MAI-113）：.backup-status と同じ */
@@ -4463,8 +4868,10 @@ button.pdf-page-number:hover {
   gap: 8px;
   max-height: 45%;
   overflow-y: auto;
-  padding: 8px 12px;
-  border-top: 1px solid var(--color-warning-border);
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-panel);
   background: var(--color-warning-bg);
 }
 
