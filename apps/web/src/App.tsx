@@ -2575,7 +2575,7 @@ export function App(props: { initial: InitialRecords }) {
         )}
 
         {view &&
-          claudeState.availability === 'on' &&
+          // 答えを見るのに Claude は要らないので、Claude を使えないときも開く
           answerNote?.canvasId === canvasId &&
           (() => {
             const { noteId } = answerNote

@@ -405,6 +405,12 @@ function outlineLine(item: Item, ctx: LineContext): string {
       if (fill) parts.push(`fill=${fill}`)
       break
     }
+    // AI 付箋（Claude に聞く付箋。docs/canvas-answer-panel-plan.md）。答えを持っていれば ai:answered
+    case 'note': {
+      const ai = aiOf(record)
+      if (ai) parts.push(ai.answer ? 'ai:answered' : 'ai')
+      break
+    }
     case 'portal':
       if (typeof p.targetId === 'string') parts.push(p.targetId)
       break
@@ -537,6 +543,32 @@ export function readNodes(records: RecordStore, ids: string[]): { nodes: Record<
   return missing.length ? { nodes, missing } : { nodes }
 }
 
+// AI 付箋の meta.ai（なければ null）
+function aiOf(record: StoredRecord): { answer?: unknown; contexts?: unknown } | null {
+  const ai = (record.meta as { ai?: unknown } | undefined)?.ai
+  return typeof ai === 'object' && ai !== null ? (ai as { answer?: unknown; contexts?: unknown }) : null
+}
+
+// read_nodes の AI 付箋：届いた答え（本文は Markdown のまま）と、添えたもの（前の答えは、どの付箋の答えかと名前だけ）
+function aiDetail(ai: { answer?: unknown; contexts?: unknown }): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const answer = typeof ai.answer === 'object' && ai.answer !== null ? (ai.answer as Record<string, unknown>) : null
+  if (answer) {
+    out.answer = Object.fromEntries(
+      ['body', 'related', 'model', 'effort', 'question', 'answeredAt'].flatMap((key) => (answer[key] !== undefined ? [[key, answer[key]]] : [])),
+    )
+  }
+  const contexts = (Array.isArray(ai.contexts) ? ai.contexts : []).flatMap((context) => {
+    if (typeof context !== 'object' || context === null) return []
+    const { kind, label, noteId, canvasId } = context as Record<string, unknown>
+    if (kind === 'answer') return [{ kind, label, noteId, canvasId }]
+    if (kind === 'canvas') return [{ kind, label }]
+    return []
+  })
+  if (contexts.length > 0) out.contexts = contexts
+  return out
+}
+
 function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord[], records: RecordStore, slide?: SlideInfo): Record<string, unknown> {
   const { record, props: p, type } = item
   const origin = applyMat(item.world, { x: item.box.x, y: item.box.y })
@@ -566,7 +598,11 @@ function detail(item: Item, canvasId: string | undefined, bindings: StoredRecord
       richMarkdown(out, type, p)
       copy('fontSize', 'fontFamily', 'color', 'align')
       if (type === 'text') copy('autoWidth')
-      if (type === 'note') copy('sizing')
+      if (type === 'note') {
+        copy('sizing')
+        const ai = aiOf(record)
+        if (ai) out.ai = aiDetail(ai)
+      }
       break
     case 'geo': {
       copy('shape', 'label')
@@ -833,7 +869,7 @@ First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revis
 Then one line per node, back-to-front (z-order); children of a group/frame follow their parent, indented by depth:
   <id> <type> <x>,<y> <W>x<H> [rot=<deg>] [extra] ["text"] [locked] [in=<parent id>] [[N children]]
 Arrows: <id> arrow <start>→<end> ["label"], where each end is a node id (bound) or x,y (free).
-Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when drawn by plot_csv; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
+Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; note: ai or ai:answered (an AI note); portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when drawn by plot_csv; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
 Text is truncated to ${MAX_LINE_TEXT} characters. Group/frame contents are collapsed as [N children] unless depth > 0.
 Filters: rect (world box intersection), query (case-insensitive text), types (e.g. note, geo, geo/ellipse) and since search inside groups/frames too; nodes whose parent line is not shown get in=<parent id>.
 since=<rev> returns only nodes changed after that revision (including arrows whose connections changed) and deleted=<ids> (node ids deleted anywhere in the workspace after it). Pass the rev from a previous result to see what the user changed.
@@ -852,6 +888,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - text, note and geo text can be formatted (bold, colours, sizes, fonts, lists); read_nodes gives that as md (see Formatted text)
 - note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
+- AI note ("AI 付箋"): a note the user asks Claude with; the outline marks it ai, or ai:answered when it holds Claude's answer. The answer is not on the canvas: the user opens it from the blue triangle at the note's top right. read_nodes gives ai.answer (body = the answer in Markdown, related = ids of related notes, model, effort, question = the question it answered, answeredAt) and ai.contexts (what is attached: kind answer = the previous answer it continues (noteId, canvasId), kind canvas = a place on the canvas)
 - geo: shape, one of rect, ellipse, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid

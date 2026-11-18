@@ -232,3 +232,37 @@ describe('canvas outline', () => {
     expect(nodes[0]!.overflow).toBeUndefined()
   })
 })
+
+describe('AI notes (the canvas AI)', () => {
+  it('marks an AI note in the outline, and gives its answer and what is attached in read_nodes', () => {
+    const records = setup()
+    const root = records.rootCanvasId
+    const text = (value: string) => ({ paragraphs: [{ runs: [{ text: value }] }], w: 200, h: 60 })
+    const answer = { body: '### なぜ\n本文', related: ['node:plain'], model: 'claude-opus-5-5', effort: 'high', question: 'コンテキストとは？', answeredAt: 5 }
+    const target = { canvasId: root, rect: { x: 0, y: 0, w: 10, h: 10 }, nodes: [] }
+    records.apply(
+      [
+        node('node:asked', 'note', root, 'a1', text('コンテキストとは？'), {
+          meta: { ai: { contexts: [{ kind: 'answer', noteId: 'node:prev', canvasId: 'canvas:x', label: '前', turns: [{ question: 'Q', answer: 'A' }] }, { kind: 'canvas', label: '範囲', target }], answer } },
+        }),
+        node('node:waiting', 'note', root, 'a2', text('まだ聞いていない'), { y: 100, meta: { ai: { contexts: [] } } }),
+        node('node:plain', 'note', root, 'a3', text('ふつうの付箋'), { y: 200 }),
+      ],
+      [],
+    )
+    const lines = readCanvas(records, {}).split('\n')
+    expect(lines).toContain('node:asked note 0,0 200x60 ai:answered "コンテキストとは？"')
+    expect(lines).toContain('node:waiting note 0,100 200x60 ai "まだ聞いていない"')
+    expect(lines).toContain('node:plain note 0,200 200x60 "ふつうの付箋"')
+    const { nodes } = readNodes(records, ['node:asked', 'node:plain'])
+    // 前の答えの写し（turns）と、範囲の中身は出さない
+    expect(nodes[0]!.ai).toEqual({
+      answer,
+      contexts: [
+        { kind: 'answer', label: '前', noteId: 'node:prev', canvasId: 'canvas:x' },
+        { kind: 'canvas', label: '範囲' },
+      ],
+    })
+    expect(nodes[1]!.ai).toBeUndefined()
+  })
+})
