@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 // Markdown カードは、表示倍率に合う解像度の画像にして描く。どの倍率の画像でも、文字はカードに対して同じ大きさで描かれること。
 // WebKit（Safari）は、SVG の viewBox で拡大すると、foreignObject の中の層を作る要素（本文の position: relative など）を拡大せず、
-// ズームすると本文の文字だけが小さくなっていた（rasterize.ts の svgOf）。WebKit で動かすときは --project=webkit
+// ズームすると本文の文字だけが小さくなっていた（rasterize.ts の svgOf）。
 
 async function openCard(page: Page) {
   await page.goto('/canvas-input-test.html?kind=markdown&sizing=auto&long=0')
