@@ -72,6 +72,8 @@ export interface AiNoteMeta {
 // 続きを聞くときに渡す前の答えの数と、文字の合計（サーバーの上限と同じ。超えたら古いものから落とし、1 つでも長ければ答えを切る）
 export const FOLLOW_UP_TURNS = 3
 export const FOLLOW_UP_LENGTH = 12_000
+// AI 付箋に添えられる所（kind: 'canvas'）の数（サーバーの上限 MAX_REFS と同じ。超えて送ると 400 で断られる）
+export const MAX_AI_PLACES = 5
 // 元の付箋と、続きの付箋の間（矢印を引く）
 export const FOLLOW_UP_GAP = 64
 // 付箋と、Canvas に残した答えのテキストの間（矢印を引く）

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { NodeRecord } from '@canvcode/core'
-import { aiNoteMeta, setAiNote, type AiContext, type AiNoteMeta, type CanvasView, type Editor, type SessionState } from '@canvcode/canvas'
+import { MAX_AI_PLACES, aiNoteMeta, setAiNote, type AiContext, type AiNoteMeta, type CanvasView, type Editor, type SessionState } from '@canvcode/canvas'
 import type { ClaudeClient, Effort } from './claudeClient.ts'
 import { useClaudeState } from './claudeClient.ts'
 import { ModelPicker } from './ModelPicker.tsx'
@@ -9,18 +9,21 @@ import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 // AI 付箋（meta.ai。Claude に聞く付箋）のまわり（docs/canvas-answer-panel-plan.md の 5）。カメラに付いて動く。
 // - 付箋の下の欄：左にコンテキストを選ぶアイコン（範囲で囲む絵。横に添えた数）、右にモデルの札と送信（➤）。枠で囲まず、付箋の下に並べる。
 //   出すのは、選んでいるものに AI 付箋がちょうど 1 枚あるとき（ほかと一緒でもよい）・その付箋の文字の編集中・
-//   その付箋の答えのパネルにフォーカスがあるとき・添える所を選んでいる間だけ
+//   その付箋の答えのパネルかこの欄にフォーカスがあるとき（答えのパネルが見張る。AnswerPopover の onFocusChange）・
+//   添える所を選んでいる間だけ
 // - コンテキストを選ぶアイコン：付箋と一緒にほかのノードを選んでいれば、それをすぐ添える。付箋だけなら「添える所を選ぶ」状態にし、
 //   キャンバスで範囲をドラッグするかノードをクリックしたら添えて、付箋を選び直す（Esc かもう一度押すとやめる）。
-//   添えた数を押すと、添えたものの一覧（× で外す）
+//   添えられるのは MAX_AI_PLACES か所まで（サーバーの上限）。添えた数を押すと、添えたものの一覧（× で外す）
 // - 付箋の上の札：前の答え（続き）を添えた付箋には、いつも出す（「「質問」の答え」と、元の付箋へ移る ↗）。
 //   会話の答え（会話のタブの「付箋に切り出す」）を添えた付箋には「💬 会話「題」の答え」と、会話のそのジョブへ戻る「↗ 会話へ」
 //   （docs/claude-chat-tab-plan.md の 5）。両方あれば、上下に並べる
 // - 答えを作っている間は、送信を押せない（角の三角が点滅している）。文字の編集中は Ctrl+Enter でも送る
 // - 小さく表示しているときは出さない
+// - 札と欄の上のホイール・ピンチ（トラックパッド・マウス）は、キャンバスのパン・ズームに渡す（CanvasView の passWheel）
 const MIN_ZOOM = 0.3
-// 欄の幅の下限（画面のピクセル）
-const MIN_WIDTH = 220
+// 札と欄の幅の下限（画面のピクセル。付箋が狭くても、この幅で出す。書式のツールバーも、この幅を避ける）
+export const AI_NOTE_UI_MIN_WIDTH = 220
+const MIN_WIDTH = AI_NOTE_UI_MIN_WIDTH
 
 export function AiNoteControls(props: {
   editor: Editor
@@ -29,7 +32,7 @@ export function AiNoteControls(props: {
   claude: ClaudeClient
   // 答えを作っている付箋
   busy: ReadonlySet<string>
-  // 答えのパネルにフォーカスがある付箋
+  // 答えのパネルかこの欄にフォーカスがある付箋（答えのパネルで見ている付箋）
   focusedNoteId: string | null
   onSend(noteId: string): void
   // 前の答えの札の ↗：元の付箋へ移る
@@ -94,6 +97,9 @@ export function AiNoteControls(props: {
     }
   }, [editor, view, picking, notify])
 
+  // 札と欄の上のホイール・ピンチを、キャンバスに渡す（React 19 の ref は、外すときに返した関数を呼ぶ）
+  const passWheel = useCallback((element: HTMLDivElement | null) => (element ? view.passWheel(element) : undefined), [view])
+
   if (camera.zoom < MIN_ZOOM) return null
 
   // 下の欄を出す付箋
@@ -103,7 +109,7 @@ export function AiNoteControls(props: {
   const screen = (x: number, y: number) => ({ left: (x - camera.x) * camera.zoom, top: (y - camera.y) * camera.zoom })
 
   return (
-    <>
+    <div className="ai-note-layer" ref={passWheel}>
       {notes.map((node) => {
         // 付箋の上の札：会話の答えと、前の答え（続き）
         const contexts = aiNoteMeta(node)?.contexts ?? []
@@ -160,6 +166,7 @@ export function AiNoteControls(props: {
           const answering = busy.has(target)
           const pickContext = () => {
             if (picking === target) return setPicking(null)
+            if (places.length >= MAX_AI_PLACES) return notify(TOO_MANY_PLACES)
             const others = [...editor.session.get().selectedIds].filter((id) => id !== target)
             const context = others.length > 0 ? selectionContext(editor, view, target) : null
             if (context) return addContext(editor, target, context, notify)
@@ -170,6 +177,9 @@ export function AiNoteControls(props: {
               key={`controls:${target}`}
               className="ai-note-controls"
               data-own-keys=""
+              // 押してもフォーカスを持たないボタン（Mac の Safari・Firefox）を押したときも、フォーカスがこの欄に来るように
+              // （キャンバスへ移ると、答えのパネルから開いた欄が消え、押せない）
+              tabIndex={-1}
               style={{ left: screen(box.x, 0).left, top: screen(0, box.y + box.h).top + 6, width: Math.max(MIN_WIDTH, box.w * camera.zoom) }}
               onPointerDown={(e) => e.stopPropagation()}
             >
@@ -244,7 +254,7 @@ export function AiNoteControls(props: {
             </div>
           )
         })()}
-    </>
+    </div>
   )
 }
 
@@ -257,11 +267,14 @@ function AreaIcon() {
   )
 }
 
-// 付箋に添えるものを足す（同じものは足さない）
+const TOO_MANY_PLACES = `添えられる所は ${MAX_AI_PLACES} か所までです。添えた数を押し、× で外してから添えてください`
+
+// 付箋に添えるものを足す（同じものは足さない。選んだ所は MAX_AI_PLACES か所まで）
 function addContext(editor: Editor, noteId: string, context: AiContext, notify: (message: string) => void): void {
   const meta = aiNoteMeta(editor.getNode(noteId))
   if (!meta) return
   if (meta.contexts.some((known) => sameContext(known, context))) return notify('もう添えてあります')
+  if (context.kind === 'canvas' && meta.contexts.filter((known) => known.kind === 'canvas').length >= MAX_AI_PLACES) return notify(TOO_MANY_PLACES)
   setAiNote(editor, noteId, { ...meta, contexts: [...meta.contexts, context] }, 'Claude に添えるものを足す')
 }
 

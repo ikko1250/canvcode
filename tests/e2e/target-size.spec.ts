@@ -479,6 +479,15 @@ test('the focus ring follows the visible button, not the widened target', async 
   for (const side of ['left', 'top', 'right', 'bottom'] as const) expect(Math.abs(black[side] - expected[side]), side).toBeLessThanOrEqual(1)
 })
 
+test('the format toolbar laid out vertically beside an AI note being edited has targets of 24×24 or more', async ({ page }) => {
+  await openApp(page)
+  const noteId = await addAiNote(page)
+  await page.evaluate((id) => (window as any).canvcode.view.textEditor.start(id), noteId)
+  const toolbar = page.getByTestId('text-format-toolbar')
+  await expect(toolbar).toHaveClass(/vertical/)
+  expect(await targetProblems(toolbar)).toEqual([])
+})
+
 test('the questions tab, the answer panel by a note, the AI note controls and the chat menus have targets of 24×24 or more (claude-chat-tab-plan 0)', async ({ page }) => {
   await openApp(page)
   const noteId = await addAiNote(page)

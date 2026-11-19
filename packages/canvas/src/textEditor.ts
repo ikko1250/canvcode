@@ -43,7 +43,6 @@ import {
   withList,
 } from '@canvcode/nodes'
 import type { Editor } from './editor.ts'
-import { stopUnlessZoom } from './documentEditor.ts'
 import { isImeEvent } from './imeGuard.ts'
 import { domPointAt, readRichTextDom, renderRichTextDom, richTextHtml } from './richTextDom.ts'
 import { TEXT_CLIPBOARD_MIME, parseTextClipboard, textClipboardData } from './textClipboard.ts'
@@ -221,8 +220,8 @@ export class TextEditor {
     element.addEventListener('dragstart', (e) => e.preventDefault())
     // キャンバスのポインタ操作（選択・ドラッグ）に渡さない
     element.addEventListener('pointerdown', (e) => e.stopPropagation())
-    // ピンチと Ctrl（⌘）+ホイールはキャンバスのズームに渡す（止めると、ブラウザがページごと拡大してしまう）
-    element.addEventListener('wheel', stopUnlessZoom, { passive: true })
+    // ホイールは止めず、キャンバスのパン・ズームに渡す（編集中の付箋の上でも、キャンバスと同じく動かせる）。
+    // 文字の要素は overflow: hidden で、ホイールで中をスクロールすることはない（textarea だったころは、中のスクロールに使っていた）
     this.options.layer.appendChild(element)
     const decorations = document.createElement('div')
     decorations.className = 'canvcode-text-decorations'

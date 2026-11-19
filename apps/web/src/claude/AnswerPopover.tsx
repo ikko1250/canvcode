@@ -8,10 +8,14 @@ import { useNodesVersion } from './useNodesVersion.ts'
 
 // 付箋の横の答えのパネル（docs/canvas-answer-panel-plan.md の 4）。付箋の角の三角を押すと開く。
 // - 付箋の右上に合わせて、付箋の右に出す（右に入らなければ左）。カメラに付いて動くが、大きさは倍率によらない（幅 POPOVER_WIDTH、高さは中身に合わせて
-//   POPOVER_MAX_HEIGHT まで。本文は中でスクロール）。キャンバスの端からはみ出さない
+//   POPOVER_MAX_HEIGHT まで。本文は中でスクロール）。キャンバスの端からはみ出さない。
+//   右のデザインパネルを出しているときは、その左端を右の端とする（パネルはデザインパネルの下に重なるので、隠れないように）
 // - 上に「回答」とモデルの札。その下は AnswerView（本文・関連する付箋・「続けて聞く」「Canvasに残す」。答えを作っている間は進み具合）
 // - 閉じる：同じ三角をもう一度押す（App）・Esc・パネルの外のキャンバスを押す（左ボタン。付箋の下の欄の上は除く）・付箋が消えた
-// - 開いたらパネルにフォーカスする。フォーカスがある間は、付箋の下の欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない
+// - 開いたらパネルにフォーカスする。パネルか付箋の下の欄にフォーカスがある間は、欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない。
+//   どちらにあるかは、文書の focusin で決める（blur では決めない）。欄のボタンを押すとフォーカスが欄へ移るので、そこで欄を消すと押せない。
+//   また、押したボタンが消えた（× で外した）・押せなくなった（送信）ときは、フォーカスが body へ落ちるだけで focusin は来ない。
+//   そのときは欄を出したままにする（ほかへフォーカスが移るか、パネルを閉じるまで）
 
 export const POPOVER_WIDTH = 360
 export const POPOVER_MAX_HEIGHT = 480
@@ -35,6 +39,8 @@ export function AnswerPopover(props: {
   // 答えを見た（質問のタブの青い点を消す）
   onSeen(noteId: string, answeredAt: number): void
   onFocusChange(focused: boolean): void
+  // 右のデザインパネルを出している
+  besideDesignPanel?: boolean
   onRelated(id: string): void
   onContinue(): void
   onKeep(): void
@@ -43,7 +49,7 @@ export function AnswerPopover(props: {
   onChat?(newThread: boolean): void
   chatTitle?: string | null
 }) {
-  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onSeen, onFocusChange, onRelated, onContinue, onKeep, onStop, onChat, chatTitle } = props
+  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onSeen, onFocusChange, besideDesignPanel, onRelated, onContinue, onKeep, onStop, onChat, chatTitle } = props
   const rootRef = useRef<HTMLElement>(null)
   // 付箋（と関連する付箋）が変わったら読み直す
   useNodesVersion(editor)
@@ -62,6 +68,16 @@ export function AnswerPopover(props: {
   useEffect(() => {
     if (answeredAt !== undefined) onSeen(noteId, answeredAt)
   }, [noteId, answeredAt, onSeen])
+
+  // フォーカスがパネルか付箋の下の欄に入ったか、ほかへ入ったか（下のフォーカスする effect より先に聞き始める）
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target
+      onFocusChange(target instanceof Element && (rootRef.current?.contains(target) === true || target.closest('.ai-note-controls') !== null))
+    }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  }, [onFocusChange])
 
   // 開いたら（別の付箋に替わったら）、パネルにフォーカスする
   useEffect(() => {
@@ -86,9 +102,12 @@ export function AnswerPopover(props: {
 
   const width = view.root.clientWidth
   const height = view.root.clientHeight
+  // 右の端（キャンバスの右端か、デザインパネルの左端。キャンバスの左上を 0 とする）
+  const panel = besideDesignPanel ? document.querySelector('[data-testid="design-panel"]') : null
+  const right = panel ? Math.min(width, panel.getBoundingClientRect().left - view.root.getBoundingClientRect().left) : width
   let left = (box.x + box.w - camera.x) * camera.zoom + GAP
-  if (left + POPOVER_WIDTH > width - EDGE) left = (box.x - camera.x) * camera.zoom - GAP - POPOVER_WIDTH
-  left = Math.max(EDGE, Math.min(left, width - POPOVER_WIDTH - EDGE))
+  if (left + POPOVER_WIDTH > right - EDGE) left = (box.x - camera.x) * camera.zoom - GAP - POPOVER_WIDTH
+  left = Math.max(EDGE, Math.min(left, right - POPOVER_WIDTH - EDGE))
   const top = Math.max(EDGE, Math.min((box.y - camera.y) * camera.zoom, height - 160))
   const maxHeight = Math.max(160, Math.min(POPOVER_MAX_HEIGHT, height - top - EDGE))
 
@@ -116,10 +135,6 @@ export function AnswerPopover(props: {
       style={{ left, top, width: POPOVER_WIDTH, maxHeight }}
       onKeyDown={onKeyDown}
       onPointerDown={(e) => e.stopPropagation()}
-      onFocus={() => onFocusChange(true)}
-      onBlur={(e) => {
-        if (!(e.relatedTarget instanceof Node) || !e.currentTarget.contains(e.relatedTarget)) onFocusChange(false)
-      }}
       {...{ [OWN_KEYS_ATTRIBUTE]: '' }}
     >
       <div className="answer-popover-head">

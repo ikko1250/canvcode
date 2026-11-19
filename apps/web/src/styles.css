@@ -2956,6 +2956,18 @@ button.pdf-page-number:hover {
   cursor: pointer;
 }
 
+/* AI 付箋の編集中は、ボタンを縦に並べて付箋の左に出す（上に札・下に欄があるので） */
+.text-format-toolbar.vertical {
+  flex-direction: column;
+  height: auto;
+}
+
+.text-format-toolbar.vertical button {
+  /* 当たり（MAI-113）：左右はツールバーの枠まで（34px）、上下は並んだボタンの間（2px）の半分まで（枠の 1px を足す） */
+  --target-reach-x: 5px;
+  --target-reach-y: 2px;
+}
+
 .text-format-toolbar button:hover {
   background: var(--color-hover);
 }
@@ -3289,10 +3301,17 @@ button.pdf-page-number:hover {
   cursor: pointer;
 }
 
+/* AI 付箋のまわり（札と欄）をまとめる入れ物。ホイールを受けるためだけのもので、箱を作らない（札と欄の位置は .main に対して決める） */
+.ai-note-layer {
+  display: contents;
+}
+
 /* AI 付箋（Claude に聞く付箋）の下の欄。1 段目に、左にコンテキストを選ぶアイコンと添えた数、右にモデルの札と送信。2 段目に添えたもの（数を押したとき） */
 .ai-note-controls {
   position: absolute;
-  z-index: 5;
+  /* z-index は付けず、後に置く書式のツールバー・デザインパネルの下にする（App で前に置く）。中の浮かぶもの（モデルを選ぶ欄など）の
+     z-index が外へ効かないよう、ここで重なりを閉じる */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3455,7 +3474,9 @@ button.pdf-page-number:hover {
 /* 前の答え（続き）・会話の答えを添えた AI 付箋の上の札。両方あれば、上下に並べる */
 .ai-note-chips {
   position: absolute;
-  z-index: 5;
+  /* z-index は付けず、後に置く書式のツールバー・デザインパネルの下にする（App で前に置く）。中の浮かぶもの（モデルを選ぶ欄など）の
+     z-index が外へ効かないよう、ここで重なりを閉じる */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -3522,7 +3543,9 @@ button.pdf-page-number:hover {
 /* 付箋の横の答えのパネル（付箋の角の三角で開く） */
 .answer-popover {
   position: absolute;
-  z-index: 6;
+  /* z-index は付けず、後に置く書式のツールバー・デザインパネルの下にする（App で前に置く）。中の浮かぶもの（モデルを選ぶ欄など）の
+     z-index が外へ効かないよう、ここで重なりを閉じる */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;

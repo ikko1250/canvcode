@@ -1093,10 +1093,12 @@ export function App(props: { initial: InitialRecords }) {
   )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
   const { answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvasTitle })
-  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルにフォーカスがあるか（付箋の下の欄を出す）。
+  // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルか付箋の下の欄にフォーカスがあるか（付箋の下の欄を出す。パネルが focusin で見張る）。
   // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
   const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
   const [answerFocused, setAnswerFocused] = useState(false)
+  // 右のデザインパネルを出しているか（答えのパネルは、その左に収める）
+  const [designShown, setDesignShown] = useState(false)
   const closeAnswer = useCallback(() => {
     setAnswerNote(null)
     setAnswerFocused(false)
@@ -1134,6 +1136,8 @@ export function App(props: { initial: InitialRecords }) {
       const editor = view.editor
       const context = followUpContext(noteId, editor.canvasId, aiNoteMeta(editor.getNode(noteId)))
       if (!context) return notify('この付箋には、まだ答えがありません')
+      // 編集の途中（文字の編集をよそへ預けている・ドラッグの途中）なら、begin が投げるので押せない（パネルは閉じない）
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
       closeAnswer()
       const tx = editor.begin('続けて聞く')
       const placed = placeFollowUpNote(editor, tx, noteId, context)
@@ -1186,6 +1190,7 @@ export function App(props: { initial: InitialRecords }) {
       if (sourceCanvasId === editor.canvasId && editor.getNode(noteId)) return continueAnswer(noteId)
       const context = followUpContext(noteId, sourceCanvasId, meta)
       if (!context) return notify('この付箋には、まだ答えがありません')
+      if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
       const tx = editor.begin('続けて聞く')
       const placed = placeFollowUpAt(editor, tx, viewCenter(view), context)
       tx.flush()
@@ -2485,6 +2490,64 @@ export function App(props: { initial: InitialRecords }) {
           )}
         </div>
 
+        {/* AI 付箋のまわり（付箋の上の札・下の欄）と、付箋の横の答えのパネル。キャンバスに付いて動く部品なので、z-index を付けず、
+            後に置く書式のツールバー・デザインパネル・状態の帯・通知の下にする */}
+        {view && claudeState.availability === 'on' && (
+          <AiNoteControls
+            editor={editor}
+            view={view}
+            session={session}
+            claude={claude}
+            busy={session.answeringIds}
+            focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
+            onSend={(noteId) => void askWithNotes([noteId])}
+            onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
+            onOpenChat={openChatAnswer}
+            canvasTitle={canvasTitle}
+            notify={notify}
+          />
+        )}
+
+        {view &&
+          // 答えを見るのに Claude は要らないので、Claude を使えないときも開く
+          answerNote?.canvasId === canvasId &&
+          (() => {
+            const { noteId } = answerNote
+            // 答えを作っている間の進み具合（サーバーが流すもの。ほかのタブで頼んだものも。この画面で頼んだばかりで、まだ届いていなければ「読む」）
+            const question = claudeState.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
+            const progress = question ? question : session.answeringIds.has(noteId) ? { step: 'read' as const, searched: false, thinking: '' } : null
+            const error = answerFailures.get(noteId)
+            return (
+              <AnswerPopover
+                editor={editor}
+                view={view}
+                camera={session.camera}
+                noteId={noteId}
+                catalog={claudeState.models}
+                progress={progress}
+                {...(question ? { runningModel: { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort } : {}) } } : {})}
+                {...(error ? { error } : {})}
+                onClose={closeAnswer}
+                onSeen={(id, answeredAt) => seenAnswers.mark(id, answeredAt)}
+                onFocusChange={setAnswerFocused}
+                besideDesignPanel={designShown}
+                onRelated={openRelated}
+                onContinue={() => continueAnswer(noteId)}
+                onKeep={() => keepAnswer(noteId)}
+                {...(progress ? { onStop: () => stopAnswer(noteId) } : {})}
+                {...(claudeState.availability === 'on'
+                  ? {
+                      onChat: (newThread: boolean) => {
+                        const answer = aiNoteMeta(editor.getNode(noteId))?.answer
+                        if (answer) importToChat({ label: firstLine(answer.question), question: answer.question, answer: answer.body, noteId, canvasId }, newThread)
+                      },
+                      chatTitle: chatThread?.title ?? null,
+                    }
+                  : {})}
+              />
+            )
+          })()}
+
         {/* 文字を編集している間、そのテキスト・付箋の上に出す書式のツールバー（MAI-79） */}
         {session.editingId && <TextFormatToolbar key={`text-format:${editor.canvasId}`} editor={editor} view={view} camera={session.camera} />}
 
@@ -2499,6 +2562,7 @@ export function App(props: { initial: InitialRecords }) {
             setDesignOpen(open)
             saveDesignPanelOpen(open)
           }}
+          onShownChange={setDesignShown}
         />
 
         {showStats && stats && (
@@ -2653,61 +2717,6 @@ export function App(props: { initial: InitialRecords }) {
         )}
 
         <AgentToasts sync={sync} />
-
-        {view && claudeState.availability === 'on' && (
-          <AiNoteControls
-            editor={editor}
-            view={view}
-            session={session}
-            claude={claude}
-            busy={session.answeringIds}
-            focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
-            onSend={(noteId) => void askWithNotes([noteId])}
-            onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
-            onOpenChat={openChatAnswer}
-            canvasTitle={canvasTitle}
-            notify={notify}
-          />
-        )}
-
-        {view &&
-          // 答えを見るのに Claude は要らないので、Claude を使えないときも開く
-          answerNote?.canvasId === canvasId &&
-          (() => {
-            const { noteId } = answerNote
-            // 答えを作っている間の進み具合（サーバーが流すもの。ほかのタブで頼んだものも。この画面で頼んだばかりで、まだ届いていなければ「読む」）
-            const question = claudeState.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
-            const progress = question ? question : session.answeringIds.has(noteId) ? { step: 'read' as const, searched: false, thinking: '' } : null
-            const error = answerFailures.get(noteId)
-            return (
-              <AnswerPopover
-                editor={editor}
-                view={view}
-                camera={session.camera}
-                noteId={noteId}
-                catalog={claudeState.models}
-                progress={progress}
-                {...(question ? { runningModel: { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort } : {}) } } : {})}
-                {...(error ? { error } : {})}
-                onClose={closeAnswer}
-                onSeen={(id, answeredAt) => seenAnswers.mark(id, answeredAt)}
-                onFocusChange={setAnswerFocused}
-                onRelated={openRelated}
-                onContinue={() => continueAnswer(noteId)}
-                onKeep={() => keepAnswer(noteId)}
-                {...(progress ? { onStop: () => stopAnswer(noteId) } : {})}
-                {...(claudeState.availability === 'on'
-                  ? {
-                      onChat: (newThread: boolean) => {
-                        const answer = aiNoteMeta(editor.getNode(noteId))?.answer
-                        if (answer) importToChat({ label: firstLine(answer.question), question: answer.question, answer: answer.body, noteId, canvasId }, newThread)
-                      },
-                      chatTitle: chatThread?.title ?? null,
-                    }
-                  : {})}
-              />
-            )
-          })()}
 
         {citing.map((job) => {
           // 引用を作っている間の印（置く所＝アイテムの右下に出す。カメラに付いて動く）

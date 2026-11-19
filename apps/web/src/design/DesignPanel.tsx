@@ -55,8 +55,10 @@ export function DesignPanel(props: {
   nodes: readonly NodeRecord[]
   open: boolean
   onOpenChange: (open: boolean) => void
+  // パネルを出しているか（閉じた・出す項目がない・出した）が変わった（答えのパネルが、重ならない所に出るため）
+  onShownChange?: (shown: boolean) => void
 }) {
-  const { editor, view, nodes, open, onOpenChange } = props
+  const { editor, view, nodes, open, onOpenChange, onShownChange } = props
   const rootRef = useRef<HTMLElement>(null)
   // 続けて変えている途中の変更（スライダーのドラッグ・色の選択）。項目ごとに 1 つ
   const running = useRef<{ fieldId: string; edit: PropertyEdit } | null>(null)
@@ -132,6 +134,10 @@ export function DesignPanel(props: {
   const editingId = useSyncExternalStore(editor.session.subscribe, () => editor.session.get().editingId)
 
   const allSections = visibleSections(nodes, undefined, textSelection, editor)
+  const shown = open && allSections.length > 0
+  useEffect(() => {
+    onShownChange?.(shown)
+  }, [shown, onShownChange])
   if (allSections.length === 0) return null
   const footerSections = allSections.filter(({ section }) => section.footer)
   const tabSections = allSections.filter(({ section }) => !section.footer)
