@@ -240,6 +240,15 @@ describe('AI notes (the canvas AI)', () => {
     const text = (value: string) => ({ paragraphs: [{ runs: [{ text: value }] }], w: 200, h: 60 })
     const answer = { body: '### なぜ\n本文', related: ['node:plain'], model: 'claude-opus-5-5', effort: 'high', question: 'コンテキストとは？', answeredAt: 5 }
     const target = { canvasId: root, rect: { x: 0, y: 0, w: 10, h: 10 }, nodes: [] }
+    const report = {
+      ...answer,
+      question: '表にして',
+      threadId: 't3',
+      jobId: 'j3',
+      status: 'failed',
+      error: '止まりました',
+      changes: { canvas: [{ batch: 'ai-1', label: '表を置く', canvasId: root }], files: ['a.md'], commands: [] },
+    }
     records.apply(
       [
         node('node:asked', 'note', root, 'a1', text('コンテキストとは？'), {
@@ -256,10 +265,17 @@ describe('AI notes (the canvas AI)', () => {
         }),
         node('node:waiting', 'note', root, 'a2', text('まだ聞いていない'), { y: 100, meta: { ai: { contexts: [] } } }),
         node('node:plain', 'note', root, 'a3', text('ふつうの付箋'), { y: 200 }),
+        // 作業の途中の付箋と、作業の報告を持つ付箋（docs/ai-note-tasks-plan.md）
+        node('node:working', 'note', root, 'a4', text('表にして'), { y: 300, meta: { ai: { contexts: [], task: { threadId: 't2', jobId: 'j2', startedAt: 1 }, answer } } }),
+        node('node:reported', 'note', root, 'a5', text('表にして'), { y: 400, meta: { ai: { contexts: [], answer: report } } }),
       ],
       [],
     )
     const lines = readCanvas(records, {}).split('\n')
+    expect(lines).toContain('node:working note 0,300 200x60 ai:working "表にして"')
+    expect(lines).toContain('node:reported note 0,400 200x60 ai:answered "表にして"')
+    expect(readNodes(records, ['node:working']).nodes[0]!.ai).toEqual({ answer, task: { threadId: 't2', jobId: 'j2' } })
+    expect(readNodes(records, ['node:reported']).nodes[0]!.ai).toEqual({ answer: report })
     expect(lines).toContain('node:asked note 0,0 200x60 ai:answered "コンテキストとは？"')
     expect(lines).toContain('node:waiting note 0,100 200x60 ai "まだ聞いていない"')
     expect(lines).toContain('node:plain note 0,200 200x60 "ふつうの付箋"')

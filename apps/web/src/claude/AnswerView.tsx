@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
 import type { AiAnswer } from '@canvcode/canvas'
 import { thinkingBlocks } from './thinking.ts'
-import type { RunningQuestion } from './claudeClient.ts'
+import type { JobEvent, RunningQuestion } from './claudeClient.ts'
+import { runningText, toolLabel } from './toolGroups.ts'
 
 // 付箋で聞いた答えの中身（docs/canvas-answer-panel-plan.md の 4）。付箋の横のパネル（AnswerPopover）と、
 // 右のパネルの質問のタブの答えで同じものを使う。
@@ -13,6 +14,9 @@ import type { RunningQuestion } from './claudeClient.ts'
 //   「会話で続ける」は小さなメニュー：「いまの会話「題」に入れる」（会話を選んでいれば）・「新しい会話にする」（docs/claude-chat-tab-plan.md の 6）
 // - 答えを作っている間は、本文の代わりに、進み具合（読む → 調べる → 書く）と考えている中身と「やめる」
 // - 失敗したら、前の答えがあればそれを出し、上に失敗のわけを 1 行出す
+// - AI 付箋の作業（docs/ai-note-tasks-plan.md）：作業の間は、今していること・ツールの動き・Claude の途中の文と「止める」（task）。
+//   報告（threadId のある答え）は、止まった・止めたときの 1 行、本文、変えたもの（Canvas の編集・ファイル・コマンド。たたんで出す）、
+//   関連する付箋、「続けて頼む」「チャットで続ける」（その作業の会話を開く）「Canvasに残す」。前の Q&A の答えは今のまま
 
 export interface RelatedNote {
   id: string
@@ -22,10 +26,21 @@ export interface RelatedNote {
 
 export type AnswerProgress = Pick<RunningQuestion, 'step' | 'searched' | 'thinking'>
 
+// 付箋の作業の間の様子（動いているジョブの出来事。asking は許可を待っているか）
+export interface TaskProgress {
+  events: readonly JobEvent[]
+  asking: boolean
+}
+
+// 作業の間に出すツールの動きの数（新しいものから）
+const TASK_TOOL_LINES = 8
+
 export function AnswerView(props: {
   answer: AiAnswer | null
   // 答えを作っている間
   progress: AnswerProgress | null
+  // 付箋の作業の間
+  task?: TaskProgress | null
   error?: string
   questionChanged: boolean
   related: readonly RelatedNote[]
@@ -36,18 +51,26 @@ export function AnswerView(props: {
   // 会話で続ける（newThread なら新しい会話）。chatTitle は、いま会話のタブで選んでいる会話の題（なければ新しい会話だけ）
   onChat?(newThread: boolean): void
   chatTitle?: string | null
+  // 作業の報告の「チャットで続ける」：その作業の会話を開く
+  onOpenThread?(threadId: string, jobId?: string): void
 }) {
-  const { answer, progress, error, questionChanged, related, onRelated, onContinue, onKeep, onStop, onChat, chatTitle } = props
+  const { answer, progress, task, error, questionChanged, related, onRelated, onContinue, onKeep, onStop, onChat, chatTitle, onOpenThread } = props
   const [chatMenu, setChatMenu] = useState(false)
   const html = useMemo(() => (answer ? renderMarkdownToSafeHtml(answer.body) : ''), [answer])
+  if (task) return <TaskProgressView task={task} {...(onStop ? { onStop } : {})} />
   if (progress) return <AnswerProgressView progress={progress} {...(onStop ? { onStop } : {})} />
+  // 作業の報告か（前の Q&A の答えには会話がない）
+  const report = answer?.threadId ? answer : null
   return (
     <div className="answer-view">
-      {error && <p className="answer-view-error">答えられませんでした：{error}</p>}
+      {error && <p className="answer-view-error">{report || !answer ? '頼めませんでした' : '答えられませんでした'}：{error}</p>}
       {answer ? (
         <>
-          {questionChanged && <p className="answer-view-note">質問が変わっています（送り直すと答え直します）</p>}
+          {report?.status === 'failed' && <p className="answer-view-error">作業が途中で止まりました{report.error ? `：${report.error}` : ''}</p>}
+          {report?.status === 'cancelled' && <p className="answer-view-note">作業を止めました（ここまでの報告です）</p>}
+          {questionChanged && <p className="answer-view-note">{report ? '付箋の文が変わっています（送り直すと、もう一度作業します）' : '質問が変わっています（送り直すと答え直します）'}</p>}
           <div className="answer-view-body claude-text" dangerouslySetInnerHTML={{ __html: html }} />
+          {report?.changes && <TaskChanges changes={report.changes} />}
           {related.length > 0 && (
             <div className="answer-view-related">
               <div className="answer-view-related-title">関連する付箋</div>
@@ -58,14 +81,24 @@ export function AnswerView(props: {
               ))}
             </div>
           )}
-          {(onContinue || onKeep || onChat) && (
+          {(onContinue || onKeep || onChat || (report && onOpenThread)) && (
             <div className="answer-view-actions">
               {onContinue && (
-                <button type="button" className="answer-view-continue" onClick={onContinue} title="この答えを踏まえて聞く付箋を、元の付箋の下に置く">
-                  続けて聞く
+                <button
+                  type="button"
+                  className="answer-view-continue"
+                  onClick={onContinue}
+                  title={report ? 'この作業の続きを頼む付箋を、元の付箋の下に置く' : 'この答えを踏まえて聞く付箋を、元の付箋の下に置く'}
+                >
+                  {report ? '続けて頼む' : '続けて聞く'}
                 </button>
               )}
-              {onChat && (
+              {report && onOpenThread && (
+                <button type="button" className="answer-view-chat" onClick={() => onOpenThread(report.threadId!, report.jobId)} title="この作業の会話を、会話のタブで開いて続ける">
+                  チャットで続ける
+                </button>
+              )}
+              {!report && onChat && (
                 <button
                   type="button"
                   className="answer-view-chat"
@@ -82,7 +115,7 @@ export function AnswerView(props: {
                   Canvasに残す
                 </button>
               )}
-              {onChat && chatMenu && (
+              {!report && onChat && chatMenu && (
                 <ChatMenu
                   title={chatTitle ?? null}
                   onChoose={(newThread) => {
@@ -98,6 +131,95 @@ export function AnswerView(props: {
       ) : (
         !error && <p className="answer-view-note">まだ答えがありません</p>
       )}
+    </div>
+  )
+}
+
+// 作業の報告の「変えたもの」（たたんで出す。なければ出さない）
+function TaskChanges(props: { changes: NonNullable<AiAnswer['changes']> }) {
+  const { canvas, files, commands } = props.changes
+  const count = canvas.length + files.length + commands.length
+  if (count === 0) return null
+  return (
+    <details className="answer-view-changes">
+      <summary>変えたもの {count} 件</summary>
+      {canvas.length > 0 && (
+        <div className="answer-view-changes-group">
+          <div className="answer-view-changes-title">キャンバス</div>
+          <ul>
+            {canvas.map((edit) => (
+              <li key={edit.batch} className={edit.undone ? 'undone' : undefined}>
+                {edit.label}
+                {edit.undone ? '（戻した）' : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className="answer-view-changes-group">
+          <div className="answer-view-changes-title">ファイル（戻せません）</div>
+          <ul>
+            {files.map((file) => (
+              <li key={file}>
+                <code>{file}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {commands.length > 0 && (
+        <div className="answer-view-changes-group">
+          <div className="answer-view-changes-title">コマンド</div>
+          <ul>
+            {commands.map((command) => (
+              <li key={command}>
+                <code>{command}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </details>
+  )
+}
+
+// 付箋の作業の間：今していること（許可を待っていれば、そう出す）と「止める」、ツールの動き（新しいものから）、Claude の途中の文
+function TaskProgressView(props: { task: TaskProgress; onStop?(): void }) {
+  const { task, onStop } = props
+  const tools = task.events.flatMap((event) => (event.kind === 'tool' ? [event] : [])).slice(-TASK_TOOL_LINES).reverse()
+  const lastText = [...task.events].reverse().find((event): event is Extract<JobEvent, { kind: 'text' }> => event.kind === 'text')?.text.trim()
+  return (
+    <div className="answer-view answer-view-running">
+      <div className="answer-view-steps" aria-label="進み具合">
+        <span className={`answer-view-step current${task.asking ? ' asking' : ''}`}>
+          ● {task.asking ? '許可を待っています（作業のタブで答えてください）' : runningText(task.events, false)}
+        </span>
+        {onStop && (
+          <button type="button" className="answer-view-stop" onClick={onStop} title="この作業を止める">
+            止める
+          </button>
+        )}
+      </div>
+      <div className="answer-thinking">
+        {tools.length === 0 && !lastText ? (
+          <p className="answer-thinking-empty">作業を始めています…</p>
+        ) : (
+          <>
+            {lastText && <p>{lastText}</p>}
+            {tools.length > 0 && (
+              <div className="answer-thinking-tool">
+                {tools.map((tool, i) => (
+                  <div key={i} title={tool.name}>
+                    {toolLabel(tool.name)}
+                    {tool.detail ? `：${tool.detail}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }

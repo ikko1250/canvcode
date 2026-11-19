@@ -14,6 +14,8 @@ import { useSyncExternalStore } from 'react'
 //   終わった質問は、終わり方を少しだけ覚える（finishedQuestions。頼んだ画面が、ほかのタブで止められたと知るため）
 // - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）は、会話を読むときに一緒に読む（chatQuestions）。
 //   動いているものは付箋の質問と同じく SSE で受け（kind: 'chat'）、終わったら、その会話の質問を読み直す
+// - 付箋の作業（AI 付箋の文を指示にしたジョブ。docs/ai-note-tasks-plan.md）は startNoteTask で頼む。ジョブと会話には note が付く。
+//   付箋の作業しかない会話（noteOnly）は、会話の一覧に出さない（chatThreads）。報告はサーバーが付箋に書く
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -117,8 +119,16 @@ export interface ClaudeJob {
   effort?: Effort
   // 取り込んだ付箋の質問と答え
   imports?: ImportedQuestion[]
+  // 付箋の作業なら、頼んだ付箋
+  note?: NoteRef
   eventCount: number
   events: JobEvent[]
+}
+
+// 付箋の作業を頼んだ付箋
+export interface NoteRef {
+  noteId: string
+  canvasId: string
 }
 
 export interface BackgroundTask {
@@ -196,6 +206,9 @@ export interface ThreadSummary {
   // 最後に頼んだモデルと effort（なければ既定。MAI-106）
   model?: string
   effort?: Effort
+  // 付箋の作業から始まった会話なら、その付箋。noteOnly は、付箋の作業しかない（会話の一覧に出さない）
+  note?: NoteRef
+  noteOnly?: true
 }
 
 export type StreamMessage =
@@ -218,6 +231,36 @@ export interface StartRequest {
   effort?: Effort
   // 取り込む付箋の質問と答え（1 つまで）
   imports?: ImportedQuestion[]
+}
+
+// 付箋の作業を頼む（POST /api/claude/note-tasks。サーバーの claude/noteTasks.ts の NoteTaskRequest と同じ形）
+export interface NoteTaskRequest {
+  noteId: string
+  canvasId: string
+  instruction: string
+  refs?: { label: string; refId: string }[]
+  candidates?: { id: string; text: string }[]
+  // 続けて頼んだ付箋の、前の指示と報告（古い方から）
+  previous?: { question: string; answer: string }[]
+  // 送り直しなら、前の作業の会話
+  lastThreadId?: string
+  // 前の作業の Canvas の変更を戻してから送る
+  undo?: boolean
+  model?: string
+  effort?: Effort
+}
+
+// 前の変更を戻せなかった（409）。undone は戻したもの、failed は戻せずに止めたもの、left はそのために残したもの
+export class NoteTaskUndoError extends Error {
+  readonly undone: { batch: string; label: string }[]
+  readonly failed: { batch: string; label: string; reason: string } | undefined
+  readonly left: { batch: string; label: string }[]
+  constructor(message: string, summary: { undone?: { batch: string; label: string }[]; failed?: { batch: string; label: string; reason: string }; left?: { batch: string; label: string }[] }) {
+    super(message)
+    this.undone = summary.undone ?? []
+    this.failed = summary.failed
+    this.left = summary.left ?? []
+  }
 }
 
 // 'checking'：確かめている。'off'：サーバーで切ってある。'on'：使える
@@ -330,6 +373,23 @@ export function threadAsking(thread: ThreadSummary): boolean {
   return (thread.permissions?.length ?? 0) > 0
 }
 
+// 会話の一覧に出す会話（付箋の作業しかないものは出さない。keep は、出していなくても入れる会話（選んでいる会話））
+export function chatThreads(state: Pick<ClaudeState, 'threads'>, keep?: string | null): ThreadSummary[] {
+  return state.threads.filter((thread) => !thread.noteOnly || thread.threadId === keep)
+}
+
+// 動いている付箋の作業（古いものから）。バックグラウンドのジョブも入る
+export function runningNoteTasks(state: Pick<ClaudeState, 'jobs'>): ClaudeJob[] {
+  return [...state.jobs.values()].filter((job) => job.note && job.status === 'running').sort((a, b) => a.createdAt - b.createdAt)
+}
+
+// 付箋の作業の会話で、許可を待っている問い合わせ（古いものから。会話の id を添える）
+export function noteTaskPermissions(state: Pick<ClaudeState, 'threads'>): (PendingPermission & { threadId: string; note: NoteRef })[] {
+  return state.threads
+    .flatMap((thread) => (thread.note ? (thread.permissions ?? []).map((permission) => ({ ...permission, threadId: thread.threadId, note: thread.note! })) : []))
+    .sort((a, b) => a.createdAt - b.createdAt)
+}
+
 // 会話のジョブ（古いものから）
 export function jobsOfThread(state: ClaudeState, threadId: string): ClaudeJob[] {
   return [...state.jobs.values()].filter((job) => job.threadId === threadId).sort((a, b) => a.createdAt - b.createdAt)
@@ -390,6 +450,8 @@ export class ClaudeClient {
   private source: EventSource | null = null
   private recheck: number | null = null
   private readonly loading = new Set<string>()
+  // 読もうとして、ないと言われた会話（消した会話を選んだままでも、読み直しを繰り返さない。届いた変化にあれば外す）
+  private readonly gone = new Set<string>()
   private loadingModels = false
   // 最後にモデルの一覧を読んだ時刻（Claude Code に聞けなかった固定の一覧なら、MODELS_RETRY_MS たってから読み直す）
   private modelsAt = 0
@@ -421,6 +483,7 @@ export class ClaudeClient {
       }
       // 会話の質問が終わったら、その会話の質問を読み直す（答えはサーバーの claude.db にある）
       const ended = message.type === 'question-done' ? this.snapshot.questions.find((question) => question.id === message.id) : undefined
+      if (message.type === 'job' || message.type === 'thread') this.gone.delete(message.thread.threadId)
       const { state, missing } = applyStreamMessage(this.snapshot, message)
       this.set(state)
       if (missing) void this.refetch(missing)
@@ -429,21 +492,29 @@ export class ClaudeClient {
     this.source = source
   }
 
-  // 会話の中身を読む（読んでいれば何もしない）
+  // 会話の中身を読む（読んでいれば何もしない）。一覧にない会話（付箋の作業の会話。「チャットで続ける」で開いた）なら、一覧にも入れる
   async loadThread(threadId: string): Promise<void> {
-    if (this.snapshot.loaded.has(threadId) || this.loading.has(threadId)) return
+    if (this.snapshot.loaded.has(threadId) || this.loading.has(threadId) || this.gone.has(threadId)) return
     this.loading.add(threadId)
     try {
       const res = await fetch(`${BASE}/threads/${threadId}`)
+      if (res.status === 404) this.gone.add(threadId)
       if (!res.ok) return
-      const { jobs, questions = [] } = (await res.json()) as { jobs: ClaudeJob[]; questions?: ChatQuestion[] }
+      const { thread, jobs, questions = [] } = (await res.json()) as { thread?: ThreadSummary; jobs: ClaudeJob[]; questions?: ChatQuestion[] }
       const next = new Map(this.snapshot.jobs)
       for (const job of jobs) {
         // SSE で先に届いた分（読んでいる間に足された出来事）があれば、そちらを残す
         const current = next.get(job.id)
         if (!current || current.events.length <= job.events.length) next.set(job.id, job)
       }
-      this.set({ ...this.snapshot, jobs: next, loaded: new Set(this.snapshot.loaded).add(threadId), chatQuestions: withQuestions(this.snapshot.chatQuestions, threadId, questions) })
+      const threads = thread && !this.snapshot.threads.some((t) => t.threadId === threadId) ? sortThreads([thread, ...this.snapshot.threads]) : this.snapshot.threads
+      this.set({
+        ...this.snapshot,
+        threads,
+        jobs: next,
+        loaded: new Set(this.snapshot.loaded).add(threadId),
+        chatQuestions: withQuestions(this.snapshot.chatQuestions, threadId, questions),
+      })
     } catch (error) {
       console.warn('Failed to load a Claude thread', error)
     } finally {
@@ -521,6 +592,21 @@ export class ClaudeClient {
       })
     }
     return job
+  }
+
+  // 付箋の作業を頼む。ジョブは SSE より先に入れておく（会話の一覧には入れない。付箋の作業の会話は出さない）
+  async startNoteTask(request: NoteTaskRequest): Promise<{ job: ClaudeJob; undone?: { batch: string; label: string }[] }> {
+    const res = await fetch(`${BASE}/note-tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const body = (await res.json().catch(() => ({}))) as { job?: ClaudeJob; undone?: { batch: string; label: string }[]; error?: string; failed?: unknown; left?: unknown }
+    if (res.status === 409 && body.failed) throw new NoteTaskUndoError(body.error ?? '前の変更を戻せませんでした', body as never)
+    if (!res.ok || !body.job) throw new Error(body.error ?? `HTTP ${res.status}`)
+    const job = body.job
+    if (!this.snapshot.jobs.has(job.id)) this.set({ ...this.snapshot, jobs: new Map(this.snapshot.jobs).set(job.id, job) })
+    return { job, ...(body.undone ? { undone: body.undone } : {}) }
   }
 
   async cancel(id: string): Promise<void> {

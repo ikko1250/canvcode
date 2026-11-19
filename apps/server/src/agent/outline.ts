@@ -394,10 +394,10 @@ function outlineLine(item: Item, ctx: LineContext): string {
       if (fill) parts.push(`fill=${fill}`)
       break
     }
-    // AI 付箋（Claude に聞く付箋。docs/canvas-answer-panel-plan.md）。答えを持っていれば ai:answered
+    // AI 付箋（Claude に作業を頼む付箋。docs/ai-note-tasks-plan.md）。作業の途中なら ai:working、報告（前の答え）を持っていれば ai:answered
     case 'note': {
       const ai = aiOf(record)
-      if (ai) parts.push(ai.answer ? 'ai:answered' : 'ai')
+      if (ai) parts.push(ai.task ? 'ai:working' : ai.answer ? 'ai:answered' : 'ai')
       break
     }
     case 'portal':
@@ -533,21 +533,25 @@ export function readNodes(records: RecordStore, ids: string[]): { nodes: Record<
 }
 
 // AI 付箋の meta.ai（なければ null）
-function aiOf(record: StoredRecord): { answer?: unknown; contexts?: unknown } | null {
+function aiOf(record: StoredRecord): { answer?: unknown; contexts?: unknown; task?: unknown } | null {
   const ai = (record.meta as { ai?: unknown } | undefined)?.ai
-  return typeof ai === 'object' && ai !== null ? (ai as { answer?: unknown; contexts?: unknown }) : null
+  return typeof ai === 'object' && ai !== null ? (ai as { answer?: unknown; contexts?: unknown; task?: unknown }) : null
 }
 
-// read_nodes の AI 付箋：届いた答え（本文は Markdown のまま）と、添えたもの（前の答えは、どの付箋の答えかと名前だけ。
-// 会話の答えは、どの会話のどのジョブかと名前だけで、写しは出さない）
-function aiDetail(ai: { answer?: unknown; contexts?: unknown }): Record<string, unknown> {
+// read_nodes の AI 付箋：届いた答え・作業の報告（本文は Markdown のまま。報告なら会話・ジョブ・終わり方・変えたもの）と、
+// 作業の途中ならその会話とジョブ、添えたもの（前の答えは、どの付箋の答えかと名前だけ。会話の答えは、どの会話のどのジョブかと名前だけで、写しは出さない）
+function aiDetail(ai: { answer?: unknown; contexts?: unknown; task?: unknown }): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const answer = typeof ai.answer === 'object' && ai.answer !== null ? (ai.answer as Record<string, unknown>) : null
   if (answer) {
     out.answer = Object.fromEntries(
-      ['body', 'related', 'model', 'effort', 'question', 'answeredAt'].flatMap((key) => (answer[key] !== undefined ? [[key, answer[key]]] : [])),
+      ['body', 'related', 'model', 'effort', 'question', 'answeredAt', 'threadId', 'jobId', 'status', 'error', 'changes'].flatMap((key) =>
+        answer[key] !== undefined ? [[key, answer[key]]] : [],
+      ),
     )
   }
+  const task = typeof ai.task === 'object' && ai.task !== null ? (ai.task as Record<string, unknown>) : null
+  if (task) out.task = { threadId: task.threadId, jobId: task.jobId }
   const contexts = (Array.isArray(ai.contexts) ? ai.contexts : []).flatMap((context): Record<string, unknown>[] => {
     if (typeof context !== 'object' || context === null) return []
     const { kind, label, noteId, canvasId, threadId, jobId, questionId } = context as Record<string, unknown>
@@ -877,7 +881,7 @@ First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revis
 Then one line per node, back-to-front (z-order); children of a group/frame follow their parent, indented by depth:
   <id> <type> <x>,<y> <W>x<H> [rot=<deg>] [extra] ["text"] [locked] [in=<parent id>] [[N children]]
 Arrows: <id> arrow <start>→<end> ["label"], where each end is a node id (bound) or x,y (free).
-Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; note: ai or ai:answered (an AI note); portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when drawn by plot_csv; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
+Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; note: ai, ai:answered or ai:working (an AI note); portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when drawn by plot_csv; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
 Text is truncated to ${MAX_LINE_TEXT} characters. Group/frame contents are collapsed as [N children] unless depth > 0.
 Filters: rect (world box intersection), query (case-insensitive text), types (e.g. note, geo, geo/ellipse) and since search inside groups/frames too; nodes whose parent line is not shown get in=<parent id>.
 since=<rev> returns only nodes changed after that revision (including arrows whose connections changed) and deleted=<ids> (node ids deleted anywhere in the workspace after it). Pass the rev from a previous result to see what the user changed.
@@ -896,7 +900,7 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - text: free text (props: paragraphs → plain text, fontSize, color, autoWidth/w)
 - text, note and geo text can be formatted (bold, colours, sizes, fonts, lists); read_nodes gives that as md (see Formatted text)
 - note: sticky note (text, w, h, color = background); its height fits the text (sizing auto) unless h is given (then h is the minimum height, sizing fixed)
-- AI note ("AI 付箋"): a note the user asks Claude with; the outline marks it ai, or ai:answered when it holds Claude's answer. The answer is not on the canvas: the user opens it from the blue triangle at the note's top right. read_nodes gives ai.answer (body = the answer in Markdown, related = ids of related notes, model, effort, question = the question it answered, answeredAt) and ai.contexts (what is attached: kind answer = the previous answer it continues (noteId, canvasId), kind chat = an answer cut out from the chat panel (threadId, jobId; or questionId for a question asked from the chat without adding it to the conversation), kind canvas = a place on the canvas)
+- AI note ("AI 付箋"): a note whose text is an instruction the user gives Claude Code (it runs as a job like the chat panel); the outline marks it ai, ai:working while a task runs, or ai:answered when it holds a report (or an answer from before notes became tasks). The report is not on the canvas: the user opens it from the blue triangle at the note's top right. read_nodes gives ai.answer (body = the report in Markdown, related = ids of related notes, model, effort, question = the instruction, answeredAt; for a task also threadId, jobId, status = done, failed or cancelled, error, changes = canvas edits (batch, label, undone), files written and commands run), ai.task (threadId, jobId) while it runs and ai.contexts (what is attached: kind answer = the previous answer it continues (noteId, canvasId), kind chat = an answer cut out from the chat panel (threadId, jobId; or questionId for a question asked from the chat without adding it to the conversation), kind canvas = a place on the canvas)
 - geo: shape, one of rect, ellipse, triangle, blockArrow, blockArrowBoth, blockArrowBent, chevron (label, fill, stroke, strokeWidth, strokeDash, cornerRadius, labelPadding, labelVerticalAlign). fill "image" (slide image frames) adds assetId, scaleMode (fill | fit | crop | tile) and crop
 - labelPadding (geo): px between the shape's box (a block arrow's shaft) and its text, a number for all sides or {top,right,bottom,left}; omitted = 8. labelVerticalAlign: top | middle | bottom of the padded box; omitted = middle
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly

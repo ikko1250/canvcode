@@ -3,6 +3,7 @@ import type { NodeRecord } from '@canvcode/core'
 import {
   MAX_AI_PLACES,
   aiNoteMeta,
+  hasUndoableChanges,
   isMacPlatform,
   pdfPlaceLabel,
   sameAiContext,
@@ -49,7 +50,8 @@ export function AiNoteControls(props: {
   busy: ReadonlySet<string>
   // 答えのパネルかこの欄にフォーカスがある付箋（答えのパネルで見ている付箋）
   focusedNoteId: string | null
-  onSend(noteId: string): void
+  // 送る（undo なら、前の作業の Canvas の変更を戻してから送る）
+  onSend(noteId: string, undo?: boolean): void
   // 前の答えの札の ↗：元の付箋へ移る
   onOpenContext(canvasId: string, noteId: string): void
   // 会話の答えの札の ↗：会話のそのジョブ（会話の質問なら、そのカード）へ戻る（Claude を使えないときは渡さない）
@@ -68,6 +70,8 @@ export function AiNoteControls(props: {
   const setPicking = useCallback((noteId: string | null) => setPickingIn(noteId ? { noteId, editor } : null), [editor])
   // 添えたものの一覧を開いている付箋
   const [listing, setListing] = useState<string | null>(null)
+  // 送信の ▾（「前の変更を戻してから送る」）を開いている付箋
+  const [sendMenu, setSendMenu] = useState<string | null>(null)
 
   useEffect(() => {
     if (notes.length > 0) void claude.loadModels()
@@ -307,17 +311,48 @@ export function AiNoteControls(props: {
                   type="button"
                   className="ai-note-send"
                   disabled={answering}
-                  aria-label="Claude に送る"
+                  aria-label="Claude に頼む"
                   onClick={() => {
-                    // 文字を編集している途中なら、編集を終えてから送る（書いた文字を質問にする）
+                    // 文字を編集している途中なら、編集を終えてから送る（書いた文字を指示にする）
                     if (view.textEditor.editingId === target) view.textEditor.finish()
+                    setSendMenu(null)
                     onSend(target)
                   }}
-                  title={answering ? 'Claude が答えを作っています' : 'Claude に送る（文字の編集中は Ctrl+Enter）'}
+                  title={answering ? 'Claude が作業しています' : 'Claude に頼む（文字の編集中は Ctrl+Enter）'}
                 >
                   <span aria-hidden="true">➤</span>
                 </button>
+                {hasUndoableChanges(meta.answer) && (
+                  <button
+                    type="button"
+                    className="ai-note-send-more"
+                    disabled={answering}
+                    aria-haspopup="menu"
+                    aria-expanded={sendMenu === target}
+                    aria-label="送り方を選ぶ"
+                    title="送り方を選ぶ（前の作業の変更を戻してから送る）"
+                    onClick={() => setSendMenu(sendMenu === target ? null : target)}
+                  >
+                    <span aria-hidden="true">▾</span>
+                  </button>
+                )}
               </div>
+              {sendMenu === target && hasUndoableChanges(meta.answer) && (
+                <div className="ai-note-send-menu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      if (view.textEditor.editingId === target) view.textEditor.finish()
+                      setSendMenu(null)
+                      onSend(target, true)
+                    }}
+                    title="前の作業でキャンバスに足した・変えたものを戻してから、もう一度頼む（ファイルとコマンドの変更は戻せません）"
+                  >
+                    前の変更を戻してから送る
+                  </button>
+                </div>
+              )}
               {picking === target && <div className="ai-note-picking-help">{PICK_TEXT_HELP}</div>}
               {listing === target && places.length > 0 && (
                 <div className="ai-note-contexts">

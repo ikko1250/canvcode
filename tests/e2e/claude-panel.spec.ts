@@ -801,11 +801,11 @@ test('the Claude button opens the answers panel, and the chat is one more step (
   await openApp(page, {}, { open: false })
   await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: { refId: 'ref:TEST000001' } }))
   // 右上の「質問」では、質問のタブだけ（まだ質問がなければ、聞き方を書く）
-  await expect(page.locator('.claude-toggle')).toHaveText('質問')
+  await expect(page.locator('.claude-toggle')).toHaveText('作業')
   await page.locator('.claude-toggle').click()
   await expect(answerPanel(page)).toBeVisible()
-  await expect(answerPanel(page)).toContainText('付箋で聞いた質問は、まだありません')
-  await expect(answerPanel(page).getByRole('tab', { name: '質問' })).toHaveAttribute('aria-selected', 'true')
+  await expect(answerPanel(page)).toContainText('付箋の作業は、まだありません')
+  await expect(answerPanel(page).getByRole('tab', { name: '作業' })).toHaveAttribute('aria-selected', 'true')
   await expect(panel(page)).toBeHidden()
   const viewport = page.viewportSize()!
   const box = (await answerPanel(page).boundingBox())!
@@ -816,7 +816,7 @@ test('the Claude button opens the answers panel, and the chat is one more step (
   await expect(panel(page)).toBeVisible()
   await expect(promptBox(page)).toBeFocused()
   await promptBox(page).fill('書きかけ')
-  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await panel(page).getByRole('tab', { name: '作業' }).click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(answerPanel(page)).toBeFocused()
   await expect(panel(page)).toBeHidden()
@@ -865,7 +865,7 @@ test('the file editor shows the chat directly, without the answers panel (MAI-10
   await page.locator('.file-editor-close').click()
   await expect(page.locator('.file-editor')).toHaveCount(0)
   await expect(panel(page)).toBeVisible()
-  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await panel(page).getByRole('tab', { name: '作業' }).click()
   await expect(answerPanel(page)).toBeVisible()
   await expect(panel(page)).toBeHidden()
 })
@@ -954,9 +954,13 @@ test('shows the whole model popover when the right half of the file editor is na
 test('cuts an answer of the chat into an AI note, sends the chat answer with it, and the chip goes back to the job (claude-chat-tab-plan 5)', async ({ page }) => {
   await openApp(page)
   const asked: Record<string, unknown>[] = []
-  await page.route('**/api/claude/answer', (route) => {
-    asked.push(route.request().postDataJSON() as Record<string, unknown>)
-    return route.fulfill({ json: { body: '続きの答え', related: [], model: 'claude-sonnet-5-5' } })
+  // 付箋の作業を頼む（docs/ai-note-tasks-plan.md）
+  await page.route('**/api/claude/note-tasks', (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    asked.push(body)
+    const id = '11111111-2222-4333-8444-555555555555'
+    const job = { id, threadId: id, prompt: body.instruction, status: 'done', createdAt: 0, note: { noteId: body.noteId, canvasId: body.canvasId }, eventCount: 0, events: [] }
+    return route.fulfill({ status: 201, json: { job } })
   })
   const before = await page.evaluate(() => (window as any).canvcode.editor.index.allIds().length)
 
@@ -986,10 +990,10 @@ test('cuts an answer of the chat into an AI note, sends the chat answer with it,
   await page.keyboard.type('つまりどういうこと？')
   await page.keyboard.press('ControlOrMeta+Enter')
   await expect.poll(() => asked.length).toBe(1)
-  expect(asked[0]).toMatchObject({ question: 'つまりどういうこと？', previous: [{ question: 'question', answer: 'Answer from Claude' }] })
+  expect(asked[0]).toMatchObject({ instruction: 'つまりどういうこと？', previous: [{ question: 'question', answer: 'Answer from Claude' }] })
 
-  // 質問のタブに移ってから、札の ↗ で会話のそのジョブへ戻る（少しのあいだ色が付く）
-  await panel(page).getByRole('tab', { name: '質問' }).click()
+  // 作業のタブに移ってから、札の ↗ で会話のそのジョブへ戻る（少しのあいだ色が付く）
+  await panel(page).getByRole('tab', { name: '作業' }).click()
   await expect(panel(page)).toBeHidden()
   await page.locator('.ai-note-chip.chat').getByRole('button', { name: '↗ 会話へ' }).click()
   await expect(panel(page)).toBeVisible()
@@ -1025,7 +1029,7 @@ test('continues a question asked with a note in the chat: the chip waits above t
   })
 
   // 質問のタブで答えを開き、「会話で続ける」→「いまの会話「hello」に入れる」
-  await panel(page).getByRole('tab', { name: '質問' }).click()
+  await panel(page).getByRole('tab', { name: '作業' }).click()
   await answerPanel(page).locator('.question-row-main', { hasText: 'コンテキストとは？' }).click()
   await answerPanel(page).getByRole('button', { name: '会話で続ける' }).click()
   const menu = answerPanel(page).getByRole('menu')

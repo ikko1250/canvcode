@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { assetIdFromHash, indicesBetween, isFileRecord, type Camera, type NodeRecord, type ReferenceRecord } from '@canvcode/core'
 import {
@@ -86,7 +86,7 @@ import { ClaudeTabs } from './claude/ClaudeTabs.tsx'
 import { QuestionPanel, type QuestionOpenRequest } from './claude/QuestionPanel.tsx'
 import { SeenAnswers } from './claude/seenAnswers.ts'
 import { AnswerPopover } from './claude/AnswerPopover.tsx'
-import { ClaudeClient, threadAsking, threadBusy, useClaudeState, type ChatQuestionDetail, type ImportedQuestion } from './claude/claudeClient.ts'
+import { ClaudeClient, noteTaskPermissions, runningNoteTasks, threadAsking, threadBusy, useClaudeState, type ChatQuestionDetail, type ImportedQuestion } from './claude/claudeClient.ts'
 import { memoParagraphs, memoSource, requestMemo } from './claude/memo.ts'
 import { lookupMemo, requestLookup } from './claude/lookup.ts'
 import { citationParagraphs, citeSourceOf, requestCitation } from './claude/cite.ts'
@@ -1083,16 +1083,12 @@ export function App(props: { initial: InitialRecords }) {
     [notify],
   )
 
-  // キャンバスの AI（付箋で聞き、答えは付箋に持たせる。claude/useCanvasAnswers.ts）。動いている質問はサーバーが流し、質問のタブ（QuestionPanel）に出す。
-  // まだ見ていない答え（質問のタブの青い点）は、ブラウザに覚える
+  // キャンバスの AI（AI 付箋の作業。claude/useCanvasAnswers.ts）。動いている作業はサーバーが流し、作業のタブ（QuestionPanel）に出す。
+  // まだ見ていない報告（作業のタブの青い点）は、ブラウザに覚える
   const [seenAnswers] = useState(() => new SeenAnswers())
-  // 答えを書く Canvas の Editor。待っている間に、取っておく数（MAX_EDITORS）を超えて捨てられていても、読み込んであれば作り直す
-  const answerEditor = useCallback(
-    (canvasId: string) => editors.get(canvasId) ?? (sync.isLoaded(canvasId) && workspace.getCanvas(canvasId) ? getEditor(canvasId) : undefined),
-    [editors, sync, workspace, getEditor],
-  )
   const canvasTitle = useCallback((id: string) => workspace.getCanvas(id)?.title || '無題', [workspace])
-  const { answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvasTitle })
+  // AI 付箋の作業（付箋の文を指示にして、会話と同じジョブで動かす。報告はサーバーが付箋に書く。docs/ai-note-tasks-plan.md）
+  const { sending: answering, ask: askWithNotes, failures: answerFailures, cancel: cancelAnswer } = useCanvasAnswers({ viewRef, claude, notify })
   // 付箋の横の答えのパネル（claude/AnswerPopover.tsx）で見ている付箋と、パネルか付箋の下の欄にフォーカスがあるか（付箋の下の欄を出す。パネルが focusin で見張る）。
   // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
   const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
@@ -1139,7 +1135,7 @@ export function App(props: { initial: InitialRecords }) {
       // 編集の途中（文字の編集をよそへ預けている・ドラッグの途中）なら、begin が投げるので押せない（パネルは閉じない）
       if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
       closeAnswer()
-      const tx = editor.begin('続けて聞く')
+      const tx = editor.begin('続けて頼む')
       const placed = placeFollowUpNote(editor, tx, noteId, context)
       if (!placed) return tx.cancel()
       tx.flush()
@@ -1171,15 +1167,8 @@ export function App(props: { initial: InitialRecords }) {
     },
     [notify, closeAnswer],
   )
-  // 答えを作っているのをやめる（ほかのタブで頼んだものも）
-  const stopAnswer = useCallback(
-    (noteId: string) => {
-      const question = claude.state.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
-      if (question) void claude.cancelQuestion(question.id).catch((error: unknown) => notify(`やめられませんでした：${error instanceof Error ? error.message : String(error)}`))
-      else cancelAnswer(noteId)
-    },
-    [claude, canvasId, cancelAnswer, notify],
-  )
+  // 付箋の作業を止める（ほかのタブで頼んだものも）
+  const stopAnswer = cancelAnswer
   // 質問のタブの「続けて聞く」：元の付箋がいま開いている Canvas にあれば、付箋の横のパネルと同じ。
   // なければ、画面の真ん中に前の答えの札を添えた AI 付箋を置き、書き始める（Undo 1 回）
   const continueQuestion = useCallback(
@@ -1191,7 +1180,7 @@ export function App(props: { initial: InitialRecords }) {
       const context = followUpContext(noteId, sourceCanvasId, meta)
       if (!context) return notify('この付箋には、まだ答えがありません')
       if (editor.store.activeTransaction) return notify('編集を終えてから押してください')
-      const tx = editor.begin('続けて聞く')
+      const tx = editor.begin('続けて頼む')
       const placed = placeFollowUpAt(editor, tx, viewCenter(view), context)
       tx.flush()
       view.textEditor.start(placed, { tx })
@@ -1275,7 +1264,7 @@ export function App(props: { initial: InitialRecords }) {
         answer: question.body,
         previous: question.previous,
       })
-      const tx = editor.begin('続けて聞く')
+      const tx = editor.begin('続けて頼む')
       const placed = placeFollowUpAt(editor, tx, viewCenter(view), context)
       tx.flush()
       view.textEditor.start(placed, { tx })
@@ -1297,17 +1286,20 @@ export function App(props: { initial: InitialRecords }) {
   useLayoutEffect(() => {
     openAnswerRef.current = openAnswer
   }, [openAnswer])
-  // 付箋の角の三角を点滅させる付箋（この画面で頼んでいるものと、サーバーが流す動いている質問。ほかのタブで頼んだものも）。
-  // Canvas ごとの Editor の session に立てる（Canvas を移ったら、移った先の Editor に）
-  const answeringQuestions = claudeState.questions
+  // 付箋の角の三角を点滅させる付箋（この画面で頼んでいるものと、動いている付箋の作業。ほかのタブで頼んだものも）と、
+  // 許可を待っている付箋（三角を警告の色にする）。Canvas ごとの Editor の session に立てる（Canvas を移ったら、移った先の Editor に）
+  const noteTasksRunning = useMemo(() => runningNoteTasks(claudeState), [claudeState])
+  const noteTasksAsking = useMemo(() => noteTaskPermissions(claudeState), [claudeState])
   useEffect(() => {
     const ids = new Set([
-      ...answering.flatMap((job) => (job.canvasId === editor.canvasId ? job.anchorIds.slice(0, 1) : [])),
-      ...answeringQuestions.flatMap((question) => (question.noteId && question.canvasId === editor.canvasId ? [question.noteId] : [])),
+      ...answering.flatMap((item) => (item.canvasId === editor.canvasId ? [item.noteId] : [])),
+      ...noteTasksRunning.flatMap((job) => (job.note?.canvasId === editor.canvasId ? [job.note.noteId] : [])),
     ])
-    const current = editor.session.get().answeringIds
-    if (ids.size !== current.size || [...ids].some((id) => !current.has(id))) editor.session.set({ answeringIds: ids })
-  }, [editor, answering, answeringQuestions])
+    const asking = new Set(noteTasksAsking.flatMap((permission) => (permission.note.canvasId === editor.canvasId ? [permission.note.noteId] : [])))
+    const current = editor.session.get()
+    const same = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((id) => b.has(id))
+    if (!same(ids, current.answeringIds) || !same(asking, current.askingIds)) editor.session.set({ answeringIds: ids, askingIds: asking })
+  }, [editor, answering, noteTasksRunning, noteTasksAsking])
 
   // APA の引用を置く（MAI-98）：アイテム（PDF の Portal・PDF のページ・リンクカード・Markdown のカード）の引用を、Claude（既定は Sonnet）に
   // Web で確かめながら作ってもらい、アイテムの右下にテキストとして置く（Undo 1 回で消える）。待っている間は、置く所に「作っています」を出す
@@ -1497,10 +1489,10 @@ export function App(props: { initial: InitialRecords }) {
       // 付箋 1 枚なら、AI モード（付箋の下に、モデル・添えるもの・送信を出す）にする・やめる
       if (claude.state.availability === 'on' && selected.length > 0 && selected.every((node) => node.type === 'note')) {
         const askable = questionOf(editor, selected.map((node) => node.id)) !== null
-        if (askable) items.push({ label: 'Claude に聞く', onSelect: () => void askWithNotes(selected.map((node) => node.id)) })
+        if (askable) items.push({ label: 'Claude に頼む', onSelect: () => void askWithNotes(selected.map((node) => node.id)) })
         if (single) {
           const ai = aiNoteMeta(single)
-          const label = ai ? (ai.answer ? 'AI モードをやめる（答えも消す）' : 'AI モードをやめる') : 'AI モードにする（Claude に聞く付箋）'
+          const label = ai ? (ai.answer ? 'AI モードをやめる（報告も消す）' : 'AI モードをやめる') : 'AI モードにする（Claude に頼む付箋）'
           items.push({ label, onSelect: () => void setAiNote(editor, single.id, ai ? null : { contexts: [] }) })
         }
         if (askable && !single) items.push('separator')
@@ -2351,7 +2343,7 @@ export function App(props: { initial: InitialRecords }) {
   const claudeAvailable = claudeView !== null && claudeState.availability === 'on'
   // 右のパネルの上の「会話｜質問」のタブ
   const claudeTabs = (active: 'chat' | 'questions') => (
-    <ClaudeTabs active={active} running={claudeState.questions.length} onChat={() => askClaude('')} onQuestions={showAnswers} />
+    <ClaudeTabs active={active} running={claudeState.questions.length + noteTasksRunning.length} onChat={() => askClaude('')} onQuestions={showAnswers} />
   )
   const claudeChat = claudeView === 'chat'
   const claudeInEditor = claudeAvailable && claudeChat && openFileId !== null && !editorClaudeHidden
@@ -2500,7 +2492,7 @@ export function App(props: { initial: InitialRecords }) {
             claude={claude}
             busy={session.answeringIds}
             focusedNoteId={answerFocused && answerNote?.canvasId === canvasId ? answerNote.noteId : null}
-            onSend={(noteId) => void askWithNotes([noteId])}
+            onSend={(noteId, undo) => void askWithNotes([noteId], { undo })}
             onOpenContext={(targetCanvasId, noteId) => void openNoteAnswer(targetCanvasId, noteId)}
             onOpenChat={openChatAnswer}
             canvasTitle={canvasTitle}
@@ -2513,9 +2505,10 @@ export function App(props: { initial: InitialRecords }) {
           answerNote?.canvasId === canvasId &&
           (() => {
             const { noteId } = answerNote
-            // 答えを作っている間の進み具合（サーバーが流すもの。ほかのタブで頼んだものも。この画面で頼んだばかりで、まだ届いていなければ「読む」）
-            const question = claudeState.questions.find((item) => item.noteId === noteId && item.canvasId === canvasId)
-            const progress = question ? question : session.answeringIds.has(noteId) ? { step: 'read' as const, searched: false, thinking: '' } : null
+            // 作業の間の様子（動いているジョブの出来事。ほかのタブで頼んだものも。この画面で頼んだばかりで、まだ届いていなければ空）
+            const job = noteTasksRunning.find((item) => item.note?.noteId === noteId)
+            const asking = noteTasksAsking.some((permission) => permission.note.noteId === noteId)
+            const task = job ? { events: job.events, asking } : session.answeringIds.has(noteId) ? { events: [], asking: false } : null
             const error = answerFailures.get(noteId)
             return (
               <AnswerPopover
@@ -2524,8 +2517,9 @@ export function App(props: { initial: InitialRecords }) {
                 camera={session.camera}
                 noteId={noteId}
                 catalog={claudeState.models}
-                progress={progress}
-                {...(question ? { runningModel: { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort } : {}) } } : {})}
+                progress={null}
+                task={task}
+                {...(job ? { runningModel: { ...(job.model ? { model: job.model } : {}), ...(job.effort ? { effort: job.effort } : {}) } } : {})}
                 {...(error ? { error } : {})}
                 onClose={closeAnswer}
                 onSeen={(id, answeredAt) => seenAnswers.mark(id, answeredAt)}
@@ -2534,7 +2528,7 @@ export function App(props: { initial: InitialRecords }) {
                 onRelated={openRelated}
                 onContinue={() => continueAnswer(noteId)}
                 onKeep={() => keepAnswer(noteId)}
-                {...(progress ? { onStop: () => stopAnswer(noteId) } : {})}
+                {...(job ? { onStop: () => stopAnswer(noteId) } : {})}
                 {...(claudeState.availability === 'on'
                   ? {
                       onChat: (newThread: boolean) => {
@@ -2542,6 +2536,11 @@ export function App(props: { initial: InitialRecords }) {
                         if (answer) importToChat({ label: firstLine(answer.question), question: answer.question, answer: answer.body, noteId, canvasId }, newThread)
                       },
                       chatTitle: chatThread?.title ?? null,
+                      // 作業の報告なら、その作業の会話を開く（チャットで続ける）
+                      onOpenThread: (threadId: string, jobId?: string) => {
+                        closeAnswer()
+                        openChatAnswer({ threadId, ...(jobId ? { jobId } : {}) })
+                      },
                     }
                   : {})}
               />
@@ -2684,10 +2683,10 @@ export function App(props: { initial: InitialRecords }) {
                 forgetClaudeRequests()
               }}
               // C はこのボタンと違って閉じないので、aria-keyshortcuts は付けず、ここに書く（MAI-91）
-              title="付箋で聞いた質問（どの Canvas のものも）と、Claude との会話のパネルを開け閉めする（C で開き、もう一度 C で会話の入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて会話を開く）"
+              title="付箋で頼んだ作業（どの Canvas のものも）と、Claude との会話のパネルを開け閉めする（C で開き、もう一度 C で会話の入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて会話を開く）"
             >
-              質問
-              {claudeState.questions.length > 0 && <span className="claude-toggle-count">●{claudeState.questions.length}</span>}
+              作業
+              {claudeState.questions.length + noteTasksRunning.length > 0 && <span className="claude-toggle-count">●{claudeState.questions.length + noteTasksRunning.length}</span>}
             </button>
           )}
           <BackupStatus serverOnline={syncStatus !== 'offline'} />
@@ -2869,6 +2868,7 @@ export function App(props: { initial: InitialRecords }) {
               onOpenChat={openChatAnswer}
               onContinueChat={continueChatQuestion}
               onKeepChat={keepChatQuestion}
+              onOpenThread={(threadId, jobId) => openChatAnswer({ threadId, ...(jobId ? { jobId } : {}) })}
             />
             <ClaudePanel
               client={claude}

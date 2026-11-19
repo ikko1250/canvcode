@@ -2018,7 +2018,7 @@ export class CanvasView {
     }
     if (this.dirty.has('scene')) drawn += this.drawSceneLayer(view)
     if (this.dirty.has('overlay')) {
-      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, wordHighlight, snapGuides, gapGuides, hoveredSpacing, spacingDrag, answeringIds, hoveredAiCorner } =
+      const { selectedIds, hoveredId, brush, focusedGroupId, quoteRegion, wordHighlight, snapGuides, gapGuides, hoveredSpacing, spacingDrag, answeringIds, askingIds, hoveredAiCorner } =
         this.editor.session.get()
       drawn += drawOverlay(this.overlayCtx, this.editor, view, {
         lifted: this.lifted,
@@ -2032,7 +2032,7 @@ export class CanvasView {
         gapGuides,
         hoveredSpacing,
         spacingDrag,
-        aiCorners: { answeringIds, hoveredId: hoveredAiCorner, now },
+        aiCorners: { answeringIds, askingIds, hoveredId: hoveredAiCorner, now },
       })
     }
     // 描いたノード数は、シーンを描き直したフレームの値を表示し続ける
@@ -2174,6 +2174,7 @@ export class CanvasView {
       state.cropEditing !== prev.cropEditing ||
       state.cornerHandlesId !== prev.cornerHandlesId ||
       state.answeringIds !== prev.answeringIds ||
+      state.askingIds !== prev.askingIds ||
       state.hoveredAiCorner !== prev.hoveredAiCorner
     ) {
       this.invalidate('overlay')
