@@ -1097,6 +1097,8 @@ export function App(props: { initial: InitialRecords }) {
   // 付箋の角の三角で開け閉めする。Canvas を移ったら閉じる
   const [answerNote, setAnswerNote] = useState<{ canvasId: string; noteId: string } | null>(null)
   const [answerFocused, setAnswerFocused] = useState(false)
+  // 右のデザインパネルを出しているか（答えのパネルは、その左に収める）
+  const [designShown, setDesignShown] = useState(false)
   const closeAnswer = useCallback(() => {
     setAnswerNote(null)
     setAnswerFocused(false)
@@ -2528,6 +2530,7 @@ export function App(props: { initial: InitialRecords }) {
                 onClose={closeAnswer}
                 onSeen={(id, answeredAt) => seenAnswers.mark(id, answeredAt)}
                 onFocusChange={setAnswerFocused}
+                besideDesignPanel={designShown}
                 onRelated={openRelated}
                 onContinue={() => continueAnswer(noteId)}
                 onKeep={() => keepAnswer(noteId)}
@@ -2559,6 +2562,7 @@ export function App(props: { initial: InitialRecords }) {
             setDesignOpen(open)
             saveDesignPanelOpen(open)
           }}
+          onShownChange={setDesignShown}
         />
 
         {showStats && stats && (

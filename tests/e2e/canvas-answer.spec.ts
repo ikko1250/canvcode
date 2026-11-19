@@ -524,7 +524,7 @@ test('付箋の上の札・下の欄の上でも、ホイールでパン、Ctrl+
   await expect(textEditor).toBeFocused()
 })
 
-test('付箋の上の札・下の欄・横の答えのパネルは、デザインパネルの下に出る', async ({ page }) => {
+test('付箋の上の札・下の欄は、デザインパネルの下に出る。横の答えのパネルは、デザインパネルの左に収める', async ({ page }) => {
   const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
   // 答えを持たせてから、前の答えを添える（giveAnswer は添えたものを空にする）
   await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
@@ -563,7 +563,27 @@ test('付箋の上の札・下の欄・横の答えのパネルは、デザイ�
   expect(await covered('.ai-note-controls .ai-note-attach')).toBe('panel')
   expect(await covered('.ai-note-controls .ai-note-send')).toBe('panel')
   expect(await covered('.ai-note-chips')).toBe('panel')
-  expect(await covered('.answer-popover')).toBe('panel')
+  // 答えのパネルは、付箋の右に入らないので左に出し、デザインパネルとは重ねない
+  expect(await covered('.answer-popover')).toBe('no overlap')
+  const popoverBox = (await page.locator('.answer-popover').boundingBox())!
+  expect(popoverBox.x + popoverBox.width).toBeLessThanOrEqual((await panel.boundingBox())!.x)
+
+  // 付箋をデザインパネルの少し左に戻す：付箋の右に出すとデザインパネルにかかるので、左に出す
+  await page.evaluate((id) => {
+    const editor = (window as any).canvcode.editor
+    const bounds = editor.index.get(id).worldBounds
+    const root = document.querySelector('.canvas-container > div[tabindex]')!.getBoundingClientRect()
+    const box = document.querySelector('[data-testid="design-panel"]')!.getBoundingClientRect()
+    const { zoom } = editor.session.get().camera
+    editor.session.set({ camera: { x: bounds.x + bounds.w - (box.left - 100 - root.left) / zoom, y: bounds.y - (box.top + 80 - root.top) / zoom, zoom } })
+  }, noteId)
+  const panelLeft = (await panel.boundingBox())!.x
+  await expect
+    .poll(async () => {
+      const box = (await page.locator('.answer-popover').boundingBox())!
+      return box.x + box.width
+    })
+    .toBeLessThanOrEqual(panelLeft)
 })
 
 test('AI 付箋の文字を編集している間、書式のツールバー（BIUS）は縦に並べて付箋の左に出す（上の札・下の欄と重ならない）。ふつうの付箋では上に横に出す', async ({ page }) => {
@@ -600,6 +620,25 @@ test('AI 付箋の文字を編集している間、書式のツールバー（BI
   await expect(toolbar).not.toHaveClass(/vertical/)
   const flat = (await toolbar.boundingBox())!
   expect(flat.width).toBeGreaterThan(flat.height)
+  await page.keyboard.press('Escape')
+
+  // AI 付箋が画面の左端にあり、左に場所がない：札と欄（付箋より広い）の右に出し、画面からはみ出さない
+  await page.evaluate((id) => {
+    const editor = (window as any).canvcode.editor
+    const bounds = editor.index.get(id).worldBounds
+    editor.session.set({ camera: { x: bounds.x - 10 / 0.5, y: bounds.y - 300 / 0.5, zoom: 0.5 } })
+  }, noteId)
+  const edge = await centerOf(page, noteId)
+  await page.mouse.dblclick(edge.x, edge.y)
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  await expect(toolbar).toHaveClass(/vertical/)
+  const side = (await toolbar.boundingBox())!
+  const viewport = page.viewportSize()!
+  expect(side.x + side.width).toBeLessThanOrEqual(viewport.width)
+  for (const selector of ['.ai-note-chips', '.ai-note-controls']) {
+    const other = (await page.locator(selector).boundingBox())!
+    expect(side.x, selector).toBeGreaterThanOrEqual(other.x + other.width)
+  }
 })
 
 test('答えを作っている間は、三角のパネルに進み具合と「やめる」を出し、やめられる', async ({ page }) => {

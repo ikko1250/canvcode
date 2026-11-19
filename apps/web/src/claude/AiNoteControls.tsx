@@ -21,8 +21,9 @@ import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 // - 小さく表示しているときは出さない
 // - 札と欄の上のホイール・ピンチ（トラックパッド・マウス）は、キャンバスのパン・ズームに渡す（CanvasView の passWheel）
 const MIN_ZOOM = 0.3
-// 欄の幅の下限（画面のピクセル）
-const MIN_WIDTH = 220
+// 札と欄の幅の下限（画面のピクセル。付箋が狭くても、この幅で出す。書式のツールバーも、この幅を避ける）
+export const AI_NOTE_UI_MIN_WIDTH = 220
+const MIN_WIDTH = AI_NOTE_UI_MIN_WIDTH
 
 export function AiNoteControls(props: {
   editor: Editor

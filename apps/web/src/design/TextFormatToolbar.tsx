@@ -2,6 +2,7 @@ import { useSyncExternalStore, type ComponentType } from 'react'
 import { KEEP_TEXT_EDITING_ATTRIBUTE, OWN_KEYS_ATTRIBUTE, aiNoteMeta, type CanvasView, type Editor, type TextSelection } from '@canvcode/canvas'
 import type { Camera } from '@canvcode/core'
 import { hasRichText } from '@canvcode/nodes'
+import { AI_NOTE_UI_MIN_WIDTH } from '../claude/AiNoteControls.tsx'
 import { ToggleButton } from './controls.tsx'
 import { TEXT_TOGGLE_FIELDS } from './sections.ts'
 import { TEXT_TOGGLE_SHORTCUTS, applyTextToggle, editingToggleItems } from './textToggles.ts'
@@ -10,7 +11,7 @@ import { TEXT_TOGGLE_SHORTCUTS, applyTextToggle, editingToggleItems } from './te
 // - キャンバスのズーム・パンに追従する（ノードの画面上の位置に付いて動く）。ボタンの大きさはズームによらず一定。
 //   上に場所がなければ（画面の上端に近い）ノードの下に出す。
 //   AI 付箋（Claude に聞く付箋）は、上に札・下に欄（claude/AiNoteControls.tsx）があるので、ボタンを縦に並べて付箋の左に出す
-//   （左に場所がなければ右）
+//   （左に場所がなければ、札と欄の右。画面の左右の端からははみ出さない。上は上端から TOP_MARGIN まで寄せるが、付箋の下端より下にはしない）
 // - ボタンはフォーカスを奪わない（デザインパネルと同じ。押しても編集中の文字の選択が残る）。
 //   ツールバーの中にフォーカスが移っても、文字の編集は終えない（data-keep-text-editing）
 // - 表示・切り替えはデザインパネルと同じ（textToggles.ts。範囲の値、範囲がなければ次に打つ文字の書式）
@@ -39,8 +40,10 @@ export function TextFormatToolbar(props: { editor: Editor; view: CanvasView | nu
   let top: number
   if (vertical) {
     left = x - GAP - VERTICAL_WIDTH
-    if (left < GAP) left = x + bounds.w * camera.zoom + GAP
-    top = Math.max(TOP_MARGIN, y)
+    // 右に出すときは、札と欄（付箋より広いことがある）の右
+    if (left < GAP) left = x + Math.max(AI_NOTE_UI_MIN_WIDTH, bounds.w * camera.zoom) + GAP
+    left = Math.max(GAP, Math.min(left, (view?.root.clientWidth ?? Infinity) - GAP - VERTICAL_WIDTH))
+    top = Math.min(Math.max(TOP_MARGIN, y), y + bounds.h * camera.zoom)
   } else {
     const above = y - GAP - TOOLBAR_HEIGHT
     left = Math.max(GAP, x)
