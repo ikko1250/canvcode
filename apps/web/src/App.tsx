@@ -1235,7 +1235,7 @@ export function App(props: { initial: InitialRecords }) {
     },
     [closeAnswer, chatThread],
   )
-  // 会話の質問を質問のタブで開く（会話の欄の「答えを見る →」・取り込んだ会話の質問のカードの ↗）
+  // 会話の質問を作業のタブで開く（会話の欄の、取り込んだ会話の質問のカードの ↗）
   const openChatQuestion = useCallback((id: string) => {
     setClaudeView('answers')
     setClaudeFocus((n) => n + 1)
@@ -1290,6 +1290,8 @@ export function App(props: { initial: InitialRecords }) {
   // 許可を待っている付箋（三角を警告の色にする）。Canvas ごとの Editor の session に立てる（Canvas を移ったら、移った先の Editor に）
   const noteTasksRunning = useMemo(() => runningNoteTasks(claudeState), [claudeState])
   const noteTasksAsking = useMemo(() => noteTaskPermissions(claudeState), [claudeState])
+  // 作業のタブの ●N：動いている付箋の作業と、付箋で聞いている質問（前のもの）。会話の質問は会話の欄に出すので数えない
+  const runningWork = noteTasksRunning.length + claudeState.questions.filter((question) => question.kind !== 'chat').length
   useEffect(() => {
     const ids = new Set([
       ...answering.flatMap((item) => (item.canvasId === editor.canvasId ? [item.noteId] : [])),
@@ -2343,7 +2345,7 @@ export function App(props: { initial: InitialRecords }) {
   const claudeAvailable = claudeView !== null && claudeState.availability === 'on'
   // 右のパネルの上の「会話｜質問」のタブ
   const claudeTabs = (active: 'chat' | 'questions') => (
-    <ClaudeTabs active={active} running={claudeState.questions.length + noteTasksRunning.length} onChat={() => askClaude('')} onQuestions={showAnswers} />
+    <ClaudeTabs active={active} running={runningWork} onChat={() => askClaude('')} onQuestions={showAnswers} />
   )
   const claudeChat = claudeView === 'chat'
   const claudeInEditor = claudeAvailable && claudeChat && openFileId !== null && !editorClaudeHidden
@@ -2686,7 +2688,7 @@ export function App(props: { initial: InitialRecords }) {
               title="付箋で頼んだ作業（どの Canvas のものも）と、Claude との会話のパネルを開け閉めする（C で開き、もう一度 C で会話の入力欄に移る。Ctrl+Alt+Enter で、選んでいる所を添えて会話を開く）"
             >
               作業
-              {claudeState.questions.length + noteTasksRunning.length > 0 && <span className="claude-toggle-count">●{claudeState.questions.length + noteTasksRunning.length}</span>}
+              {runningWork > 0 && <span className="claude-toggle-count">●{runningWork}</span>}
             </button>
           )}
           <BackupStatus serverOnline={syncStatus !== 'offline'} />

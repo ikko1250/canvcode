@@ -105,6 +105,9 @@ function QuestionView(props: {
           <MarkdownText text={question.body} />
           <QuestionActions question={question} answer={question.body} catalog={catalog} {...(onCutToNote ? { onCutToNote } : {})} />
         </>
+      ) : question.status === 'done' ? (
+        // 答えたと届いたが、答えをまだ読んでいない（読み直している）
+        <div className="claude-status">答えを読み込んでいます…</div>
       ) : (
         <div className={`claude-status ${question.status}`}>
           {question.status === 'cancelled' ? 'やめました' : `答えられませんでした${question.error ? `：${question.error}` : ''}`}

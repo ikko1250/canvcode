@@ -58,7 +58,7 @@ export function ChatComposer(props: {
           {importLabel && (
             <span className="claude-attachment claude-import-chip" title="次に送る文と一緒に、付箋の質問と答えを会話に入れます">
               <span>
-                {importFromChat ? '別枠の質問を取り込みます' : '付箋の質問を取り込みます'}「{importLabel}」
+                {importFromChat ? '会話の質問を取り込みます' : '付箋の質問を取り込みます'}「{importLabel}」
               </span>
               {onClearImport && (
                 <button type="button" onClick={onClearImport} aria-label="取り込むのをやめる" title="取り込むのをやめる">

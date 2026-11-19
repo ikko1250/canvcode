@@ -239,7 +239,7 @@ describe('the answer stream and the running questions', () => {
     expect(questions.list()).toEqual([])
   })
 
-  it('asks from the chat: keeps it in claude.db, writes the answer there and ends it as done without placing; mixes it into the list and gives it by id (claude-chat-tab-plan 7)', async () => {
+  it('asks from the chat: keeps it in claude.db, writes the answer there and ends it as done without placing; leaves it out of the list of answered notes and gives it by id (claude-chat-tab-plan 7, docs/ai-note-tasks-plan.md の E)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'canvcode-chat-questions-'))
     const store = new ClaudeStore(dir)
     cleanups.push(() => {
@@ -270,14 +270,9 @@ describe('the answer stream and the running questions', () => {
     expect(questions.list()).toEqual([])
     expect(changes.at(-1)).toEqual({ type: 'question-done', id, status: 'done' })
     expect(store.question(id)).toMatchObject({ status: 'done', body: '答え', model: 'claude-opus-5-5', answeredAt: expect.any(Number) })
-    // 一覧には、付箋の答えと答えた時刻の順に混ぜる（Canvas で絞ったときは出さない）
+    // 一覧（作業のタブ）には混ぜない（会話の質問は会話の欄に出す）
     const list = (await (await fetch(`${base}/api/claude/questions`)).json()) as { questions: Record<string, unknown>[] }
-    expect(list.questions).toEqual([
-      { kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', model: 'claude-opus-5-5', effort: 'medium', answeredAt: expect.any(Number) },
-      expect.objectContaining({ kind: 'note', noteId: 'node:n' }),
-    ])
-    const here = (await (await fetch(`${base}/api/claude/questions?canvasId=canvas:c`)).json()) as { questions: Record<string, unknown>[] }
-    expect(here.questions.map((item) => item.kind)).toEqual(['note'])
+    expect(list.questions).toEqual([expect.objectContaining({ kind: 'note', noteId: 'node:n' })])
     // 1 つを読む
     const one = await fetch(`${base}/api/claude/questions/chat/${id}`)
     expect(await one.json()).toMatchObject({ kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', previous, body: '答え', status: 'done' })
@@ -304,7 +299,7 @@ describe('the answer stream and the running questions', () => {
     const id = questions.list()[0]!.id
     expect(questions.list()[0]).toMatchObject({ kind: 'chat', threadId: id })
     expect(store.question(id)).toMatchObject({ status: 'running', threadId: id })
-    expect(store.thread(id)).toMatchObject({ threadId: id, title: '会話の外', jobCount: 0, running: true })
+    expect(store.thread(id)).toMatchObject({ threadId: id, title: '会話の外', jobCount: 0 })
     expect(store.threads().map((thread) => thread.threadId)).toEqual([id])
     expect(announced).toEqual([id])
     expect((await fetch(`${base}/api/claude/questions/${id}/cancel`, { method: 'POST' })).status).toBe(204)
@@ -314,7 +309,6 @@ describe('the answer stream and the running questions', () => {
     expect(store.question(id)).toMatchObject({ status: 'cancelled' })
     // 終わったときも知らせる（会話の一覧の時刻が変わる）
     expect(announced).toEqual([id, id])
-    expect(store.thread(id)).toMatchObject({ running: false })
   })
 
   it('a question from the chat leaves the running list even when claude.db cannot take its answer or its failure', async () => {

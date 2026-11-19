@@ -46,7 +46,7 @@ const THREAD_TITLE_LENGTH = 20
 
 type Viewing = { kind: 'note'; noteId: string; canvasId: string } | { kind: 'chat'; id: string }
 
-// 会話の質問を開く（会話の欄の「答えを見る →」）。n が変わるたびに開く
+// 会話の質問を開く（会話の欄の、取り込んだ会話の質問のカードの ↗）。n が変わるたびに開く
 export interface QuestionOpenRequest {
   id: string
   n: number
@@ -105,7 +105,7 @@ export function QuestionPanel(props: {
     )
   }
 
-  // 会話の質問を開く（会話の欄の「答えを見る →」）
+  // 会話の質問を開く（会話の欄の、取り込んだ会話の質問のカードの ↗）
   const [seenOpen, setSeenOpen] = useState<typeof open>(null)
   if (open !== seenOpen) {
     setSeenOpen(open)

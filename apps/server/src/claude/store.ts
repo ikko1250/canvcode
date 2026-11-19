@@ -209,10 +209,9 @@ export class ClaudeStore {
 
   // 会話の一覧（最後に動いたものから）。付箋の作業しかない会話は入れない。質問だけの会話も入れる
   threads(limit = 200): ThreadSummary[] {
-    const jobs = this.db
-      .prepare(`${THREAD_SELECT} GROUP BY thread_id HAVING SUM(note_id IS NULL) > 0 ORDER BY updated_at DESC LIMIT ?`)
-      .all(limit) as unknown as ThreadRow[]
-    const questions = this.db.prepare(`${QUESTION_THREAD_SELECT} GROUP BY thread_id ORDER BY updated_at DESC LIMIT ?`).all(limit) as unknown as ThreadRow[]
+    // 質問の時刻を合わせてから並べて切るので、ここでは切らない（ジョブの時刻だけで切ると、最近質問した古い会話が落ちる）
+    const jobs = this.db.prepare(`${THREAD_SELECT} GROUP BY thread_id HAVING SUM(note_id IS NULL) > 0`).all() as unknown as ThreadRow[]
+    const questions = this.db.prepare(`${QUESTION_THREAD_SELECT} GROUP BY thread_id`).all() as unknown as ThreadRow[]
     const info = this.questionInfo()
     return [...jobs, ...questions]
       .map((row) => withQuestions(threadOf(row), info.get(row.thread_id)))
@@ -269,13 +268,6 @@ export class ClaudeStore {
   // 会話の質問（聞いた順）
   threadQuestions(threadId: string): ChatQuestion[] {
     return (this.db.prepare('SELECT * FROM questions WHERE thread_id = ? ORDER BY created_at, rowid').all(threadId) as unknown as QuestionRow[]).map(questionOf)
-  }
-
-  // 答えた会話の質問（答えた時刻の新しいものから limit 件）
-  answeredQuestions(limit = 100): ChatQuestion[] {
-    return (
-      this.db.prepare("SELECT * FROM questions WHERE status = 'done' ORDER BY answered_at DESC, rowid DESC LIMIT ?").all(limit) as unknown as QuestionRow[]
-    ).map(questionOf)
   }
 
   // 会話を消す（その会話の質問も消す）。消したジョブの Claude Code の session_id を返す
@@ -367,16 +359,17 @@ function withQuestions(thread: ThreadSummary, info: QuestionInfo | undefined): T
   return { ...thread, ...first, updatedAt: Math.max(thread.updatedAt, info.lastAt) }
 }
 
-// 質問だけの会話（ジョブのない会話）。題は最初の質問、モデルと effort は最後の質問のもの。答えを作っている質問があれば動いている
+// 質問だけの会話（ジョブのない会話）。題は最初の質問。動いている（running）はジョブのことなので、いつも false。
+// モデルと effort は持たない（質問の行には、「既定」で聞いても答えたモデルが入るので、それを会話の値にすると、次に会話で頼むジョブがそのモデルで動く）
 const QUESTION_THREAD_SELECT = `
   SELECT thread_id,
     (SELECT question FROM questions AS first WHERE first.thread_id = questions.thread_id ORDER BY created_at, rowid LIMIT 1) AS title,
     MIN(created_at) AS created_at,
     MAX(COALESCE(answered_at, created_at)) AS updated_at,
     0 AS job_count,
-    SUM(status = 'running') AS running,
-    (SELECT model FROM questions AS last WHERE last.thread_id = questions.thread_id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS model,
-    (SELECT effort FROM questions AS last WHERE last.thread_id = questions.thread_id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS effort,
+    0 AS running,
+    NULL AS model,
+    NULL AS effort,
     NULL AS note_id,
     NULL AS note_canvas_id,
     1 AS chat_jobs
@@ -493,6 +486,9 @@ function open(path: string): DatabaseSync {
     if (!columns.some((column) => column.name === 'ref_label')) db.exec('ALTER TABLE jobs ADD COLUMN ref_label TEXT')
     // 取り込んだ質問と答え（imports）のない claude.db に足す
     if (!columns.some((column) => column.name === 'imports')) db.exec('ALTER TABLE jobs ADD COLUMN imports TEXT')
+    // 前のサーバーで、会話を選ばずに聞いた会話の質問（thread_id がない）は、それぞれを質問だけの会話にする（会話の id は質問の id。
+    // 会話の質問は会話の欄にしか出さないので、会話がないと見られない。docs/ai-note-tasks-plan.md の 10）
+    db.exec('UPDATE questions SET thread_id = id WHERE thread_id IS NULL')
     // 付箋の作業の付箋（note_id・note_canvas_id）のない claude.db に足す（docs/ai-note-tasks-plan.md）
     if (!columns.some((column) => column.name === 'note_id')) db.exec('ALTER TABLE jobs ADD COLUMN note_id TEXT')
     if (!columns.some((column) => column.name === 'note_canvas_id')) db.exec('ALTER TABLE jobs ADD COLUMN note_canvas_id TEXT')

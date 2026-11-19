@@ -1120,6 +1120,8 @@ test('asks one question from the prompt box without adding it to the chat, shows
   await expect(item.locator('.claude-answer-model')).toHaveText(/Sonnet/)
   await expect(page.locator('.claude-job:not(.claude-question)')).toHaveCount(1)
   await page.screenshot({ path: test.info().outputPath('chat-question.png') })
+  // 会話の質問は、作業のタブの ●N に数えない
+  await expect(panel(page).getByRole('tab', { name: '作業' })).toHaveText('作業')
 
   // 付箋に切り出す：会話の札（この質問と答え・添えた前の答えの写し）を添えた AI 付箋を置く
   await item.hover()
@@ -1160,7 +1162,21 @@ test('a question asked with no conversation chosen becomes a new conversation an
   await expect.poll(() => asked.length).toBe(1)
   expect(asked[0]).toMatchObject({ source: { kind: 'chat', label: '新しく聞く' } })
   expect((asked[0] as { source: object }).source).not.toHaveProperty('threadId')
-  // サーバーが作った会話を選ぶ
+  // サーバーが作った会話を選ぶ（質問だけの会話でも「読み込んでいます…」は出さない）
   await expect(page.locator('.claude-thread-name')).toHaveText('新しく聞く')
   await expect(page.locator(`.claude-question[data-question-id="${id}"] .claude-text`)).toHaveText('答えです')
+  await expect(panel(page).getByText('読み込んでいます…')).toHaveCount(0)
+
+  // その会話で「会話」で頼むと、最後に答えた質問を取り込んで渡す（Claude Code は、その会話の質問を知らない）
+  const started: Record<string, unknown>[] = []
+  await page.route('**/api/claude/jobs', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    started.push(body)
+    await route.fulfill({ status: 201, json: { job: { id: 'j9', threadId: id, prompt: body.prompt, imports: body.imports, status: 'running', createdAt: Date.now(), eventCount: 0, events: [] } } })
+  })
+  await page.getByRole('radiogroup', { name: '送り方' }).getByRole('radio', { name: '会話' }).click()
+  await promptBox(page).fill('これを表にして')
+  await page.getByRole('button', { name: '送る' }).click()
+  await expect.poll(() => started.length).toBe(1)
+  expect(started[0]).toMatchObject({ prompt: 'これを表にして', threadId: id, imports: [{ label: '新しく聞く', question: '新しく聞く', answer: '答えです', questionId: id }] })
 })

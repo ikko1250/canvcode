@@ -42,7 +42,7 @@ import { answerOfEvents, toolLabel } from './toolGroups.ts'
 //   取り込むだけでは Claude を動かさず、次に送る文と一緒に渡す（imports）。取り込めるのは 1 度に 1 つ。会話の欄には、そのジョブの頼んだ文の上にカードを出す
 // - 入力欄の「会話｜質問」（キャンバスでだけ）：「質問」で送ると、その 1 つだけ会話に入れずに聞く（POST /api/claude/answer。Web だけを使い、
 //   前の答えとして、会話の最後の終わったジョブを添える）。送っても「質問」のまま（docs/ai-note-tasks-plan.md の E）。会話の欄に、聞いた時刻の位置で
-//   質問と答えをそのまま出す（答えを作っている間は進み具合と考えている中身と「止める」）。会話を選ばずに聞いたら、サーバーが新しい会話を作り、それを選ぶ
+//   質問と答えをそのまま出す（答えを作っている間は進み具合と考えている中身と「やめる」）。会話を選ばずに聞いたら、サーバーが新しい会話を作り、それを選ぶ
 
 // 添える場所。refId が null の間は保存している
 export interface ClaudeAttachment {
@@ -114,7 +114,7 @@ interface Props {
   onThreadChange?(thread: { threadId: string; title: string } | null): void
   // 会話の欄のカードの ↗：取り込んだ付箋の質問へ（キャンバスでだけ渡す）
   onOpenImport?(item: ImportedQuestion): void
-  // 別枠の質問の「答えを見る →」：質問のタブで開く（キャンバスでだけ渡す。渡したときだけ、入力欄に「会話｜質問」を出す）
+  // 会話の質問を作業のタブで開く（キャンバスでだけ渡す。渡したときだけ、入力欄に「会話｜質問」を出す。会話の欄からは使わない）
   onOpenQuestion?(id: string): void
 }
 
@@ -222,7 +222,10 @@ export function ClaudePanel(props: Props) {
     const found = state.threads.find((t) => t.threadId === threadId)?.permissions ?? []
     return { ids: new Set(found.map((p) => p.id)), jobs: new Set(found.flatMap((p) => (p.jobId ? [p.jobId] : []))) }
   }, [state, threadId])
-  const eventTotal = jobs.reduce((n, job) => n + job.events.length, 0) + sideQuestions.length
+  // 会話の質問は、答えを作っている間の考えている中身と、届いた答えでも伸びる
+  const eventTotal =
+    jobs.reduce((n, job) => n + job.events.length, 0) +
+    sideQuestions.reduce((n, question) => n + 1 + (question.body?.length ?? 0) + (questionProgress.get(question.id)?.thinking.length ?? 0), 0)
 
   // 新しい出来事が来たら下までスクロールする（読み返しているとき＝下から離れているときは動かさない）
   const stick = useRef(true)
@@ -288,6 +291,9 @@ export function ClaudePanel(props: Props) {
     if (!text || sending || running || attachment?.refId === null) return
     setSending(true)
     setError(null)
+    // 質問だけの会話で初めて頼むときは、最後に答えた質問と答えを取り込んで渡す（Claude Code は、その会話の質問を知らない）
+    const asked = !pendingImport && thread && jobs.length === 0 ? [...sideQuestions].reverse().find((item) => item.status === 'done' && item.body) : undefined
+    const carried: ImportedQuestion | null = asked ? { label: firstLine(asked.question), question: asked.question, answer: asked.body!, questionId: asked.id } : null
     client
       .start({
         prompt: text,
@@ -295,7 +301,7 @@ export function ClaudePanel(props: Props) {
         ...(attachment?.refId ? { refId: attachment.refId, refLabel: attachment.label } : {}),
         ...(thread ? { threadId: thread.threadId } : {}),
         ...settingOf(setting),
-        ...(pendingImport ? { imports: [pendingImport] } : {}),
+        ...(pendingImport ? { imports: [pendingImport] } : carried ? { imports: [carried] } : {}),
       })
       .then((job) => {
         setPrompt('')
@@ -315,10 +321,10 @@ export function ClaudePanel(props: Props) {
     const text = prompt.trim()
     if (!text || sending || attachment?.refId === null) return
     // 前の答え：会話の最後の終わったジョブ（バックグラウンドから続けたものは、頼んだ文がないので除く）。送る前に長さを収める（大きすぎて 413 にならないように）
-    const last = [...jobs].reverse().find((job) => job.status === 'done' && !job.origin && answerOfEvents(job.events))
+    const previous = lastTurn()
     const request: AnswerRequest = {
       question: text,
-      ...(last ? { previous: fitTurns([{ question: last.prompt, answer: answerOfEvents(last.events) }]) } : {}),
+      ...(previous ? { previous: fitTurns([previous]) } : {}),
       ...(attachment?.refId ? { refs: [{ label: attachment.label, refId: attachment.refId }] } : {}),
       source: { kind: 'chat', ...(thread ? { threadId: thread.threadId } : {}), label: firstLine(text) },
     }
@@ -333,12 +339,16 @@ export function ClaudePanel(props: Props) {
         setPrompt('')
         stick.current = true
         onClearAttachment()
-        // 会話を選ばずに聞いた：サーバーが作った会話を一覧に入れて選ぶ
+        // 会話を選ばずに聞いた：サーバーが作った会話を一覧に入れて選ぶ（入力欄のモデルは、いま選んでいるもののまま。読むのは選んだあと）
         if (!askedIn && created) {
           const now = Date.now()
-          client.addThread({ threadId: created, title: text, createdAt: now, updatedAt: now, jobCount: 0, running: true })
+          client.addThread({ threadId: created, title: text, createdAt: now, updatedAt: now, jobCount: 0, running: false })
+          setSettingFor(created)
           setThreadId(created)
           askedIn = created
+        } else if (askedIn) {
+          // 答えを作っている間も、質問の全文を出す（SSE の動いている質問は 1 行目だけ。サーバーは start の前に行を書いている）
+          void client.reloadQuestions(askedIn)
         }
       },
     })
@@ -391,6 +401,14 @@ export function ClaudePanel(props: Props) {
         return next
       })
     })
+  }
+
+  // 前の答え：会話の最後に終わったもの（頼んだ文と答えのあるジョブか、答えた会話の質問。バックグラウンドから続けたジョブは、頼んだ文がないので除く）
+  const lastTurn = (): { question: string; answer: string } | null => {
+    const job = [...jobs].reverse().find((item) => item.status === 'done' && !item.origin && answerOfEvents(item.events))
+    const question = [...sideQuestions].reverse().find((item) => item.status === 'done' && item.body)
+    if (question && (!job || question.createdAt > job.createdAt)) return { question: question.question, answer: question.body! }
+    return job ? { question: job.prompt, answer: answerOfEvents(job.events) } : null
   }
 
   const cutToNote = (job: ClaudeJob, text: string) => {
@@ -460,7 +478,7 @@ export function ClaudePanel(props: Props) {
             が危なくないと判断したものを動かし、判断できなかったものはここで許可を求めます。
           </p>
         )}
-        {thread && jobs.length === 0 && <p className="claude-hint">読み込んでいます…</p>}
+        {thread && !state.loaded.has(thread.threadId) && jobs.length === 0 && sideQuestions.length === 0 && <p className="claude-hint">読み込んでいます…</p>}
         <ChatLog
           jobs={jobs}
           catalog={state.models}

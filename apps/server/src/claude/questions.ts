@@ -4,7 +4,7 @@ import { plainTextOf, richTextFromMarkdown, type TextParagraph } from '@canvcode
 import type { RecordStore, StoredRecord } from '../records.ts'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
-import type { ChatQuestion, ClaudeStore } from './store.ts'
+import type { ClaudeStore } from './store.ts'
 
 // 付箋で聞いている、動いている質問（docs/canvas-answer-panel-plan.md の 2.3）。
 // - 付箋で聞く答え（claude/answer.ts）を NDJSON で頼むとき、どの付箋の質問か（source）を添えると、ここに載る。
@@ -27,7 +27,7 @@ import type { ChatQuestion, ClaudeStore } from './store.ts'
 //   GET /api/claude/questions/<付箋の id>：その付箋の meta.ai（答えと添えたもの）と、関連する付箋の名前。なければ 404
 // - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）：source が { kind: 'chat', threadId?, label }。
 //   付箋がないので、サーバーが答えを claude.db（表 questions）に書いてから done で終える（placing はない）。
-//   一覧（GET /api/claude/questions）には、付箋の答えと答えた時刻の順に混ぜて返す（1 件に kind: 'note' | 'chat'。canvasId で絞ったときは出さない）。
+//   一覧（GET /api/claude/questions）には混ぜない（会話の質問は会話の欄に出す。docs/ai-note-tasks-plan.md の E）。
 //   GET /api/claude/questions/chat/<id>：会話の質問 1 つ（{ kind: 'chat', ...ChatQuestion, threadTitle? }）。なければ 404
 
 // 答えを画面に渡してから、付箋に書いたと知らせが来るまで待つ時間（ミリ秒）
@@ -216,37 +216,8 @@ export interface AnsweredNotes {
   detail(noteId: string): AnsweredNoteDetail | null
 }
 
-// 答えた会話の質問（一覧の 1 行）
-export interface AnsweredChatQuestion {
-  kind: 'chat'
-  id: string
-  threadId?: string
-  // 会話の題（会話がなければ、ない）
-  threadTitle?: string
-  // 質問の 1 行目
-  question: string
-  model: string
-  effort?: string
-  answeredAt: number
-}
-
 // 会話の質問の置き場所（claude/store.ts）
-export type ChatQuestionStore = Pick<ClaudeStore, 'insertQuestion' | 'finishQuestion' | 'question' | 'answeredQuestions' | 'thread'>
-
-// 答えた会話の質問の一覧の 1 行
-export function answeredChatQuestion(store: Pick<ClaudeStore, 'thread'>, question: ChatQuestion): AnsweredChatQuestion {
-  const title = question.threadId ? store.thread(question.threadId)?.title : undefined
-  return {
-    kind: 'chat',
-    id: question.id,
-    ...(question.threadId ? { threadId: question.threadId } : {}),
-    ...(title ? { threadTitle: title } : {}),
-    question: firstLine(question.question, MAX_LABEL_LENGTH, true),
-    model: question.model ?? '',
-    ...(question.effort ? { effort: question.effort } : {}),
-    answeredAt: question.answeredAt ?? question.createdAt,
-  }
-}
+export type ChatQuestionStore = Pick<ClaudeStore, 'insertQuestion' | 'finishQuestion' | 'question' | 'thread'>
 
 // ワークスペースのレコードから読む
 export function answeredNotesOf(records: Pick<RecordStore, 'answeredNotes' | 'get' | 'canvasOf'>): AnsweredNotes {
@@ -337,10 +308,8 @@ export function handleQuestions(
     }
     if (path === '/api/claude/questions') {
       const canvasId = new URL(req.url ?? '/', 'http://x').searchParams.get('canvasId') || undefined
-      // 会話の質問は Canvas を持たないので、Canvas で絞ったときは出さない
-      const chats = chat && !canvasId ? chat.answeredQuestions(ANSWERED_LIMIT).map((question) => answeredChatQuestion(chat, question)) : []
-      const list = [...answered.list(canvasId), ...chats].sort((a, b) => b.answeredAt - a.answeredAt).slice(0, ANSWERED_LIMIT)
-      sendJson(res, 200, { questions: list })
+      // 付箋の答え（作業の報告）だけ。会話の質問は会話の欄に出すので混ぜない（混ぜると、作業のタブの 100 件を会話の質問が埋める）
+      sendJson(res, 200, { questions: answered.list(canvasId).slice(0, ANSWERED_LIMIT) })
       return true
     }
     const detail = answered.detail(decodeURIComponent(ANSWERED_PATH.exec(path)![1]!))
