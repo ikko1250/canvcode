@@ -254,6 +254,23 @@ describe('ClaudeJobs', () => {
     expect(() => jobs.start({ prompt: 'x', note, threadId: job.threadId })).toThrow(/新しい会話で始めます/)
   })
 
+  it('reopens the process of a note task with the chat system prompt when the chat continues it, resuming the session', async () => {
+    const sdk = replying(() => [assistant('s1', [{ type: 'text', text: 'はい' }])])
+    const jobs = makeJobs({ run: sdk.run })
+    const note = { noteId: 'node:n', canvasId: 'canvas:c' }
+    const task = jobs.start({ prompt: '表にして', canvasId: 'canvas:c', note })
+    await finished(jobs, task.id)
+    const followed = jobs.start({ prompt: '列を足して', threadId: task.threadId })
+    expect(followed.note).toBeUndefined()
+    const second = await queryAt(sdk, 1)
+    expect(second.options.resume).toBe('s1')
+    expect((second.options.systemPrompt as { append: string }).append).toContain('chat panel')
+    await finished(jobs, followed.id)
+    // 会話から頼んだので、一覧に出る
+    expect(jobs.threads().find((thread) => thread.threadId === task.threadId)?.noteOnly).toBeUndefined()
+    await jobs.dispose()
+  })
+
   it('runs a prompt with the selected place in auto mode, and turns messages into events', async () => {
     const sdk = replying(() => [
       assistant('s1', [

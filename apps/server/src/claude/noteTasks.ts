@@ -4,7 +4,7 @@ import type { AgentHost } from '../agent/host.ts'
 import { undoThreadEdits } from '../agent/ops.ts'
 import type { RecordStore, StoredRecord } from '../records.ts'
 import { THREAD_ID } from '../threadHeader.ts'
-import { answerFromText, parseCandidates, parsePrevious, parseRefs, type AnswerCandidate, type PreviousTurn } from './answer.ts'
+import { MAX_CANDIDATES, answerFromText, parseCandidates, parsePrevious, parseRefs, type AnswerCandidate, type PreviousTurn } from './answer.ts'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError, MAX_PROMPT_LENGTH, type ClaudeJobs, type Job, type JobEvent } from './jobs.ts'
 import { isEffortLevel, isModelName } from './models.ts'
@@ -19,6 +19,11 @@ import { isEffortLevel, isModelName } from './models.ts'
 // - 報告：本文は最後にツールを呼んだあとの文（Markdown。最後の行の <canvas-related> から関連する付箋を読む）、変えたもの（その会話の
 //   Canvas の編集・書いたファイル・コマンド）、状態と誤り。付箋の作業の会話で、あとからバックグラウンドの作業が続けて書いた文は、報告に足す
 // - 起動したときに、作業の途中のままの付箋（サーバーが止まって途切れたもの）に、報告を書く
+// - meta.ai.task と作業の報告は、サーバーだけが書く。ブラウザが送った付箋の記録では、保存してある方を引き継ぐ（SyncHub の見張り。keepTaskFields）。
+//   ブラウザは、送っている途中の付箋に届いた変更を捨てるので、引き継がないと、文字を書いた直後に送ったとき・作業の間に付箋を編集したときに、
+//   印や報告が古い記録で上書きされていた
+// - 送り直しの「前の作業」は、その付箋の会話のときだけ使う（付箋をコピーすると、写しにも元の報告が付いてくる）。前の変更を戻すのは、
+//   始められると確かめてから、記録が残っていて全部戻せるときだけ（記録が古くて消えた・そのあとに変わったものがあれば、何も戻さずに 409）
 // - POST /api/claude/note-tasks { noteId, canvasId, instruction, refs?, candidates?, previous?, lastThreadId?, undo?, model?, effort? }：
 //   201 { job, undone? }。undo で戻せないものがあれば 409 { error, undone, failed, left }
 
@@ -36,16 +41,16 @@ const MAX_RELATED = 3
 const LAST_REPORT_LENGTH = 4_000
 // 報告の本文がないとき
 const NO_REPORT = '（報告がありませんでした）'
-export const INTERRUPTED_REPORT = 'サーバーが止まったので、作業が途切れました'
 
 const NOTE_ID = /^node:[A-Za-z0-9_-]{1,64}$/
 const CANVAS_ID = /^canvas:[A-Za-z0-9_-]{1,64}$/
 
-// 付箋に書く、作業の途中（meta.ai.task）
+// 付箋に書く、作業の途中（meta.ai.task）。questionIds は、何枚かの付箋で頼んだときの、ほかの付箋（報告に移す）
 export interface NoteTaskState {
   threadId: string
   jobId: string
   startedAt: number
+  questionIds?: string[]
 }
 
 // 報告の「変えたもの」
@@ -64,8 +69,9 @@ export interface NoteTaskReport {
   related: string[]
   model: string
   effort?: string
-  // 指示（送ったときの付箋の文）
+  // 指示（送ったときの付箋の文）と、何枚かの付箋で頼んだときのほかの付箋
   question: string
+  questionIds?: string[]
   answeredAt: number
   threadId: string
   jobId: string
@@ -78,6 +84,8 @@ export interface NoteTaskRequest {
   noteId: string
   canvasId: string
   instruction: string
+  // 何枚かの付箋で頼んだときの、ほかの付箋（指示は読む順につないだもの）
+  questionIds?: string[]
   refs?: { label: string; refId: string }[]
   candidates?: AnswerCandidate[]
   // 続けて頼んだ付箋の、前の指示と報告（古い方から）
@@ -116,6 +124,7 @@ export class NoteTasks {
 
   constructor(deps: NoteTasksDeps) {
     this.deps = deps
+    deps.host.sync?.setGuard(keepTaskFields)
     this.unsubscribe = deps.jobs.subscribe((change) => {
       if (change.type !== 'job' || !change.job.note || change.job.status === 'running') return
       // 終わったと知らせたのは 1 度だけ（終わったあとに足した出来事の知らせは、from が出来事の数より小さい）
@@ -129,6 +138,7 @@ export class NoteTasks {
   }
 
   dispose(): void {
+    this.deps.host.sync?.setGuard(null)
     this.unsubscribe()
   }
 
@@ -137,14 +147,24 @@ export class NoteTasks {
     const note = this.note(request.noteId)
     if (!note) throw new JobError(404, 'その付箋はもうありません')
     if (this.deps.records.canvasOf(request.noteId) !== request.canvasId) throw new JobError(409, '付箋がその Canvas にありません')
-    const task = taskOf(note)
-    if (task && this.deps.jobs.get(task.jobId)?.status === 'running') throw new JobError(409, 'この付箋の前の作業が、まだ終わっていません')
+    // この付箋のジョブ（バックグラウンドの作業が続けているものも）が動いていれば断る（画面も同じに数える）
+    if (this.deps.jobs.runningJobs().some((job) => job.note?.noteId === request.noteId)) throw new JobError(409, 'この付箋の前の作業が、まだ終わっていません')
+    // 前の作業は、この付箋の会話のときだけ使う（コピーした付箋の写しには、元の付箋の報告が付いている）
+    const ownThread = request.lastThreadId ? this.ownThread(request.noteId, request.lastThreadId) : false
+    if (request.undo && request.lastThreadId && !ownThread) throw new JobError(409, 'この報告は、ほかの付箋（コピーの元）の作業のものなので、前の変更を戻せません')
+    const lastThreadId = ownThread ? request.lastThreadId : undefined
     let undone: UndoSummary | undefined
-    if (request.undo && request.lastThreadId) {
-      undone = undoThreadEdits(this.deps.host, request.lastThreadId)
+    if (request.undo && lastThreadId) {
+      // 戻してから始められないと、戻したことが知らされないので、先に確かめる
+      this.deps.jobs.assertCanStart()
+      const missing = this.missingEdits(note, lastThreadId)
+      if (missing.length > 0) {
+        throw new JobError(409, `前の変更のうち ${missing.length} 個（「${missing[0]}」など）は、記録が古くて消えたので戻せません。何も戻さずに、送りませんでした`)
+      }
+      undone = undoThreadEdits(this.deps.host, lastThreadId)
       if (undone.failed) throw new UndoFailed(undone)
     }
-    const materials = this.materials(request, undone !== undefined)
+    const materials = this.materials({ ...request, ...(lastThreadId ? { lastThreadId } : { lastThreadId: undefined }) }, undone !== undefined)
     const job = this.deps.jobs.start({
       prompt: request.instruction,
       canvasId: request.canvasId,
@@ -153,7 +173,8 @@ export class NoteTasks {
       ...(request.model ? { model: request.model } : {}),
       ...(request.effort ? { effort: request.effort } : {}),
     })
-    this.writeAi(request.noteId, (ai) => ({ ...ai, task: { threadId: job.threadId, jobId: job.id, startedAt: job.createdAt } satisfies NoteTaskState }))
+    const task: NoteTaskState = { threadId: job.threadId, jobId: job.id, startedAt: job.createdAt, ...(request.questionIds?.length ? { questionIds: request.questionIds } : {}) }
+    this.writeAi(request.noteId, (ai) => ({ ...ai, task }))
     // 送るまでの間に終わっていたら（すぐ失敗した）、報告を書く
     if (job.status !== 'running') this.finished(job.id)
     return { job, ...(undone ? { undone: undone.undone } : {}) }
@@ -167,7 +188,8 @@ export class NoteTasks {
       if (!task) continue
       const job = this.deps.jobs.get(task.jobId)
       if (job?.status === 'running') continue
-      if (job) this.report(job, note.id)
+      // ほかの付箋の作業の印（付箋をコピーした写し）なら、報告は書かずに印だけ消す
+      if (job && job.note?.noteId === note.id) this.report(job, note.id)
       else this.writeAi(note.id, (ai) => withoutTask(ai))
       count++
     }
@@ -180,20 +202,43 @@ export class NoteTasks {
     if (!job?.note) return
     const note = this.note(job.note.noteId)
     if (!note) return
-    if (taskOf(note)?.jobId === job.id) return this.report(job, note.id)
+    const task = taskOf(note)
     const report = reportOf(note)
+    if (task?.jobId === job.id) return this.report(job, note.id)
+    // 作業の途中の印がなくなっていても（どこかで上書きされた）、ほかの作業の印がなく、報告がこの作業より古ければ書く
+    if (!job.origin && !task && (!report || report.answeredAt < job.createdAt)) return this.report(job, note.id)
     if (job.origin === 'background' && report?.threadId === job.threadId) {
       const more = finalText(job.events)
       if (!more) return
       const { body } = answerFromText(more)
-      this.writeAi(note.id, (ai) => ({ ...ai, answer: { ...report, body: clip(`${report.body}\n\n### 続き（バックグラウンドの作業のあと）\n\n${body.trim()}`), changes: this.changes(job.threadId, job.events) } }))
+      const changes = this.changes(job.threadId, this.threadEvents(job.threadId))
+      this.writeAi(note.id, (ai) => ({ ...ai, answer: { ...report, body: clip(`${report.body}\n\n### 続き（バックグラウンドの作業のあと）\n\n${body.trim()}`), changes } }))
     }
+  }
+
+  // 付箋の作業の会話の出来事（付箋のジョブだけ。会話から続けて頼んだものは入れない）
+  private threadEvents(threadId: string): JobEvent[] {
+    return (this.deps.jobs.thread(threadId)?.jobs ?? []).filter((job) => job.note).flatMap((job) => job.events)
+  }
+
+  // その会話が、この付箋の作業の会話か
+  private ownThread(noteId: string, threadId: string): boolean {
+    return this.deps.jobs.thread(threadId)?.thread.note?.noteId === noteId
+  }
+
+  // 前の作業の報告にある、まだ戻していない Canvas の編集のうち、記録が古くて消えたもの（の名前）
+  private missingEdits(note: StoredRecord, threadId: string): string[] {
+    const report = reportOf(note)
+    if (report?.threadId !== threadId) return []
+    const known = new Set(this.deps.records.agentOpsOfThread(threadId).map((op) => op.id))
+    return (report.changes?.canvas ?? []).filter((edit) => !edit.undone && !known.has(edit.batch)).map((edit) => edit.label)
   }
 
   // 報告を書き、作業の途中の印を消す
   private report(job: Job, noteId: string): void {
     const canvasId = job.note?.canvasId ?? this.deps.records.canvasOf(noteId)
     const { body, related } = answerFromText(finalText(job.events))
+    const questionIds = taskOf(this.note(noteId)!)?.questionIds
     const error = [...job.events].reverse().find((event): event is Extract<JobEvent, { kind: 'error' }> => event.kind === 'error')?.message
     const status = job.status === 'running' ? 'failed' : job.status
     const report: NoteTaskReport = {
@@ -202,12 +247,13 @@ export class NoteTasks {
       model: job.model ?? '',
       ...(job.effort ? { effort: job.effort } : {}),
       question: job.prompt,
+      ...(questionIds?.length ? { questionIds } : {}),
       answeredAt: job.finishedAt ?? Date.now(),
       threadId: job.threadId,
       jobId: job.id,
       status,
       ...(status !== 'done' && error ? { error } : {}),
-      changes: this.changes(job.threadId, job.events),
+      changes: this.changes(job.threadId, this.threadEvents(job.threadId)),
     }
     this.writeAi(noteId, (ai) => ({ ...withoutTask(ai), answer: report }))
   }
@@ -317,7 +363,26 @@ export class NoteTasks {
 export function taskOf(note: StoredRecord): NoteTaskState | undefined {
   const task = (note.meta as { ai?: { task?: unknown } } | undefined)?.ai?.task as Partial<NoteTaskState> | undefined
   if (!task || typeof task.threadId !== 'string' || typeof task.jobId !== 'string') return undefined
-  return { threadId: task.threadId, jobId: task.jobId, startedAt: typeof task.startedAt === 'number' ? task.startedAt : 0 }
+  const questionIds = Array.isArray(task.questionIds) ? task.questionIds.filter((id): id is string => typeof id === 'string') : []
+  return { threadId: task.threadId, jobId: task.jobId, startedAt: typeof task.startedAt === 'number' ? task.startedAt : 0, ...(questionIds.length ? { questionIds } : {}) }
+}
+
+// ブラウザが送った付箋の記録に、サーバーが書いた欄（meta.ai.task と、作業の報告の meta.ai.answer）を、保存してある方から引き継ぐ（SyncHub の見張り）。
+// AI モードをやめた付箋（meta.ai がない）は、そのまま受ける。新しく足した付箋（コピーした写し）からは、作業の途中の印を外す。
+// 前の Q&A の答え（会話のない答え）は、ブラウザが書いたものなので引き継がない。変えなければ、受けたものをそのまま返す
+export function keepTaskFields(record: StoredRecord, stored: StoredRecord | undefined): StoredRecord {
+  if (record.typeName !== 'node' || record.type !== 'note') return record
+  const meta = (typeof record.meta === 'object' && record.meta !== null ? record.meta : {}) as Record<string, unknown>
+  const ai = typeof meta.ai === 'object' && meta.ai !== null ? (meta.ai as Record<string, unknown>) : null
+  if (!ai) return record
+  const kept = (stored?.meta as { ai?: Record<string, unknown> } | undefined)?.ai
+  const keptAi = typeof kept === 'object' && kept !== null ? kept : {}
+  const next: Record<string, unknown> = { ...ai }
+  if (keptAi.task !== undefined) next.task = keptAi.task
+  else delete next.task
+  if (stored && reportOf(stored)) next.answer = keptAi.answer
+  if (JSON.stringify(next) === JSON.stringify(ai)) return record
+  return { ...record, meta: { ...meta, ai: next } } as StoredRecord
 }
 
 // 付箋の報告（作業の報告でなければ undefined）
@@ -354,12 +419,14 @@ function quote(text: string): string {
 
 export function parseNoteTaskRequest(body: unknown): NoteTaskRequest {
   if (typeof body !== 'object' || body === null) throw new JobError(400, 'invalid body')
-  const { noteId, canvasId, instruction, refs, candidates, previous, lastThreadId, undo, model, effort } = body as Record<string, unknown>
+  const { noteId, canvasId, instruction, questionIds, refs, candidates, previous, lastThreadId, undo, model, effort } = body as Record<string, unknown>
   if (typeof noteId !== 'string' || !NOTE_ID.test(noteId)) throw new JobError(400, 'invalid noteId')
   if (typeof canvasId !== 'string' || !CANVAS_ID.test(canvasId)) throw new JobError(400, 'invalid canvasId')
   if (typeof instruction !== 'string' || instruction.trim() === '') throw new JobError(400, '付箋に指示が書かれていません')
   if (instruction.trim().length > MAX_PROMPT_LENGTH) throw new JobError(413, `指示が長すぎます（${MAX_PROMPT_LENGTH} 文字まで）`)
   if (lastThreadId !== undefined && (typeof lastThreadId !== 'string' || !THREAD_ID.test(lastThreadId))) throw new JobError(400, 'invalid lastThreadId')
+  const others = questionIds === undefined ? [] : questionIds
+  if (!Array.isArray(others) || others.length > MAX_CANDIDATES || others.some((id) => typeof id !== 'string' || !NOTE_ID.test(id))) throw new JobError(400, 'invalid questionIds')
   if (undo !== undefined && typeof undo !== 'boolean') throw new JobError(400, 'invalid undo')
   if (model !== undefined && !isModelName(model)) throw new JobError(400, 'invalid model')
   if (effort !== undefined && !isEffortLevel(effort)) throw new JobError(400, 'invalid effort')
@@ -370,6 +437,7 @@ export function parseNoteTaskRequest(body: unknown): NoteTaskRequest {
     noteId,
     canvasId,
     instruction: instruction.trim(),
+    ...(others.length > 0 ? { questionIds: others as string[] } : {}),
     ...(places.length > 0 ? { refs: places } : {}),
     ...(nearby.length > 0 ? { candidates: nearby } : {}),
     ...(turns.length > 0 ? { previous: turns } : {}),

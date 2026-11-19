@@ -238,6 +238,8 @@ export interface NoteTaskRequest {
   noteId: string
   canvasId: string
   instruction: string
+  // 何枚かの付箋で頼んだときの、ほかの付箋
+  questionIds?: string[]
   refs?: { label: string; refId: string }[]
   candidates?: { id: string; text: string }[]
   // 続けて頼んだ付箋の、前の指示と報告（古い方から）
@@ -383,10 +385,10 @@ export function runningNoteTasks(state: Pick<ClaudeState, 'jobs'>): ClaudeJob[] 
   return [...state.jobs.values()].filter((job) => job.note && job.status === 'running').sort((a, b) => a.createdAt - b.createdAt)
 }
 
-// 付箋の作業の会話で、許可を待っている問い合わせ（古いものから。会話の id を添える）
+// 付箋の作業の会話で、許可を待っている問い合わせ（古いものから。会話の id を添える）。会話から続けて頼んだ会話のものは、会話のタブで答えるので入れない
 export function noteTaskPermissions(state: Pick<ClaudeState, 'threads'>): (PendingPermission & { threadId: string; note: NoteRef })[] {
   return state.threads
-    .flatMap((thread) => (thread.note ? (thread.permissions ?? []).map((permission) => ({ ...permission, threadId: thread.threadId, note: thread.note! })) : []))
+    .flatMap((thread) => (thread.note && thread.noteOnly ? (thread.permissions ?? []).map((permission) => ({ ...permission, threadId: thread.threadId, note: thread.note! })) : []))
     .sort((a, b) => a.createdAt - b.createdAt)
 }
 

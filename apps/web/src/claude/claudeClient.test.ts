@@ -354,7 +354,12 @@ describe('note tasks', () => {
         ['done', job('done', { status: 'done', note })],
         ['chat', job('chat')],
       ]),
-      threads: [thread('x', 1, { note, noteOnly: true, permissions: [permission] }), thread('chat', 1, { permissions: [{ ...permission, id: 'p2' }] })],
+      threads: [
+        thread('x', 1, { note, noteOnly: true, permissions: [permission] }),
+        thread('chat', 1, { permissions: [{ ...permission, id: 'p2' }] }),
+        // 会話から続けて頼んだ付箋の作業の会話は、会話のタブで答える
+        thread('continued', 1, { note, permissions: [{ ...permission, id: 'p3' }] }),
+      ],
     })
     expect(runningNoteTasks(s).map((j) => j.id)).toEqual(['y', 'x'])
     expect(noteTaskPermissions(s)).toEqual([{ ...permission, threadId: 'x', note }])

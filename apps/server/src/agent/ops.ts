@@ -480,21 +480,37 @@ export function undoCanvasEdit(host: AgentHost, batchId: string): { rev: number;
 }
 
 // 会話の AI の編集を、新しいものから順に取り消す（付箋の作業の「前の変更を戻してから送る」。docs/ai-note-tasks-plan.md の B）。
-// 取り消したもの（undone）と、取り消せずに止めたもの（failed。そのあとに変わった・作った Canvas に足された）と、そのために残したもの（left）を返す。
-// もう取り消したものは飛ばす。記録が古くて消えた編集は、ここには出てこない（戻せない）
+// 先に、全部戻せるかを確かめる（新しいものから戻していったとして、それぞれの編集のあとの値が、その時点の値と合うか）。
+// 戻せないもの（そのあとに変わった）があれば、何も戻さずに、それ（failed）と、ほかのまだ戻していないもの（left）を返す。
+// もう取り消したものは飛ばす。記録が古くて消えた編集は、ここには出てこない（呼ぶ側が確かめる）
 export function undoThreadEdits(
   host: AgentHost,
   threadId: string,
 ): { undone: { batch: string; label: string }[]; failed?: { batch: string; label: string; reason: string }; left: { batch: string; label: string }[] } {
   const ops = host.records.agentOpsOfThread(threadId).filter((op) => op.undoneAt === null)
+  const named = (op: { id: string; label: string }) => ({ batch: op.id, label: op.label })
+  // 戻していったときの、レコードの値（JSON。null はない）
+  const after = new Map<string, string>()
+  const now = (id: string) => after.get(id) ?? JSON.stringify(host.records.get(id) ?? null)
+  for (const summary of ops) {
+    const op = host.records.getAgentOp(summary.id)
+    if (!op) continue
+    const conflicts = op.patch.filter((entry) => now(entry.id) !== JSON.stringify(entry.after)).map((entry) => entry.id)
+    if (conflicts.length > 0) {
+      const reason = `Conflict: ${conflicts.length} record(s) changed after this edit (${listIds(conflicts)}). Nothing was undone.`
+      return { undone: [], failed: { ...named(summary), reason }, left: ops.filter((other) => other !== summary).map(named) }
+    }
+    for (const entry of op.patch) after.set(entry.id, JSON.stringify(entry.before))
+  }
   const undone: { batch: string; label: string }[] = []
   for (const [i, op] of ops.entries()) {
     try {
       undoCanvasEdit(host, op.id)
-      undone.push({ batch: op.id, label: op.label })
+      undone.push(named(op))
     } catch (error) {
+      // 確かめたあとでも、作った Canvas にあとから足されたものがあれば断られる（そこまでは戻している）
       if (!(error instanceof EditError)) throw error
-      return { undone, failed: { batch: op.id, label: op.label, reason: error.message }, left: ops.slice(i + 1).map((rest) => ({ batch: rest.id, label: rest.label })) }
+      return { undone, failed: { ...named(op), reason: error.message }, left: ops.slice(i + 1).map(named) }
     }
   }
   return { undone, left: [] }

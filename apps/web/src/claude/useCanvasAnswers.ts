@@ -72,6 +72,7 @@ export function useCanvasAnswers({ viewRef, claude, notify }: CanvasAnswersDeps)
           noteId,
           canvasId,
           instruction: asked.question,
+          ...(asked.questionIds.length > 1 ? { questionIds: asked.questionIds.slice(1) } : {}),
           ...(refs.length > 0 ? { refs } : {}),
           ...(candidates.length > 0 ? { candidates } : {}),
           ...(previous.length > 0 ? { previous } : {}),

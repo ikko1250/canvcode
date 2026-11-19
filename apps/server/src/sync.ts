@@ -14,6 +14,8 @@ import { LIST_RECORD_TYPES, type RecordStore, type StoredRecord } from './record
 //   { type: 'render', attempt, … }（Canvas を画像にしてほしい。答えは HTTP の PUT /api/renders/<attempt>。renders.ts。MAI-89）
 // 保存した変更は onChange の購読者（AI の編集に使うサーバーの中のワークスペース。agent/host.ts）にも知らせる
 // 同じレコードへの同時の変更は、後から届いたものを採用する（MAI-15）
+// ただし、サーバーが持つ欄は見張り（guard。setGuard）が、保存してある方から引き継ぐ（付箋の作業の meta.ai.task と報告。claude/noteTasks.ts）。
+// ブラウザは、送っている途中のレコードに届いた変更を捨てるので、引き継いで変わったレコードは、ack のあとで送ったタブにも送る
 //
 // 開いた Canvas の分だけ読む（docs/lazy-canvas-loading-plan.md）：
 // - タブごとに、読んだ Canvas を持つ。hello に canvases がなければ（古いタブ）、すべての Canvas を読んだものとして扱う
@@ -25,6 +27,9 @@ import { LIST_RECORD_TYPES, type RecordStore, type StoredRecord } from './record
 
 // 保存した変更（records は保存したレコード、deleted は消した id）
 export type ChangeListener = (records: unknown[], deleted: string[]) => void
+
+// ブラウザが送ったレコードを、保存する前に直す（stored は保存してある方。なければ undefined）。直さなければ、受けたものをそのまま返す
+export type PushGuard = (record: StoredRecord, stored: StoredRecord | undefined) => StoredRecord
 
 // ユーザーがいま見ている所（タブごと。メモリにだけ持ち、タブを閉じたら捨てる）。AI のツールの既定に使う
 export interface Presence {
@@ -87,6 +92,7 @@ export class SyncHub {
   private readonly presences = new Map<WebSocket, Presence>()
   private readonly features = new Map<WebSocket, ReadonlySet<string>>()
   private readonly closeListeners = new Set<(socket: WebSocket) => void>()
+  private guard: PushGuard | null = null
 
   constructor(store: RecordStore) {
     this.store = store
@@ -289,7 +295,10 @@ export class SyncHub {
       return
     }
     if (message.type !== 'push') return
-    const puts = Array.isArray(message.puts) ? message.puts : []
+    const received = Array.isArray(message.puts) ? message.puts : []
+    // サーバーが持つ欄を引き継ぐ（変えたレコードの id を覚え、ack のあとで送ったタブに送り直す）
+    const corrected = new Set<string>()
+    const puts = this.guard ? received.map((record) => this.guarded(record, corrected)) : received
     const deletes = Array.isArray(message.deletes) ? message.deletes : []
     let rev: number
     try {
@@ -306,17 +315,32 @@ export class SyncHub {
     const sent = new Set(puts.map((record) => (record as StoredRecord | null)?.id))
     const sentDeleted = new Set(deletes)
     const own: Outgoing = { rev, records: [], canvasIds: [], deleted: outgoing.deleted.filter((id) => !sentDeleted.has(id)) }
+    const fixed: Outgoing = { rev, records: [], canvasIds: [], deleted: [] }
     for (const [i, record] of outgoing.records.entries()) {
-      if (sent.has(record.id)) continue
-      own.records.push(record)
-      own.canvasIds.push(outgoing.canvasIds[i])
+      const target = !sent.has(record.id) ? own : corrected.has(record.id) ? fixed : null
+      if (!target) continue
+      target.records.push(record)
+      target.canvasIds.push(outgoing.canvasIds[i])
     }
-    if (own.records.length > 0 || own.deleted.length > 0) {
-      const scope = this.clients.get(socket) ?? new Set<string>()
-      socket.send(JSON.stringify({ type: 'changes', ...scoped(own, scope) }))
-    }
+    const scope = this.clients.get(socket) ?? new Set<string>()
+    if (own.records.length > 0 || own.deleted.length > 0) socket.send(JSON.stringify({ type: 'changes', ...scoped(own, scope) }))
     socket.send(JSON.stringify({ type: 'ack', seq: message.seq, rev }))
+    // 見張りが直したレコード（送ったタブの手元のものと違う）。ack のあとなので、タブは送っている途中のものとして捨てない
+    if (fixed.records.length > 0) socket.send(JSON.stringify({ type: 'changes', ...scoped(fixed, scope) }))
     this.emit(outgoing.records, outgoing.deleted)
+  }
+
+  // ブラウザが送ったレコードを、保存する前に直す見張りを置く（1 つだけ。null で外す）
+  setGuard(guard: PushGuard | null): void {
+    this.guard = guard
+  }
+
+  private guarded(record: unknown, corrected: Set<string>): unknown {
+    if (typeof record !== 'object' || record === null || typeof (record as StoredRecord).id !== 'string') return record
+    const incoming = record as StoredRecord
+    const next = this.guard!(incoming, this.store.get(incoming.id))
+    if (next !== incoming) corrected.add(incoming.id)
+    return next
   }
 }
 

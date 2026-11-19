@@ -218,8 +218,8 @@ describe('edit_canvas', () => {
     expect(undoThreadEdits(host, thread)).toEqual({ undone: [], left: [] })
   })
 
-  it('stops undoing a thread at an edit that changed afterwards, and says what is left', () => {
-    const { host, edit } = setup()
+  it('undoes nothing of a thread when one of its edits changed afterwards, and says which one and what is left', () => {
+    const { records, host, edit } = setup()
     const thread = '11111111-2222-4333-8444-666666666666'
     const first = edit([{ op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 10, h: 10 }], { threadId: thread, label: '箱を置く' })
     const second = edit([{ op: 'create', type: 'geo', as: 'b', x: 100, y: 0, w: 10, h: 10 }], { threadId: thread, label: 'もう 1 つ置く' })
@@ -227,9 +227,25 @@ describe('edit_canvas', () => {
     // そのあとに、ほかの人が 2 つ目の箱を動かした
     edit([{ op: 'move', ids: [second.created.b!], dx: 5 }])
     const result = undoThreadEdits(host, thread)
-    expect(result.undone).toEqual([{ batch: third.batch, label: '動かす' }])
+    expect(result.undone).toEqual([])
     expect(result.failed).toMatchObject({ batch: second.batch, label: 'もう 1 つ置く', reason: expect.stringMatching(/Conflict/) })
-    expect(result.left).toEqual([{ batch: first.batch, label: '箱を置く' }])
+    expect(result.left).toEqual([
+      { batch: third.batch, label: '動かす' },
+      { batch: first.batch, label: '箱を置く' },
+    ])
+    // 新しい方（動かした）も戻していない
+    expect(records.agentOpsOfThread(thread).every((op) => op.undoneAt === null)).toBe(true)
+    expect(records.get(first.created.a!)).toMatchObject({ x: 5 })
+  })
+
+  it('checks a chain of edits of one thread on the same node as if the newer ones were undone first', () => {
+    const { records, host, edit } = setup()
+    const thread = '11111111-2222-4333-8444-777777777777'
+    const made = edit([{ op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 10, h: 10 }], { threadId: thread })
+    edit([{ op: 'move', ids: [made.created.a!], dx: 5 }], { threadId: thread })
+    edit([{ op: 'move', ids: [made.created.a!], dx: 5 }], { threadId: thread })
+    expect(undoThreadEdits(host, thread).undone).toHaveLength(3)
+    expect(records.get(made.created.a!)).toBeUndefined()
   })
 
   it('aligns a placed node with the other one, and places in the empty space right of or below the content (MAI-105)', () => {

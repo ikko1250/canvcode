@@ -188,6 +188,7 @@ export const PERMISSION_TIMEOUT_MS = 10 * 60_000
 export const MAX_PENDING_PERMISSIONS = 20
 // モデルの一覧を聞けなかったとき、聞き直すまでの時間（ミリ秒）
 export const MODEL_PROBE_RETRY_MS = 60_000
+export const TOO_MANY_SESSIONS = `同時に開いておける会話は ${MAX_SESSIONS} つまでです。ほかの会話の作業が終わるのを待つか、止めてください`
 export const TOO_MANY_PERMISSIONS = `待っている許可が多すぎます（1 つの会話で ${MAX_PENDING_PERMISSIONS} まで）。前の許可の答えを待ってから、もう一度試してください`
 
 export interface ClaudeJobsDeps {
@@ -356,13 +357,16 @@ export class ClaudeJobs {
       if (last.status === 'running' || live?.current || live?.waiting) throw new JobError(409, '前の依頼がまだ終わっていません')
       resume = live?.sessionId ?? last.sessionId
     }
-    // 画面で許可を待っている依頼も数える（ターンの途中で、プロセスも動いている）
-    if ([...this.running.values()].filter((job) => !job.origin).length >= MAX_RUNNING) {
-      const asking = [...this.live.values()].some((thread) => thread.permissions.size > 0)
-      throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです${asking ? '。許可を待っている依頼があれば、答えると進みます' : ''}`)
-    }
+    this.checkRunning()
     // 費用の上限に達したプロセスは、新しいものに替える
     if (live?.retire && live.session.tasks.length === 0) {
+      void this.closeThread(live.threadId)
+      live = undefined
+    }
+    // 付箋の作業のプロセスに、会話から続けて頼むときは、会話のシステムプロンプトで開き直す（resume で続ける。
+    // 付箋の作業のプロンプトのままだと、会話の依頼も「報告は付箋に出る」として動き、バックグラウンドの作業も付箋のものになる）。
+    // バックグラウンドの作業か待っている許可があれば、閉じると止まるので、そのまま使う
+    if (live?.note && !request.note && live.session.tasks.length === 0 && live.permissions.size === 0) {
       void this.closeThread(live.threadId)
       live = undefined
     }
@@ -405,6 +409,27 @@ export class ClaudeJobs {
     this.begin(thread, job)
     thread.session.send(messageText(job, thread.canvasId, request.materials), job.id, (error) => this.configureFailed(thread, job, settings, previous, error))
     return publicJob(job)
+  }
+
+  // 新しい依頼を始められるか（同時に動かせる依頼の数と、開いておける会話の数）。始められなければ 429 を投げる（何も変えない）。
+  // 付箋の作業が、前の変更を戻す前に確かめる（戻したあとで始められないと、戻したことが知らされない）
+  assertCanStart(): void {
+    this.checkRunning()
+    if (this.live.size >= MAX_SESSIONS && !this.idleThreads()[0]) throw new JobError(429, TOO_MANY_SESSIONS)
+  }
+
+  // 画面で許可を待っている依頼も数える（ターンの途中で、プロセスも動いている）
+  private checkRunning(): void {
+    if ([...this.running.values()].filter((job) => !job.origin).length < MAX_RUNNING) return
+    const asking = [...this.live.values()].some((thread) => thread.permissions.size > 0)
+    throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです${asking ? '。許可を待っている依頼があれば、答えると進みます' : ''}`)
+  }
+
+  // 何もしていない（今のジョブもバックグラウンドの作業も待っている許可もない）プロセス（古いものから）
+  private idleThreads(): LiveThread[] {
+    return [...this.live.values()]
+      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0 && thread.permissions.size === 0)
+      .sort((a, b) => a.lastActive - b.lastActive)
   }
 
   // ジョブを止める：今のターンだけを止め、バックグラウンドの作業とプロセスは残す
@@ -506,10 +531,8 @@ export class ClaudeJobs {
   // 新しいプロセスを立てる場所を空ける。上限なら、何もしていないものを古い順に 1 つ閉じる
   private makeRoom(): void {
     if (this.live.size < MAX_SESSIONS) return
-    const idle = [...this.live.values()]
-      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0 && thread.permissions.size === 0)
-      .sort((a, b) => a.lastActive - b.lastActive)[0]
-    if (!idle) throw new JobError(429, `同時に開いておける会話は ${MAX_SESSIONS} つまでです。ほかの会話の作業が終わるのを待つか、止めてください`)
+    const idle = this.idleThreads()[0]
+    if (!idle) throw new JobError(429, TOO_MANY_SESSIONS)
     void this.closeThread(idle.threadId)
   }
 

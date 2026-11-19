@@ -9,8 +9,8 @@ import { AgentHost } from '../agent/host.ts'
 import { editCanvas } from '../agent/ops.ts'
 import { RecordStore } from '../records.ts'
 import { SyncHub } from '../sync.ts'
-import type { ClaudeJobs, Job, JobEvent, JobListener, StartRequest } from './jobs.ts'
-import { finalText, handleNoteTasks, NoteTasks, parseNoteTaskRequest, UndoFailed, type NoteTaskReport } from './noteTasks.ts'
+import { JobError, type ClaudeJobs, type Job, type JobEvent, type JobListener, type StartRequest } from './jobs.ts'
+import { finalText, handleNoteTasks, keepTaskFields, NoteTasks, parseNoteTaskRequest, UndoFailed, type NoteTaskReport } from './noteTasks.ts'
 
 // 付箋の作業（AI 付箋の文を指示にして、会話と同じジョブで動かす）。ジョブは偽物、付箋と Canvas の編集は本物の RecordStore と AgentHost
 
@@ -26,6 +26,8 @@ function fakeJobs() {
   const started: StartRequest[] = []
   const api = {
     started,
+    // true なら、始められない（同時に動かせる数の上限）
+    full: false,
     subscribe(listener: JobListener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -51,9 +53,15 @@ function fakeJobs() {
     get(id: string): Job | undefined {
       return jobs.get(id)
     },
+    runningJobs(): Job[] {
+      return [...jobs.values()].filter((job) => job.status === 'running')
+    },
+    assertCanStart() {
+      if (api.full) throw new JobError(429, '同時に動かせるのは 2 つまでです')
+    },
     thread(threadId: string) {
       const list = [...jobs.values()].filter((job) => job.threadId === threadId)
-      return list.length > 0 ? { thread: {} as never, jobs: list, questions: [] } : undefined
+      return list.length > 0 ? { thread: { threadId, ...(list[0]!.note ? { note: list[0]!.note } : {}) } as never, jobs: list, questions: [] } : undefined
     },
     // 終わらせて知らせる（終わったときの知らせは、足した出来事がない）
     end(id: string, events: JobEvent[], status: Job['status'] = 'done') {
@@ -246,6 +254,118 @@ describe('NoteTasks', () => {
     expect(ai()!.answer).toMatchObject({ status: 'failed', error: 'サーバーが止まったので途切れました' })
     expect((records.get(nearId)!.meta as { ai: Record<string, unknown> }).ai).toEqual({ contexts: [] })
     expect(tasks.recover()).toBe(0)
+  })
+})
+
+describe('NoteTasks after the review (docs/ai-note-tasks-plan.md)', () => {
+  // ブラウザが送る古い記録（サーバーの書いた欄のない付箋）を、見張りなしで保存する
+  const stalePush = (records: RecordStore, noteId: string, ai: Record<string, unknown>) => {
+    const note = records.get(noteId)!
+    records.apply([{ ...note, meta: { ...(note.meta as Record<string, unknown>), ai } }], [])
+  }
+
+  it('writes the report even when the task mark was lost, unless the note has a newer report or another task', () => {
+    const { records, jobs, tasks, canvasId, noteId, ai } = setup()
+    const { job } = tasks.start({ noteId, canvasId, instruction: '表にして' })
+    stalePush(records, noteId, { contexts: [] })
+    jobs.end(job.id, [{ kind: 'text', text: '置きました。' }])
+    expect(ai()!.answer).toMatchObject({ body: '置きました。', jobId: job.id })
+    // ほかの作業の印があれば、書かない
+    const second = tasks.start({ noteId, canvasId, instruction: 'もう一度' }).job
+    stalePush(records, noteId, { contexts: [], task: { threadId: 'other', jobId: 'other', startedAt: 1 }, answer: ai()!.answer })
+    jobs.end(second.id, [{ kind: 'text', text: '二度目' }])
+    expect(ai()!.answer!.body).toBe('置きました。')
+  })
+
+  it('refuses to undo when some edits of the last run are too old to have records, and undoes nothing', () => {
+    const { records, host, jobs, tasks, canvasId, noteId, ai } = setup()
+    const first = tasks.start({ noteId, canvasId, instruction: '箱を置いて' }).job
+    const placed = editCanvas(host, { canvasId, ops: [{ op: 'create', type: 'geo', as: 'box', x: 0, y: 300, w: 10, h: 10 }], label: '箱を置く', threadId: first.threadId })
+    jobs.end(first.id, [{ kind: 'text', text: '置きました。' }])
+    // 報告には、記録が消えた編集も載っている
+    const report = ai()!.answer!
+    stalePush(records, noteId, { contexts: [], answer: { ...report, changes: { ...report.changes, canvas: [{ batch: 'ai-gonegonegone', label: '古い編集', canvasId }, ...report.changes.canvas] } } })
+    expect(() => tasks.start({ noteId, canvasId, instruction: 'もう一度', lastThreadId: first.threadId, undo: true })).toThrow(/前の変更のうち 1 個（「古い編集」など）は、記録が古くて消えた/)
+    expect(records.get(placed.created.box!)).toBeDefined()
+    expect(jobs.started).toHaveLength(1)
+  })
+
+  it('checks that a job can start before undoing (a 429 leaves the last changes as they were)', () => {
+    const { records, host, jobs, tasks, canvasId, noteId } = setup()
+    const first = tasks.start({ noteId, canvasId, instruction: '箱を置いて' }).job
+    const placed = editCanvas(host, { canvasId, ops: [{ op: 'create', type: 'geo', as: 'box', x: 0, y: 300, w: 10, h: 10 }], label: '箱を置く', threadId: first.threadId })
+    jobs.end(first.id, [{ kind: 'text', text: '置きました。' }])
+    jobs.full = true
+    expect(() => tasks.start({ noteId, canvasId, instruction: 'もう一度', lastThreadId: first.threadId, undo: true })).toThrow(expect.objectContaining({ status: 429 }))
+    expect(records.get(placed.created.box!)).toBeDefined()
+  })
+
+  it('keeps the files and commands of the task when a background job adds to the report', () => {
+    const { jobs, tasks, canvasId, noteId, ai } = setup()
+    const { job } = tasks.start({ noteId, canvasId, instruction: '調べて' })
+    jobs.end(job.id, [{ kind: 'tool', name: 'Write', detail: 'a.md' }, { kind: 'tool', name: 'Bash', detail: 'ls' }, { kind: 'text', text: '調べています。' }])
+    const later = jobs.background(job.threadId, { noteId, canvasId })
+    jobs.end(later, [{ kind: 'tool', name: 'Write', detail: 'b.md' }, { kind: 'text', text: '調べ終えました。' }])
+    expect(ai()!.answer!.changes).toMatchObject({ files: ['a.md', 'b.md'], commands: ['ls'] })
+  })
+
+  it('uses the last run only when it was a task of this note (a copied note carries the report of the original)', () => {
+    const { records, host, jobs, tasks, canvasId, noteId, nearId } = setup()
+    const first = tasks.start({ noteId, canvasId, instruction: '箱を置いて' }).job
+    const placed = editCanvas(host, { canvasId, ops: [{ op: 'create', type: 'geo', as: 'box', x: 0, y: 300, w: 10, h: 10 }], label: '箱を置く', threadId: first.threadId })
+    jobs.end(first.id, [{ kind: 'text', text: '置きました。' }])
+    // 写し（近くの付箋を写しに見立てる）に、元の付箋の報告が付いている
+    stalePush(records, nearId, { contexts: [], answer: (records.get(noteId)!.meta as any).ai.answer })
+    expect(() => tasks.start({ noteId: nearId, canvasId, instruction: '丸', lastThreadId: first.threadId, undo: true })).toThrow(/ほかの付箋（コピーの元）の作業/)
+    expect(records.get(placed.created.box!)).toBeDefined()
+    tasks.start({ noteId: nearId, canvasId, instruction: '丸', lastThreadId: first.threadId })
+    expect(jobs.started.at(-1)!.materials ?? '').not.toContain('<canvas-last-run>')
+  })
+
+  it('moves the other notes of the instruction to the report (questionIds)', () => {
+    const { jobs, tasks, canvasId, noteId, nearId, ai } = setup()
+    const { job } = tasks.start({ noteId, canvasId, instruction: '表にして\n\n近くの付箋', questionIds: [nearId] })
+    expect(ai()!.task).toMatchObject({ questionIds: [nearId] })
+    jobs.end(job.id, [{ kind: 'text', text: '置きました。' }])
+    expect(ai()!.answer).toMatchObject({ question: '表にして\n\n近くの付箋', questionIds: [nearId] })
+  })
+
+  it('refuses a note while a background job of its task still runs (as the screen does)', () => {
+    const { jobs, tasks, canvasId, noteId } = setup()
+    const { job } = tasks.start({ noteId, canvasId, instruction: '調べて' })
+    jobs.end(job.id, [{ kind: 'text', text: '調べています。' }])
+    jobs.background(job.threadId, { noteId, canvasId })
+    expect(() => tasks.start({ noteId, canvasId, instruction: 'もう一度' })).toThrow(/前の作業が、まだ終わっていません/)
+  })
+})
+
+describe('keepTaskFields', () => {
+  const note = (ai: unknown, extra: Record<string, unknown> = {}) => ({ typeName: 'node', id: 'node:n', type: 'note', props: {}, meta: { color: 'x', ...(ai === undefined ? {} : { ai }) }, ...extra }) as any
+  const task = { threadId: 't', jobId: 'j', startedAt: 1 }
+  const report = { body: '報告', related: [], model: 'm', question: 'q', answeredAt: 2, threadId: 't', jobId: 'j', status: 'done', changes: { canvas: [], files: [], commands: [] } }
+
+  it('keeps the task mark and the report of the stored note in what the browser sent', () => {
+    const sent = note({ contexts: [{ kind: 'canvas', label: '範囲', target: {} }], model: 'opus' })
+    const kept = keepTaskFields(sent, note({ contexts: [], task, answer: report }))
+    expect(kept.meta).toEqual({ color: 'x', ai: { contexts: [{ kind: 'canvas', label: '範囲', target: {} }], model: 'opus', task, answer: report } })
+    // 印が消えていれば、送られた古い印も外す
+    expect((keepTaskFields(note({ contexts: [], task }), note({ contexts: [], answer: report })).meta as any).ai).toEqual({ contexts: [], answer: report })
+  })
+
+  it('takes what the browser sent as it is when nothing differs, when AI mode ended, for other nodes, and for an old Q&A answer', () => {
+    const same = note({ contexts: [], task, answer: report })
+    expect(keepTaskFields(same, note({ contexts: [], task, answer: report }))).toBe(same)
+    const ended = note(undefined)
+    expect(keepTaskFields(ended, note({ contexts: [], task }))).toBe(ended)
+    const geo = { ...note({ contexts: [] }), type: 'geo' }
+    expect(keepTaskFields(geo, note({ contexts: [], task }))).toBe(geo)
+    const qa = { body: '答え', related: [], model: 'm', question: 'q', answeredAt: 1 }
+    const edited = note({ contexts: [], answer: { ...qa, body: '書き直した' } })
+    expect(keepTaskFields(edited, note({ contexts: [], answer: qa }))).toBe(edited)
+  })
+
+  it('drops a task mark from a new note (a copy)', () => {
+    expect((keepTaskFields(note({ contexts: [], task, answer: report }), undefined).meta as any).ai).toEqual({ contexts: [], answer: report })
   })
 })
 
