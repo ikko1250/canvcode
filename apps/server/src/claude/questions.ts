@@ -93,8 +93,8 @@ export class RunningQuestions {
   }
 
   // 始まった。abort は、止めるときに呼ぶ（Claude を止める）。id を返す
-  start(source: QuestionSource, setting: { model?: string; effort?: string }, abort: () => void): string {
-    const id = randomUUID()
+  // id は、呼ぶ側が決めたいとき（質問だけの会話にするとき、会話の id にも使う）
+  start(source: QuestionSource, setting: { model?: string; effort?: string }, abort: () => void, id: string = randomUUID()): string {
     const question = {
       id,
       ...source,

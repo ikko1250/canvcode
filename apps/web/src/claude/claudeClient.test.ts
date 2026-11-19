@@ -389,6 +389,17 @@ describe('note tasks', () => {
     await expect(client.startNoteTask(request)).rejects.toThrow('同時に動かせるのは 2 つまでです')
   })
 
+  it('adds a thread made by a question asked with no thread chosen, once, in the order of the list', () => {
+    const client = bare(state({ threads: [thread('old', 1), thread('new', 9)] }))
+    client.addThread(thread('q', 5, { jobCount: 0 }))
+    client.addThread(thread('q', 99, { title: 'もう一度' }))
+    expect(client.state.threads.map((t) => [t.threadId, t.title])).toEqual([
+      ['new', 'new'],
+      ['q', 'q'],
+      ['old', 'old'],
+    ])
+  })
+
   it('adds a thread that is not in the list when it is read (a note task opened from the note), and does not ask again for a thread that is gone', async () => {
     const replies: [number, unknown][] = [
       [200, { thread: thread('task', 5, { note, noteOnly: true }), jobs: [job('task', { status: 'done', note })], questions: [] }],

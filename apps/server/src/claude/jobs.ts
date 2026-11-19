@@ -353,9 +353,10 @@ export class ClaudeJobs {
     let live = request.threadId ? this.live.get(request.threadId) : undefined
     if (request.threadId) {
       const last = this.store.lastOfThread(request.threadId)
-      if (!last) throw new JobError(404, 'その会話はもうありません')
-      if (last.status === 'running' || live?.current || live?.waiting) throw new JobError(409, '前の依頼がまだ終わっていません')
-      resume = live?.sessionId ?? last.sessionId
+      // 質問だけの会話（ジョブがない）なら、続ける Claude Code の会話はなく、新しく始める
+      if (!last && !this.store.thread(request.threadId)) throw new JobError(404, 'その会話はもうありません')
+      if (last?.status === 'running' || live?.current || live?.waiting) throw new JobError(409, '前の依頼がまだ終わっていません')
+      resume = live?.sessionId ?? last?.sessionId
     }
     this.checkRunning()
     // 費用の上限に達したプロセスは、新しいものに替える
@@ -1004,6 +1005,11 @@ export class ClaudeJobs {
     const summary = withImports && imports ? { ...rest, imports } : rest
     const change: JobChange = { type: 'job', job: summary, events: job.events.slice(from), from, thread: this.info(thread) }
     for (const listener of this.listeners) safely(() => listener(change))
+  }
+
+  // 会話が変わったと知らせる（質問だけの会話を作った・会話の質問が終わったとき。claude/answer.ts）
+  announceThread(threadId: string): void {
+    this.notifyThread(threadId)
   }
 
   private notifyThread(threadId: string): void {

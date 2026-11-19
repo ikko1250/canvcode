@@ -276,7 +276,7 @@ const server = createServer(async (req, res) => {
   if (handleAgentOps(req, res, url.pathname, agent)) return
   if (handleMemo(req, res, url.pathname, memo)) return
   if (handleLookup(req, res, url.pathname, lookup)) return
-  if (handleAnswer(req, res, url.pathname, answer, questions, claudeStore)) return
+  if (handleAnswer(req, res, url.pathname, answer, questions, claudeStore, claude ? (threadId) => claude.announceThread(threadId) : null)) return
   if (handleQuestions(req, res, url.pathname, questions, answeredNotes, claudeStore)) return
   if (handleCite(req, res, url.pathname, cite)) return
   if (handleNoteTasks(req, res, url.pathname, noteTasks)) return

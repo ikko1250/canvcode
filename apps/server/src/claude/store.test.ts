@@ -36,6 +36,33 @@ const job = (id: string, threadId: string, createdAt: number, extra: Record<stri
 })
 
 describe('ClaudeStore', () => {
+  it('makes a thread of questions only, and gives a thread with jobs the first question and the last time of its questions (docs/ai-note-tasks-plan.md の 10)', () => {
+    const store = open(dataDir())
+    const question = (id: string, threadId: string, createdAt: number, extra: Record<string, unknown> = {}) => ({
+      id,
+      threadId,
+      question: `質問 ${id}`,
+      previous: [],
+      status: 'done' as const,
+      createdAt,
+      answeredAt: createdAt + 1,
+      ...extra,
+    })
+    // モデルは最後の質問のもの
+    store.insertQuestion(question('q1', 'only', 5, { model: 'haiku' }))
+    store.insertQuestion(question('q2', 'only', 7, { status: 'running', answeredAt: undefined, model: 'opus' }))
+    store.insertJob(job('chat', 'chat', 3))
+    expect(store.thread('only')).toMatchObject({ threadId: 'only', title: '質問 q1', createdAt: 5, updatedAt: 7, jobCount: 0, running: true, model: 'opus' })
+    expect(store.threads().map((thread) => thread.threadId)).toEqual(['only', 'chat'])
+    // 質問だけの会話で頼むと、ジョブのある会話になる。題は最初の質問のまま、最後に動いた時刻は遅い方
+    store.insertJob(job('j', 'only', 10))
+    expect(store.thread('only')).toMatchObject({ title: '質問 q1', createdAt: 5, updatedAt: 10, jobCount: 1 })
+    // ジョブのある会話のあとで聞いた質問の時刻も、一覧の順に効く
+    store.insertQuestion(question('q3', 'chat', 20))
+    expect(store.threads().map((thread) => thread.threadId)).toEqual(['chat', 'only'])
+    expect(store.thread('chat')).toMatchObject({ title: 'prompt chat', updatedAt: 21 })
+  })
+
   it('keeps the note of a note task, and leaves threads with only note tasks out of the list (docs/ai-note-tasks-plan.md)', () => {
     const store = open(dataDir())
     const note = { noteId: 'node:n', canvasId: 'canvas:c' }
