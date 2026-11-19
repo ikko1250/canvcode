@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { NodeRecord } from '@canvcode/core'
 import { MAX_AI_PLACES, aiNoteMeta, setAiNote, type AiContext, type AiNoteMeta, type CanvasView, type Editor, type SessionState } from '@canvcode/canvas'
 import type { ClaudeClient, Effort } from './claudeClient.ts'
@@ -19,6 +19,7 @@ import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 //   （docs/claude-chat-tab-plan.md の 5）。両方あれば、上下に並べる
 // - 答えを作っている間は、送信を押せない（角の三角が点滅している）。文字の編集中は Ctrl+Enter でも送る
 // - 小さく表示しているときは出さない
+// - 札と欄の上のホイール・ピンチ（トラックパッド・マウス）は、キャンバスのパン・ズームに渡す（CanvasView の passWheel）
 const MIN_ZOOM = 0.3
 // 欄の幅の下限（画面のピクセル）
 const MIN_WIDTH = 220
@@ -95,6 +96,9 @@ export function AiNoteControls(props: {
     }
   }, [editor, view, picking, notify])
 
+  // 札と欄の上のホイール・ピンチを、キャンバスに渡す（React 19 の ref は、外すときに返した関数を呼ぶ）
+  const passWheel = useCallback((element: HTMLDivElement | null) => (element ? view.passWheel(element) : undefined), [view])
+
   if (camera.zoom < MIN_ZOOM) return null
 
   // 下の欄を出す付箋
@@ -104,7 +108,7 @@ export function AiNoteControls(props: {
   const screen = (x: number, y: number) => ({ left: (x - camera.x) * camera.zoom, top: (y - camera.y) * camera.zoom })
 
   return (
-    <>
+    <div className="ai-note-layer" ref={passWheel}>
       {notes.map((node) => {
         // 付箋の上の札：会話の答えと、前の答え（続き）
         const contexts = aiNoteMeta(node)?.contexts ?? []
@@ -249,7 +253,7 @@ export function AiNoteControls(props: {
             </div>
           )
         })()}
-    </>
+    </div>
   )
 }
 

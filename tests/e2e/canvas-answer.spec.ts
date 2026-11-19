@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 
 // キャンバスの AI：付箋の右クリックの「Claude に聞く」か AI 付箋の「送信」で、答え（サーバーの /api/claude/answer。ここでは差し替え）を
 // 質問の付箋の meta.ai.answer に書く（キャンバスには何も置かない）。近くの付箋を関連する付箋の候補として送り、
@@ -459,6 +459,147 @@ test('付箋に添えられる所は 5 か所まで。それより多く添え�
   await page.locator('.ai-note-send').click()
   await expect(page.getByText('添えた所が多すぎます（5 か所まで）')).toBeVisible()
   expect(sent).toEqual([])
+})
+
+// 前の答えを添えた AI 付箋にする（付箋の上に札が出る）
+const giveFollowUp = (page: Page, id: string) =>
+  page.evaluate((id) => {
+    const editor = (window as any).canvcode.editor
+    const node = editor.getNode(id)
+    const context = { kind: 'answer', noteId: 'node:gone', canvasId: 'canvas:input-test', label: '前の質問', turns: [{ question: '前の質問', answer: '前の答え' }] }
+    editor.transact('ai', (tx: any) => tx.put({ ...node, meta: { ...node.meta, ai: { ...node.meta?.ai, contexts: [context] } } }))
+  }, id)
+
+const cameraOf = (page: Page) => page.evaluate(() => (window as any).canvcode.editor.session.get().camera as { x: number; y: number; zoom: number })
+
+async function hover(page: Page, locator: Locator): Promise<void> {
+  const box = (await locator.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+}
+
+test('付箋の上の札・下の欄の上でも、ホイールでパン、Ctrl+ホイールでズームする（モデルを選ぶ欄の上は除く）。文字を編集している付箋の上でもパンする', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  await giveFollowUp(page, noteId)
+  const note = await centerOf(page, noteId)
+  await page.mouse.click(note.x, note.y)
+  const controls = page.locator('.ai-note-controls')
+  await expect(controls).toBeVisible()
+  // 欄のボタンの上：パン
+  await hover(page, controls.locator('.ai-note-attach'))
+  let before = await cameraOf(page)
+  await page.mouse.wheel(0, 120)
+  await expect.poll(async () => (await cameraOf(page)).y).not.toBe(before.y)
+  // 札の上：パン
+  await hover(page, page.locator('.ai-note-chip'))
+  before = await cameraOf(page)
+  await page.mouse.wheel(0, 120)
+  await expect.poll(async () => (await cameraOf(page)).y).not.toBe(before.y)
+  // Ctrl+ホイール（トラックパッドのピンチ）：ズーム
+  await hover(page, controls.locator('.ai-note-send'))
+  before = await cameraOf(page)
+  await page.keyboard.down('Control')
+  await page.mouse.wheel(0, -120)
+  await page.keyboard.up('Control')
+  await expect.poll(async () => (await cameraOf(page)).zoom).toBeGreaterThan(before.zoom)
+  // モデルを選ぶ欄（ダイアログ）の上では、キャンバスを動かさない
+  await controls.locator('.claude-model-button').click()
+  const picker = controls.locator('.claude-model-popover')
+  await expect(picker).toBeVisible()
+  await hover(page, picker)
+  before = await cameraOf(page)
+  await page.mouse.wheel(0, 120)
+  await page.waitForTimeout(200)
+  expect(await cameraOf(page)).toEqual(before)
+  await page.keyboard.press('Escape')
+
+  // 文字を編集している付箋の上：パンする（編集は続ける）
+  const editing = await centerOf(page, noteId)
+  await page.mouse.dblclick(editing.x, editing.y)
+  const textEditor = page.locator('.canvcode-text-editor')
+  await expect(textEditor).toBeFocused()
+  await hover(page, textEditor)
+  before = await cameraOf(page)
+  await page.mouse.wheel(0, 120)
+  await expect.poll(async () => (await cameraOf(page)).y).not.toBe(before.y)
+  await expect(textEditor).toBeFocused()
+})
+
+test('付箋の上の札・下の欄・横の答えのパネルは、デザインパネルの下に出る', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  // 答えを持たせてから、前の答えを添える（giveAnswer は添えたものを空にする）
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
+  await giveFollowUp(page, noteId)
+  // 答えのパネルを開き、付箋を選んで（デザインパネルが出る）、付箋をデザインパネルの下へ動かす
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(page.locator('.answer-popover')).toBeVisible()
+  await page.evaluate((id) => (window as any).canvcode.editor.setSelection([id]), noteId)
+  const panel = page.getByTestId('design-panel')
+  await expect(panel).toBeVisible()
+  await expect(page.locator('.ai-note-controls')).toBeVisible()
+  await page.evaluate((id) => {
+    const editor = (window as any).canvcode.editor
+    const bounds = editor.index.get(id).worldBounds
+    const root = document.querySelector('.canvas-container > div[tabindex]')!.getBoundingClientRect()
+    const box = document.querySelector('[data-testid="design-panel"]')!.getBoundingClientRect()
+    const { zoom } = editor.session.get().camera
+    // 付箋の左上を、デザインパネルの左上から少し内側へ
+    editor.session.set({ camera: { x: bounds.x - (box.left + 24 - root.left) / zoom, y: bounds.y - (box.top + 80 - root.top) / zoom, zoom } })
+  }, noteId)
+  // 重なった所の真ん中で、いちばん上にあるのはデザインパネル
+  const covered = (selector: string) =>
+    page.evaluate((selector) => {
+      const a = document.querySelector(selector)!.getBoundingClientRect()
+      const b = document.querySelector('[data-testid="design-panel"]')!.getBoundingClientRect()
+      const left = Math.max(a.left, b.left)
+      const right = Math.min(a.right, b.right)
+      const top = Math.max(a.top, b.top)
+      const bottom = Math.min(a.bottom, b.bottom)
+      if (right <= left || bottom <= top) return 'no overlap'
+      const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2)
+      return hit?.closest('[data-testid="design-panel"]') ? 'panel' : (hit?.className ?? 'nothing')
+    }, selector)
+  // 欄はボタンのない所をキャンバスに通す（pointer-events: none）ので、ボタンで確かめる
+  expect(await covered('.ai-note-controls .ai-note-attach')).toBe('panel')
+  expect(await covered('.ai-note-controls .ai-note-send')).toBe('panel')
+  expect(await covered('.ai-note-chips')).toBe('panel')
+  expect(await covered('.answer-popover')).toBe('panel')
+})
+
+test('AI 付箋の文字を編集している間、書式のツールバー（BIUS）は縦に並べて付箋の左に出す（上の札・下の欄と重ならない）。ふつうの付箋では上に横に出す', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  await giveFollowUp(page, noteId)
+  const otherId = await addNote(page, 'ふつうの付箋', { x: 700, y: 300 })
+  const note = await centerOf(page, noteId)
+  await page.mouse.dblclick(note.x, note.y)
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  const toolbar = page.getByTestId('text-format-toolbar')
+  await expect(toolbar).toHaveClass(/vertical/)
+  await expect(toolbar).toHaveAttribute('aria-orientation', 'vertical')
+  const box = (await toolbar.boundingBox())!
+  const noteBox = await page.evaluate((id) => {
+    const editor = (window as any).canvcode.editor
+    const bounds = editor.index.get(id).worldBounds
+    const camera = editor.session.get().camera
+    const root = document.querySelector('.canvas-container > div[tabindex]')!.getBoundingClientRect()
+    return { x: root.left + (bounds.x - camera.x) * camera.zoom, y: root.top + (bounds.y - camera.y) * camera.zoom }
+  }, noteId)
+  expect(box.x + box.width).toBeLessThanOrEqual(noteBox.x)
+  expect(box.height).toBeGreaterThan(box.width)
+  for (const selector of ['.ai-note-chips', '.ai-note-controls']) {
+    const other = (await page.locator(selector).boundingBox())!
+    const overlaps = box.x < other.x + other.width && other.x < box.x + box.width && box.y < other.y + other.height && other.y < box.y + box.height
+    expect(overlaps, selector).toBe(false)
+  }
+  await page.screenshot({ path: test.info().outputPath('ai-note-format-toolbar.png') })
+  await page.keyboard.press('Escape')
+  // ふつうの付箋：上に横に出す
+  const other = await centerOf(page, otherId)
+  await page.mouse.dblclick(other.x, other.y)
+  await expect(page.locator('.canvcode-text-editor')).toBeFocused()
+  await expect(toolbar).not.toHaveClass(/vertical/)
+  const flat = (await toolbar.boundingBox())!
+  expect(flat.width).toBeGreaterThan(flat.height)
 })
 
 test('答えを作っている間は、三角のパネルに進み具合と「やめる」を出し、やめられる', async ({ page }) => {

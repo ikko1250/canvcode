@@ -1,5 +1,5 @@
 import { useSyncExternalStore, type ComponentType } from 'react'
-import { KEEP_TEXT_EDITING_ATTRIBUTE, OWN_KEYS_ATTRIBUTE, type CanvasView, type Editor, type TextSelection } from '@canvcode/canvas'
+import { KEEP_TEXT_EDITING_ATTRIBUTE, OWN_KEYS_ATTRIBUTE, aiNoteMeta, type CanvasView, type Editor, type TextSelection } from '@canvcode/canvas'
 import type { Camera } from '@canvcode/core'
 import { hasRichText } from '@canvcode/nodes'
 import { ToggleButton } from './controls.tsx'
@@ -8,12 +8,16 @@ import { TEXT_TOGGLE_SHORTCUTS, applyTextToggle, editingToggleItems } from './te
 
 // 文字を編集している間、そのテキスト・付箋・図形のすぐ上に出す小さなツールバー（MAI-79）。太字・斜体・下線・取り消し線を切り替える。
 // - キャンバスのズーム・パンに追従する（ノードの画面上の位置に付いて動く）。ボタンの大きさはズームによらず一定。
-//   上に場所がなければ（画面の上端に近い）ノードの下に出す
+//   上に場所がなければ（画面の上端に近い）ノードの下に出す。
+//   AI 付箋（Claude に聞く付箋）は、上に札・下に欄（claude/AiNoteControls.tsx）があるので、ボタンを縦に並べて付箋の左に出す
+//   （左に場所がなければ右）
 // - ボタンはフォーカスを奪わない（デザインパネルと同じ。押しても編集中の文字の選択が残る）。
 //   ツールバーの中にフォーカスが移っても、文字の編集は終えない（data-keep-text-editing）
 // - 表示・切り替えはデザインパネルと同じ（textToggles.ts。範囲の値、範囲がなければ次に打つ文字の書式）
 
 const TOOLBAR_HEIGHT = 32
+// 縦に並べたときの幅（ボタン 26px・余白 3px・枠 1px）
+const VERTICAL_WIDTH = 34
 const GAP = 8
 // 画面の上端からこれより近ければ、ノードの下に出す（上のパンくずリストと重ならないように）
 const TOP_MARGIN = 48
@@ -30,15 +34,26 @@ export function TextFormatToolbar(props: { editor: Editor; view: CanvasView | nu
   const bounds = entry.worldBounds
   const x = (bounds.x - camera.x) * camera.zoom
   const y = (bounds.y - camera.y) * camera.zoom
-  const above = y - GAP - TOOLBAR_HEIGHT
-  const top = above >= TOP_MARGIN ? above : y + bounds.h * camera.zoom + GAP
+  const vertical = aiNoteMeta(node) !== null
+  let left: number
+  let top: number
+  if (vertical) {
+    left = x - GAP - VERTICAL_WIDTH
+    if (left < GAP) left = x + bounds.w * camera.zoom + GAP
+    top = Math.max(TOP_MARGIN, y)
+  } else {
+    const above = y - GAP - TOOLBAR_HEIGHT
+    left = Math.max(GAP, x)
+    top = above >= TOP_MARGIN ? above : y + bounds.h * camera.zoom + GAP
+  }
   return (
     <div
-      className="text-format-toolbar"
+      className={vertical ? 'text-format-toolbar vertical' : 'text-format-toolbar'}
       role="toolbar"
       aria-label="文字の書式"
+      aria-orientation={vertical ? 'vertical' : 'horizontal'}
       data-testid="text-format-toolbar"
-      style={{ left: Math.max(GAP, x), top }}
+      style={{ left, top }}
       {...{ [OWN_KEYS_ATTRIBUTE]: '', [KEEP_TEXT_EDITING_ATTRIBUTE]: '' }}
       onPointerDown={(e) => {
         // ボタンの間を押しても、キャンバスの操作にしない・フォーカスを奪わない

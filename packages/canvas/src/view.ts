@@ -2354,6 +2354,33 @@ export class CanvasView {
     return { center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, distance: Math.hypot(a.x - b.x, a.y - b.y) }
   }
 
+  // キャンバスの外にあって、キャンバスに付いて動く部品（AI 付箋の上の札・下の欄など）の上のホイールとピンチ（Safari の gesture）を、
+  // キャンバスのパン・ズームにする（部品の上でもキャンバスと同じく動かせるように）。部品の中のダイアログ（[role="dialog"]。
+  // モデルを選ぶ欄など）の上では渡さない（その中でスクロールする）。やめる関数を返す
+  passWheel(element: HTMLElement): () => void {
+    const passes = (e: Event) => {
+      const dialog = e.target instanceof Element ? e.target.closest('[role="dialog"]') : null
+      return !dialog || !element.contains(dialog)
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (passes(e)) this.onWheel(e)
+    }
+    const onGestureStart = (e: Event) => {
+      if (passes(e)) this.onGesture(e, 'start')
+    }
+    const onGestureChange = (e: Event) => {
+      if (passes(e)) this.onGesture(e, 'change')
+    }
+    element.addEventListener('wheel', onWheel, { passive: false })
+    element.addEventListener('gesturestart', onGestureStart)
+    element.addEventListener('gesturechange', onGestureChange)
+    return () => {
+      element.removeEventListener('wheel', onWheel)
+      element.removeEventListener('gesturestart', onGestureStart)
+      element.removeEventListener('gesturechange', onGestureChange)
+    }
+  }
+
   private onWheel(e: WheelEvent): void {
     e.preventDefault()
     const scale = e.deltaMode === 1 ? LINE_HEIGHT_PX : e.deltaMode === 2 ? this.height : 1
