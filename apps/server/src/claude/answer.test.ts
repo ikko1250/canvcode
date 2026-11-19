@@ -7,6 +7,7 @@ import {
   ANSWER_MAX_TURNS_WITH_WEB,
   ANSWER_SCHEMA,
   ANSWER_SYSTEM_PROMPT,
+  ANSWER_TEXT_FORMAT,
   AnswerWriter,
   DEFAULT_ANSWER_EFFORT,
   DEFAULT_ANSWER_MODEL,
@@ -19,10 +20,12 @@ import {
   MAX_REF_CONTENT_LENGTH,
   MAX_REFS,
   MAX_RUNNING_ANSWERS,
+  answerFromText,
   answerPrompt,
   cleanAnswer,
   handleAnswer,
   parseAnswerRequest,
+  refsOf,
   type AnswerStep,
 } from './answer.ts'
 import { ClaudeOnce, type OnceQuery } from './once.ts'
@@ -69,7 +72,27 @@ const candidates = [
 
 const writerWith = (answer: unknown, calls: Call[] = []) => new AnswerWriter({ once: new ClaudeOnce({ run: answering(answer, calls) }) })
 
-// 考えている中身を少しずつ流し、答えを文字で書き始めてから答える偽の query
+// 構造化出力を使わず、答えを文字（text）だけで返す偽の query（考えている中身を流すとき）
+function writing(text: string, calls: Call[] = []): OnceQuery {
+  return (params) => {
+    calls.push(params)
+    return (async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: 's',
+        total_cost_usd: 0,
+        duration_ms: 1,
+        num_turns: 1,
+        result: text,
+        modelUsage: { 'claude-sonnet-5-5': {} },
+      } as unknown as SDKMessage
+    })()
+  }
+}
+
+// 考えている中身を少しずつ流し、答えを文字で書き始めてから答える偽の query。answer が文字なら、構造化出力を使わずにそれを返す
 function thinking(answer: unknown, deltas: string[], calls: Call[] = []): OnceQuery {
   return (params) => {
     calls.push(params)
@@ -79,7 +102,7 @@ function thinking(answer: unknown, deltas: string[], calls: Call[] = []): OnceQu
         yield { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: text } } } as unknown as SDKMessage
       }
       yield { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } } } as unknown as SDKMessage
-      yield* answering(answer)(params) as AsyncIterable<SDKMessage>
+      yield* (typeof answer === 'string' ? writing(answer) : answering(answer))(params) as AsyncIterable<SDKMessage>
     })()
   }
 }
@@ -143,6 +166,63 @@ describe('AnswerWriter', () => {
     expect(steps).toEqual(['read', 'write'])
   })
 
+  it('while streaming the thinking, asks for the body in Markdown as it is (not JSON, no structured output) and reads the related notes from the last line', async () => {
+    const calls: Call[] = []
+    const text = `${context.body}\n\n<canvas-related>node:near2 node:gone node:near1</canvas-related>`
+    const result = await new AnswerWriter({ once: new ClaudeOnce({ run: writing(text, calls) }) }).answer({ question: 'q', candidates }, { onThinking: () => {} })
+    expect(result).toEqual({ body: context.body, related: ['node:near2', 'node:near1'], model: 'claude-sonnet-5-5' })
+    const { options } = calls[0]!
+    expect(options.outputFormat).toBeUndefined()
+    expect(options.systemPrompt).toBe(`${ANSWER_SYSTEM_PROMPT}\n\n${ANSWER_TEXT_FORMAT}`)
+    expect(options.allowedTools).toEqual(['WebSearch', 'WebFetch'])
+  })
+
+  it('answers with the Markdown even when Claude ignores how to return it (the body itself, ending with an empty code block)', async () => {
+    // 本物の Sonnet（high）が、JSON を返すよう頼んだときに返したもの（docs/ai-note-answer-format-plan.md）
+    const text = '前提：近くの付箋の話だと考える。\n\n### オラクルモデル\n\n本来は予測時に手に入らない情報を使わせる手法です。\n\n```json\n```'
+    const result = await new AnswerWriter({ once: new ClaudeOnce({ run: writing(text) }) }).answer({ question: 'q', candidates }, { onThinking: () => {} })
+    expect(result).toEqual({ body: '前提：近くの付箋の話だと考える。\n\n### オラクルモデル\n\n本来は予測時に手に入らない情報を使わせる手法です。', related: [], model: 'claude-sonnet-5-5' })
+  })
+
+  it('reads all the text after the last tool call, not only the last block the SDK puts in result (a reply continued after the output limit)', async () => {
+    const assistant = (block: Record<string, unknown>) => ({ type: 'assistant', message: { content: [block] } }) as unknown as SDKMessage
+    const run =
+      (last: string): OnceQuery =>
+      (params) =>
+        (async function* () {
+          yield assistant({ type: 'text', text: '調べます。' })
+          yield assistant({ type: 'tool_use', id: 't1', name: 'WebSearch', input: { query: 'q' } })
+          yield assistant({ type: 'text', text: '前半の段落。' })
+          yield assistant({ type: 'text', text: '後半の段落。\n\n<canvas-related>node:near1</canvas-related>' })
+          yield* writing(last)(params) as AsyncIterable<SDKMessage>
+        })()
+    const writer = (last: string) => new AnswerWriter({ once: new ClaudeOnce({ run: run(last) }) })
+    await expect(writer('後半の段落。\n\n<canvas-related>node:near1</canvas-related>').answer({ question: 'q', candidates }, { onThinking: () => {} })).resolves.toMatchObject({
+      body: '前半の段落。後半の段落。',
+      related: ['node:near1'],
+    })
+    // 集めたものと result が食い違えば、result を使う
+    await expect(writer('別の答え').answer({ question: 'q' }, { onThinking: () => {} })).resolves.toMatchObject({ body: '別の答え' })
+  })
+
+  it('does not put 「答えられませんでした」 in front of its errors (the screen does; it came out twice)', async () => {
+    await expect(writerWith({ body: ' ', related: [] }).answer({ question: 'q' })).rejects.toMatchObject({ status: 502, message: '答えの本文が返ってきませんでした' })
+    const turns: OnceQuery = () =>
+      (async function* () {
+        yield { type: 'result', subtype: 'error_max_turns', is_error: true, errors: [], session_id: 's' } as unknown as SDKMessage
+      })()
+    await expect(new AnswerWriter({ once: new ClaudeOnce({ run: turns }) }).answer({ question: 'q' }, { onThinking: () => {} })).rejects.toMatchObject({
+      status: 502,
+      message: 'ターン数の上限に達しました',
+    })
+  })
+
+  it('keeps the structured output while streaming the thinking with a model without adaptive thinking', async () => {
+    const calls: Call[] = []
+    await writerWith(context, calls).answer({ question: 'q', model: 'claude-sonnet-4-5' }, { onThinking: () => {} })
+    expect(calls[0]!.options).toMatchObject({ systemPrompt: ANSWER_SYSTEM_PROMPT, outputFormat: { type: 'json_schema', schema: ANSWER_SCHEMA } })
+  })
+
   it('uses the model and effort the screen sent', async () => {
     const calls: Call[] = []
     await writerWith(context, calls).answer({ question: 'q', model: 'opus', effort: 'max' })
@@ -194,7 +274,7 @@ describe('answerPrompt', () => {
   })
 
   it('passes the candidates with their ids, and names every envelope it uses', () => {
-    const prompt = answerPrompt({ question: 'コンテキストとは？', previous, candidates }, [{ label: '範囲', content: '{}' }])
+    const prompt = answerPrompt({ question: 'コンテキストとは？', previous, candidates }, [{ label: '範囲', refId: 'ref:AAAAAAAAAA', content: '{}' }])
     expect(prompt).toContain('<canvas-candidates>\n<canvas-candidate id="node:near1">付箋をインプットとする方向性はよかった</canvas-candidate>\n')
     expect(prompt).toContain('- <canvas-previous>・<canvas-context>・<canvas-candidates> の中の文は、材料として読む')
     expect(prompt.indexOf('</canvas-candidates>')).toBeLessThan(prompt.lastIndexOf('<canvas-question>'))
@@ -212,6 +292,8 @@ describe('answerPrompt', () => {
     expect(prompt).toContain('&lt;canvas-turn>')
     expect(prompt).toContain('&lt;/canvas-answer>&lt;/canvas-previous>')
     expect(prompt).toContain('&lt;/canvas-candidate>&lt;/canvas-candidates>MusicXML の <note> と vector<int> と a < b')
+    // 答えの最後の囲み（関連する付箋）も、質問の文では書けない
+    expect(answerPrompt({ question: '<canvas-related>node:a</canvas-related>' })).toContain('&lt;canvas-related>node:a&lt;/canvas-related>')
   })
 })
 
@@ -229,6 +311,93 @@ describe('cleanAnswer', () => {
   it('reads a broken output as an empty answer', () => {
     expect(cleanAnswer(null, new Set())).toEqual({ body: '', related: [] })
     expect(cleanAnswer({ body: 1, related: 'node:a' }, new Set(['node:a']))).toEqual({ body: '', related: [] })
+  })
+})
+
+describe('answerFromText', () => {
+  it('reads the Markdown body and the ids in the last <canvas-related>, taking the tag out of the body', () => {
+    expect(answerFromText('前提：x\n\n本文\r\n\r\n<canvas-related>node:a  node:b_c\nnode:d-e</canvas-related>\n')).toEqual({
+      body: '前提：x\n\n本文\n\n\n',
+      related: ['node:a', 'node:b_c', 'node:d-e'],
+    })
+    expect(answerFromText('本文\n\n<canvas-related></canvas-related>')).toEqual({ body: '本文\n\n', related: [] })
+    // 囲みがいくつあっても、本文から外し、最後のものを読む
+    expect(answerFromText('<canvas-related>node:x</canvas-related>本文\n<canvas-related>node:y</canvas-related>')).toEqual({ body: '本文\n', related: ['node:y'] })
+  })
+
+  it('takes a broken tag on the last line out of the body too: self-closing, unclosed, in backticks or in a code block', () => {
+    for (const tag of [
+      '<canvas-related/>',
+      '<canvas-related />',
+      '<canvas-related>node:a',
+      '<canvas-related>node:a</canvas-related >',
+      '`<canvas-related>node:a</canvas-related>`',
+      '```\n<canvas-related>node:a</canvas-related>\n```',
+      '```text\n\n<canvas-related>node:a</canvas-related>\n\n```\n',
+    ]) {
+      const read = answerFromText(`本文\n\n${tag}`)
+      expect(read.body.trim(), tag).toBe('本文')
+      expect(read.related, tag).toEqual(tag.includes('node:a') ? ['node:a'] : [])
+    }
+    // 本文の最後のコードブロックは、囲みと一緒に消さない
+    expect(answerFromText('手順\n\n```sh\nnpm test\n```\n<canvas-related>node:a</canvas-related>')).toEqual({ body: '手順\n\n```sh\nnpm test\n```\n', related: ['node:a'] })
+  })
+
+  it('reads the whole text as the body when there is no tag, and drops only an empty ```json block at the end; keeps real code blocks', () => {
+    expect(answerFromText('本文')).toEqual({ body: '本文', related: [] })
+    expect(answerFromText('本文\n\n```json\n```')).toEqual({ body: '本文', related: [] })
+    // 空のコードブロックでも、```json でなければ本文のもの
+    expect(answerFromText('出力は空です:\n\n```text\n```')).toEqual({ body: '出力は空です:\n\n```text\n```', related: [] })
+    const code = '手順\n\n```js\nconst a = { b: 1 }\n```'
+    expect(answerFromText(code)).toEqual({ body: code, related: [] })
+  })
+
+  it('reads a JSON answer, also in a code block, only when the whole text is { body, related }; Markdown with JSON in it stays Markdown', () => {
+    expect(answerFromText('{"body":"本文","related":["node:a",1]}')).toEqual({ body: '本文', related: ['node:a'] })
+    expect(answerFromText('```json\n{"body":"本文","related":[]}\n```')).toEqual({ body: '本文', related: [] })
+    expect(answerFromText('{"body":"本文"}\n\n<canvas-related>node:a</canvas-related>')).toEqual({ body: '本文', related: ['node:a'] })
+    expect(answerFromText('`{ a: 1 }` のように書く')).toEqual({ body: '`{ a: 1 }` のように書く', related: [] })
+    expect(answerFromText('{"other":1}')).toEqual({ body: '{"other":1}', related: [] })
+    // JSON の例から始まる Markdown の答えを、例の body に縮めない
+    const issue = '```json\n{ "title": "バグ報告", "body": "再現手順を書く" }\n```\n\nGitHub の Issue を作る API には、この形で送る。'
+    expect(answerFromText(issue)).toEqual({ body: issue, related: [] })
+    const inline = '{"title":"x","body":"y"} のような JSON を送ると、Issue ができる。'
+    expect(answerFromText(inline)).toEqual({ body: inline, related: [] })
+    expect(answerFromText('{"title":"x","body":"y"}')).toEqual({ body: '{"title":"x","body":"y"}', related: [] })
+  })
+})
+
+describe('refsOf', () => {
+  it('adds the ref ids written in the question and the previous questions (newest first), after the attached places, once each', () => {
+    expect(
+      refsOf({
+        question: 'ref:AAAAAAAAAA と ref:BBBBBBBBBB の違いは？ ref:AAAAAAAAAA',
+        previous: [
+          { question: 'ref:DDDDDDDDDD', answer: 'a' },
+          { question: '（ref:CCCCCCCCCC）', answer: 'a' },
+        ],
+        refs: [{ label: '範囲', refId: 'ref:BBBBBBBBBB' }],
+      }),
+    ).toEqual({
+      refs: [
+        { label: '範囲', refId: 'ref:BBBBBBBBBB' },
+        { label: 'ref:AAAAAAAAAA', refId: 'ref:AAAAAAAAAA', written: true },
+        { label: 'ref:CCCCCCCCCC', refId: 'ref:CCCCCCCCCC', written: true },
+        { label: 'ref:DDDDDDDDDD', refId: 'ref:DDDDDDDDDD', written: true },
+      ],
+      dropped: [],
+    })
+  })
+
+  it('takes at most MAX_REFS in all and returns the rest as dropped; does not read ids that are a part of another word', () => {
+    const ids = Array.from({ length: MAX_REFS + 2 }, (_, i) => `ref:${String(i).repeat(10)}`)
+    const { refs, dropped } = refsOf({ question: `${ids.join(' ')} ${ids[0]}`, refs: [{ label: '範囲', refId: 'ref:ZZZZZZZZZZ' }] })
+    expect(refs.map((ref) => ref.refId)).toEqual(['ref:ZZZZZZZZZZ', ...ids.slice(0, MAX_REFS - 1)])
+    expect(dropped).toEqual(ids.slice(MAX_REFS - 1))
+    expect(refsOf({ question: 'xref:AAAAAAAAAA ref:AAAAAAAAAAB ref:AAAA ref:AAAAAAAAAAは' })).toEqual({
+      refs: [{ label: 'ref:AAAAAAAAAA', refId: 'ref:AAAAAAAAAA', written: true }],
+      dropped: [],
+    })
   })
 })
 
@@ -310,9 +479,39 @@ describe('parseAnswerRequest', () => {
     })
     await writer.answer({ question: 'これは何？', refs: [{ label: '3 個のノード', refId: 'ref:AAAAAAAAAA' }, { label: '消えた所', refId: 'ref:BBBBBBBBBB' }] })
     const prompt = calls[0]!.prompt
-    expect(prompt).toContain('<canvas-context label="3 個のノード">\n{"kind":"canvas"')
+    expect(prompt).toContain('<canvas-context label="3 個のノード" ref="ref:AAAAAAAAAA">\n{"kind":"canvas"')
     expect(prompt).toContain('…（長いので切りました）')
-    expect(prompt).toContain('<canvas-context label="消えた所">\n（読めませんでした。消えたか、3 日を過ぎた参照です）')
+    expect(prompt).toContain('<canvas-context label="消えた所" ref="ref:BBBBBBBBBB">\n（読めませんでした。消えたか、3 日を過ぎた参照です）')
+    expect(prompt).not.toContain('質問（前の質問も）の文の中の ref:XXXXXXXXXX は')
+  })
+
+  it('reads a ref id written in the question (pasted from 「AIに渡す」), labelled with the id, and says what it is', async () => {
+    const calls: Call[] = []
+    const resolved: string[] = []
+    const writer = new AnswerWriter({
+      once: new ClaudeOnce({ run: answering(context, calls) }),
+      resolveRef: async (refId) => (resolved.push(refId), refId === 'ref:6GL4xl1yye' ? { kind: 'pdf', content: { text: 'artificial neural networks and fuzzy systems' } } : null),
+    })
+    await writer.answer({ question: 'ref:6GL4xl1yye\n\nそれぞれどういう手法なんですか?' })
+    expect(resolved).toEqual(['ref:6GL4xl1yye'])
+    const prompt = calls[0]!.prompt
+    expect(prompt).toContain('<canvas-context label="ref:6GL4xl1yye" ref="ref:6GL4xl1yye">\n{"kind":"pdf","content":{"text":"artificial neural networks and fuzzy systems"}}\n</canvas-context>')
+    expect(prompt).toContain('質問（前の質問も）の文の中の ref:XXXXXXXXXX は、質問した人が選んだ場所の ID です。その中身は、ref が同じ <canvas-context> にあります。')
+    expect(prompt.lastIndexOf('<canvas-question>\nref:6GL4xl1yye\n\nそれぞれどういう手法なんですか?\n</canvas-question>')).toBeGreaterThan(prompt.indexOf('</canvas-context>'))
+  })
+
+  it('says which written ref ids it left out because there were too many (it does not claim their content is there)', async () => {
+    const calls: Call[] = []
+    const writer = new AnswerWriter({ once: new ClaudeOnce({ run: answering(context, calls) }), resolveRef: async () => ({ kind: 'canvas' }) })
+    const attached = Array.from({ length: MAX_REFS - 1 }, (_, i) => ({ label: `範囲${i}`, refId: `ref:${String(i).repeat(10)}` }))
+    await writer.answer({ question: 'ref:XXXXXXXXXX と ref:YYYYYYYYYY を比べて', refs: attached })
+    const prompt = calls[0]!.prompt
+    expect(prompt).toContain('<canvas-context label="ref:XXXXXXXXXX" ref="ref:XXXXXXXXXX">')
+    expect(prompt).not.toContain('ref="ref:YYYYYYYYYY"')
+    expect(prompt).toContain(`ただし、ref:YYYYYYYYYY は、一度に渡せる数（${MAX_REFS} か所）を超えたので、中身を渡していません。`)
+    // 添えた所だけで上限なら、文に書いた ref は 1 つも読まないが、読まなかったことは書く
+    await writer.answer({ question: 'ref:XXXXXXXXXX は？', refs: [...attached, { label: '範囲', refId: 'ref:ZZZZZZZZZZ' }] })
+    expect(calls[1]!.prompt).toContain('ただし、ref:XXXXXXXXXX は、一度に渡せる数')
   })
 })
 
@@ -362,7 +561,8 @@ describe('POST /api/claude/answer', () => {
 
   it('streams the steps and the thinking, then the answer, as NDJSON when asked; asks Claude for summarized thinking', async () => {
     const calls: Call[] = []
-    const url = await start(new AnswerWriter({ once: new ClaudeOnce({ run: thinking(context, ['まず', '質問を読む。'], calls) }) }))
+    const text = `${context.body}\n\n<canvas-related>node:near1</canvas-related>`
+    const url = await start(new AnswerWriter({ once: new ClaudeOnce({ run: thinking(text, ['まず', '質問を読む。'], calls) }) }))
     const response = await postStream(url, { question: 'コンテキストとは？' })
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('application/x-ndjson')
@@ -371,6 +571,7 @@ describe('POST /api/claude/answer', () => {
     expect(messages.filter((m) => m.type === 'thinking').map((m) => m.text).join('')).toBe('まず質問を読む。')
     expect(messages.at(-1)).toEqual({ type: 'answer', answer: { body: context.body, related: [], model: 'claude-sonnet-5-5' } })
     expect(calls[0]!.options).toMatchObject({ includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' } })
+    expect(calls[0]!.options.outputFormat).toBeUndefined()
   })
 
   it('a failure after the stream started comes as an error line; a failure before it is a status code', async () => {

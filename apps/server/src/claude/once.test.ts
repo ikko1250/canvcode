@@ -87,6 +87,15 @@ describe('ClaudeOnce', () => {
       status: 502,
       message: '引用を作れませんでした：答えを決めた形にできませんでした',
     })
+    // 頭を空にすると、わけだけにする（画面が頭を付けるとき）
+    await expect(new ClaudeOnce({ run: answering(retries) }).ask({ prompt: 'p', model: 'haiku', schema, failure: '' })).rejects.toMatchObject({
+      status: 502,
+      message: '答えを決めた形にできませんでした',
+    })
+    const noDetail = success({ subtype: 'error_during_execution', is_error: true, errors: [] })
+    await expect(new ClaudeOnce({ run: answering(noDetail) }).ask({ prompt: 'p', model: 'haiku', failure: '' })).rejects.toMatchObject({
+      message: 'Claude Code が誤りで終わりました',
+    })
   })
 
   it('WebSearch・WebFetch だけを使わせられる。ほかのツールは頼めず、来てもフックと canUseTool で断る', async () => {

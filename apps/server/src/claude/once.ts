@@ -45,7 +45,8 @@ export interface OnceRequest {
   timeoutMs?: number
   // 止める（画面が頼みをやめたときなど）
   signal?: AbortSignal
-  // 失敗したときの知らせの頭（「調べられませんでした」など）。既定は「Claude が答えられませんでした」
+  // 失敗したときの知らせの頭（「調べられませんでした」など）。既定は「Claude が答えられませんでした」。
+  // 空の文字なら頭を付けず、わけだけにする（画面が頭を付けるとき。付箋の答え）
   failure?: string
   // Claude Code から届いたメッセージを 1 つずつ見る（ツールの結果から、実際に開いた URL を集めるなど。APA の引用 MAI-98）
   onMessage?: (message: SDKMessage) => void
@@ -53,7 +54,9 @@ export interface OnceRequest {
   // 途中のメッセージも受ける。考える仕組み（adaptive thinking）を持たない古いモデルでは何も届かない。
   // 考えるかはモデルが決める（effort が high 以上でないと、考えずに答えることが多い）。
   // schema と一緒に渡すと、構造化出力（答えを渡すツールを必ず使わせる。そのときモデルは考えない）を使わず、
-  // JSON を文字で返すよう頼んで、それを読む（読めなければ 502）
+  // JSON を文字で返すよう頼んで、それを読む（読めなければ 502）。
+  // 長い Markdown を JSON の文字列に入れさせると、モデルが Markdown をそのまま返して読めないことがある
+  // （付箋の答えで起きた。answer.ts は schema を渡さず、本文を Markdown のまま書かせて自分で読む。docs/ai-note-answer-format-plan.md）
   onThinking?: (text: string) => void
 }
 
@@ -122,6 +125,8 @@ export class ClaudeOnce {
   private async run<T>(request: OnceRequest, tools: OnceTool[], abortController: AbortController): Promise<OnceResult<T>> {
     const run = this.options.run ?? defaultRun
     const failure = request.failure ?? 'Claude が答えられませんでした'
+    // 失敗の知らせ（頭とわけ。頭が空なら、わけだけ）
+    const fail = (detail: string) => new JobError(502, failure ? `${failure}${detail ? `：${detail}` : ''}` : detail || 'Claude Code が誤りで終わりました')
     const messages = await run({ prompt: request.prompt, options: onceOptions(request, tools, abortController) })
     for await (const message of messages) {
       request.onMessage?.(message)
@@ -133,7 +138,7 @@ export class ClaudeOnce {
       if (message.type !== 'result') continue
       if (message.subtype === 'success' && !message.is_error) {
         const output = request.schema ? (jsonAsText(request) ? jsonFromText(message.result) : message.structured_output) : undefined
-        if (request.schema && output === undefined) throw new JobError(502, `${failure}：答えが決めた形になっていません`)
+        if (request.schema && output === undefined) throw fail('答えが決めた形になっていません')
         return {
           text: message.result,
           output: output as T | undefined,
@@ -144,9 +149,9 @@ export class ClaudeOnce {
         }
       }
       const detail = message.subtype === 'success' ? message.result : resultErrorDetail(message.subtype, message.errors)
-      throw new JobError(502, `${failure}${detail ? `：${detail}` : ''}`)
+      throw fail(detail)
     }
-    throw new JobError(502, `${failure}：Claude Code が答えずに終わりました`)
+    throw fail('Claude Code が答えずに終わりました')
   }
 }
 
