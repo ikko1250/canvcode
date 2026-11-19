@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type Keyboa
 import { OWN_KEYS_ATTRIBUTE, aiNoteMeta, firstLine, questionText, type AiAnswer, type AiNoteMeta, type Editor } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { AnswerView, type RelatedNote } from './AnswerView.tsx'
+import { PermissionList } from './ClaudePanel.tsx'
 import {
+  noteTaskPermissions,
+  runningNoteTasks,
   useClaudeState,
   type AnsweredItem,
   type AnsweredNote,
@@ -11,10 +14,12 @@ import {
   type ClaudeClient,
   type Effort,
   type ImportedQuestion,
+  type PendingPermission,
   type RunningQuestion,
 } from './claudeClient.ts'
 import { settingLabel } from './modelChoice.ts'
 import type { SeenAnswers } from './seenAnswers.ts'
+import { runningText } from './toolGroups.ts'
 import { useNodesVersion } from './useNodesVersion.ts'
 
 // 右のパネルの質問のタブ（docs/canvas-answer-panel-plan.md の 6）。付箋で聞いた質問を、どの Canvas からでも見る。
@@ -28,6 +33,9 @@ import { useNodesVersion } from './useNodesVersion.ts'
 //   一覧の 1 行は、質問と「会話「題」・時刻」（会話がなければ「会話の外」）。答えは「↗ 付箋へ移動」の代わりに「↗ 会話へ移動」（会話がなければ出さない）。
 //   「続けて聞く」は、画面の真ん中に会話の札（添えた前の答えと、この質問と答えの写し）を添えた AI 付箋を置く。まだ見ていない印は chat:<id> で覚える
 // - パネルの中のキー入力は、キャンバスに渡さない。Esc で閉じる（答えを見ていれば一覧に戻る）
+// - AI 付箋を作業の指示にしたので、名前は「作業」（docs/ai-note-tasks-plan.md の D）。動作中に、付箋の作業（今していること・経過時間・■ で止める）と、
+//   その許可の問い合わせ（会話のタブと同じカード。［断る］が先）を出す。過去の作業は、報告を持つ付箋（前の Q&A の答えも）。
+//   報告を開くと「チャットで続ける」でその作業の会話を開ける
 
 // 答えた時刻を読み直すまで待つ時間（付箋に書いた答えがサーバーに届くまで。ミリ秒）
 const REFETCH_AFTER_DONE_MS = 1500
@@ -68,9 +76,11 @@ export function QuestionPanel(props: {
   onOpenChat?(target: { threadId: string; questionId: string }): void
   onContinueChat?(question: ChatQuestionDetail): void
   onKeepChat?(body: string): void
+  // 作業の報告の「チャットで続ける」：その作業の会話を開く
+  onOpenThread?(threadId: string, jobId?: string): void
 }) {
   const { claude, editor, seen, hidden, focusRequest, tabs, canvasTitle, canPlace, onOpenNote, onContinue, onKeep, onClose } = props
-  const { open, onChat, chatTitle = null, onOpenChat, onContinueChat, onKeepChat } = props
+  const { open, onChat, chatTitle = null, onOpenChat, onContinueChat, onKeepChat, onOpenThread } = props
   const state = useClaudeState(claude)
   useSyncExternalStore(seen.subscribe, seen.getSnapshot)
   const nodesVersion = useNodesVersion(editor)
@@ -81,6 +91,18 @@ export function QuestionPanel(props: {
   const [detail, setDetail] = useState<AnsweredNoteDetail | null>(null)
   const [chatDetail, setChatDetail] = useState<ChatQuestionDetail | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  // 答えを送っている許可の問い合わせ（SSE で消えるまで、ボタンを押せなくする）
+  const [answeringPermissions, setAnsweringPermissions] = useState<ReadonlySet<string>>(new Set())
+  const answerPermission = (permission: PendingPermission & { threadId: string }, decision: 'allow' | 'deny') => {
+    setAnsweringPermissions((ids) => new Set(ids).add(permission.id))
+    void claude.answerPermission(permission.threadId, permission.id, decision).catch(() =>
+      setAnsweringPermissions((ids) => {
+        const next = new Set(ids)
+        next.delete(permission.id)
+        return next
+      }),
+    )
+  }
 
   // 会話の質問を開く（会話の欄の「答えを見る →」）
   const [seenOpen, setSeenOpen] = useState<typeof open>(null)
@@ -93,7 +115,10 @@ export function QuestionPanel(props: {
     if (!hidden) panelRef.current?.focus({ preventScroll: true })
   }, [focusRequest, hidden])
 
-  // 過去の回答を読む（開いたとき・絞り方を変えたとき・質問が終わったとき（付箋に書いた答えが届くのを待って、もう一度））
+  // 動いている付箋の作業（終わったら、過去の作業を読み直す）
+  const allTasks = runningNoteTasks(state)
+  const taskKey = allTasks.map((job) => job.id).join(',')
+  // 過去の回答を読む（開いたとき・絞り方を変えたとき・質問か作業が終わったとき（付箋に書いた答えが届くのを待って、もう一度））
   const here = editor.canvasId
   useEffect(() => {
     if (hidden) return
@@ -109,7 +134,7 @@ export function QuestionPanel(props: {
       stale = true
       window.clearTimeout(timer)
     }
-  }, [claude, hidden, filter, here, state.finishedQuestions])
+  }, [claude, hidden, filter, here, state.finishedQuestions, taskKey])
 
   // ほかの Canvas の答えを見ているときは、サーバーから読む
   useEffect(() => {
@@ -122,7 +147,7 @@ export function QuestionPanel(props: {
     return () => {
       stale = true
     }
-  }, [claude, hidden, viewing, here, state.finishedQuestions])
+  }, [claude, hidden, viewing, here, state.finishedQuestions, taskKey])
 
   // 会話の質問は、サーバーから読む（終わったら読み直す）
   useEffect(() => {
@@ -139,7 +164,10 @@ export function QuestionPanel(props: {
 
   // 動いている質問があれば、経過時間を数え直す。いま開いている Canvas に絞ったときは、会話の質問を出さない
   const running = state.questions.filter((question) => filter === 'all' || (question.kind !== 'chat' && question.canvasId === here))
-  const ticking = running.length > 0
+  const tasks = allTasks.filter((job) => filter === 'all' || job.note?.canvasId === here)
+  const asking = noteTaskPermissions(state).filter((permission) => filter === 'all' || permission.note.canvasId === here)
+  const askingThreads = new Set(asking.map((permission) => permission.threadId))
+  const ticking = running.length + tasks.length > 0
   useEffect(() => {
     if (!ticking) return
     const timer = window.setInterval(() => setNow(Date.now()), 30_000)
@@ -179,6 +207,8 @@ export function QuestionPanel(props: {
 
   function noteView(target: Extract<Viewing, { kind: 'note' }>) {
     const question = state.questions.find((item) => item.noteId === target.noteId && item.canvasId === target.canvasId)
+    const job = allTasks.find((item) => item.note?.noteId === target.noteId)
+    const task = job ? { events: job.events, asking: askingThreads.has(job.threadId) } : null
     if (target.canvasId === here) {
       const node = editor.getNode(target.noteId)
       const meta = aiNoteMeta(node)
@@ -187,11 +217,11 @@ export function QuestionPanel(props: {
         editor.getNode(id)?.type === 'note' ? [{ id, label: firstLine(questionText(editor, [id]), RELATED_LABEL_LENGTH) }] : [],
       )
       const changed = answer ? questionText(editor, [target.noteId, ...(answer.questionIds ?? [])]) !== answer.question : false
-      return { question, meta, answer, related, changed, gone: !node }
+      return { question, job, task, meta, answer, related, changed, gone: !node }
     }
     const found = detail?.noteId === target.noteId ? detail : null
     const meta = found ? aiNoteMeta({ id: found.noteId, typeName: 'node', type: 'note', meta: { ai: found.ai } } as unknown as NodeRecord) : null
-    return { question, meta, answer: meta?.answer ?? null, related: found?.related ?? [], changed: false, gone: false }
+    return { question, job, task, meta, answer: meta?.answer ?? null, related: found?.related ?? [], changed: false, gone: false }
   }
 
   function chatView(id: string) {
@@ -231,7 +261,7 @@ export function QuestionPanel(props: {
     <aside
       ref={panelRef}
       className="question-panel"
-      aria-label="付箋で聞いた質問"
+      aria-label="付箋の作業"
       hidden={hidden}
       tabIndex={-1}
       onKeyDown={onKeyDown}
@@ -251,20 +281,24 @@ export function QuestionPanel(props: {
               ← 一覧
             </button>
           </div>
-          <div className="question-detail-title">「{view.answer ? firstLine(view.answer.question, QUESTION_LABEL_LENGTH) : (view.question?.label ?? '')}」</div>
+          <div className="question-detail-title">「{view.answer ? firstLine(view.answer.question, QUESTION_LABEL_LENGTH) : view.job ? firstLine(view.job.prompt, QUESTION_LABEL_LENGTH) : (view.question?.label ?? '')}」</div>
           <div className="question-detail-meta">
             <span>
               {canvasTitle(viewing.canvasId)}
               {view.answer ? ` ・ ${timeLabel(view.answer.answeredAt, now)}` : ''}
             </span>
-            {modelLabel(state.models, view.question ?? view.answer) && <span className="question-model">{modelLabel(state.models, view.question ?? view.answer)}</span>}
+            {modelLabel(state.models, view.job ?? view.question ?? view.answer) && <span className="question-model">{modelLabel(state.models, view.job ?? view.question ?? view.answer)}</span>}
           </div>
           <button type="button" className="question-open-note" onClick={() => onOpenNote(viewing.canvasId, viewing.noteId)} disabled={view.gone}>
             ↗ 付箋へ移動
           </button>
+          {view.job && askingThreads.has(view.job.threadId) && (
+            <PermissionList permissions={asking.filter((permission) => permission.threadId === view.job!.threadId)} answering={answeringPermissions} onAnswer={(permission, decision) => answerPermission({ ...permission, threadId: view.job!.threadId }, decision)} />
+          )}
           <AnswerView
             answer={view.answer}
             progress={view.question ?? null}
+            task={view.task}
             questionChanged={view.changed}
             related={view.related}
             onRelated={(id) => onOpenNote(viewing.canvasId, id)}
@@ -276,6 +310,8 @@ export function QuestionPanel(props: {
               : {})}
             {...(onChat && view.answer ? { onChat: (newThread: boolean) => onChat(noteItem(view.answer!, viewing), newThread), chatTitle } : {})}
             {...(view.question ? { onStop: () => void claude.cancelQuestion(view.question!.id).catch(() => undefined) } : {})}
+            {...(view.job ? { onStop: () => void claude.cancel(view.job!.id).catch(() => undefined) } : {})}
+            {...(onOpenThread ? { onOpenThread } : {})}
           />
         </div>
       ) : viewing?.kind === 'chat' && chat ? (
@@ -333,7 +369,7 @@ export function QuestionPanel(props: {
       ) : (
         <div className="question-list">
           <span className="question-filter">
-            <select value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'here')} aria-label="どの Canvas の質問を出すか">
+            <select value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'here')} aria-label="どの Canvas の作業を出すか">
               <option value="all">すべてのキャンバス</option>
               <option value="here">いま開いているキャンバス</option>
             </select>
@@ -341,15 +377,33 @@ export function QuestionPanel(props: {
               ▾
             </span>
           </span>
-          {running.length === 0 && shown.length === 0 && (
+          {running.length === 0 && tasks.length === 0 && shown.length === 0 && (
             <p className="claude-hint">
-              付箋で聞いた質問は、まだありません。付箋に書いて送るか、付箋を右クリックして「Claude に聞く」を選ぶと、ここに並びます（どの Canvas
-              で聞いたものも）。会話の入力欄の「質問」で、会話に入れずに聞いたものも並びます。
+              付箋の作業は、まだありません。AI 付箋に頼みたいことを書いて送ると、Claude が作業し、ここに並びます（どの Canvas
+              で頼んだものも）。報告は付箋に残ります。会話の入力欄の「質問」で、会話に入れずに聞いたものも並びます。
             </p>
           )}
-          {running.length > 0 && (
+          {asking.length > 0 && <PermissionList permissions={asking} answering={answeringPermissions} onAnswer={(permission, decision) => answerPermission(permission as PendingPermission & { threadId: string }, decision)} />}
+          {running.length + tasks.length > 0 && (
             <section className="question-section">
-              <div className="question-section-title">動作中（{running.length}）</div>
+              <div className="question-section-title">動作中（{running.length + tasks.length}）</div>
+              {tasks.map((job) => (
+                <div key={job.id} className="question-row running">
+                  <button type="button" className="question-row-main" onClick={() => setViewing({ kind: 'note', noteId: job.note!.noteId, canvasId: job.note!.canvasId })}>
+                    <span className="claude-spinner" aria-hidden="true" />
+                    <span className="question-row-text">
+                      <span className="question-row-label">「{firstLine(job.prompt, QUESTION_LABEL_LENGTH)}」</span>
+                      <span className="question-row-meta">
+                        {canvasTitle(job.note!.canvasId)} ・ {elapsedLabel(job.createdAt, now)}
+                      </span>
+                      <span className="question-row-steps">{askingThreads.has(job.threadId) ? '許可を待っています' : runningText(job.events, false)}</span>
+                    </span>
+                  </button>
+                  <button type="button" className="question-row-stop" onClick={() => void claude.cancel(job.id).catch(() => undefined)} title="止める" aria-label="止める">
+                    ■
+                  </button>
+                </div>
+              ))}
               {running.map((question) => (
                 <div key={question.id} className="question-row running">
                   <button
@@ -379,7 +433,7 @@ export function QuestionPanel(props: {
           )}
           {shown.length > 0 && (
             <section className="question-section">
-              <div className="question-section-title">過去の回答</div>
+              <div className="question-section-title">過去の作業</div>
               {shown.map((item) => {
                 const key = item.kind === 'chat' ? `chat:${item.id}` : item.noteId
                 const unread = !seen.isSeen(key, item.answeredAt)

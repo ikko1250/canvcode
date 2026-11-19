@@ -5,6 +5,7 @@ import { ChatComposer, type ComposeMode } from './ChatComposer.tsx'
 import { ChatHeader } from './ChatHeader.tsx'
 import { ChatLog } from './ChatLog.tsx'
 import {
+  chatThreads,
   jobsOfThread,
   questionsOfThread,
   useClaudeState,
@@ -118,12 +119,13 @@ export function ClaudePanel(props: Props) {
   const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, onAttachSelection, onClearAttachment, onClose, tabs, onCutToNote, reveal } = props
   const { importRequest, onThreadChange, onOpenImport, onOpenQuestion } = props
   const state = useClaudeState(client)
-  const { threads } = state
-  // 選んだ会話。null は新しい会話
+  // 選んだ会話。null は新しい会話。開いたときに選ぶ最新の会話は、付箋の作業しかない会話を除く
   const [chosenId, setThreadId] = useState<string | null>(() => {
-    const latest = client.state.threads[0]
+    const latest = chatThreads(client.state)[0]
     return latest && (latest.running || Date.now() - latest.updatedAt < RECENT_MS) ? latest.threadId : null
   })
+  // 会話の一覧（付箋の作業しかない会話は出さない。付箋の「チャットで続ける」で開いた会話は、選んでいる間は入れる）
+  const threads = useMemo(() => chatThreads(state, chosenId), [state, chosenId])
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -191,10 +193,11 @@ export function ClaudePanel(props: Props) {
     setSetting(next)
     saveSetting(next)
   }
-  // 見ている会話の中身を読む（つなぎ直したあとも読み直す）
+  // 見ている会話の中身を読む（つなぎ直したあとも読み直す）。選んだ会話が一覧にまだなくても読む
+  // （付箋の作業の会話を「チャットで続ける」で開いたとき。読むと一覧に入る）
   useEffect(() => {
-    if (threadId && !state.loaded.has(threadId)) void client.loadThread(threadId)
-  }, [client, threadId, state.loaded])
+    if (chosenId && !state.loaded.has(chosenId)) void client.loadThread(chosenId)
+  }, [client, chosenId, state.loaded])
   // 作業の知らせを受けただけで何も書かなかったターン（サブエージェントの報告のあとに CLI が起こす）は見せない
   const jobs = useMemo(
     () => (threadId ? jobsOfThread(state, threadId).filter((job) => !(job.origin === 'background' && job.status !== 'running' && job.events.length === 0)) : []),
@@ -489,7 +492,7 @@ export function ClaudePanel(props: Props) {
 
 // 画面で許可を待っている問い合わせ（古いものが上）。入力欄のすぐ上に、警告の色のカードで出す。断る判断の材料なので、コマンドは切らずに全部出す。
 // 許可のボタンにはフォーカスを置かず、1 つのキーで許可できるようにはしない。残りの時間は 15 秒ごとに描き直す
-function PermissionList(props: {
+export function PermissionList(props: {
   permissions: readonly PendingPermission[]
   answering: ReadonlySet<string>
   onAnswer(permission: PendingPermission, decision: 'allow' | 'deny'): void

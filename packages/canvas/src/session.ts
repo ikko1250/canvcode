@@ -74,6 +74,8 @@ export interface SessionState {
   cornerHandlesId: string | null
   // 答えを作っている付箋（画面が、動いている質問から立てる）。角の三角を点滅させる（aiCorner.ts）
   answeringIds: ReadonlySet<string>
+  // 許可を待っている付箋（付箋の作業。画面が立てる）。角の三角を警告の色にする（aiCorner.ts）
+  askingIds: ReadonlySet<string>
   // マウスを乗せている角の三角の付箋
   hoveredAiCorner: string | null
 }
@@ -123,6 +125,7 @@ export class Session {
       cropEditing: null,
       cornerHandlesId: null,
       answeringIds: new Set(),
+      askingIds: new Set(),
       hoveredAiCorner: null,
       ...initial,
     }

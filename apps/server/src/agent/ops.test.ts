@@ -8,7 +8,7 @@ import { Editor } from '@canvcode/canvas/editor'
 import { RecordStore, type StoredRecord } from '../records.ts'
 import { SyncHub } from '../sync.ts'
 import { AgentHost } from './host.ts'
-import { EditError, editCanvas, undoCanvasEdit, type EditRequest } from './ops.ts'
+import { EditError, editCanvas, undoCanvasEdit, undoThreadEdits, type EditRequest } from './ops.ts'
 import { canvasFormatGuide, readCanvas, readNodes } from './outline.ts'
 
 // AI の編集（edit_canvas・undo_canvas_edit）と、サーバーの中のワークスペース（host.ts）
@@ -193,6 +193,59 @@ describe('edit_canvas', () => {
     expect(Object.keys(big.created)).toHaveLength(500)
     expect(big.moreCreated).toBe(100)
     expect(records.childrenOf(root).length).toBeGreaterThan(600)
+  })
+
+  it('records the thread that made an edit, and undoes the edits of one thread newest first (docs/ai-note-tasks-plan.md の B)', () => {
+    const { records, host, edit } = setup()
+    const thread = '11111111-2222-4333-8444-555555555555'
+    const first = edit([{ op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 10, h: 10 }], { threadId: thread, label: '箱を置く' })
+    const other = edit([{ op: 'create', type: 'geo', as: 'b', x: 100, y: 0, w: 10, h: 10 }], { label: '外の AI' })
+    const second = edit([{ op: 'move', ids: [first.created.a!], dx: 50 }], { threadId: thread, label: '箱を動かす' })
+    expect(records.getAgentOp(first.batch)).toMatchObject({ threadId: thread })
+    expect(records.getAgentOp(other.batch)!.threadId).toBeUndefined()
+    expect(records.agentOpsOfThread(thread).map((op) => op.label)).toEqual(['箱を動かす', '箱を置く'])
+    expect(undoThreadEdits(host, thread)).toEqual({
+      undone: [
+        { batch: second.batch, label: '箱を動かす' },
+        { batch: first.batch, label: '箱を置く' },
+      ],
+      left: [],
+    })
+    expect(records.get(first.created.a!)).toBeUndefined()
+    expect(records.get(other.created.b!)).toBeDefined()
+    expect(records.agentOpsOfThread(thread).every((op) => op.undoneAt !== null)).toBe(true)
+    // 取り消したものは飛ばす（2 回目は何もしない）
+    expect(undoThreadEdits(host, thread)).toEqual({ undone: [], left: [] })
+  })
+
+  it('undoes nothing of a thread when one of its edits changed afterwards, and says which one and what is left', () => {
+    const { records, host, edit } = setup()
+    const thread = '11111111-2222-4333-8444-666666666666'
+    const first = edit([{ op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 10, h: 10 }], { threadId: thread, label: '箱を置く' })
+    const second = edit([{ op: 'create', type: 'geo', as: 'b', x: 100, y: 0, w: 10, h: 10 }], { threadId: thread, label: 'もう 1 つ置く' })
+    const third = edit([{ op: 'move', ids: [first.created.a!], dx: 5 }], { threadId: thread, label: '動かす' })
+    // そのあとに、ほかの人が 2 つ目の箱を動かした
+    edit([{ op: 'move', ids: [second.created.b!], dx: 5 }])
+    const result = undoThreadEdits(host, thread)
+    expect(result.undone).toEqual([])
+    expect(result.failed).toMatchObject({ batch: second.batch, label: 'もう 1 つ置く', reason: expect.stringMatching(/Conflict/) })
+    expect(result.left).toEqual([
+      { batch: third.batch, label: '動かす' },
+      { batch: first.batch, label: '箱を置く' },
+    ])
+    // 新しい方（動かした）も戻していない
+    expect(records.agentOpsOfThread(thread).every((op) => op.undoneAt === null)).toBe(true)
+    expect(records.get(first.created.a!)).toMatchObject({ x: 5 })
+  })
+
+  it('checks a chain of edits of one thread on the same node as if the newer ones were undone first', () => {
+    const { records, host, edit } = setup()
+    const thread = '11111111-2222-4333-8444-777777777777'
+    const made = edit([{ op: 'create', type: 'geo', as: 'a', x: 0, y: 0, w: 10, h: 10 }], { threadId: thread })
+    edit([{ op: 'move', ids: [made.created.a!], dx: 5 }], { threadId: thread })
+    edit([{ op: 'move', ids: [made.created.a!], dx: 5 }], { threadId: thread })
+    expect(undoThreadEdits(host, thread).undone).toHaveLength(3)
+    expect(records.get(made.created.a!)).toBeUndefined()
   })
 
   it('aligns a placed node with the other one, and places in the empty space right of or below the content (MAI-105)', () => {

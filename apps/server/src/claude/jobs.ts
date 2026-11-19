@@ -16,7 +16,8 @@ import {
   type GuardSettings,
 } from './permissions.ts'
 import { ClaudeSession, type BackgroundTask, type ModelSettings, type RunQuery } from './session.ts'
-import type { ChatQuestion, ClaudeStore, StoredJob, ThreadSummary } from './store.ts'
+import type { ChatQuestion, ClaudeStore, NoteRef, StoredJob, ThreadSummary } from './store.ts'
+import { THREAD_HEADER } from '../threadHeader.ts'
 
 export type { BackgroundTask, RunQuery } from './session.ts'
 
@@ -37,6 +38,9 @@ export type { BackgroundTask, RunQuery } from './session.ts'
 //   （中の文は指示として読ませない）。ジョブには、頼んだ文（ユーザーが書いた文だけ）と別に残す
 // - モデルと effort（MAI-106）は依頼ごとに受け、ジョブに残す（会話の一覧は最後の依頼のものを返す）。プロセスを立てるときは Options で渡し、
 //   動いているプロセスの値と違えば、送る前に configure で変える。渡されなければ既定（CANVCODE_CLAUDE_MODEL か、ワークスペースの設定）
+// - 付箋の作業（AI 付箋から頼んだもの。docs/ai-note-tasks-plan.md）は、note を付けて新しい会話で始める。システムプロンプトは付箋の作業のもの。
+//   材料（materials。添えた所・前の作業の記録など。claude/noteTasks.ts が組み立てる）は、送る文の頭に足すだけで保存しない
+// - canvcode の MCP をつなぐとき、ヘッダー（THREAD_HEADER）に会話の id を付ける。MCP は Canvas の編集の記録に会話を残す（会話ごとに取り消せる）
 
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -113,6 +117,8 @@ export interface JobSummary {
   effort?: EffortLevel
   // 取り込んだ質問と答え
   imports?: ImportedQuestion[]
+  // 付箋の作業なら、頼んだ付箋
+  note?: NoteRef
   eventCount: number
 }
 
@@ -140,6 +146,10 @@ export interface StartRequest {
   effort?: EffortLevel
   // 取り込む質問と答え（1 つまで）
   imports?: ImportedQuestion[]
+  // 付箋の作業なら、頼んだ付箋（新しい会話で始める。threadId とは一緒に渡せない）
+  note?: NoteRef
+  // Claude に送る文の頭に足す材料（付箋の作業。保存しない）
+  materials?: string
 }
 
 // 変化。job は、ジョブが変わった（events はその変化で足した出来事。from 番目から）。thread は、会話の作業の一覧が変わった。thread-deleted は、会話を消した
@@ -178,6 +188,7 @@ export const PERMISSION_TIMEOUT_MS = 10 * 60_000
 export const MAX_PENDING_PERMISSIONS = 20
 // モデルの一覧を聞けなかったとき、聞き直すまでの時間（ミリ秒）
 export const MODEL_PROBE_RETRY_MS = 60_000
+export const TOO_MANY_SESSIONS = `同時に開いておける会話は ${MAX_SESSIONS} つまでです。ほかの会話の作業が終わるのを待つか、止めてください`
 export const TOO_MANY_PERMISSIONS = `待っている許可が多すぎます（1 つの会話で ${MAX_PENDING_PERMISSIONS} まで）。前の許可の答えを待ってから、もう一度試してください`
 
 export interface ClaudeJobsDeps {
@@ -236,6 +247,8 @@ interface LiveThread {
   sessionId?: string
   // システムプロンプトに入れた、見ている Canvas
   canvasId?: string
+  // 付箋の作業から始めた会話なら、その付箋（システムプロンプトを付箋の作業のものにする）
+  note?: NoteRef
   // 今のターンのジョブ
   current?: StoredJob
   // 送ったが、まだ答えるターンが来ていない依頼
@@ -295,8 +308,14 @@ export class ClaudeJobs {
     if (interrupted > 0) console.log(`途切れた Claude のジョブを止まったものにしました：${interrupted} 個`)
   }
 
+  // 会話の一覧。付箋の作業しかない会話は入れない（store.threads）が、プロセスがあるもの（動いている・許可を待っている）は、
+  // 画面の作業のタブが使うので足す
   threads(): ThreadInfo[] {
-    return this.store.threads().map((thread) => this.info(thread))
+    const listed = this.store.threads()
+    const known = new Set(listed.map((thread) => thread.threadId))
+    const live = [...new Set([...this.live.keys(), ...[...this.running.values()].map((job) => job.threadId)])].filter((id) => !known.has(id))
+    const extra = live.flatMap((id) => this.store.thread(id) ?? [])
+    return [...listed, ...extra].map((thread) => this.info(thread))
   }
 
   // 会話と、そのジョブ（出来事も含む）と、その会話の質問（会話に入れずに聞いたもの）
@@ -329,6 +348,7 @@ export class ClaudeJobs {
     const prompt = request.prompt.trim()
     if (!prompt) throw new JobError(400, 'プロンプトが空です')
     if (prompt.length > MAX_PROMPT_LENGTH) throw new JobError(400, `プロンプトが長すぎます（${MAX_PROMPT_LENGTH} 文字まで）`)
+    if (request.note && request.threadId) throw new JobError(400, '付箋の作業は、新しい会話で始めます（threadId と一緒に渡せません）')
     let resume: string | undefined
     let live = request.threadId ? this.live.get(request.threadId) : undefined
     if (request.threadId) {
@@ -337,13 +357,16 @@ export class ClaudeJobs {
       if (last.status === 'running' || live?.current || live?.waiting) throw new JobError(409, '前の依頼がまだ終わっていません')
       resume = live?.sessionId ?? last.sessionId
     }
-    // 画面で許可を待っている依頼も数える（ターンの途中で、プロセスも動いている）
-    if ([...this.running.values()].filter((job) => !job.origin).length >= MAX_RUNNING) {
-      const asking = [...this.live.values()].some((thread) => thread.permissions.size > 0)
-      throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです${asking ? '。許可を待っている依頼があれば、答えると進みます' : ''}`)
-    }
+    this.checkRunning()
     // 費用の上限に達したプロセスは、新しいものに替える
     if (live?.retire && live.session.tasks.length === 0) {
+      void this.closeThread(live.threadId)
+      live = undefined
+    }
+    // 付箋の作業のプロセスに、会話から続けて頼むときは、会話のシステムプロンプトで開き直す（resume で続ける。
+    // 付箋の作業のプロンプトのままだと、会話の依頼も「報告は付箋に出る」として動き、バックグラウンドの作業も付箋のものになる）。
+    // バックグラウンドの作業か待っている許可があれば、閉じると止まるので、そのまま使う
+    if (live?.note && !request.note && live.session.tasks.length === 0 && live.permissions.size === 0) {
       void this.closeThread(live.threadId)
       live = undefined
     }
@@ -362,7 +385,7 @@ export class ClaudeJobs {
     }
     const id = randomUUID()
     const threadId = request.threadId ?? id
-    const thread = live ?? this.open(threadId, resume, request.canvasId, settings)
+    const thread = live ?? this.open(threadId, resume, request.canvasId, settings, request.note)
     const job: StoredJob = {
       id,
       threadId,
@@ -374,6 +397,7 @@ export class ClaudeJobs {
       createdAt: Date.now(),
       ...settings,
       ...(request.imports && request.imports.length > 0 ? { imports: request.imports } : {}),
+      ...(request.note ? { note: request.note } : {}),
       // 誰のターンでもないときに届いた作業の知らせは、この依頼の初めに出す
       events: thread.pending.splice(0),
       eventCount: 0,
@@ -383,8 +407,29 @@ export class ClaudeJobs {
     thread.finished = []
     thread.waiting = job
     this.begin(thread, job)
-    thread.session.send(messageText(job, thread.canvasId), job.id, (error) => this.configureFailed(thread, job, settings, previous, error))
+    thread.session.send(messageText(job, thread.canvasId, request.materials), job.id, (error) => this.configureFailed(thread, job, settings, previous, error))
     return publicJob(job)
+  }
+
+  // 新しい依頼を始められるか（同時に動かせる依頼の数と、開いておける会話の数）。始められなければ 429 を投げる（何も変えない）。
+  // 付箋の作業が、前の変更を戻す前に確かめる（戻したあとで始められないと、戻したことが知らされない）
+  assertCanStart(): void {
+    this.checkRunning()
+    if (this.live.size >= MAX_SESSIONS && !this.idleThreads()[0]) throw new JobError(429, TOO_MANY_SESSIONS)
+  }
+
+  // 画面で許可を待っている依頼も数える（ターンの途中で、プロセスも動いている）
+  private checkRunning(): void {
+    if ([...this.running.values()].filter((job) => !job.origin).length < MAX_RUNNING) return
+    const asking = [...this.live.values()].some((thread) => thread.permissions.size > 0)
+    throw new JobError(429, `同時に動かせるのは ${MAX_RUNNING} つまでです${asking ? '。許可を待っている依頼があれば、答えると進みます' : ''}`)
+  }
+
+  // 何もしていない（今のジョブもバックグラウンドの作業も待っている許可もない）プロセス（古いものから）
+  private idleThreads(): LiveThread[] {
+    return [...this.live.values()]
+      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0 && thread.permissions.size === 0)
+      .sort((a, b) => a.lastActive - b.lastActive)
   }
 
   // ジョブを止める：今のターンだけを止め、バックグラウンドの作業とプロセスは残す
@@ -486,19 +531,18 @@ export class ClaudeJobs {
   // 新しいプロセスを立てる場所を空ける。上限なら、何もしていないものを古い順に 1 つ閉じる
   private makeRoom(): void {
     if (this.live.size < MAX_SESSIONS) return
-    const idle = [...this.live.values()]
-      .filter((thread) => !thread.current && !thread.waiting && thread.session.tasks.length === 0 && thread.permissions.size === 0)
-      .sort((a, b) => a.lastActive - b.lastActive)[0]
-    if (!idle) throw new JobError(429, `同時に開いておける会話は ${MAX_SESSIONS} つまでです。ほかの会話の作業が終わるのを待つか、止めてください`)
+    const idle = this.idleThreads()[0]
+    if (!idle) throw new JobError(429, TOO_MANY_SESSIONS)
     void this.closeThread(idle.threadId)
   }
 
-  private open(threadId: string, resume: string | undefined, canvasId: string | undefined, settings: ModelSettings): LiveThread {
+  private open(threadId: string, resume: string | undefined, canvasId: string | undefined, settings: ModelSettings, note?: NoteRef): LiveThread {
     const thread = {
       threadId,
       settings,
       ...(resume ? { sessionId: resume } : {}),
       ...(canvasId ? { canvasId } : {}),
+      ...(note ? { note } : {}),
       pending: [],
       finished: [],
       names: new Map(),
@@ -564,11 +608,12 @@ export class ClaudeJobs {
         return decision
       },
       hooks: { PreToolUse: [{ hooks: [preToolUseHook(this.guardSettings, denied, (guard) => (thread.guard = guard))] }] },
-      mcpServers: { canvcode: { type: 'http', url: this.deps.mcpUrl, alwaysLoad: true } },
+      // ヘッダーの会話の id は、MCP が Canvas の編集の記録に残す（会話ごとに取り消せる）
+      mcpServers: { canvcode: { type: 'http', url: this.deps.mcpUrl, headers: { [THREAD_HEADER]: thread.threadId }, alwaysLoad: true } },
       strictMcpConfig: true,
       // ワークスペースの CLAUDE.md と .claude/ の設定だけを読む（ユーザーの ~/.claude の MCP・許可の設定は使わない）
       settingSources: ['project'],
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(thread.canvasId) },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: thread.note ? noteTaskPromptAppend(thread.note) : systemPromptAppend(thread.canvasId) },
       // 画面に作業ごとの止めるボタンがある。interrupt はターンだけを止め、バックグラウンドの作業は残す
       perTaskStopAffordance: true,
       ...(thread.settings.model ?? this.deps.model ? { model: thread.settings.model ?? this.deps.model } : {}),
@@ -712,6 +757,8 @@ export class ClaudeJobs {
       status: 'running',
       createdAt: Date.now(),
       ...thread.settings,
+      // 付箋の作業の会話なら、バックグラウンドのジョブも付箋のもの（会話の一覧に出さないまま）
+      ...(thread.note ? { note: thread.note } : {}),
       events: thread.pending.splice(0),
       eventCount: 0,
       ...(thread.sessionId ? { sessionId: thread.sessionId } : {}),
@@ -977,9 +1024,11 @@ function safely(fn: () => void): void {
   }
 }
 
-// プロセスに送る文。取り込んだ質問と答え（材料として囲む）、頼んだ文、選んだ場所と、システムプロンプトと違う Canvas を見ていればそれを添える
-export function messageText(job: Pick<StoredJob, 'prompt' | 'refId' | 'canvasId' | 'imports'>, sessionCanvasId: string | undefined): string {
+// プロセスに送る文。材料（付箋の作業。呼ぶ側が囲んだもの）、取り込んだ質問と答え（材料として囲む）、頼んだ文、選んだ場所と、
+// システムプロンプトと違う Canvas を見ていればそれを添える
+export function messageText(job: Pick<StoredJob, 'prompt' | 'refId' | 'canvasId' | 'imports'>, sessionCanvasId: string | undefined, materials?: string): string {
   return [
+    materials ?? '',
     importsText(job.imports ?? []),
     job.prompt,
     job.refId ? `（選んだ場所：${job.refId}）` : '',
@@ -1043,6 +1092,25 @@ export function systemPromptAppend(canvasId: string | undefined): string {
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+// 付箋の作業（AI 付箋から頼んだもの）のシステムプロンプトに足すもの。最後の文が報告として付箋に出る（answer.ts の書き方と同じ Markdown）
+export function noteTaskPromptAppend(note: NoteRef): string {
+  return [
+    `You were asked from an AI sticky note (${note.noteId}) on canvas ${note.canvasId} of CanvCode (an infinite canvas app). The note's text is the instruction.`,
+    'Reply in the language the instruction is written in.',
+    `Pass canvas_id: "${note.canvasId}" to canvas tools unless the instruction names another canvas. Do not change the instruction note itself; place what you make near it unless told otherwise.`,
+    'To change a canvas, use edit_canvas and give it a short label of what you did (the user can undo it from the screen).',
+    'After making or rearranging slides or a diagram, look at it with render_canvas and fix what looks wrong (not after every small edit).',
+    'To place many nodes, follow "Placing many nodes" in get_canvas_format: read bounds once, place nodes relative to each other, continue from the boxes in the edit_canvas result, and pass ops a script generated as ops_file.',
+    'The current directory is the CanvCode workspace; Markdown, Python and CSV files there are CanvCode documents.',
+    'Skills in the workspace .claude/skills/ are available through the Skill tool.',
+    'File tools (Read, Write, Edit, Glob, Grep) work only inside the workspace. Bash commands are approved or denied automatically; the ones that are not are shown to the user on the screen to approve or decline (unanswered ones are declined after a while).',
+    'There is no one to ask while you work: if something is unclear, choose the most likely reading, do it, and say what you chose in the report.',
+    'Your last message is shown on the note as the report. Write it last, after all tool calls: first what you did and where (name the nodes or files you made or changed), then anything left undone. Keep it short.',
+    'Report format (Markdown): paragraphs separated by a blank line, headings up to ###, bullet and numbered lists, bold, italic, inline code and code blocks. No tables, images, links or HTML.',
+    'If the material lists notes near the instruction (<canvas-candidates>), end the report with one line <canvas-related>node:… node:…</canvas-related> holding up to 3 of their ids that relate to this work (most related first), or <canvas-related></canvas-related> if none.',
+  ].join('\n')
 }
 
 // 許可の問い合わせの終わり方ごとの、Claude に返す言葉（今の askTool の言葉と同じく日本語）

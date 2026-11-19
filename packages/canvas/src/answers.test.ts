@@ -14,6 +14,7 @@ import {
   firstLine,
   fitTurns,
   followUpContext,
+  hasUndoableChanges,
   placeAnswerText,
   placeFollowUpAt,
   placeFollowUpNote,
@@ -122,6 +123,42 @@ describe('aiNoteMeta', () => {
     expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts: [], answer: { body: 1 } } } }))).toEqual({ contexts: [] })
     expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }))).toBeNull()
     expect(aiNoteMeta({ ...editor.makeNode('geo', { x: 0, y: 0 }), meta: { ai } })).toBeNull()
+  })
+
+  it('reads the task running on a note and the report of a task (docs/ai-note-tasks-plan.md), and drops what does not fit', () => {
+    const editor = new Editor()
+    const report = {
+      body: '表を置きました',
+      related: [],
+      model: 'opus',
+      question: '表にして',
+      answeredAt: 5,
+      threadId: 't',
+      jobId: 'j',
+      status: 'failed',
+      error: '止まりました',
+      changes: { canvas: [{ batch: 'ai-1', label: '表を置く', canvasId: 'canvas:c' }, { batch: 'ai-2', label: '戻した', canvasId: 'canvas:c', undone: true }, { label: 'x' }], files: ['a.md', 1], commands: ['ls'] },
+    }
+    const ai = { contexts: [], task: { threadId: 't2', jobId: 'j2', startedAt: 9 }, answer: report }
+    expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai } }))).toEqual({
+      contexts: [],
+      task: { threadId: 't2', jobId: 'j2', startedAt: 9 },
+      answer: {
+        ...report,
+        changes: { canvas: [{ batch: 'ai-1', label: '表を置く', canvasId: 'canvas:c' }, { batch: 'ai-2', label: '戻した', canvasId: 'canvas:c', undone: true }], files: ['a.md'], commands: ['ls'] },
+      },
+    })
+    expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts: [], task: { threadId: 1 }, answer: { ...report, status: 'odd' } } } }))).toEqual({
+      contexts: [],
+      answer: expect.not.objectContaining({ status: expect.anything() }),
+    })
+    // 戻せる前の変更があるか（「前の変更を戻してから送る」）
+    const parsed = aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai } }))!.answer!
+    expect(hasUndoableChanges(parsed)).toBe(true)
+    expect(hasUndoableChanges({ ...parsed, changes: { canvas: [{ batch: 'ai-2', label: '戻した', canvasId: 'canvas:c', undone: true }], files: ['a.md'], commands: [] } })).toBe(false)
+    const { threadId: _threadId, ...qa } = parsed
+    expect(hasUndoableChanges(qa)).toBe(false)
+    expect(hasUndoableChanges(undefined)).toBe(false)
   })
 
   // PDF のページの上でなぞった文字（docs/ai-note-pick-text-plan.md）

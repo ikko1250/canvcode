@@ -18,6 +18,8 @@ export const AI_CORNER_SIZE = 22
 export const AI_CORNER_HIT_PX = 24
 export const AI_CORNER_HOVER_SCALE = 1.25
 export const AI_CORNER_COLOR = '#1d4ed8'
+// 許可を待っている付箋の作業の三角の色（警告。会話のタブの許可のカードと同じ系統）
+export const AI_CORNER_ASKING_COLOR = '#d97706'
 // 点滅の周期（ミリ秒）と、いちばん薄いときの不透明度
 export const AI_CORNER_BLINK_MS = 1200
 export const AI_CORNER_MIN_ALPHA = 0.35
@@ -66,6 +68,8 @@ export function hitAiCorner(editor: Editor, point: Vec, answeringIds: ReadonlySe
 
 export interface AiCornerState {
   answeringIds: ReadonlySet<string>
+  // 許可を待っている付箋（三角を警告の色にする。なければ、どれも青）
+  askingIds?: ReadonlySet<string>
   // マウスを乗せている三角の付箋
   hoveredId: string | null
   // 点滅に使う時刻（ミリ秒）
@@ -94,6 +98,7 @@ export function drawAiCorners(ctx: CanvasRenderingContext2D, editor: Editor, vie
       { x: w, y: 0 },
       { x: w, y: size },
     ].map((p) => toDevice(applyMat(entry.worldMatrix, p)))
+    ctx.fillStyle = state.askingIds?.has(id) ? AI_CORNER_ASKING_COLOR : AI_CORNER_COLOR
     ctx.globalAlpha = state.answeringIds.has(id) ? aiCornerAlpha(state.now) : 1
     ctx.beginPath()
     ctx.moveTo(points[0]!.x, points[0]!.y)

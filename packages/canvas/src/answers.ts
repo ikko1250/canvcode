@@ -29,6 +29,9 @@ import type { IndexEntry } from './nodeIndex.ts'
 // - 会話の答え（会話のタブの「付箋に切り出す」）も、写しを添えた札（kind: 'chat'）にする。続けて聞くと、写しを引き継ぐ
 // - 「Canvasに残す」：答えの本文を、書式付きのテキスト 1 つにして置く（付箋の Markdown で読むので、見出し・太字・箇条書きが残る）
 // Claude に頼むのは画面（apps/web/src/claude/answer.ts）。ここは Editor の上で読む・書く・置くだけ
+// - AI 付箋は作業の指示にした（docs/ai-note-tasks-plan.md）。サーバーが会話と同じ Claude Code のジョブで動かし（apps/server/src/claude/noteTasks.ts）、
+//   作業の間は meta.ai.task、終わったら meta.ai.answer に報告を書く。報告は答えと同じ項目に、会話・ジョブ・状態・変えたものを足したもの。
+//   前の Q&A の答え（threadId がない）も、そのまま読める
 
 // 前の質問と答え（続きを聞くときに Claude に渡す。古い方から）。answer は答えの本文（Markdown）
 export interface PreviousTurn {
@@ -50,6 +53,26 @@ export interface AiAnswer {
   // 付箋を何枚か選んで聞いたときの、ほかの質問の付箋
   questionIds?: string[]
   answeredAt: number
+  // 作業の報告なら（前の Q&A の答えにはない）：会話とジョブ、終わり方、誤り、変えたもの
+  threadId?: string
+  jobId?: string
+  status?: 'done' | 'failed' | 'cancelled'
+  error?: string
+  changes?: AiTaskChanges
+}
+
+// 作業の報告の「変えたもの」：その会話の Canvas の編集（古い順。undone は戻したもの）・書いたファイル・動かしたコマンド
+export interface AiTaskChanges {
+  canvas: { batch: string; label: string; canvasId: string; undone?: true }[]
+  files: string[]
+  commands: string[]
+}
+
+// 作業の途中（meta.ai.task。サーバーが書き、終わったら消す）
+export interface AiTask {
+  threadId: string
+  jobId: string
+  startedAt: number
 }
 
 // AI 付箋に添えるもの。answer は前の答え（続き。turns は「続けて聞く」を押したときの写し）、
@@ -68,8 +91,10 @@ export interface AiNoteMeta {
   // この付箋で使うモデルと effort（なければ、最後に選んだもの）
   model?: string
   effort?: string
-  // 届いた答え（新しいもの 1 つ）
+  // 届いた答え（新しいもの 1 つ。作業なら報告）
   answer?: AiAnswer
+  // 作業の途中なら、その会話とジョブ
+  task?: AiTask
 }
 
 // 続きを聞くときに渡す前の答えの数と、文字の合計（サーバーの上限と同じ。超えたら古いものから落とし、1 つでも長ければ答えを切る）
@@ -131,11 +156,13 @@ export function aiNoteMeta(node: NodeRecord | undefined): AiNoteMeta | null {
   if (!meta || typeof meta !== 'object') return null
   const contexts = Array.isArray(meta.contexts) ? meta.contexts.flatMap((context) => contextOf(context)) : []
   const answer = answerOf(meta.answer)
+  const task = taskOf(meta.task)
   return {
     contexts,
     ...(typeof meta.model === 'string' ? { model: meta.model } : {}),
     ...(typeof meta.effort === 'string' ? { effort: meta.effort } : {}),
     ...(answer ? { answer } : {}),
+    ...(task ? { task } : {}),
   }
 }
 
@@ -423,7 +450,39 @@ function answerOf(value: unknown): AiAnswer | null {
     question: answer.question,
     ...(questionIds.length > 0 ? { questionIds } : {}),
     answeredAt: typeof answer.answeredAt === 'number' ? answer.answeredAt : 0,
+    ...(typeof answer.threadId === 'string' ? { threadId: answer.threadId } : {}),
+    ...(typeof answer.jobId === 'string' ? { jobId: answer.jobId } : {}),
+    ...(answer.status === 'done' || answer.status === 'failed' || answer.status === 'cancelled' ? { status: answer.status } : {}),
+    ...(typeof answer.error === 'string' ? { error: answer.error } : {}),
+    ...(changesOf(answer.changes) ? { changes: changesOf(answer.changes)! } : {}),
   }
+}
+
+function changesOf(value: unknown): AiTaskChanges | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { canvas, files, commands } = value as Record<string, unknown>
+  const strings = (list: unknown) => (Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : [])
+  return {
+    canvas: (Array.isArray(canvas) ? canvas : []).flatMap((edit): AiTaskChanges['canvas'] => {
+      const { batch, label, canvasId, undone } = (typeof edit === 'object' && edit !== null ? edit : {}) as Record<string, unknown>
+      if (typeof batch !== 'string' || typeof label !== 'string' || typeof canvasId !== 'string') return []
+      return [{ batch, label, canvasId, ...(undone === true ? { undone: true as const } : {}) }]
+    }),
+    files: strings(files),
+    commands: strings(commands),
+  }
+}
+
+function taskOf(value: unknown): AiTask | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { threadId, jobId, startedAt } = value as Record<string, unknown>
+  if (typeof threadId !== 'string' || typeof jobId !== 'string') return null
+  return { threadId, jobId, startedAt: typeof startedAt === 'number' ? startedAt : 0 }
+}
+
+// 前の作業で、まだ戻していない Canvas の編集があるか（「前の変更を戻してから送る」を出すか）
+export function hasUndoableChanges(answer: AiAnswer | undefined): boolean {
+  return Boolean(answer?.threadId && answer.changes?.canvas.some((edit) => !edit.undone))
 }
 
 function withoutKey(meta: Record<string, unknown> | undefined, key: string): Record<string, unknown> {

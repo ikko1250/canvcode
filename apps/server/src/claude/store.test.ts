@@ -36,6 +36,24 @@ const job = (id: string, threadId: string, createdAt: number, extra: Record<stri
 })
 
 describe('ClaudeStore', () => {
+  it('keeps the note of a note task, and leaves threads with only note tasks out of the list (docs/ai-note-tasks-plan.md)', () => {
+    const store = open(dataDir())
+    const note = { noteId: 'node:n', canvasId: 'canvas:c' }
+    store.insertJob(job('chat', 'chat', 1))
+    store.insertJob(job('task', 'task', 2, { note }))
+    store.insertJob(job('task-bg', 'task', 3, { note, origin: 'background' }))
+    expect(store.job('task')).toMatchObject({ note })
+    expect(store.job('chat')!.note).toBeUndefined()
+    expect(store.threads().map((thread) => thread.threadId)).toEqual(['chat'])
+    // どの会話も、id を指せば読める（付箋の「チャットで続ける」）
+    expect(store.thread('task')).toMatchObject({ threadId: 'task', note, noteOnly: true, jobCount: 2 })
+    // 会話から 1 つでも頼んだら、一覧に出る
+    store.insertJob(job('follow', 'task', 4))
+    expect(store.threads().map((thread) => thread.threadId)).toEqual(['task', 'chat'])
+    expect(store.thread('task')).toMatchObject({ note })
+    expect(store.thread('task')!.noteOnly).toBeUndefined()
+  })
+
   it('saves jobs, events and sessions, and reads them back after reopening', () => {
     const dir = dataDir()
     const store = new ClaudeStore(dir)

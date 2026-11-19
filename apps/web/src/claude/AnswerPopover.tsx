@@ -1,7 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 import type { Camera } from '@canvcode/core'
 import { OWN_KEYS_ATTRIBUTE, aiNoteMeta, firstLine, questionText, type CanvasView, type Editor } from '@canvcode/canvas'
-import { AnswerView, type AnswerProgress, type RelatedNote } from './AnswerView.tsx'
+import { AnswerView, type AnswerProgress, type RelatedNote, type TaskProgress } from './AnswerView.tsx'
 import type { Effort, ModelCatalog } from './claudeClient.ts'
 import { settingLabel } from './modelChoice.ts'
 import { useNodesVersion } from './useNodesVersion.ts'
@@ -10,7 +10,8 @@ import { useNodesVersion } from './useNodesVersion.ts'
 // - 付箋の右上に合わせて、付箋の右に出す（右に入らなければ左）。カメラに付いて動くが、大きさは倍率によらない（幅 POPOVER_WIDTH、高さは中身に合わせて
 //   POPOVER_MAX_HEIGHT まで。本文は中でスクロール）。キャンバスの端からはみ出さない。
 //   右のデザインパネルを出しているときは、その左端を右の端とする（パネルはデザインパネルの下に重なるので、隠れないように）
-// - 上に「回答」とモデルの札。その下は AnswerView（本文・関連する付箋・「続けて聞く」「Canvasに残す」。答えを作っている間は進み具合）
+// - 上に「回答」（付箋の作業なら「作業」）とモデルの札。その下は AnswerView（本文・関連する付箋・「続けて聞く」「Canvasに残す」。
+//   答えを作っている間は進み具合、付箋の作業の間はその様子）
 // - 閉じる：同じ三角をもう一度押す（App）・Esc・パネルの外のキャンバスを押す（左ボタン。付箋の下の欄の上は除く）・付箋が消えた
 // - 開いたらパネルにフォーカスする。パネルか付箋の下の欄にフォーカスがある間は、欄を出す（onFocusChange）。パネルの中のキー入力は、キャンバスに渡さない。
 //   どちらにあるかは、文書の focusin で決める（blur では決めない）。欄のボタンを押すとフォーカスが欄へ移るので、そこで欄を消すと押せない。
@@ -33,6 +34,8 @@ export function AnswerPopover(props: {
   catalog: ModelCatalog | undefined
   // 答えを作っている間の進み具合と、そのモデル
   progress: AnswerProgress | null
+  // 付箋の作業の間の様子
+  task?: TaskProgress | null
   runningModel?: { model?: string; effort?: string }
   error?: string
   onClose(): void
@@ -48,8 +51,11 @@ export function AnswerPopover(props: {
   // 会話で続ける（Claude を使えないときは渡さない）。chatTitle は、いま会話のタブで選んでいる会話の題
   onChat?(newThread: boolean): void
   chatTitle?: string | null
+  // 作業の報告の「チャットで続ける」
+  onOpenThread?(threadId: string, jobId?: string): void
 }) {
-  const { editor, view, camera, noteId, catalog, progress, runningModel, error, onClose, onSeen, onFocusChange, besideDesignPanel, onRelated, onContinue, onKeep, onStop, onChat, chatTitle } = props
+  const { editor, view, camera, noteId, catalog, progress, task, runningModel, error, onClose, onSeen, onFocusChange, besideDesignPanel, onRelated, onContinue, onKeep, onStop, onChat, chatTitle, onOpenThread } =
+    props
   const rootRef = useRef<HTMLElement>(null)
   // 付箋（と関連する付箋）が変わったら読み直す
   useNodesVersion(editor)
@@ -115,7 +121,8 @@ export function AnswerPopover(props: {
     editor.getNode(id)?.type === 'note' ? [{ id, label: firstLine(questionText(editor, [id]), RELATED_LABEL_LENGTH) }] : [],
   )
   const questionChanged = answer ? questionText(editor, [noteId, ...(answer.questionIds ?? [])]) !== answer.question : false
-  const model = answer && !progress ? { model: answer.model, effort: answer.effort } : runningModel
+  const model = answer && !progress && !task ? { model: answer.model, effort: answer.effort } : runningModel
+  const working = Boolean(task || answer?.threadId)
   const label = model?.model ? settingLabel(catalog, { model: model.model, ...(model.effort ? { effort: model.effort as Effort } : {}) }) : ''
 
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
@@ -130,7 +137,7 @@ export function AnswerPopover(props: {
     <aside
       ref={rootRef}
       className="answer-popover"
-      aria-label="Claude の回答"
+      aria-label={working ? 'Claude の作業' : 'Claude の回答'}
       tabIndex={-1}
       style={{ left, top, width: POPOVER_WIDTH, maxHeight }}
       onKeyDown={onKeyDown}
@@ -138,12 +145,13 @@ export function AnswerPopover(props: {
       {...{ [OWN_KEYS_ATTRIBUTE]: '' }}
     >
       <div className="answer-popover-head">
-        <strong>回答</strong>
+        <strong>{working ? '作業' : '回答'}</strong>
         {label && <span className="answer-popover-model">{label}</span>}
       </div>
       <AnswerView
         answer={answer}
         progress={progress}
+        task={task ?? null}
         {...(error ? { error } : {})}
         questionChanged={questionChanged}
         related={related}
@@ -152,6 +160,7 @@ export function AnswerPopover(props: {
         onKeep={onKeep}
         {...(onStop ? { onStop } : {})}
         {...(onChat && answer ? { onChat, chatTitle: chatTitle ?? null } : {})}
+        {...(onOpenThread ? { onOpenThread } : {})}
       />
     </aside>
   )

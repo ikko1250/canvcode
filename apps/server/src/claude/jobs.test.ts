@@ -229,6 +229,48 @@ const queryAt = async (sdk: { queries: FakeQuery[] }, index: number) => {
 }
 
 describe('ClaudeJobs', () => {
+  it('runs a note task in a new thread with the note task system prompt and the materials before the instruction (docs/ai-note-tasks-plan.md)', async () => {
+    const sdk = replying(() => [assistant('s1', [{ type: 'text', text: '置きました' }])])
+    const jobs = makeJobs({ run: sdk.run })
+    const note = { noteId: 'node:n', canvasId: 'canvas:c' }
+    const job = jobs.start({ prompt: '表にして', canvasId: 'canvas:c', note, materials: '<canvas-places>…</canvas-places>' })
+    expect(job.note).toEqual(note)
+    const done = await finished(jobs, job.id)
+    expect(done).toMatchObject({ status: 'done', note })
+    const [q] = sdk.queries
+    expect(q.sent).toEqual(['<canvas-places>…</canvas-places>\n\n表にして'])
+    const append = (q.options.systemPrompt as { append: string }).append
+    expect(append).toContain('You were asked from an AI sticky note (node:n) on canvas canvas:c')
+    expect(append).toContain('Your last message is shown on the note as the report')
+    expect(append).not.toContain('chat panel')
+    expect(q.options.mcpServers).toMatchObject({ canvcode: { headers: { 'x-canvcode-thread': job.threadId } } })
+    // 付箋の作業しかない会話は、プロセスが残っている間は一覧に入る（作業のタブが使う）。閉じたら入らない
+    expect(jobs.threads().map((thread) => thread.threadId)).toEqual([job.threadId])
+    expect(jobs.threads()[0]).toMatchObject({ noteOnly: true, note })
+    await jobs.dispose()
+    expect(jobs.threads()).toEqual([])
+    expect(jobs.thread(job.threadId)!.jobs).toHaveLength(1)
+    // 付箋の作業は、続きの会話に入れられない
+    expect(() => jobs.start({ prompt: 'x', note, threadId: job.threadId })).toThrow(/新しい会話で始めます/)
+  })
+
+  it('reopens the process of a note task with the chat system prompt when the chat continues it, resuming the session', async () => {
+    const sdk = replying(() => [assistant('s1', [{ type: 'text', text: 'はい' }])])
+    const jobs = makeJobs({ run: sdk.run })
+    const note = { noteId: 'node:n', canvasId: 'canvas:c' }
+    const task = jobs.start({ prompt: '表にして', canvasId: 'canvas:c', note })
+    await finished(jobs, task.id)
+    const followed = jobs.start({ prompt: '列を足して', threadId: task.threadId })
+    expect(followed.note).toBeUndefined()
+    const second = await queryAt(sdk, 1)
+    expect(second.options.resume).toBe('s1')
+    expect((second.options.systemPrompt as { append: string }).append).toContain('chat panel')
+    await finished(jobs, followed.id)
+    // 会話から頼んだので、一覧に出る
+    expect(jobs.threads().find((thread) => thread.threadId === task.threadId)?.noteOnly).toBeUndefined()
+    await jobs.dispose()
+  })
+
   it('runs a prompt with the selected place in auto mode, and turns messages into events', async () => {
     const sdk = replying(() => [
       assistant('s1', [
@@ -265,7 +307,8 @@ describe('ClaudeJobs', () => {
     expect(options.tools).toContain('Agent')
     expect(options.tools).toContain('Skill')
     expect(options.skills).toBe('all')
-    expect(options.mcpServers).toEqual({ canvcode: { type: 'http', url: 'http://127.0.0.1:1/mcp', alwaysLoad: true } })
+    // MCP は、ヘッダーの会話の id を Canvas の編集の記録に残す
+    expect(options.mcpServers).toEqual({ canvcode: { type: 'http', url: 'http://127.0.0.1:1/mcp', headers: { 'x-canvcode-thread': job.threadId }, alwaysLoad: true } })
     expect(options.strictMcpConfig).toBe(true)
     expect(options.hooks?.PreToolUse).toHaveLength(1)
     expect(options.resume).toBeUndefined()

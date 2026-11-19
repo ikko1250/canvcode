@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { applyMat, type NodeRecord } from '@canvcode/core'
 import { richTextFromPlain } from '@canvcode/nodes'
 import {
+  AI_CORNER_ASKING_COLOR,
+  AI_CORNER_COLOR,
   AI_CORNER_HOVER_SCALE,
   AI_CORNER_MIN_ALPHA,
   AI_CORNER_SIZE,
@@ -127,7 +129,7 @@ describe('hitAiCorner', () => {
 describe('drawAiCorners', () => {
   // 描いた三角（デバイスのピクセル）と、そのときの不透明度
   function recorder() {
-    const shapes: { points: { x: number; y: number }[]; alpha: number }[] = []
+    const shapes: { points: { x: number; y: number }[]; alpha: number; color: string }[] = []
     let points: { x: number; y: number }[] = []
     const ctx = {
       globalAlpha: 1,
@@ -140,7 +142,7 @@ describe('drawAiCorners', () => {
       lineTo: (x: number, y: number) => points.push({ x, y }),
       closePath() {},
       fill() {
-        shapes.push({ points, alpha: ctx.globalAlpha })
+        shapes.push({ points, alpha: ctx.globalAlpha, color: ctx.fillStyle })
       },
     }
     return { ctx: ctx as unknown as CanvasRenderingContext2D, shapes }
@@ -167,6 +169,20 @@ describe('drawAiCorners', () => {
     expect(at(400).alpha).toBe(1)
     expect(at(1000).points[0]).toEqual({ x: 1000 - AI_CORNER_SIZE * 2, y: 0 })
     expect(at(1000).alpha).toBeCloseTo(AI_CORNER_MIN_ALPHA)
+    expect(shapes.every((shape) => shape.color === AI_CORNER_COLOR)).toBe(true)
+  })
+
+  it('draws the corner of a note whose task waits for a permission in the warning color', () => {
+    const editor = new Editor()
+    const asking = note(editor, { x: 0, y: 0 }, { answered: false })
+    const working = note(editor, { x: 300, y: 0 }, { answered: false })
+    editor.createNodes([asking, working])
+    const { ctx, shapes } = recorder()
+    const view = { camera: { x: 0, y: 0, zoom: 1 }, width: 1000, height: 800, dpr: 1 }
+    drawAiCorners(ctx, editor, view, { answeringIds: new Set([asking.id, working.id]), askingIds: new Set([asking.id]), hoveredId: null, now: 0 })
+    const at = (right: number) => shapes.find((shape) => shape.points[1]!.x === right)!
+    expect(at(200).color).toBe(AI_CORNER_ASKING_COLOR)
+    expect(at(500).color).toBe(AI_CORNER_COLOR)
   })
 })
 

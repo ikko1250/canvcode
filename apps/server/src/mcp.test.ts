@@ -108,6 +108,23 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
 }
 
 describe('MCP server', () => {
+  it('records the thread in the header (x-canvcode-thread) on the canvas edits it makes; ignores a header of another form', async () => {
+    const { url, records } = await setup()
+    const thread = '11111111-2222-4333-8444-555555555555'
+    const connect = async (headers: Record<string, string>) => {
+      const client = new Client({ name: 'job', version: '0.0.0' })
+      await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }))
+      cleanups.push(() => client.close())
+      return client
+    }
+    const job = await connect({ 'x-canvcode-thread': thread })
+    const made = await call(job, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'create', type: 'geo', x: 0, y: 0, w: 10, h: 10 }], label: '箱' })
+    expect(records.agentOpsOfThread(thread).map((op) => op.id)).toEqual([made.data.batch])
+    const odd = await connect({ 'x-canvcode-thread': 'not-a-thread' })
+    const other = await call(odd, 'edit_canvas', { canvas_id: records.rootCanvasId, ops: [{ op: 'create', type: 'geo', x: 50, y: 0, w: 10, h: 10 }] })
+    expect(records.getAgentOp(other.data.batch)!.threadId).toBeUndefined()
+  })
+
   it('lists the document tools', async () => {
     const { client } = await setup()
     const { tools } = await client.listTools()

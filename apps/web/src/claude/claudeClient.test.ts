@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   applyStreamMessage,
+  chatThreads,
   ClaudeClient,
   KEPT_FINISHED_QUESTIONS,
+  NoteTaskUndoError,
+  noteTaskPermissions,
+  runningNoteTasks,
   jobsOfThread,
   questionsOfThread,
   threadAsking,
@@ -207,7 +211,7 @@ describe('questions of a thread (asked from the chat without adding them to it)'
     const fetch = vi.fn(async () => new Response(JSON.stringify(replies.shift())))
     vi.stubGlobal('fetch', fetch)
     const client = Object.create(ClaudeClient.prototype) as ClaudeClient
-    Object.assign(client, { snapshot: state(), loading: new Set(), listeners: new Set() })
+    Object.assign(client, { snapshot: state(), loading: new Set(), gone: new Set(), listeners: new Set() })
     await client.loadThread('t')
     expect(client.state.chatQuestions.get('q1')).toMatchObject({ status: 'running' })
     expect(client.state.loaded.has('t')).toBe(true)
@@ -321,5 +325,86 @@ describe('questions waiting for an answer', () => {
       vi.useRealTimers()
       vi.unstubAllGlobals()
     }
+  })
+})
+
+// 付箋の作業（AI 付箋の文を指示にしたジョブ。docs/ai-note-tasks-plan.md）
+describe('note tasks', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+  const note = { noteId: 'node:n', canvasId: 'canvas:c' }
+  const bare = (snapshot: ClaudeState) => {
+    const client = Object.create(ClaudeClient.prototype) as ClaudeClient
+    Object.assign(client, { snapshot, loading: new Set(), gone: new Set(), listeners: new Set() })
+    return client
+  }
+
+  it('leaves threads with only note tasks out of the chat threads, except the chosen one', () => {
+    const s = state({ threads: [thread('a', 3), thread('task', 2, { note, noteOnly: true }), thread('b', 1, { note })] })
+    expect(chatThreads(s).map((t) => t.threadId)).toEqual(['a', 'b'])
+    expect(chatThreads(s, 'task').map((t) => t.threadId)).toEqual(['a', 'task', 'b'])
+  })
+
+  it('finds the running note tasks and the permissions they wait for', () => {
+    const s = state({
+      jobs: new Map([
+        ['x', job('x', { createdAt: 2, note })],
+        ['y', job('y', { createdAt: 1, note: { noteId: 'node:m', canvasId: 'canvas:c' } })],
+        ['done', job('done', { status: 'done', note })],
+        ['chat', job('chat')],
+      ]),
+      threads: [
+        thread('x', 1, { note, noteOnly: true, permissions: [permission] }),
+        thread('chat', 1, { permissions: [{ ...permission, id: 'p2' }] }),
+        // 会話から続けて頼んだ付箋の作業の会話は、会話のタブで答える
+        thread('continued', 1, { note, permissions: [{ ...permission, id: 'p3' }] }),
+      ],
+    })
+    expect(runningNoteTasks(s).map((j) => j.id)).toEqual(['y', 'x'])
+    expect(noteTaskPermissions(s)).toEqual([{ ...permission, threadId: 'x', note }])
+  })
+
+  it('starts a note task and keeps its job; throws the undo summary when the last changes could not be undone', async () => {
+    const created = job('j', { note })
+    const replies: [number, unknown][] = [
+      [201, { job: created, undone: [{ batch: 'ai-1', label: '置く' }] }],
+      [409, { error: '前の変更「動かす」を戻せなかった', undone: [{ batch: 'ai-2', label: '足す' }], failed: { batch: 'ai-3', label: '動かす', reason: 'Conflict' }, left: [] }],
+      [429, { error: '同時に動かせるのは 2 つまでです' }],
+    ]
+    const fetch = vi.fn(async () => {
+      const [status, body] = replies.shift()!
+      return new Response(JSON.stringify(body), { status })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const client = bare(state())
+    const request = { noteId: 'node:n', canvasId: 'canvas:c', instruction: '表にして', undo: true, lastThreadId: 't' }
+    await expect(client.startNoteTask(request)).resolves.toEqual({ job: created, undone: [{ batch: 'ai-1', label: '置く' }] })
+    expect(client.state.jobs.get('j')).toEqual(created)
+    expect(client.state.threads).toEqual([])
+    expect(fetch.mock.calls[0]).toEqual(['/api/claude/note-tasks', expect.objectContaining({ method: 'POST', body: JSON.stringify(request) })])
+    const failure = await client.startNoteTask(request).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(NoteTaskUndoError)
+    expect(failure).toMatchObject({ message: '前の変更「動かす」を戻せなかった', undone: [{ batch: 'ai-2', label: '足す' }], failed: { label: '動かす' } })
+    await expect(client.startNoteTask(request)).rejects.toThrow('同時に動かせるのは 2 つまでです')
+  })
+
+  it('adds a thread that is not in the list when it is read (a note task opened from the note), and does not ask again for a thread that is gone', async () => {
+    const replies: [number, unknown][] = [
+      [200, { thread: thread('task', 5, { note, noteOnly: true }), jobs: [job('task', { status: 'done', note })], questions: [] }],
+      [404, { error: 'その会話はもうありません' }],
+    ]
+    const fetch = vi.fn(async () => {
+      const [status, body] = replies.shift()!
+      return new Response(JSON.stringify(body), { status })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const client = bare(state({ threads: [thread('a', 9)] }))
+    await client.loadThread('task')
+    expect(client.state.threads.map((t) => t.threadId)).toEqual(['a', 'task'])
+    expect(client.state.loaded.has('task')).toBe(true)
+    await client.loadThread('deleted')
+    await client.loadThread('deleted')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 })

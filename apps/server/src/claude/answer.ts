@@ -523,7 +523,7 @@ export function parseAnswerRequest(body: unknown): AnswerRequest {
 }
 
 // 前の質問と答え（古い方から MAX_PREVIOUS 個）。合計が長ければ古いものから落とし、それでも長ければ、残った 1 つの答えの後ろを切る
-function parsePrevious(value: unknown): PreviousTurn[] {
+export function parsePrevious(value: unknown): PreviousTurn[] {
   if (value === undefined) return []
   if (!Array.isArray(value)) throw new JobError(400, 'invalid previous')
   const turns = value.slice(-MAX_PREVIOUS).map((item): PreviousTurn => {
@@ -539,7 +539,7 @@ function parsePrevious(value: unknown): PreviousTurn[] {
 }
 
 // 添えたキャンバスの一部（{ label, refId }。MAX_REFS 個まで）
-function parseRefs(value: unknown): { label: string; refId: string }[] {
+export function parseRefs(value: unknown): { label: string; refId: string }[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > MAX_REFS) throw new JobError(400, `invalid refs（${MAX_REFS} 個まで）`)
   return value.map((item) => {
@@ -550,7 +550,7 @@ function parseRefs(value: unknown): { label: string; refId: string }[] {
 }
 
 // 関連する付箋の候補（{ id, text }。MAX_CANDIDATES 個まで）。文字は 1 行にして MAX_CANDIDATE_LENGTH で切り、空のもの・重なる id は落とす
-function parseCandidates(value: unknown): AnswerCandidate[] {
+export function parseCandidates(value: unknown): AnswerCandidate[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > MAX_CANDIDATES) throw new JobError(400, `invalid candidates（${MAX_CANDIDATES} 個まで）`)
   const seen = new Set<string>()

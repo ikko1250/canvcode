@@ -19,7 +19,6 @@ const LINES = [
   { text: 'pus of text. It works well.', y: 670 },
   { text: 'Results are shown in Table 2.', y: 600 },
 ]
-const ANSWER = { body: '答え', related: [] as string[], model: 'claude-sonnet-5-5' }
 
 // Helvetica（埋め込まない標準フォント）で文字を書いた 1 ページの PDF
 function textPdf(): Buffer {
@@ -76,9 +75,13 @@ async function openApp(page: Page, sent: { refs: Record<string, unknown>[]; asks
   await page.route('**/api/claude/events', (route) => route.fulfill({ status: 204 }))
   await page.route('**/api/claude/models', (route) => route.fulfill({ json: { models: [], default: {}, fromClaude: false } }))
   await page.route('**/api/claude/questions*', (route) => route.fulfill({ json: { questions: [] } }))
-  await page.route('**/api/claude/answer', async (route) => {
-    sent.asks.push(route.request().postDataJSON() as Record<string, unknown>)
-    await route.fulfill({ json: ANSWER })
+  // 付箋の作業を頼む（docs/ai-note-tasks-plan.md）。送ったものを集め、その付箋の作業のジョブを返す
+  await page.route('**/api/claude/note-tasks', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    sent.asks.push(body)
+    const id = '11111111-2222-4333-8444-555555555555'
+    const job = { id, threadId: id, prompt: body.instruction, status: 'done', createdAt: 0, note: { noteId: body.noteId, canvasId: body.canvasId }, eventCount: 0, events: [] }
+    await route.fulfill({ status: 201, json: { job } })
   })
   await page.route('**/api/refs', async (route) => {
     sent.refs.push(route.request().postDataJSON() as Record<string, unknown>)

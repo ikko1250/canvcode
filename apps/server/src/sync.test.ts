@@ -80,6 +80,41 @@ const node = (id: string, parentId: string, props: Record<string, unknown> = {},
 const quote = (id: string, parentId: string, anchorId: string, memo = '') => node(id, parentId, { anchorId, memo, quote: '引用した文\n2 行目' }, 'quote-card')
 
 describe('SyncHub', () => {
+  it('lets a guard fix what a tab pushes before saving, relays the fixed record, and sends it back to the pushing tab after the ack', async () => {
+    const { records, hub, base } = await setup()
+    const root = records.rootCanvasId
+    records.apply([node('node:n', root, { kept: 'server' })], [])
+    // サーバーが持つ欄（ここでは props.kept）を、保存してある方から引き継ぐ
+    hub.setGuard((record, stored) => {
+      const kept = (stored?.props as Record<string, unknown> | undefined)?.kept
+      const props = record.props as Record<string, unknown>
+      return kept === undefined || props.kept === kept ? record : { ...record, props: { ...props, kept } }
+    })
+    const writer = await connect(base)
+    writer.send({ type: 'hello', since: records.rev })
+    await writer.next('changes')
+    const reader = await connect(base)
+    reader.send({ type: 'hello', since: records.rev })
+    await reader.next('changes')
+
+    writer.send({ type: 'push', seq: 1, puts: [node('node:n', root, { kept: 'stale', text: '書いた' }), node('node:m', root, {})], deletes: [] })
+    // 送ったタブには、ack のあとに直したものだけを送る（直していない node:m は送り返さない）
+    await writer.next('ack')
+    const fixed = await writer.next('changes')
+    expect(records.get('node:n')!.props).toEqual({ kept: 'server', text: '書いた' })
+    expect(fixed.records.map((r: { id: string; props: unknown }) => [r.id, r.props])).toEqual([['node:n', { kept: 'server', text: '書いた' }]])
+    expect(await writer.drain()).toEqual([])
+    // ほかのタブには、直したものを中継する
+    const relayed = await reader.next('changes')
+    expect(relayed.records.find((r: { id: string }) => r.id === 'node:n').props).toEqual({ kept: 'server', text: '書いた' })
+
+    // 見張りを外すと、受けたものをそのまま保存する
+    hub.setGuard(null)
+    writer.send({ type: 'push', seq: 2, puts: [node('node:n', root, { kept: 'stale' })], deletes: [] })
+    await writer.next('ack')
+    expect(records.get('node:n')!.props).toEqual({ kept: 'stale' })
+  })
+
   it('reads the list records and the requested canvases over HTTP, with citations and the canvas of a record', async () => {
     const { records, base } = await setup()
     const root = records.rootCanvasId
