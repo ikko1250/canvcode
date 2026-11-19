@@ -133,7 +133,8 @@ export interface ToolContext {
   openAnswer?(noteId: string): void
 }
 
-export type WordSelectionEvent = { phase: 'move' | 'end'; pageId: string; from: Vec; to: Vec; screen: Vec } | { phase: 'cancel' }
+// pick は、AI 付箋の添える所を選んでいる間の Ctrl（⌘）+ドラッグでなぞっているとき（離したら、選んだ文字を添える）
+export type WordSelectionEvent = { phase: 'move' | 'end'; pageId: string; from: Vec; to: Vec; screen: Vec; pick?: true } | { phase: 'cancel' }
 
 // 選択しているノードのハンドル（画面上の位置）。描画と当たり判定で同じものを使う（MAI-23）
 export function selectionHandles(editor: Editor): { selection: TransformSelection; handles: ScreenHandles } | null {
@@ -271,8 +272,9 @@ type SelectState =
   | { name: 'pointingCanvas'; start: ToolPointer; initial: ReadonlySet<string>; nodeId?: string; excludeId?: string }
   // 引用する範囲を選んでいる（Alt+ドラッグ、または「範囲を選んで引用」のあとのドラッグ。MAI-33）。start はページのローカル座標
   | { name: 'selectingQuote'; pageId: string; start: Vec; rect: Box | null }
-  // 調べる語をなぞっている（MAI-99）。start・current はページの中の割合
-  | { name: 'selectingWords'; pageId: string; start: Vec; current: Vec }
+  // 調べる語をなぞっている（MAI-99）。start・current はページの中の割合。
+  // pick は、AI 付箋の添える所をなぞっているとき（押した画面の位置と、少しでも動かしたか。動かさずに離したら添えない）
+  | { name: 'selectingWords'; pageId: string; start: Vec; current: Vec; pick?: { screen: Vec; moved: boolean } }
   // excludeId は、Ctrl（⌘）を押してドラッグを始めたノード。範囲に入っても選ばない
   | { name: 'brushing'; start: ToolPointer; initial: ReadonlySet<string>; additive: boolean; excludeId?: string }
   | {
@@ -367,6 +369,18 @@ export class SelectTool implements Tool {
       }
       this.ctx.setCursor(null)
       this.ctx.wordSelection?.({ phase: 'cancel' })
+    }
+    // AI 付箋の添える所を選んでいる間は、PDF のページの上の Ctrl（⌘）+ドラッグで、文字を読む順になぞって添える。
+    // ページは固定したノードなので、ふつうのドラッグがもう範囲選択になる（docs/ai-note-pick-text-plan.md）
+    if (editor.session.get().pickingContext && (pointer.ctrlKey || pointer.metaKey)) {
+      const entry = this.pdfPageAt(pointer.world)
+      if (entry) {
+        const start = pageFraction(entry, pointer.world)
+        this.state = { name: 'selectingWords', pageId: entry.node.id, start, current: start, pick: { screen: pointer.screen, moved: false } }
+        editor.session.set({ hoveredId: null })
+        this.ctx.setCursor('text')
+        return
+      }
     }
     // PDF のページの上の Alt+ドラッグ（または「範囲を選んで引用」のあと）は、引用する範囲の選択（MAI-33）
     const armed = editor.session.get().quoteArmed
@@ -546,9 +560,11 @@ export class SelectTool implements Tool {
         const hit = editor.hitTest(pointer.world, HIT_MARGIN_PX / zoom)
         // 引用の範囲を選ぶ前は十字、調べる語をなぞる前は文字を選ぶカーソル（MAI-99）、
         // PDF のページの上の引用した範囲の上では指のカーソル（MAI-33）
+        // AI 付箋の添える所を選んでいる間は、PDF のページの上で Ctrl（⌘）を押していれば、なぞれることを見せる
+        const pickText = editor.session.get().pickingContext && (pointer.ctrlKey || pointer.metaKey) && this.pdfPageAt(pointer.world) !== undefined
         const cursor = editor.session.get().quoteArmed
           ? 'crosshair'
-          : editor.session.get().wordLookupArmed
+          : editor.session.get().wordLookupArmed || pickText
             ? 'text'
             : !hit && editor.citationsAt(pointer.world).length > 0
               ? 'pointer'
@@ -582,8 +598,14 @@ export class SelectTool implements Tool {
       case 'selectingWords': {
         const entry = editor.index.get(state.pageId)
         if (!entry) return
+        if (state.pick && !state.pick.moved) {
+          // 添える所のなぞりは、少し動かしてから始める（クリックでは 1 語を選ばない）
+          if (dist(pointer.screen, state.pick.screen) < DRAG_THRESHOLD_PX) return
+          state.pick.moved = true
+          this.hasWordSelection = true
+        }
         state.current = pageFraction(entry, pointer.world)
-        this.ctx.wordSelection?.({ phase: 'move', pageId: state.pageId, from: state.start, to: state.current, screen: pointer.screen })
+        this.ctx.wordSelection?.({ phase: 'move', pageId: state.pageId, from: state.start, to: state.current, screen: pointer.screen, ...(state.pick ? { pick: true as const } : {}) })
         return
       }
       case 'selectingQuote': {
@@ -763,11 +785,18 @@ export class SelectTool implements Tool {
       // PDF のページの上の、引用した範囲をクリックした（MAI-33）
       const anchors = editor.citationsAt(pointer.world)
       if (anchors.length > 0) this.ctx.openCitations(anchors, pointer.screen)
+    } else if (state.name === 'selectingWords' && state.pick && (!state.pick.moved || pointer.cancelled)) {
+      // 添える所のなぞりを、動かさずに離した（クリック）か、ブラウザが取り消した：添えない
+      this.ctx.setCursor(null)
+      if (this.hasWordSelection) {
+        this.hasWordSelection = false
+        this.ctx.wordSelection?.({ phase: 'cancel' })
+      }
     } else if (state.name === 'selectingWords') {
       const entry = editor.index.get(state.pageId)
       const to = entry ? pageFraction(entry, pointer.world) : state.current
       this.ctx.setCursor(null)
-      this.ctx.wordSelection?.({ phase: 'end', pageId: state.pageId, from: state.start, to, screen: pointer.screen })
+      this.ctx.wordSelection?.({ phase: 'end', pageId: state.pageId, from: state.start, to, screen: pointer.screen, ...(state.pick ? { pick: true as const } : {}) })
     } else if (state.name === 'selectingQuote') {
       const entry = editor.index.get(state.pageId)
       const rect = state.rect

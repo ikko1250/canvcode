@@ -59,8 +59,9 @@ export function canvasRefTarget(source: CanvasRefSource): CanvasRefTarget | null
 }
 
 // 範囲選択の枠が一部にかかった PDF のページと、ページの中の範囲（割合）。
-// 枠を使わないとき（選んだノードを囲む箱）や、ページのほぼ全体を囲んだときは付けない（ページ全体の文字はサーバーが返す）
-export function pdfRegionRequests(source: CanvasRefSource): PdfRegionRequest[] {
+// 枠を使わないとき（選んだノードを囲む箱）や、ページのほぼ全体を囲んだときは付けない（ページ全体の文字はサーバーが返す）。
+// wholePages なら、ページのほぼ全体を囲んだときもページ全体（0〜1）を付ける（AI 付箋に添えるとき。付箋で答える Claude はファイルを読めない）
+export function pdfRegionRequests(source: CanvasRefSource, options: { wholePages?: boolean } = {}): PdfRegionRequest[] {
   const brush = activeBrush(source)
   if (!brush) return []
   const out: PdfRegionRequest[] = []
@@ -72,7 +73,12 @@ export function pdfRegionRequests(source: CanvasRefSource): PdfRegionRequest[] {
     const x1 = clamp01((brush.rect.x + brush.rect.w - bounds.x) / bounds.w)
     const y1 = clamp01((brush.rect.y + brush.rect.h - bounds.y) / bounds.h)
     const area = (x1 - x0) * (y1 - y0)
-    if (!(area > 0) || area >= WHOLE_PAGE) continue
+    if (!(area > 0)) continue
+    if (area >= WHOLE_PAGE) {
+      if (options.wholePages) out.push({ nodeId: page.id, assetId: page.assetId, fileId: page.fileId, pageIndex: page.pageIndex, rect: { x: 0, y: 0, w: 1, h: 1 } })
+      if (out.length >= MAX_PDF_REGIONS) break
+      continue
+    }
     const r = (n: number) => Math.round(n * 10000) / 10000
     const rect = { x: r(x0), y: r(y0), w: r(x1 - x0), h: r(y1 - y0) }
     // 丸めで 1 をわずかに超えないように

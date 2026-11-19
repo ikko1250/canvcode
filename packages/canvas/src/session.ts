@@ -51,6 +51,8 @@ export interface SessionState {
   wordLookupArmed: boolean
   // 調べる語のハイライト（行ごとの箱。ワールド座標）。なぞっている間と、調べた結果の吹き出しを閉じるまで出しておく
   wordHighlight: readonly Box[] | null
+  // AI 付箋の添える所を選んでいる間（AiNoteControls が立てる）。PDF のページの上の Ctrl（⌘）+ドラッグを、文字をなぞって添えるものにする
+  pickingContext: boolean
   // フリーハンドで描く線の色・太さ（MAI-27）と透過率（0〜1 の不透明度。MAI-49）
   drawStyle: DrawStyle
   // 矢印の色・太さ・矢じり（MAI-28）
@@ -109,6 +111,7 @@ export class Session {
       quoteArmed: false,
       wordLookupArmed: false,
       wordHighlight: null,
+      pickingContext: false,
       // フリーハンドの既定は赤・透過率 50%（MAI-49）
       drawStyle: { color: '#e03131', size: 4, opacity: 0.5 },
       arrowStyle: { color: '#1f2328', size: 3, arrowheadStart: 'none', arrowheadEnd: 'arrow' },

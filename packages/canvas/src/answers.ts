@@ -1,4 +1,4 @@
-import { boxesIntersect, indicesBetween, unionBoxes, type Box, type CanvasRefTarget, type NodeRecord, type Transaction, type Vec, type WorkspaceRecord } from '@canvcode/core'
+import { boxesIntersect, indicesBetween, unionBoxes, type Box, type CanvasRefTarget, type NodeRecord, type PdfRefTarget, type Transaction, type Vec, type WorkspaceRecord } from '@canvcode/core'
 import {
   baseFormatOf,
   noteHeight,
@@ -52,12 +52,13 @@ export interface AiAnswer {
 }
 
 // AI 付箋に添えるもの。answer は前の答え（続き。turns は「続けて聞く」を押したときの写し）、
-// canvas は選んだ所（送るときに ref にする。ref は 3 日で消えるので、範囲を持っておく）、
+// canvas は選んだ所（送るときに ref にする。ref は 3 日で消えるので、範囲を持っておく）。target は、範囲（矩形）かノードなら Canvas の範囲、
+// PDF のページの上でなぞった文字なら PDF の範囲（docs/ai-note-pick-text-plan.md）、
 // chat は会話の答え（会話のタブの「付箋に切り出す」。turns は、切り出したときの頼んだ文と答えの写し。docs/claude-chat-tab-plan.md の 5）。
 // 会話の質問（会話に入れずに聞いたもの）の「続けて聞く」も chat にする（jobId の代わりに questionId。会話の外で聞いたものは threadId もない）
 export type AiContext =
   | { kind: 'answer'; noteId: string; canvasId: string; label: string; turns: PreviousTurn[] }
-  | { kind: 'canvas'; label: string; target: CanvasRefTarget }
+  | { kind: 'canvas'; label: string; target: CanvasRefTarget | PdfRefTarget }
   | { kind: 'chat'; threadId?: string; jobId?: string; questionId?: string; label: string; turns: PreviousTurn[] }
 
 export interface AiNoteMeta {
@@ -346,7 +347,11 @@ function contextOf(value: unknown): AiContext[] {
   const context = value as Record<string, unknown>
   const label = typeof context.label === 'string' ? context.label : ''
   if (context.kind === 'canvas' && typeof context.target === 'object' && context.target !== null) {
-    return [{ kind: 'canvas', label, target: context.target as CanvasRefTarget }]
+    const target = context.target as Record<string, unknown>
+    if (target.kind !== 'pdf') return [{ kind: 'canvas', label, target: context.target as CanvasRefTarget }]
+    const { fileId, pageIndex, rect, text } = target
+    if (typeof fileId !== 'string' || typeof pageIndex !== 'number' || typeof rect !== 'object' || rect === null || typeof text !== 'string') return []
+    return [{ kind: 'canvas', label, target: context.target as PdfRefTarget }]
   }
   if (context.kind === 'answer' && typeof context.noteId === 'string' && typeof context.canvasId === 'string') {
     const turns = turnsOf(context.turns)
@@ -357,6 +362,28 @@ function contextOf(value: unknown): AiContext[] {
     return [{ kind: 'chat', ...id('threadId'), ...id('jobId'), ...id('questionId'), label, turns: turnsOf(context.turns) }]
   }
   return []
+}
+
+// PDF のページの上でなぞった文字を添えるときの名前（「Claude に頼む…」の名前と同じ書き方）
+export function pdfPlaceLabel(target: Pick<PdfRefTarget, 'pageIndex' | 'text'>): string {
+  const line = target.text.replace(/\s+/g, ' ').trim()
+  return `PDF の ${target.pageIndex + 1} ページ「${line.length > PLACE_LABEL_LENGTH ? `${line.slice(0, PLACE_LABEL_LENGTH)}…` : line}」`
+}
+
+const PLACE_LABEL_LENGTH = 16
+
+// 添えるものが同じか（前の答え・会話の答えは同じ答え、選んだ所は同じノードと範囲か、同じ PDF の同じ文字）
+export function sameAiContext(a: AiContext, b: AiContext): boolean {
+  if (a.kind === 'answer' && b.kind === 'answer') return a.noteId === b.noteId
+  if (a.kind === 'chat' && b.kind === 'chat') return a.jobId === b.jobId && a.questionId === b.questionId
+  if (a.kind !== 'canvas' || b.kind !== 'canvas') return false
+  const x = a.target
+  const y = b.target
+  if (x.kind === 'pdf' || y.kind === 'pdf') {
+    return x.kind === 'pdf' && y.kind === 'pdf' && x.fileId === y.fileId && x.pageIndex === y.pageIndex && x.text === y.text && JSON.stringify(x.rect) === JSON.stringify(y.rect)
+  }
+  const ids = (target: CanvasRefTarget) => target.nodes.map((node) => node.id).sort().join(',')
+  return ids(x) === ids(y) && JSON.stringify(x.rect) === JSON.stringify(y.rect)
 }
 
 function turnsOf(value: unknown): PreviousTurn[] {

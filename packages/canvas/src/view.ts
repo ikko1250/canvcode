@@ -20,6 +20,7 @@ import {
   type CanvasRefTarget,
   type LinesRefTarget,
   type NodeRecord,
+  type PdfRefTarget,
   type PdfRegion,
   type RefTarget,
   type Vec,
@@ -241,6 +242,8 @@ export class CanvasView {
   private wordDrag: { pageId: string; from: Vec; to: Vec } | null = null
   // なぞったあとに、語を調べる（MAI-99）か、選んだ文字を引用・コピー・AI に渡す（MAI-103）か
   private wordPurpose: 'lookup' | 'text' = 'lookup'
+  // AI 付箋の添える所を選んでいる間に、PDF のページの上でなぞった文字を受け取るもの（onTextPick。AiNoteControls）
+  private readonly textPickListeners = new Set<(target: PdfRefTarget) => void>()
   private charWidths: CharWidths | null = null
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
@@ -567,7 +570,7 @@ export class CanvasView {
     const { drawStyle, arrowStyle } = this.editorRef.session.get()
     this.clearSearch()
     this.wordDrag = null
-    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, wordLookupArmed: false, wordHighlight: null, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null, hoveredAiCorner: null })
+    this.editorRef.session.set({ hoveredId: null, brush: null, lastBrush: null, quoteRegion: null, quoteArmed: false, wordLookupArmed: false, wordHighlight: null, pickingContext: false, hoveredSpacing: null, spacingDrag: null, cornerHandlesId: null, hoveredAiCorner: null })
     this.editorRef = editor
     // ほかの Canvas の画像は、最近使ったものを少しだけ残して捨てる（戻ったときにすぐ見えるように。MAI-66）
     this.images.trim(IMAGE_CACHE_KEEP_ON_SWITCH_BYTES)
@@ -1184,6 +1187,12 @@ export class CanvasView {
     const page = editor.getNode(drag.pageId)
     if (page?.type !== 'pdf-page') return this.clearWordHighlight()
     const props = page.props as PdfPageProps
+    if (event.pick) {
+      // AI 付箋に添える所（選んだ文字。改行は入れない）。ハイライトは、次に押すか、選ぶ状態を抜けるまで残す
+      const target: PdfRefTarget = { kind: 'pdf', fileId: props.fileId, pageIndex: props.pageIndex, rect: selected.rect, text: joinLines(selected.words.text) }
+      for (const listener of [...this.textPickListeners]) listener(target)
+      return
+    }
     const camera = editor.session.get().camera
     const bounds = this.root.getBoundingClientRect()
     const union = unionBoxes(selected.world)
@@ -1593,6 +1602,24 @@ export class CanvasView {
       return this.options.notify(image ? 'コピーできませんでした。「画像として保存」を使ってください' : '画像を作れませんでした（範囲の中に描くものがないか、描けませんでした）')
     }
     if (image) this.options.notify(`画像をコピーしました（${imageNote(image)}）`)
+  }
+
+  // AI 付箋の添える所を選んでいる間（セッションの pickingContext）に、PDF のページの上を Ctrl（⌘）+ドラッグでなぞった文字を受け取る。
+  // 返した関数でやめる
+  onTextPick(listener: (target: PdfRefTarget) => void): () => void {
+    this.textPickListeners.add(listener)
+    return () => this.textPickListeners.delete(listener)
+  }
+
+  // AI 付箋に添える Canvas の範囲（canvasReference と同じ）。範囲選択の枠がかかった PDF のページには、その範囲の文字を付ける。
+  // 付箋で答える Claude はファイルを読めないので、ページのほぼ全体を囲んだときも、ページ全体の文字を付ける（docs/ai-note-pick-text-plan.md の 3）。
+  // 範囲と選んでいるものは、呼んだときのものを使う
+  async canvasReferenceWithText(): Promise<CanvasRefTarget | null> {
+    const source = this.canvasRefSource()
+    const target = canvasRefTarget(source)
+    if (!target) return null
+    const requests = pdfRegionRequests(source, { wholePages: true })
+    return requests.length > 0 ? this.withPdfRegions(target, requests) : target
   }
 
   // 今の Canvas の範囲を AI に渡す。範囲がなければ、そう知らせる
