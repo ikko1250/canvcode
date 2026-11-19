@@ -219,8 +219,9 @@ test('動かさずに Ctrl+クリックしただけでは添えない。同じ�
   await expect.poll(() => selection(page)).toEqual([noteId])
 })
 
-test('修飾キーなしで PDF のページの一部を範囲で囲むと、1 か所で抜け、その範囲の文字を添える。ほぼ全体を囲むと、ページ全体の文字を添える', async ({ page }) => {
-  const noteId = await openApp(page, { refs: [], asks: [] })
+test('修飾キーなしで PDF のページの一部を範囲で囲むと、1 か所で抜ける。送ると、その範囲の文字を ref に付ける。ほぼ全体を囲むと、ページ全体の文字', async ({ page }) => {
+  const sent = { refs: [] as Record<string, any>[], asks: [] as Record<string, unknown>[] }
+  const noteId = await openApp(page, sent)
   await startPicking(page, noteId)
   // 1・2 行目を囲む（付箋にはかからない）
   await drag(page, await screenAt(page, 60, LINES[0]!.y + FONT * 1.2), await screenAt(page, 480, LINES[1]!.y - FONT * 0.6))
@@ -229,10 +230,11 @@ test('修飾キーなしで PDF のページの一部を範囲で囲むと、1 �
   await expect.poll(() => selection(page)).toEqual([noteId])
   const [area] = await contextsOf(page, noteId)
   expect(area).toMatchObject({ kind: 'canvas', label: '1 個のノード', target: { kind: 'canvas', canvasId: CANVAS_ID } })
-  expect(area.target.nodes).toHaveLength(1)
-  expect(area.target.nodes[0]).toMatchObject({ id: 'node:page0', pdf: { fileId: FILE_ID, pageIndex: 0 } })
-  expect(area.target.nodes[0].pdf.text).toContain('The model was trained on a large corpus of text.')
-  expect(area.target.nodes[0].pdf.text).not.toContain('Results')
+  expect(area.target.nodes.map((node: { id: string }) => node.id)).toEqual(['node:page0'])
+  // 付箋には、ページの中の範囲だけを持つ（文字は送るときに読む）
+  expect(area.regions).toHaveLength(1)
+  expect(area.regions[0]).toMatchObject({ nodeId: 'node:page0', fileId: FILE_ID, pageIndex: 0 })
+  expect(area.regions[0].rect.h).toBeLessThan(0.2)
 
   // ページのほぼ全体を囲む（付箋も入るが、付箋自身は添えない）
   await page.locator('.ai-note-attach').click()
@@ -241,6 +243,77 @@ test('修飾キーなしで PDF のページの一部を範囲で囲むと、1 �
   await expect(page.locator('.ai-note-attach-count')).toHaveText('2')
   const [, whole] = await contextsOf(page, noteId)
   expect(whole.target.nodes.map((node: { id: string }) => node.id)).toEqual(['node:page0'])
-  expect(whole.target.nodes[0].pdf).toMatchObject({ rect: { x: 0, y: 0, w: 1, h: 1 } })
-  expect(whole.target.nodes[0].pdf.text).toContain('Results are shown in Table 2.')
+  expect(whole.regions).toEqual([expect.objectContaining({ nodeId: 'node:page0', rect: { x: 0, y: 0, w: 1, h: 1 } })])
+
+  // 送ると、範囲の文字を読んで ref のノードに付ける
+  await page.locator('.ai-note-send').click()
+  await expect.poll(() => sent.asks.length).toBe(1)
+  expect(sent.refs).toHaveLength(2)
+  const first = sent.refs[0]!.nodes[0].pdf
+  expect(first).toMatchObject({ fileId: FILE_ID, pageIndex: 0 })
+  expect(first.text).toContain('The model was trained on a large corpus of text.')
+  expect(first.text).not.toContain('Results')
+  expect(sent.refs[1]!.nodes[0].pdf.text).toContain('Results are shown in Table 2.')
+})
+
+test('Ctrl を押したまま範囲で囲んで添えたあと、Ctrl+クリックや Undo で、選んでいないものを添えない', async ({ page }) => {
+  const noteId = await openApp(page, { refs: [], asks: [] })
+  await startPicking(page, noteId)
+  await page.keyboard.down('Control')
+  // 1・2 行目を、ページの外の左から囲む（Ctrl を押していても、ページの外から始めれば範囲選択）
+  await drag(page, await screenAt(page, -20, LINES[0]!.y + FONT * 1.2), await screenAt(page, 480, LINES[1]!.y - FONT * 0.6))
+  await expect(page.locator('.ai-note-attach-count')).toHaveText('1')
+  await expect(page.locator('.ai-note-picking')).toBeVisible()
+  // 添えたら、付箋を選び直しておく
+  await expect.poll(() => selection(page)).toEqual([noteId])
+  // 何もない所を Ctrl+クリックしても、添えない
+  const empty = await screenAt(page, PAGE.width + 40, 400)
+  await page.mouse.click(empty.x, empty.y)
+  await page.waitForTimeout(200)
+  expect(await contextsOf(page, noteId)).toHaveLength(1)
+  // Ctrl+Z で添えたことを戻しても、もう一度は添えない
+  await page.keyboard.press('z')
+  await expect.poll(() => contextsOf(page, noteId)).toEqual([])
+  await page.waitForTimeout(200)
+  expect(await contextsOf(page, noteId)).toEqual([])
+  await page.keyboard.up('Control')
+  await expect(page.locator('.ai-note-picking')).toHaveCount(0)
+})
+
+test('2 か所目をなぞっている途中で Ctrl を離すと、そのなぞりを添えてから抜ける。なぞっている途中の Esc は、何も添えず、ハイライトも残さない', async ({ page }) => {
+  const noteId = await openApp(page, { refs: [], asks: [] })
+  await startPicking(page, noteId)
+  await page.keyboard.down('Control')
+  await drag(page, await lineAt(page, 72 + 45, 0), await lineAt(page, 72 + 84, 1))
+  await expect(page.locator('.ai-note-attach-count')).toHaveText('1')
+  // 2 か所目：押して動かし、離す前に Ctrl を離す
+  const from = await lineAt(page, 72 + 4, 2)
+  const to = await lineAt(page, 72 + 80, 2)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move((from.x + to.x) / 2, from.y, { steps: 4 })
+  await page.keyboard.up('Control')
+  await expect(page.locator('.ai-note-picking')).toBeVisible()
+  await page.mouse.move(to.x, to.y, { steps: 4 })
+  await page.mouse.up()
+  await expect(page.locator('.ai-note-attach-count')).toHaveText('2')
+  await expect(page.locator('.ai-note-picking')).toHaveCount(0)
+  await expect.poll(() => selection(page)).toEqual([noteId])
+  await expect.poll(() => wordHighlight(page)).toBeNull()
+  expect((await contextsOf(page, noteId))[1]).toMatchObject({ target: { text: 'Results are' } })
+
+  // なぞっている途中で Esc
+  await page.locator('.ai-note-attach').click()
+  await page.keyboard.down('Control')
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move((from.x + to.x) / 2, from.y, { steps: 4 })
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.ai-note-picking')).toHaveCount(0)
+  await page.mouse.move(to.x, to.y, { steps: 4 })
+  await page.mouse.up()
+  await page.keyboard.up('Control')
+  await page.waitForTimeout(200)
+  expect(await contextsOf(page, noteId)).toHaveLength(2)
+  expect(await wordHighlight(page)).toBeNull()
 })

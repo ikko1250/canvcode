@@ -102,11 +102,12 @@ describe('PDF pages in a brush', () => {
 
   // AI 付箋に添えるとき（付箋で答える Claude はファイルを読めないので、ページ全体の文字も要る）
   it('adds the whole page for a page the brush almost covers, with wholePages', () => {
-    const half = { ...page, id: 'node:half', pageIndex: 3 }
-    const requests = pdfRegionRequests(brushed({ x: 90, y: 990, w: 700, h: 900 }, [page, half]), { wholePages: true })
+    // 次のページ（下に 1850 から）は、枠が上の 1 割（80）にだけかかる
+    const next: PdfPageInRange = { ...page, id: 'node:next', pageIndex: 3, bounds: { x: 100, y: 1850, w: 600, h: 800 } }
+    const requests = pdfRegionRequests(brushed({ x: 90, y: 990, w: 700, h: 940 }, [page, next]), { wholePages: true })
     expect(requests).toEqual([
       { nodeId: 'node:page', assetId: 'asset:abc', fileId: 'file:pdf', pageIndex: 2, rect: { x: 0, y: 0, w: 1, h: 1 } },
-      { nodeId: 'node:half', assetId: 'asset:abc', fileId: 'file:pdf', pageIndex: 3, rect: { x: 0, y: 0, w: 1, h: 1 } },
+      { nodeId: 'node:next', assetId: 'asset:abc', fileId: 'file:pdf', pageIndex: 3, rect: { x: 0, y: 0, w: 1, h: 0.1 } },
     ])
     // 一部にかかったページは、今までどおりその範囲
     expect(pdfRegionRequests(brushed({ x: 160, y: 1160, w: 300, h: 200 }), { wholePages: true })[0]!.rect).toEqual({ x: 0.1, y: 0.2, w: 0.5, h: 0.25 })

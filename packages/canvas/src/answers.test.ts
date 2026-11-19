@@ -135,6 +135,23 @@ describe('aiNoteMeta', () => {
     ]
     expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts } } }))).toEqual({ contexts: [contexts[0]] })
   })
+
+  // 範囲がかかった PDF のページの範囲（送るときに、その文字を読む）
+  it('keeps the PDF page regions of an area, and drops the ones that do not fit', () => {
+    const editor = new Editor()
+    const target = { kind: 'canvas', canvasId: editor.canvasId, rect: { x: 0, y: 0, w: 10, h: 10 }, nodes: [{ id: 'node:page', bounds: { x: 0, y: 0, w: 5, h: 5 } }] }
+    const region = { nodeId: 'node:page', assetId: 'asset:a', fileId: 'file:pdf', pageIndex: 0, rect: { x: 0, y: 0, w: 1, h: 0.5 } }
+    const contexts = [
+      { kind: 'canvas', label: '範囲', target, regions: [region, { ...region, rect: { x: 0 } }, { ...region, nodeId: 3 }, 'broken'] },
+      { kind: 'canvas', label: '範囲 2', target, regions: 'broken' },
+    ]
+    expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts } } }))).toEqual({
+      contexts: [
+        { kind: 'canvas', label: '範囲', target, regions: [region] },
+        { kind: 'canvas', label: '範囲 2', target },
+      ],
+    })
+  })
 })
 
 describe('places', () => {

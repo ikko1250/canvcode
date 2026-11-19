@@ -61,8 +61,9 @@ export function AiNoteControls(props: {
   const { camera } = session
   const notes = useAiNotes(editor)
   const { models } = useClaudeState(claude)
-  // 添える所を選んでいる付箋（選び始めた Canvas の Editor と一緒に持つ。Canvas を移ったら、選ぶ状態を抜ける）
+  // 添える所を選んでいる付箋（選び始めた Canvas の Editor と一緒に持つ）。Canvas を移ったら、選ぶ状態を抜ける（戻ってきても続けない）
   const [pickingIn, setPickingIn] = useState<{ noteId: string; editor: Editor } | null>(null)
+  if (pickingIn && pickingIn.editor !== editor) setPickingIn(null)
   const picking = pickingIn?.editor === editor && editor.getNode(pickingIn.noteId) ? pickingIn.noteId : null
   const setPicking = useCallback((noteId: string | null) => setPickingIn(noteId ? { noteId, editor } : null), [editor])
   // 添えたものの一覧を開いている付箋
@@ -88,31 +89,36 @@ export function AiNoteControls(props: {
   }, [editor, view, onSend, busy])
 
   // 添える所を選んでいる間：範囲選択を終えたか、ノードを選んだか、PDF の文字をなぞったら、それを添える。
-  // 添えたときに Ctrl（⌘）を押していなければ、付箋を選び直して抜ける。押していれば続け、離したら抜ける。Esc でやめる
+  // 添えたときに Ctrl（⌘）を押していなければ、付箋を選び直して抜ける。押していれば続け、離したら抜ける
+  // （ドラッグの途中で離したら、そのドラッグで添えてから抜ける）。Esc でやめる
   useEffect(() => {
     if (!picking) return
     editor.session.set({ pickingContext: true })
-    // Ctrl（⌘）を押しているか（キーと、ポインタのイベントの修飾キーで決める。選ぶ状態に入る前から押していても分かるように）。
-    // picked は、押したまま添えたか（離したら抜ける。何も添えずに離したなら、ズームのために押したなどなので抜けない）
+    // held：Ctrl（⌘）を押しているか（キーと、ポインタのイベントの修飾キーで決める。選ぶ状態に入る前から押していても分かるように）。
+    // picked：押したまま添えたか（離したら抜ける。何も添えずに離したなら、ズームのために押したなどなので抜けない）。
+    // down：ボタンを押している（ドラッグの途中）。leaving：ドラッグの途中で離した（ドラッグを終えたら抜ける）。
+    // stopped：抜けた（片付けたあとに届くものも、何もしない）
     let held = false
     let picked = false
+    let down = false
+    let leaving = false
     let stopped = false
     const stop = () => {
       if (stopped) return
       stopped = true
       setPicking(null)
-      view.clearWordHighlight()
       if (editor.getNode(picking)) editor.setSelection([picking])
     }
-    // 添える（PDF の文字を読み終えてから足す。抜けるかは、添えると決めたときに押していたかで決める）
-    const take = (pending: Promise<AiContext | null>) => {
-      if (held) picked = true
-      else stop()
-      void pending.then((context) => {
-        if (!context) return
-        addContext(editor, picking, context, notify)
-        if (placesOf(aiNoteMeta(editor.getNode(picking))).length >= MAX_AI_PLACES) stop()
-      })
+    const take = (context: AiContext) => {
+      if (held) {
+        picked = true
+        // 選んだものと範囲選択の枠を、付箋に戻しておく（残すと、次に押したとき・Undo で選択が戻ったときに、もう一度添える）。
+        // 添える前に戻す（添えた編集の Undo で、付箋を選んだ状態に戻るように）
+        editor.setSelection([picking])
+        if (editor.session.get().lastBrush) editor.session.set({ lastBrush: null })
+      }
+      addContext(editor, picking, context, notify)
+      if (!held || placesOf(aiNoteMeta(editor.getNode(picking))).length >= MAX_AI_PLACES) stop()
     }
     const unsubscribe = editor.session.subscribe((state, prev) => {
       if (stopped || state.brush || (state.selectedIds === prev.selectedIds && state.lastBrush === prev.lastBrush)) return
@@ -120,10 +126,19 @@ export function AiNoteControls(props: {
       if (context) take(context)
     })
     const stopTextPicks = view.onTextPick((target) => {
-      if (!stopped) take(Promise.resolve({ kind: 'canvas', label: pdfPlaceLabel(target), target }))
+      if (!stopped) take({ kind: 'canvas', label: pdfPlaceLabel(target), target })
     })
     const track = (e: KeyboardEvent | PointerEvent) => {
       held = e.ctrlKey || e.metaKey
+    }
+    const onPointer = (e: PointerEvent) => {
+      track(e)
+      if (e.type === 'pointerdown') down = true
+      else if (e.type === 'pointerup' || e.type === 'pointercancel') down = false
+    }
+    // キャンバスがドラッグを終えたあと（泡の段）：途中で Ctrl（⌘）を離していたら、なぞった文字を読み終えて添えてから抜ける
+    const afterRelease = () => {
+      if (leaving && !stopped) void view.textPickSettled().then(stop)
     }
     const onKey = (e: KeyboardEvent) => {
       track(e)
@@ -134,26 +149,35 @@ export function AiNoteControls(props: {
     }
     const onKeyUp = (e: KeyboardEvent) => {
       track(e)
-      if (!held && picked) stop()
+      if (held || !picked) return
+      if (down) leaving = true
+      else stop()
     }
     // ⌘+Tab などでウィンドウを離れると、離したことが届かない
     const onBlur = () => {
       held = false
       if (picked) stop()
     }
-    const pointerEvents = ['pointerdown', 'pointermove', 'pointerup'] as const
+    const pointerEvents = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'] as const
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('keyup', onKeyUp, true)
     window.addEventListener('blur', onBlur)
-    for (const type of pointerEvents) window.addEventListener(type, track, true)
+    for (const type of pointerEvents) window.addEventListener(type, onPointer, true)
+    window.addEventListener('pointerup', afterRelease)
+    window.addEventListener('pointercancel', afterRelease)
     return () => {
+      stopped = true
       unsubscribe()
       stopTextPicks()
       editor.session.set({ pickingContext: false })
+      // なぞった所のハイライトを消す（ほかの Canvas へ移ったあとなら、移るときに消えている）
+      if (view.editor === editor) view.clearWordHighlight()
       window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('keyup', onKeyUp, true)
       window.removeEventListener('blur', onBlur)
-      for (const type of pointerEvents) window.removeEventListener(type, track, true)
+      for (const type of pointerEvents) window.removeEventListener(type, onPointer, true)
+      window.removeEventListener('pointerup', afterRelease)
+      window.removeEventListener('pointercancel', afterRelease)
     }
   }, [editor, view, picking, setPicking, notify])
 
@@ -229,7 +253,7 @@ export function AiNoteControls(props: {
             if (places.length >= MAX_AI_PLACES) return notify(TOO_MANY_PLACES)
             const others = [...editor.session.get().selectedIds].filter((id) => id !== target)
             const context = others.length > 0 ? selectionContext(editor, view, target) : null
-            if (context) return void context.then((ready) => ready && addContext(editor, target, ready, notify))
+            if (context) return addContext(editor, target, context, notify)
             setPicking(target)
           }
           return (
@@ -373,20 +397,18 @@ function useAiNotes(editor: Editor): NodeRecord[] {
   }, [editor, version])
 }
 
-// 今選んでいるもの（付箋自身は除く）。添えるものがなければ null（すぐ決める）。
-// 範囲選択の枠がかかった PDF のページには、その範囲の文字を付ける（読み終えてから返す。範囲と選んでいるものは、呼んだときのもの）
-function selectionContext(editor: Editor, view: CanvasView, noteId: string): Promise<AiContext | null> | null {
+// 今選んでいるもの（付箋自身は除く）。範囲選択の枠がかかった PDF のページは、ページの中の範囲も持つ（送るときに、その文字を読む）
+function selectionContext(editor: Editor, view: CanvasView, noteId: string): AiContext | null {
   const selected = [...editor.session.get().selectedIds].filter((id) => id !== noteId)
   const target = view.canvasReference()
   if (!target) return null
   const nodes = target.nodes.filter((node) => node.id !== noteId)
   if (nodes.length === 0 && selected.length === 0 && target.nodes.length > 0) return null
-  const label = nodes.length > 0 ? `${nodes.length} 個のノード` : 'キャンバスの範囲'
-  return view
-    .canvasReferenceWithText()
-    .catch(() => null)
-    .then((withText): AiContext => {
-      const full = withText ?? target
-      return { kind: 'canvas', label, target: { ...full, nodes: full.nodes.filter((node) => node.id !== noteId) } }
-    })
+  const regions = view.canvasReferenceRegions().filter((region) => nodes.some((node) => node.id === region.nodeId))
+  return {
+    kind: 'canvas',
+    label: nodes.length > 0 ? `${nodes.length} 個のノード` : 'キャンバスの範囲',
+    target: { ...target, nodes },
+    ...(regions.length > 0 ? { regions } : {}),
+  }
 }

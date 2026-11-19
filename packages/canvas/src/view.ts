@@ -244,6 +244,8 @@ export class CanvasView {
   private wordPurpose: 'lookup' | 'text' = 'lookup'
   // AI 付箋の添える所を選んでいる間に、PDF のページの上でなぞった文字を受け取るもの（onTextPick。AiNoteControls）
   private readonly textPickListeners = new Set<(target: PdfRefTarget) => void>()
+  // なぞった添える所を、離したあと読み終えるまで（textPickSettled）
+  private textPickDone: Promise<void> = Promise.resolve()
   private charWidths: CharWidths | null = null
   // Markdown の引用の行（本文の版ごとに、探し直した結果を覚えておく）
   private readonly quoteLines = new Map<string, { version: string; line: number | null }>()
@@ -625,7 +627,10 @@ export class CanvasView {
         const bounds = this.root.getBoundingClientRect()
         this.options.onQuote({ kind: 'pdf', pageId, rect, clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
       },
-      wordSelection: (event) => void this.onWordSelection(event),
+      wordSelection: (event) => {
+        const handled = this.onWordSelection(event)
+        if (event.phase === 'end' && event.pick) this.textPickDone = handled.catch(() => {})
+      },
       openCitations: (anchorIds, screen) => {
         const bounds = this.root.getBoundingClientRect()
         this.options.onOpenCitations(anchorIds, { clientX: screen.x + bounds.left, clientY: screen.y + bounds.top })
@@ -1163,7 +1168,8 @@ export class CanvasView {
   }
 
   private async onWordSelection(event: WordSelectionEvent): Promise<void> {
-    if (event.phase === 'cancel') {
+    // 添える所のなぞりで、受け取るものがいない（なぞっている途中で、選ぶ状態を Esc などで抜けた）なら、ハイライトを残さない
+    if (event.phase === 'cancel' || (event.pick && this.textPickListeners.size === 0)) {
       this.clearWordHighlight()
       return
     }
@@ -1188,7 +1194,9 @@ export class CanvasView {
     if (page?.type !== 'pdf-page') return this.clearWordHighlight()
     const props = page.props as PdfPageProps
     if (event.pick) {
-      // AI 付箋に添える所（選んだ文字。改行は入れない）。ハイライトは、次に押すか、選ぶ状態を抜けるまで残す
+      // AI 付箋に添える所（選んだ文字。改行は入れない）。ハイライトは、次に押すか、選ぶ状態を抜けるまで残す。
+      // 読んでいる間に選ぶ状態を抜けていたら、ハイライトを消すだけ
+      if (this.textPickListeners.size === 0) return this.clearWordHighlight()
       const target: PdfRefTarget = { kind: 'pdf', fileId: props.fileId, pageIndex: props.pageIndex, rect: selected.rect, text: joinLines(selected.words.text) }
       for (const listener of [...this.textPickListeners]) listener(target)
       return
@@ -1611,15 +1619,16 @@ export class CanvasView {
     return () => this.textPickListeners.delete(listener)
   }
 
-  // AI 付箋に添える Canvas の範囲（canvasReference と同じ）。範囲選択の枠がかかった PDF のページには、その範囲の文字を付ける。
-  // 付箋で答える Claude はファイルを読めないので、ページのほぼ全体を囲んだときも、ページ全体の文字を付ける（docs/ai-note-pick-text-plan.md の 3）。
-  // 範囲と選んでいるものは、呼んだときのものを使う
-  async canvasReferenceWithText(): Promise<CanvasRefTarget | null> {
-    const source = this.canvasRefSource()
-    const target = canvasRefTarget(source)
-    if (!target) return null
-    const requests = pdfRegionRequests(source, { wholePages: true })
-    return requests.length > 0 ? this.withPdfRegions(target, requests) : target
+  // なぞっている添える所（離したあと、文字を読み終えて onTextPick に渡すまで）を待つ。なぞっていなければすぐ解ける
+  textPickSettled(): Promise<void> {
+    return this.textPickDone
+  }
+
+  // AI 付箋に添える Canvas の範囲（canvasReference）の、範囲選択の枠がかかった PDF のページと、ページの中の範囲。
+  // 付箋で答える Claude はファイルを読めないので、ページのほぼ全体を囲んだときはページ全体にする（docs/ai-note-pick-text-plan.md の 3）。
+  // 送るときに saveReference へ渡すと、その範囲の文字を読んで ref のノードに付ける
+  canvasReferenceRegions(): PdfRegionRequest[] {
+    return pdfRegionRequests(this.canvasRefSource(), { wholePages: true })
   }
 
   // 今の Canvas の範囲を AI に渡す。範囲がなければ、そう知らせる
