@@ -17,6 +17,7 @@ import type { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
 import { RenderError, type RenderBroker, type RenderResult, type RenderTarget } from './renders.ts'
 import { addFileLocations, pdfFileSummary, resolveReference, type FileSummary, type RefDeps } from './refs.ts'
+import { THREAD_HEADER, THREAD_ID } from './threadHeader.ts'
 
 // AI から CanvCode を使うための MCP サーバー（MAI-59）。
 // - Claude Code などが Streamable HTTP で /mcp につなぐ（claude mcp add --transport http canvcode http://127.0.0.1:8787/mcp）
@@ -37,7 +38,15 @@ export const MCP_PATH = '/mcp'
 // agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）。
 // pdf がなければ、edit_canvas で PDF を取り込めない。plot がなければ（か pdf の Asset がなければ）、グラフのツールを出さない。
 // renders がなければ、Canvas を画像にするツール（render_canvas）を出さない
-export type McpDeps = RefDeps & { agent?: AgentHost; presence?: () => Presence | null; pdf?: Omit<PdfSources, 'files'>; plot?: Plotter; renders?: RenderBroker }
+// threadId は、要求を送った画面の Claude Code の会話（ヘッダー THREAD_HEADER。handleMcp が読む）。Canvas の編集の記録に残す
+export type McpDeps = RefDeps & {
+  agent?: AgentHost
+  presence?: () => Presence | null
+  pdf?: Omit<PdfSources, 'files'>
+  plot?: Plotter
+  renders?: RenderBroker
+  threadId?: string
+}
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const { files } = deps
@@ -217,7 +226,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }),
   )
 
-  registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot, deps.renders)
+  registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot, deps.renders, deps.threadId)
   return server
 }
 
@@ -232,8 +241,11 @@ function registerCanvasTools(
   pdf?: PdfSources,
   plot?: Plotter,
   renders?: RenderBroker,
+  threadId?: string,
 ): void {
   const { records } = refDeps
+  // Canvas の編集に残す、頼んだ会話
+  const thread: { threadId?: string } = threadId ? { threadId } : {}
   // ユーザーが見ている所（その Canvas がまだあるときだけ）
   const viewing = (): Presence | null => {
     const current = presence?.() ?? null
@@ -334,7 +346,7 @@ function registerCanvasTools(
         // PDF を読んで保存する前に、数を確かめる
         checkOpCount(ops.length, fromFile ? MAX_FILE_OPS : undefined)
         const pdfs = await preparePdfs(ops, pdf)
-        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport, pdfs, ...(fromFile ? { maxOps: MAX_FILE_OPS } : {}) })
+        const result = editCanvas(agent, { canvasId, ops, ifRev: if_rev, label, viewport, pdfs, ...(fromFile ? { maxOps: MAX_FILE_OPS } : {}), ...thread })
         // 取り込んだ PDF の文字（ページごとに「=== page N ===」）のファイル。AI が grep して、どのページかを探せる。
         // 文字を取り出し終えるのは、少しだけ（PDF_TEXT_WAIT_MS）待つ。間に合わなければ textPending にして先に返す
         // （取り出しは続く。あとで read_nodes や resolve_reference が textPath を返す。PDF をたくさん取り込むと、返事が時間切れになっていた。MAI-105）
@@ -367,7 +379,7 @@ function registerCanvasTools(
     ({ batch_id }) => editGuard(async () => text(JSON.stringify(undoCanvasEdit(agent, batch_id)))),
   )
 
-  if (plot && pdf) registerPlotTools(server, plot, pdf.assets, agent, pdf.files, records, viewing)
+  if (plot && pdf) registerPlotTools(server, plot, pdf.assets, agent, pdf.files, records, viewing, thread)
 }
 
 // 表（CSV）のグラフ（plot.ts）。描いた PNG を Asset に保存し、edit_canvas と同じ編集（元に戻せる）で画像のノードを置く・差し替える
@@ -379,6 +391,7 @@ function registerPlotTools(
   files: McpDeps['files'],
   records: RecordStore,
   viewing: () => Presence | null,
+  thread: { threadId?: string },
 ): void {
   server.registerTool(
     'list_plot_styles',
@@ -501,7 +514,7 @@ function registerPlotTools(
           if (!current?.props) throw new PlotError(`${input.node} was deleted while drawing`)
           const w = current.props.w
           const ops = [{ op: 'update', id: input.node, props: { assetId: `asset:${hash}`, plot: spec, crop: null }, w, h: (w * rendered.height) / rendered.width }]
-          result = editCanvas(agent, { canvasId: existing.canvasId, ops, label, images: new Map([[0, image]]) })
+          result = editCanvas(agent, { canvasId: existing.canvasId, ops, label, images: new Map([[0, image]]), ...thread })
         } else {
           // canvas_id がなければ、place の相手の Canvas、それもなければユーザーが見ている Canvas
           const near = input.place && (input.place.rightOf ?? input.place.leftOf ?? input.place.below ?? input.place.above)
@@ -509,7 +522,7 @@ function registerPlotTools(
           if (!canvasId) throw new EditError('No canvas_id, and no open CanvCode tab reports which canvas the user is viewing. Pass canvas_id (see list_canvases).')
           const viewport = user?.canvasId === canvasId ? user.viewport : undefined
           const op = { op: 'create', type: 'image', as: 'chart', ...(input.at ?? {}), ...(input.place ? { place: input.place } : {}), ...(input.w ? { w: input.w } : {}) }
-          result = editCanvas(agent, { canvasId, ops: [op], label, viewport, images: new Map([[0, image]]) })
+          result = editCanvas(agent, { canvasId, ops: [op], label, viewport, images: new Map([[0, image]]), ...thread })
         }
         return json({
           ...(existing ? { node: input.node } : { node: result.created.chart }),
@@ -579,7 +592,9 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, path:
     res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }))
     return true
   }
-  const server = createMcpServer(deps)
+  const header = req.headers[THREAD_HEADER]
+  const threadId = typeof header === 'string' && THREAD_ID.test(header) ? header : undefined
+  const server = createMcpServer({ ...deps, ...(threadId ? { threadId } : {}) })
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
   res.on('close', () => {
     void transport.close()

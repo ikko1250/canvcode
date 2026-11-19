@@ -127,12 +127,51 @@ describe('RecordStore', () => {
     db.exec("DROP TABLE agent_ops; UPDATE meta SET value = '1' WHERE key = 'schema'")
     db.close()
     const reopened = new RecordStore(dir)
-    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v4-'))).toBe(true)
+    expect(readdirSync(dir).some((name) => name.startsWith('workspace.db.before-v5-'))).toBe(true)
     expect(reopened.get('node:a')).toBeDefined()
     const rev = reopened.applyAgentOp({ id: 'ai-1', canvasId: reopened.rootCanvasId, label: 'x', createdAt: 1, patch: [{ id: 'node:b', before: null, after: node('node:b', reopened.rootCanvasId) }] })
     expect(reopened.getAgentOp('ai-1')).toMatchObject({ rev, undoneAt: null, patch: [{ id: 'node:b', before: null }] })
     expect(reopened.revsOf(['node:a', 'node:b', 'node:none'])).toEqual(new Map([['node:a', 1], ['node:b', rev]]))
     reopened.close()
+  })
+
+  it('adds the thread of an AI edit to a version 4 database, also when an older server set the version back (docs/ai-note-tasks-plan.md の B)', () => {
+    const dir = dataDir()
+    const store = new RecordStore(dir)
+    store.close()
+    // 版 4 の db にする（agent_ops に thread_id がない）
+    let db = new DatabaseSync(join(dir, 'workspace.db'))
+    db.exec("DROP TABLE agent_ops; CREATE TABLE agent_ops (id TEXT PRIMARY KEY, canvas_id TEXT NOT NULL, label TEXT NOT NULL, created_at INTEGER NOT NULL, rev INTEGER NOT NULL, patch TEXT NOT NULL, undone_at INTEGER); UPDATE meta SET value = '4' WHERE key = 'schema'")
+    db.close()
+    let reopened = new RecordStore(dir)
+    const thread = '11111111-2222-4333-8444-555555555555'
+    reopened.applyAgentOp({ id: 'ai-1', canvasId: reopened.rootCanvasId, label: '置く', createdAt: 1, patch: [{ id: 'node:b', before: null, after: node('node:b', reopened.rootCanvasId) }], threadId: thread })
+    expect(reopened.getAgentOp('ai-1')).toMatchObject({ threadId: thread })
+    expect(reopened.agentOpsOfThread(thread)).toEqual([{ id: 'ai-1', canvasId: reopened.rootCanvasId, label: '置く', createdAt: 1, undoneAt: null }])
+    reopened.close()
+    // 古いサーバーが版を 4 に戻したあとに開き直しても、列を足し直さない（壊れない）
+    db = new DatabaseSync(join(dir, 'workspace.db'))
+    db.exec("UPDATE meta SET value = '4' WHERE key = 'schema'")
+    db.close()
+    reopened = new RecordStore(dir)
+    expect(reopened.agentOpsOfThread(thread)).toHaveLength(1)
+    reopened.close()
+  })
+
+  it('finds the notes with a task running on them (meta.ai.task)', () => {
+    const store = new RecordStore(dataDir())
+    const root = store.rootCanvasId
+    const task = { threadId: 't', jobId: 'j', startedAt: 1 }
+    store.apply(
+      [
+        { ...node('node:a', root), type: 'note', meta: { ai: { contexts: [], task } } },
+        { ...node('node:b', root), type: 'note', meta: { ai: { contexts: [] } } },
+        { ...node('node:c', root), meta: { ai: { task } } },
+      ],
+      [],
+    )
+    expect(store.notesWithTask().map((record) => record.id)).toEqual(['node:a'])
+    store.close()
   })
 
   describe('所属する Canvas（canvas_id）', () => {

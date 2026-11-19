@@ -15,6 +15,7 @@ import { ClaudeJobs, claudeLimitsFromEnv } from './claude/jobs.ts'
 import { ClaudeStore } from './claude/store.ts'
 import { handleMemo, MemoWriter } from './claude/memo.ts'
 import { AnswerWriter, handleAnswer } from './claude/answer.ts'
+import { handleNoteTasks, NoteTasks } from './claude/noteTasks.ts'
 import { CitationWriter, handleCite } from './claude/cite.ts'
 import { handleLookup, WordLookup } from './claude/lookup.ts'
 import { answeredNotesOf, handleQuestions, RunningQuestions } from './claude/questions.ts'
@@ -147,6 +148,12 @@ const claude = !claudeStore
         ...(process.env.CANVCODE_CLAUDE_MODEL ? { model: process.env.CANVCODE_CLAUDE_MODEL } : {}),
         ...claudeLimitsFromEnv(process.env),
       })
+// 付箋の作業（AI 付箋の文を指示にして、会話と同じジョブで動かす。claude/noteTasks.ts）。起動したときに、途切れた作業の報告を書く
+const noteTasks = claude ? new NoteTasks({ jobs: claude, records, host: agent }) : null
+if (noteTasks) {
+  const recovered = noteTasks.recover()
+  if (recovered > 0) console.log(`途切れた付箋の作業に報告を書きました：${recovered} 個`)
+}
 // 付箋の文字を箇条書きのメモにする（claude/memo.ts）。既定は Sonnet。CANVCODE_MEMO_MODEL でモデルを変える
 const memo = process.env.CANVCODE_CLAUDE === '0' ? null : new MemoWriter(process.env.CANVCODE_MEMO_MODEL ? { model: process.env.CANVCODE_MEMO_MODEL } : {})
 // Claude を 1 回だけ動かす共通の仕組み（claude/once.ts）と、その上の、PDF の語を調べる API（claude/lookup.ts）。既定は Haiku
@@ -272,6 +279,7 @@ const server = createServer(async (req, res) => {
   if (handleAnswer(req, res, url.pathname, answer, questions, claudeStore)) return
   if (handleQuestions(req, res, url.pathname, questions, answeredNotes, claudeStore)) return
   if (handleCite(req, res, url.pathname, cite)) return
+  if (handleNoteTasks(req, res, url.pathname, noteTasks)) return
   if (handleClaude(req, res, url.pathname, claude, questions)) return
   if (await handleImport(req, res, url.pathname, { dataDir: DATA_DIR, records, files, assets, thumbnails, sync })) return
   if (await thumbnails.handle(req, res, url.pathname)) return

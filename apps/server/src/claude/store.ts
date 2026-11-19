@@ -15,6 +15,8 @@ import { isEffortLevel } from './models.ts'
 // - 履歴なので、バックアップには入れない（backup.ts）。開けなければ、壊れたものを脇に置いて作り直す
 // - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）は、表 questions に置く。
 //   付箋がないので、答えはここに書く。会話を消したら、その会話の質問も消す。起動したときに答えを作っていることになっているものは、失敗にする
+// - 付箋の作業（AI 付箋から頼んだジョブ。docs/ai-note-tasks-plan.md）は、note_id・note_canvas_id の列に付箋を残す（後から足した列）。
+//   付箋の作業しかない会話は、会話の一覧（threads）に出さない（会話から 1 つでも頼んだら出す）。thread は、どの会話も返す
 
 export interface ThreadSummary {
   threadId: string
@@ -28,6 +30,15 @@ export interface ThreadSummary {
   // 最後に頼んだ（バックグラウンドでない）依頼のモデルと effort（MAI-106。なければ既定）。前の会話を開いたとき、その値に戻す
   model?: string
   effort?: EffortLevel
+  // 付箋の作業から始まった会話なら、その付箋。noteOnly は、付箋の作業しかない（会話の一覧に出さない）
+  note?: NoteRef
+  noteOnly?: true
+}
+
+// 付箋の作業を頼んだ付箋
+export interface NoteRef {
+  noteId: string
+  canvasId: string
 }
 
 export interface StoredJob extends Job {
@@ -75,6 +86,8 @@ interface JobRow {
   effort: string | null
   ref_label: string | null
   imports: string | null
+  note_id: string | null
+  note_canvas_id: string | null
 }
 
 interface QuestionRow {
@@ -100,6 +113,9 @@ interface ThreadRow {
   running: number
   model: string | null
   effort: string | null
+  note_id: string | null
+  note_canvas_id: string | null
+  chat_jobs: number
 }
 
 export class ClaudeStore {
@@ -122,8 +138,8 @@ export class ClaudeStore {
   insertJob(job: StoredJob): void {
     this.db
       .prepare(
-        `INSERT INTO jobs (id, thread_id, prompt, origin, ref_id, ref_label, canvas_id, status, created_at, finished_at, cost_usd, duration_ms, session_id, event_count, model, effort, imports)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO jobs (id, thread_id, prompt, origin, ref_id, ref_label, canvas_id, status, created_at, finished_at, cost_usd, duration_ms, session_id, event_count, model, effort, imports, note_id, note_canvas_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         job.id,
@@ -143,6 +159,8 @@ export class ClaudeStore {
         job.model ?? null,
         job.effort ?? null,
         job.imports && job.imports.length > 0 ? JSON.stringify(job.imports) : null,
+        job.note?.noteId ?? null,
+        job.note?.canvasId ?? null,
       )
     job.events.forEach((event, seq) => this.appendEvent(job.id, seq, event))
   }
@@ -185,9 +203,11 @@ export class ClaudeStore {
     return row && threadOf(row)
   }
 
-  // 会話の一覧（最後に動いたものから）
+  // 会話の一覧（最後に動いたものから）。付箋の作業しかない会話は入れない
   threads(limit = 200): ThreadSummary[] {
-    const rows = this.db.prepare(`${THREAD_SELECT} GROUP BY thread_id ORDER BY updated_at DESC LIMIT ?`).all(limit) as unknown as ThreadRow[]
+    const rows = this.db
+      .prepare(`${THREAD_SELECT} GROUP BY thread_id HAVING SUM(note_id IS NULL) > 0 ORDER BY updated_at DESC LIMIT ?`)
+      .all(limit) as unknown as ThreadRow[]
     return rows.map(threadOf)
   }
 
@@ -292,6 +312,7 @@ export class ClaudeStore {
       ...(row.session_id ? { sessionId: row.session_id } : {}),
       ...(row.model ? { model: row.model } : {}),
       ...(isEffortLevel(row.effort) ? { effort: row.effort } : {}),
+      ...(row.note_id && row.note_canvas_id ? { note: { noteId: row.note_id, canvasId: row.note_canvas_id } } : {}),
       eventCount: events.length,
       events,
     }
@@ -306,7 +327,10 @@ const THREAD_SELECT = `
     COUNT(*) AS job_count,
     SUM(status = 'running') AS running,
     (SELECT model FROM jobs AS last WHERE last.thread_id = jobs.thread_id AND last.origin IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1) AS model,
-    (SELECT effort FROM jobs AS last WHERE last.thread_id = jobs.thread_id AND last.origin IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1) AS effort
+    (SELECT effort FROM jobs AS last WHERE last.thread_id = jobs.thread_id AND last.origin IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1) AS effort,
+    (SELECT note_id FROM jobs AS first WHERE first.thread_id = jobs.thread_id ORDER BY created_at, rowid LIMIT 1) AS note_id,
+    (SELECT note_canvas_id FROM jobs AS first WHERE first.thread_id = jobs.thread_id ORDER BY created_at, rowid LIMIT 1) AS note_canvas_id,
+    SUM(note_id IS NULL) AS chat_jobs
   FROM jobs`
 
 function threadOf(row: ThreadRow): ThreadSummary {
@@ -319,6 +343,8 @@ function threadOf(row: ThreadRow): ThreadSummary {
     running: row.running > 0,
     ...(row.model ? { model: row.model } : {}),
     ...(isEffortLevel(row.effort) ? { effort: row.effort } : {}),
+    ...(row.note_id && row.note_canvas_id ? { note: { noteId: row.note_id, canvasId: row.note_canvas_id } } : {}),
+    ...(Number(row.chat_jobs) === 0 ? { noteOnly: true as const } : {}),
   }
 }
 
@@ -418,6 +444,9 @@ function open(path: string): DatabaseSync {
     if (!columns.some((column) => column.name === 'ref_label')) db.exec('ALTER TABLE jobs ADD COLUMN ref_label TEXT')
     // 取り込んだ質問と答え（imports）のない claude.db に足す
     if (!columns.some((column) => column.name === 'imports')) db.exec('ALTER TABLE jobs ADD COLUMN imports TEXT')
+    // 付箋の作業の付箋（note_id・note_canvas_id）のない claude.db に足す（docs/ai-note-tasks-plan.md）
+    if (!columns.some((column) => column.name === 'note_id')) db.exec('ALTER TABLE jobs ADD COLUMN note_id TEXT')
+    if (!columns.some((column) => column.name === 'note_canvas_id')) db.exec('ALTER TABLE jobs ADD COLUMN note_canvas_id TEXT')
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     return db
   } catch (error) {

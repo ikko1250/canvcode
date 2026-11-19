@@ -325,6 +325,8 @@ export interface EditRequest {
   pdfs?: ReadonlyMap<number, PreparedPdf>
   // create type image の画像（ops の何番目か → 保存した Asset）。plot_csv が描いて用意する（update で画像を差し替えるときも、Asset を知らせるために入れる）
   images?: ReadonlyMap<number, PreparedImage>
+  // 編集を頼んだ会話（画面から頼んだ Claude Code の会話。MCP の要求のヘッダーで知る）。記録に残し、会話ごとに取り消せるようにする
+  threadId?: string
 }
 
 // plot_csv が描いて Asset に保存した画像
@@ -426,7 +428,7 @@ export function editCanvas(host: AgentHost, request: EditRequest): EditResult {
   const batch = `ai-${randomIdSuffix(12)}`
   let rev: number
   try {
-    rev = records.applyAgentOp({ id: batch, canvasId: canvas.id, label, createdAt: Date.now(), patch: entries })
+    rev = records.applyAgentOp({ id: batch, canvasId: canvas.id, label, createdAt: Date.now(), patch: entries, ...(request.threadId ? { threadId: request.threadId } : {}) })
   } catch (error) {
     host.revert(patch)
     throw new EditError(`Could not save: ${error instanceof Error ? error.message : String(error)}. Nothing was changed.`)
@@ -475,6 +477,27 @@ export function undoCanvasEdit(host: AgentHost, batchId: string): { rev: number;
   if (host.sync) host.sync.broadcast(rev, puts, { origin: { kind: 'ai-undo', batchId: op.id, label: op.label, canvasId: op.canvasId } }, { deleted })
   else host.applyRemote(puts as unknown as WorkspaceRecord[], deleted)
   return { rev, restored: op.patch.length }
+}
+
+// 会話の AI の編集を、新しいものから順に取り消す（付箋の作業の「前の変更を戻してから送る」。docs/ai-note-tasks-plan.md の B）。
+// 取り消したもの（undone）と、取り消せずに止めたもの（failed。そのあとに変わった・作った Canvas に足された）と、そのために残したもの（left）を返す。
+// もう取り消したものは飛ばす。記録が古くて消えた編集は、ここには出てこない（戻せない）
+export function undoThreadEdits(
+  host: AgentHost,
+  threadId: string,
+): { undone: { batch: string; label: string }[]; failed?: { batch: string; label: string; reason: string }; left: { batch: string; label: string }[] } {
+  const ops = host.records.agentOpsOfThread(threadId).filter((op) => op.undoneAt === null)
+  const undone: { batch: string; label: string }[] = []
+  for (const [i, op] of ops.entries()) {
+    try {
+      undoCanvasEdit(host, op.id)
+      undone.push({ batch: op.id, label: op.label })
+    } catch (error) {
+      if (!(error instanceof EditError)) throw error
+      return { undone, failed: { batch: op.id, label: op.label, reason: error.message }, left: ops.slice(i + 1).map((rest) => ({ batch: rest.id, label: rest.label })) }
+    }
+  }
+  return { undone, left: [] }
 }
 
 // 変えたスライド（中身を変えたものも）のうち、文字があふれている・並べられなかった行があるものの警告

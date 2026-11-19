@@ -34,7 +34,7 @@ export interface ScopedChanges extends Changes {
 export type Cascade = StoredRecord[]
 
 // テーブルの構造の版。変えるときは MIGRATIONS に足す（起動時に、適用する前に workspace.db のコピーを作る）
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 5
 const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
   // AI の編集の記録（MCP の edit_canvas。Undo に使う）
   2: (db) =>
@@ -67,6 +67,13 @@ const MIGRATIONS: Record<number, (db: DatabaseSync) => void> = {
       CREATE INDEX IF NOT EXISTS records_type ON records (type_name, type);
     `)
   },
+  // AI の編集をした会話（画面から頼んだ Claude Code の会話。MCP の要求のヘッダーで知る）。付箋の作業の「前の変更を戻す」に使う
+  // （docs/ai-note-tasks-plan.md の B）。古いサーバーが版を戻したあとに、もう一度当たってもよいように、列があれば足さない
+  5: (db) => {
+    const columns = db.prepare('PRAGMA table_info(agent_ops)').all() as { name: string }[]
+    if (!columns.some((column) => column.name === 'thread_id')) db.exec('ALTER TABLE agent_ops ADD COLUMN thread_id TEXT')
+    db.exec('CREATE INDEX IF NOT EXISTS agent_ops_thread ON agent_ops (thread_id, created_at)')
+  },
 }
 
 // WAL のファイル（workspace.db-wal）の大きさの上限（バイト）。チェックポイントのあと、これを超えた分を切り詰める
@@ -98,7 +105,12 @@ export interface AgentOp {
   rev: number
   patch: AgentOpEntry[]
   undoneAt: number | null
+  // 編集をした会話（画面から頼んだ Claude Code の会話。外の AI の編集なら、ない）
+  threadId?: string
 }
+
+// 会話の AI の編集（patch を読まない一覧）
+export type AgentOpSummary = Pick<AgentOp, 'id' | 'canvasId' | 'label' | 'createdAt' | 'undoneAt'>
 
 // 一覧のレコード（どの Canvas にも所属しない。ブラウザは全部を読む）の typeName
 export const LIST_RECORD_TYPES = ['canvas', 'file', 'anchor'] as const
@@ -201,6 +213,14 @@ export class RecordStore {
       )
       .all(...(canvasId ? [canvasId, limit] : [limit])) as { body: string; canvas_id: string; title: string | null }[]
     return rows.map((row) => ({ record: JSON.parse(row.body) as StoredRecord, canvasId: row.canvas_id, canvasTitle: row.title ?? '' }))
+  }
+
+  // 作業の途中の付箋（付箋の作業。meta.ai.task。claude/noteTasks.ts）。起動したときに、途切れた作業の報告を書くために読む
+  notesWithTask(): StoredRecord[] {
+    const rows = this.db
+      .prepare("SELECT body FROM records WHERE type_name = 'node' AND type = 'note' AND json_extract(body, '$.meta.ai.task') IS NOT NULL")
+      .all() as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as StoredRecord)
   }
 
   // この変更番号で変わったレコード（known の id は中身を読まない。所属だけ返す）と、消えたレコード
@@ -378,8 +398,8 @@ export class RecordStore {
       // 一緒に消したレコードも記録に入れる（取り消すと戻る）
       const patch = [...op.patch, ...cascade.map((record) => ({ id: record.id, before: record, after: null }))]
       this.db
-        .prepare('INSERT INTO agent_ops (id, canvas_id, label, created_at, rev, patch) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(op.id, op.canvasId, op.label, op.createdAt, rev, JSON.stringify(patch))
+        .prepare('INSERT INTO agent_ops (id, canvas_id, label, created_at, rev, patch, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(op.id, op.canvasId, op.label, op.createdAt, rev, JSON.stringify(patch), op.threadId ?? null)
       this.pruneAgentOps()
     })
   }
@@ -397,7 +417,7 @@ export class RecordStore {
 
   getAgentOp(id: string): AgentOp | undefined {
     const row = this.db.prepare('SELECT * FROM agent_ops WHERE id = ?').get(id) as
-      | { id: string; canvas_id: string; label: string; created_at: number; rev: number; patch: string; undone_at: number | null }
+      | { id: string; canvas_id: string; label: string; created_at: number; rev: number; patch: string; undone_at: number | null; thread_id: string | null }
       | undefined
     if (!row) return undefined
     return {
@@ -408,7 +428,22 @@ export class RecordStore {
       rev: Number(row.rev),
       patch: JSON.parse(row.patch) as AgentOpEntry[],
       undoneAt: row.undone_at === null ? null : Number(row.undone_at),
+      ...(row.thread_id ? { threadId: row.thread_id } : {}),
     }
+  }
+
+  // その会話がした AI の編集（新しいものから）。古くて消した記録は入らない
+  agentOpsOfThread(threadId: string): AgentOpSummary[] {
+    const rows = this.db
+      .prepare('SELECT id, canvas_id, label, created_at, undone_at FROM agent_ops WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC')
+      .all(threadId) as { id: string; canvas_id: string; label: string; created_at: number; undone_at: number | null }[]
+    return rows.map((row) => ({
+      id: row.id,
+      canvasId: row.canvas_id,
+      label: row.label,
+      createdAt: Number(row.created_at),
+      undoneAt: row.undone_at === null ? null : Number(row.undone_at),
+    }))
   }
 
   // AI の編集を取り消した差分を保存し、取り消したことを記録する（同じトランザクション）
