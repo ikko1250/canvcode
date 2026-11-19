@@ -3427,6 +3427,17 @@ button.pdf-page-number:hover {
   white-space: nowrap;
 }
 
+/* 選んでいる間だけ出す、PDF の文字のなぞり方。押せないので、キャンバスに通す */
+.ai-note-picking-help {
+  align-self: flex-start;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 2px 8px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-sub);
+}
+
 .ai-note-controls-spacer {
   flex: 1;
 }

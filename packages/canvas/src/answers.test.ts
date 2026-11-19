@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { NodeRecord } from '@canvcode/core'
+import type { CanvasRefTarget, NodeRecord, PdfRefTarget } from '@canvcode/core'
 import { plainTextOf, richTextFromPlain, type NoteProps, type TextProps } from '@canvcode/nodes'
 import {
   ANSWER_TEXT_FONT_SIZE,
@@ -19,11 +19,14 @@ import {
   placeFollowUpNote,
   previousTurnsOf,
   questionOf,
+  pdfPlaceLabel,
   questionText,
+  sameAiContext,
   setAiAnswer,
   setAiNote,
   waitUntilIdle,
   type AiAnswer,
+  type AiContext,
 } from './answers.ts'
 import { Editor } from './editor.ts'
 
@@ -119,6 +122,57 @@ describe('aiNoteMeta', () => {
     expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts: [], answer: { body: 1 } } } }))).toEqual({ contexts: [] })
     expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }))).toBeNull()
     expect(aiNoteMeta({ ...editor.makeNode('geo', { x: 0, y: 0 }), meta: { ai } })).toBeNull()
+  })
+
+  // PDF のページの上でなぞった文字（docs/ai-note-pick-text-plan.md）
+  it('reads a passage of a PDF page as a place, and drops a broken one', () => {
+    const editor = new Editor()
+    const passage = { kind: 'pdf', fileId: 'file:pdf', pageIndex: 2, rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.1 }, text: 'The model was trained' }
+    const contexts = [
+      { kind: 'canvas', label: 'PDF の 3 ページ「The model was trained」', target: passage },
+      { kind: 'canvas', label: '壊れたもの', target: { kind: 'pdf', fileId: 'file:pdf', pageIndex: '2', rect: passage.rect, text: 'x' } },
+      { kind: 'canvas', label: '文字がない', target: { kind: 'pdf', fileId: 'file:pdf', pageIndex: 2, rect: passage.rect } },
+    ]
+    expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts } } }))).toEqual({ contexts: [contexts[0]] })
+  })
+
+  // 範囲がかかった PDF のページの範囲（送るときに、その文字を読む）
+  it('keeps the PDF page regions of an area, and drops the ones that do not fit', () => {
+    const editor = new Editor()
+    const target = { kind: 'canvas', canvasId: editor.canvasId, rect: { x: 0, y: 0, w: 10, h: 10 }, nodes: [{ id: 'node:page', bounds: { x: 0, y: 0, w: 5, h: 5 } }] }
+    const region = { nodeId: 'node:page', assetId: 'asset:a', fileId: 'file:pdf', pageIndex: 0, rect: { x: 0, y: 0, w: 1, h: 0.5 } }
+    const contexts = [
+      { kind: 'canvas', label: '範囲', target, regions: [region, { ...region, rect: { x: 0 } }, { ...region, nodeId: 3 }, 'broken'] },
+      { kind: 'canvas', label: '範囲 2', target, regions: 'broken' },
+    ]
+    expect(aiNoteMeta(note(editor, 'Q', { x: 0, y: 0 }, { meta: { ai: { contexts } } }))).toEqual({
+      contexts: [
+        { kind: 'canvas', label: '範囲', target, regions: [region] },
+        { kind: 'canvas', label: '範囲 2', target },
+      ],
+    })
+  })
+})
+
+describe('places', () => {
+  const passage: PdfRefTarget = { kind: 'pdf', fileId: 'file:pdf', pageIndex: 0, rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.1 }, text: 'The model was trained on a large corpus' }
+  const area: CanvasRefTarget = { kind: 'canvas', canvasId: 'canvas:c', rect: { x: 0, y: 0, w: 10, h: 10 }, nodes: [{ id: 'node:a', bounds: { x: 0, y: 0, w: 5, h: 5 } }] }
+
+  it('names a passage of a PDF page by its page and the head of the text', () => {
+    expect(pdfPlaceLabel(passage)).toBe('PDF の 1 ページ「The model was tr…」')
+    expect(pdfPlaceLabel({ pageIndex: 4, text: ' 短い\n文字 ' })).toBe('PDF の 5 ページ「短い 文字」')
+  })
+
+  it('finds the same place: the same nodes and area, or the same passage of the same page', () => {
+    const place = (target: PdfRefTarget | CanvasRefTarget, label = ''): AiContext => ({ kind: 'canvas', label, target })
+    expect(sameAiContext(place(passage, 'a'), place({ ...passage }, 'b'))).toBe(true)
+    expect(sameAiContext(place(passage), place({ ...passage, pageIndex: 1 }))).toBe(false)
+    expect(sameAiContext(place(passage), place({ ...passage, text: 'The model' }))).toBe(false)
+    expect(sameAiContext(place(passage), place({ ...passage, fileId: 'file:other' }))).toBe(false)
+    expect(sameAiContext(place(passage), place(area))).toBe(false)
+    expect(sameAiContext(place(area), place({ ...area, nodes: [...area.nodes] }))).toBe(true)
+    expect(sameAiContext(place(area), place({ ...area, rect: { x: 1, y: 0, w: 10, h: 10 } }))).toBe(false)
+    expect(sameAiContext({ kind: 'answer', noteId: 'node:a', canvasId: 'canvas:c', label: '', turns: [] }, place(area))).toBe(false)
   })
 })
 

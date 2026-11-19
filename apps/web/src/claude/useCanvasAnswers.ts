@@ -143,9 +143,12 @@ export function useCanvasAnswers({ viewRef, claude, notify, answerEditor, canvas
             if (questionId && claude.state.finishedQuestions.get(questionId) === 'cancelled') job.abort.abort()
           })
           try {
-            // 選んだ所は、送るときに ref にする（ref は 3 日で消えるので、付箋には範囲を持っておく）
+            // 選んだ所は、送るときに ref にする（ref は 3 日で消えるので、付箋には範囲を持っておく）。
+            // 範囲がかかった PDF のページ（regions）は、その範囲の文字を読んで ref のノードに付ける（docs/ai-note-pick-text-plan.md の 3）
             const refs = (
-              await Promise.all(places.map(async (place) => ({ label: place.label, refId: await view.saveReference(place.target).catch(() => null) })))
+              await Promise.all(
+                places.map(async (place) => ({ label: place.label, refId: await view.saveReference(place.target, place.regions ?? []).catch(() => null) })),
+              )
             ).flatMap((ref) => (ref.refId ? [{ label: ref.label, refId: ref.refId }] : []))
             const request = {
               question: asked.question,
