@@ -29,7 +29,8 @@ import { useNodesVersion } from './useNodesVersion.ts'
 // - ② 答え：「← 一覧」、質問、Canvas と時刻、モデルの札、「↗ 付箋へ移動」、AnswerView（本文・関連する付箋・「続けて聞く」「会話で続ける」「Canvasに残す」）。
 //   答えを作っている間は、進み具合と考えている中身と「やめる」。開いたら、その答えを見たことにする
 // - ③ この場で続けて聞く：「続けて聞く」「Canvasに残す」は、元の付箋がいま開いている Canvas になければ、画面の真ん中に置く（App）
-// - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）も混ぜて出す。
+// - 会話の質問（会話の入力欄の「質問」で、会話に入れずに聞いたもの。docs/claude-chat-tab-plan.md の 7）は、会話の欄に出すので一覧には出さない
+//   （docs/ai-note-tasks-plan.md の E）。会話の欄の取り込んだ質問のカードの ↗ から、id で開くことはできる。以下はそのときの出し方。
 //   一覧の 1 行は、質問と「会話「題」・時刻」（会話がなければ「会話の外」）。答えは「↗ 付箋へ移動」の代わりに「↗ 会話へ移動」（会話がなければ出さない）。
 //   「続けて聞く」は、画面の真ん中に会話の札（添えた前の答えと、この質問と答えの写し）を添えた AI 付箋を置く。まだ見ていない印は chat:<id> で覚える
 // - パネルの中のキー入力は、キャンバスに渡さない。Esc で閉じる（答えを見ていれば一覧に戻る）
@@ -45,7 +46,7 @@ const THREAD_TITLE_LENGTH = 20
 
 type Viewing = { kind: 'note'; noteId: string; canvasId: string } | { kind: 'chat'; id: string }
 
-// 会話の質問を開く（会話の欄の「答えを見る →」）。n が変わるたびに開く
+// 会話の質問を開く（会話の欄の、取り込んだ会話の質問のカードの ↗）。n が変わるたびに開く
 export interface QuestionOpenRequest {
   id: string
   n: number
@@ -104,7 +105,7 @@ export function QuestionPanel(props: {
     )
   }
 
-  // 会話の質問を開く（会話の欄の「答えを見る →」）
+  // 会話の質問を開く（会話の欄の、取り込んだ会話の質問のカードの ↗）
   const [seenOpen, setSeenOpen] = useState<typeof open>(null)
   if (open !== seenOpen) {
     setSeenOpen(open)
@@ -163,7 +164,8 @@ export function QuestionPanel(props: {
   }, [claude, hidden, viewing, state.finishedQuestions])
 
   // 動いている質問があれば、経過時間を数え直す。いま開いている Canvas に絞ったときは、会話の質問を出さない
-  const running = state.questions.filter((question) => filter === 'all' || (question.kind !== 'chat' && question.canvasId === here))
+  // 会話の質問は会話の欄に出すので、ここには出さない
+  const running = state.questions.filter((question) => question.kind !== 'chat' && (filter === 'all' || question.canvasId === here))
   const tasks = allTasks.filter((job) => filter === 'all' || job.note?.canvasId === here)
   const asking = noteTaskPermissions(state).filter((permission) => filter === 'all' || permission.note.canvasId === here)
   const askingThreads = new Set(asking.map((permission) => permission.threadId))
@@ -182,7 +184,7 @@ export function QuestionPanel(props: {
       const answer = aiNoteMeta(node)?.answer
       return node && answer ? [answeredOf(node, answer, here, canvasTitle(here))] : []
     })
-    return [...past.filter((item) => item.kind === 'chat' || item.canvasId !== here), ...local].sort((a, b) => b.answeredAt - a.answeredAt)
+    return [...past.filter((item) => item.kind !== 'chat' && item.canvasId !== here), ...local].sort((a, b) => b.answeredAt - a.answeredAt)
   }, [editor, here, past, nodesVersion, canvasTitle])
 
   // 会話の題（一覧に出す。読んである会話の一覧から。消した会話は、サーバーが送った題）
@@ -380,7 +382,7 @@ export function QuestionPanel(props: {
           {running.length === 0 && tasks.length === 0 && shown.length === 0 && (
             <p className="claude-hint">
               付箋の作業は、まだありません。AI 付箋に頼みたいことを書いて送ると、Claude が作業し、ここに並びます（どの Canvas
-              で頼んだものも）。報告は付箋に残ります。会話の入力欄の「質問」で、会話に入れずに聞いたものも並びます。
+              で頼んだものも）。報告は付箋に残ります。質問は、会話のタブの入力欄の「質問」で聞けます（答えは会話の欄に出ます）。
             </p>
           )}
           {asking.length > 0 && <PermissionList permissions={asking} answering={answeringPermissions} onAnswer={(permission, decision) => answerPermission(permission as PendingPermission & { threadId: string }, decision)} />}

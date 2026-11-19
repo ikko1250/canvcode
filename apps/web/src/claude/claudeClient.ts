@@ -596,6 +596,13 @@ export class ClaudeClient {
     return job
   }
 
+  // 会話を一覧に入れる（なければ。会話を選ばずに聞いた質問で、サーバーが作った会話。SSE の変化が届けば、それで置き換わる）
+  addThread(thread: ThreadSummary): void {
+    if (this.snapshot.threads.some((known) => known.threadId === thread.threadId)) return
+    this.gone.delete(thread.threadId)
+    this.set({ ...this.snapshot, threads: sortThreads([thread, ...this.snapshot.threads]) })
+  }
+
   // 付箋の作業を頼む。ジョブは SSE より先に入れておく（会話の一覧には入れない。付箋の作業の会話は出さない）
   async startNoteTask(request: NoteTaskRequest): Promise<{ job: ClaudeJob; undone?: { batch: string; label: string }[] }> {
     const res = await fetch(`${BASE}/note-tasks`, {

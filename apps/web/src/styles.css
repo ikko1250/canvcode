@@ -4412,52 +4412,18 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
-/* 別枠の質問（会話には入れていない）のカード。点線の枠で、会話のジョブと見分ける */
-.claude-side-question {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 10px 0;
-  padding: 10px 14px;
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-panel);
+/* 会話の質問（入力欄の「質問」で、会話に入れずに Web だけで聞いたもの）。吹き出しを点線の枠にし、「質問」の印を付けて、会話の依頼と見分ける */
+.claude-prompt.question {
+  border: 1px dashed var(--color-accent);
   background: var(--color-surface);
-  transition: background-color 0.4s, box-shadow 0.4s;
 }
 
-.claude-side-question.highlighted {
-  background: var(--color-selected);
-  box-shadow: 0 0 0 4px var(--color-selected);
-}
-
-.claude-side-question-head {
-  color: var(--color-text-sub);
-}
-
-.claude-side-question-text {
-  color: var(--color-text);
-  font: var(--font-body);
+.claude-prompt-tag {
+  margin-bottom: 2px;
+  color: var(--color-accent);
+  font: var(--font-ui);
   font-weight: var(--font-weight-700);
-  letter-spacing: var(--letter-spacing-body);
-  overflow-wrap: anywhere;
-}
-
-.claude-side-question-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 10px;
-  min-height: 24px;
-  color: var(--color-text-sub);
-}
-
-.claude-side-question-foot .claude-link {
-  --target-reach-y: 4px;
-}
-
-.claude-side-question-end.failed {
-  color: var(--color-error-strong);
-  overflow-wrap: anywhere;
+  letter-spacing: var(--letter-spacing-ui);
 }
 
 /* 取り込んだ付箋の質問のカード（そのジョブの頼んだ文の上） */

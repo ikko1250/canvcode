@@ -49,6 +49,13 @@ describe('requestAnswer', () => {
     expect(failure).toMatchObject({ status: 499, message: '頼むのをやめました' })
   })
 
+  it('passes the thread of a question from the chat from the first line (a new thread when none was chosen)', async () => {
+    vi.stubGlobal('fetch', async () => ndjson([`{"type":"start","id":"q-2","threadId":"q-2"}\n{"type":"error","status":499,"error":"x"}\n`]))
+    const started: [string, string | undefined][] = []
+    await requestAnswer({ question: 'q', source: { kind: 'chat', label: 'q' } } as never, {}, { onStart: (id, threadId) => started.push([id, threadId]) }).catch(() => undefined)
+    expect(started).toEqual([['q-2', 'q-2']])
+  })
+
   it('throws the error line, an error status, or a stream that ends without an answer', async () => {
     vi.stubGlobal('fetch', async () => ndjson([`{"type":"thinking","text":"…"}\n{"type":"error","status":502,"error":"答えられませんでした：短く"}\n`]))
     await expect(requestAnswer({ question: 'q' }, {})).rejects.toThrow('答えられませんでした：短く')

@@ -44,7 +44,8 @@ export class AnswerError extends Error {
 export interface AnswerOptions {
   signal?: AbortSignal
   // 動いている質問の一覧に載った（source を添えたとき）
-  onStart?: (id: string) => void
+  // threadId は、会話の質問の会話（会話を選ばずに聞いたら、サーバーが作った新しい会話）
+  onStart?: (id: string, threadId?: string) => void
   // Claude の考えている中身（少しずつ届く）
   onThinking?: (text: string) => void
   onStep?: (step: AnswerStep) => void
@@ -72,10 +73,10 @@ async function readStream(body: ReadableStream<Uint8Array>, options: AnswerOptio
   let buffer = ''
   const handle = (line: string): AnswerResult | null => {
     if (!line.trim()) return null
-    const message = JSON.parse(line) as { type?: string; id?: unknown; text?: unknown; step?: unknown; answer?: unknown; status?: unknown; error?: unknown }
+    const message = JSON.parse(line) as { type?: string; id?: unknown; threadId?: unknown; text?: unknown; step?: unknown; answer?: unknown; status?: unknown; error?: unknown }
     if (message.type === 'thinking' && typeof message.text === 'string') options.onThinking?.(message.text)
     else if (message.type === 'step' && isStep(message.step)) options.onStep?.(message.step)
-    else if (message.type === 'start' && typeof message.id === 'string') options.onStart?.(message.id)
+    else if (message.type === 'start' && typeof message.id === 'string') options.onStart?.(message.id, typeof message.threadId === 'string' ? message.threadId : undefined)
     else if (message.type === 'error') {
       throw new AnswerError(typeof message.error === 'string' ? message.error : '答えられませんでした', typeof message.status === 'number' ? message.status : 500)
     }

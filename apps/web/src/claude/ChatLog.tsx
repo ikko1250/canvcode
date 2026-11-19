@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { firstLine } from '@canvcode/canvas'
 import { renderMarkdownToSafeHtml } from '@canvcode/nodes/markdown'
-import type { ChatQuestion, ClaudeJob, ImportedQuestion, JobEvent, ModelCatalog, PermissionAnswer } from './claudeClient.ts'
+import { AnswerView } from './AnswerView.tsx'
+import type { ChatQuestion, ClaudeJob, Effort, ImportedQuestion, JobEvent, ModelCatalog, PermissionAnswer, RunningQuestion } from './claudeClient.ts'
 import { settingLabel, settingOf } from './modelChoice.ts'
 import { answerOfEvents, groupEvents, groupLabel, runningText, toolLabel, type ToolGroup } from './toolGroups.ts'
 
@@ -14,8 +14,9 @@ import { answerOfEvents, groupEvents, groupLabel, runningText, toolLabel, type T
 // - 答え（そのジョブの文章をつないだもの）にマウスを乗せると、下に「📌 付箋に切り出す」「コピー」と、右にモデルの札
 //   （かかった時間と費用はツールチップ）。タッチの端末では、初めから出す。失敗・止めたときは 1 行で出す
 // - 付箋から取り込んだ質問（imports）は、そのジョブの頼んだ文の上に「付箋の質問を取り込みました「質問」とその答え ↗ 付箋へ」のカード
-// - 会話の質問（会話に入れずに聞いたもの）は、聞いた時刻の位置に点線のカード「別枠の質問（会話には入れていない）「質問」 答えを見る →」
-//   （答えを作っている間は「答えを作っています…」と「止める」）
+// - 会話の質問（入力欄の「質問」で、会話に入れずに Web だけで聞いたもの。docs/ai-note-tasks-plan.md の E）は、聞いた時刻の位置に、
+//   「質問」の印を付けた吹き出しと、答え（Markdown）をそのまま出す。答えを作っている間は、進み具合と考えている中身と「やめる」。
+//   答えには「📌 付箋に切り出す」「コピー」とモデルの札。答えられなかった・やめたときは 1 行
 
 export interface ChatLogProps {
   jobs: readonly ClaudeJob[]
@@ -26,17 +27,18 @@ export interface ChatLogProps {
   onCancel(job: ClaudeJob): void
   // 付箋に切り出す（全画面のエディタでは渡さない）
   onCutToNote?(job: ClaudeJob, answer: string): void
-  // 会話の質問（聞いた順）と、そのカードの操作
+  // 会話の質問（聞いた順）と、答えを作っているものの進み具合（id → 動いている質問）
   questions?: readonly ChatQuestion[]
+  questionProgress?: ReadonlyMap<string, RunningQuestion>
   onStopQuestion?(id: string): void
-  // 「答えを見る →」：質問のタブで開く（全画面のエディタでは渡さない）
-  onOpenQuestion?(id: string): void
+  // 会話の質問の答えを付箋に切り出す（全画面のエディタでは渡さない）
+  onCutQuestion?(question: ChatQuestion): void
   // 取り込んだ質問のカードの ↗（全画面のエディタでは渡さない）
   onOpenImport?(item: ImportedQuestion): void
 }
 
 export function ChatLog(props: ChatLogProps) {
-  const { jobs, catalog, askingJobs, pendingIds, onCancel, onCutToNote, questions = [], onStopQuestion, onOpenQuestion, onOpenImport } = props
+  const { jobs, catalog, askingJobs, pendingIds, onCancel, onCutToNote, questions = [], questionProgress, onStopQuestion, onCutQuestion, onOpenImport } = props
   // ジョブと会話の質問を、時刻の順に並べる（同じ時刻ならジョブを先に）
   const items = useMemo(
     () =>
@@ -60,11 +62,13 @@ export function ChatLog(props: ChatLogProps) {
             {...(onOpenImport ? { onOpenImport } : {})}
           />
         ) : (
-          <SideQuestionCard
+          <QuestionView
             key={item.question.id}
             question={item.question}
+            progress={questionProgress?.get(item.question.id) ?? null}
+            catalog={catalog}
             {...(onStopQuestion ? { onStop: () => onStopQuestion(item.question.id) } : {})}
-            {...(onOpenQuestion ? { onOpen: () => onOpenQuestion(item.question.id) } : {})}
+            {...(onCutQuestion ? { onCutToNote: () => onCutQuestion(item.question) } : {})}
           />
         ),
       )}
@@ -72,36 +76,69 @@ export function ChatLog(props: ChatLogProps) {
   )
 }
 
-// 別枠の質問（会話には入れていない）のカード
-function SideQuestionCard(props: { question: ChatQuestion; onStop?(): void; onOpen?(): void }) {
-  const { question, onStop, onOpen } = props
+// 会話の質問（会話に入れずに、Web だけで聞いたもの）：「質問」の印の吹き出しと、答え
+function QuestionView(props: {
+  question: ChatQuestion
+  progress: RunningQuestion | null
+  catalog: ModelCatalog | undefined
+  onStop?(): void
+  onCutToNote?(): void
+}) {
+  const { question, progress, catalog, onStop, onCutToNote } = props
   return (
-    <div className={`claude-side-question ${question.status}`} data-question-id={question.id}>
-      <div className="claude-side-question-head">別枠の質問（会話には入れていない）</div>
-      <div className="claude-side-question-foot">
-        <span className="claude-side-question-text">「{firstLine(question.question, 60)}」</span>
-        {question.status === 'running' ? (
-          <>
-            <span className="claude-spinner" aria-hidden="true" />
-            <span>答えを作っています…</span>
-            {onStop && (
-              <button type="button" className="claude-link" onClick={onStop}>
-                止める
-              </button>
-            )}
-          </>
-        ) : question.status === 'done' ? (
-          onOpen && (
-            <button type="button" className="claude-link" onClick={onOpen} title="質問のタブで、この答えを見る">
-              答えを見る →
-            </button>
-          )
-        ) : (
-          <span className={`claude-side-question-end ${question.status}`}>
-            {question.status === 'cancelled' ? 'やめました' : `答えられませんでした${question.error ? `：${question.error}` : ''}`}
-          </span>
-        )}
+    <div className={`claude-job claude-question ${question.status}`} data-question-id={question.id}>
+      <div className="claude-prompt question">
+        <div className="claude-prompt-tag" title="会話には入れずに、Web だけを使って聞いた質問">質問</div>
+        <div className="claude-prompt-text">{question.question}</div>
       </div>
+      {question.status === 'running' ? (
+        <AnswerView
+          answer={null}
+          progress={progress ?? { step: 'read', searched: false, thinking: '' }}
+          questionChanged={false}
+          related={[]}
+          onRelated={() => undefined}
+          {...(onStop ? { onStop } : {})}
+        />
+      ) : question.status === 'done' && question.body !== undefined ? (
+        <>
+          <MarkdownText text={question.body} />
+          <QuestionActions question={question} answer={question.body} catalog={catalog} {...(onCutToNote ? { onCutToNote } : {})} />
+        </>
+      ) : question.status === 'done' ? (
+        // 答えたと届いたが、答えをまだ読んでいない（読み直している）
+        <div className="claude-status">答えを読み込んでいます…</div>
+      ) : (
+        <div className={`claude-status ${question.status}`}>
+          {question.status === 'cancelled' ? 'やめました' : `答えられませんでした${question.error ? `：${question.error}` : ''}`}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 会話の質問の答えの操作：「📌 付箋に切り出す」「コピー」と、右にモデルの札
+function QuestionActions(props: { question: ChatQuestion; answer: string; catalog: ModelCatalog | undefined; onCutToNote?(): void }) {
+  const { question, answer, catalog, onCutToNote } = props
+  const [copied, setCopied] = useState<'done' | 'failed' | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(null), 1500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  return (
+    <div className="claude-answer-actions">
+      {onCutToNote && (
+        <button type="button" className="claude-answer-cut" onClick={onCutToNote} title="この質問と答えを添えた AI 付箋を、いま開いている Canvas に置く（会話には何も足さない）">
+          📌 付箋に切り出す
+        </button>
+      )}
+      <button type="button" className="claude-answer-copy" onClick={() => void copyText(answer).then((ok) => setCopied(ok ? 'done' : 'failed'))} title="答えを Markdown のままコピーする">
+        {copied === 'done' ? 'コピーしました' : copied === 'failed' ? 'コピーできませんでした' : 'コピー'}
+      </button>
+      <span className="claude-answer-model" title="会話には入れずに、Web だけを使って答えた">
+        {settingLabel(catalog, { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort as Effort } : {}) })}
+      </span>
     </div>
   )
 }
@@ -112,7 +149,7 @@ function ImportCard(props: { item: ImportedQuestion; onOpen?(): void }) {
   const chat = !!item.questionId
   return (
     <div className="claude-import-card">
-      <div className="claude-import-card-head">{chat ? '別枠の質問を取り込みました' : '付箋の質問を取り込みました'}</div>
+      <div className="claude-import-card-head">{chat ? '会話の質問を取り込みました' : '付箋の質問を取り込みました'}</div>
       <div className="claude-import-card-line">
         <span className="claude-import-card-text">
           <strong>「{item.label}」</strong>とその答え

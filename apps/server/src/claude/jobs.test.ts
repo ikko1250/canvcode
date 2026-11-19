@@ -271,6 +271,21 @@ describe('ClaudeJobs', () => {
     await jobs.dispose()
   })
 
+  it('starts a new Claude Code session in a thread of questions only (asked from the chat before any job)', async () => {
+    const sdk = replying(() => [assistant('s1', [{ type: 'text', text: 'はい' }])])
+    const store = openStore()
+    store.insertQuestion({ id: 'q1', threadId: 'qthread', question: 'コンテキストとは？', previous: [], status: 'done', createdAt: 1, answeredAt: 2 })
+    const jobs = makeJobs({ run: sdk.run, store })
+    const job = jobs.start({ prompt: '表にして', threadId: 'qthread' })
+    expect(job.threadId).toBe('qthread')
+    const [q] = [await queryAt(sdk, 0)]
+    expect(q.options.resume).toBeUndefined()
+    await finished(jobs, job.id)
+    expect(jobs.thread('qthread')!.thread).toMatchObject({ title: 'コンテキストとは？', jobCount: 1 })
+    expect(() => jobs.start({ prompt: 'x', threadId: 'nothing' })).toThrow(/その会話はもうありません/)
+    await jobs.dispose()
+  })
+
   it('runs a prompt with the selected place in auto mode, and turns messages into events', async () => {
     const sdk = replying(() => [
       assistant('s1', [

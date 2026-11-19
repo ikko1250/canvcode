@@ -36,6 +36,50 @@ const job = (id: string, threadId: string, createdAt: number, extra: Record<stri
 })
 
 describe('ClaudeStore', () => {
+  it('makes a thread of questions only, and gives a thread with jobs the first question and the last time of its questions (docs/ai-note-tasks-plan.md の 10)', () => {
+    const store = open(dataDir())
+    const question = (id: string, threadId: string, createdAt: number, extra: Record<string, unknown> = {}) => ({
+      id,
+      threadId,
+      question: `質問 ${id}`,
+      previous: [],
+      status: 'done' as const,
+      createdAt,
+      answeredAt: createdAt + 1,
+      ...extra,
+    })
+    // 質問の行のモデルは、「既定」で聞いても答えたモデルなので、会話の値にしない。動いている（running）は、ジョブのことなので false
+    store.insertQuestion(question('q1', 'only', 5, { model: 'haiku' }))
+    store.insertQuestion(question('q2', 'only', 7, { status: 'running', answeredAt: undefined, model: 'opus' }))
+    store.insertJob(job('chat', 'chat', 3))
+    expect(store.thread('only')).toMatchObject({ threadId: 'only', title: '質問 q1', createdAt: 5, updatedAt: 7, jobCount: 0, running: false })
+    expect(store.thread('only')!.model).toBeUndefined()
+    expect(store.threads().map((thread) => thread.threadId)).toEqual(['only', 'chat'])
+    // 質問だけの会話で頼むと、ジョブのある会話になる。題は最初の質問のまま、最後に動いた時刻は遅い方
+    store.insertJob(job('j', 'only', 10))
+    expect(store.thread('only')).toMatchObject({ title: '質問 q1', createdAt: 5, updatedAt: 10, jobCount: 1 })
+    // ジョブのある会話のあとで聞いた質問の時刻も、一覧の順に効く
+    store.insertQuestion(question('q3', 'chat', 20))
+    expect(store.threads().map((thread) => thread.threadId)).toEqual(['chat', 'only'])
+    expect(store.thread('chat')).toMatchObject({ title: 'prompt chat', updatedAt: 21 })
+    // 一覧を切るのは、質問の時刻を合わせて並べたあと（最近質問した古い会話を落とさない）
+    for (let i = 0; i < 3; i++) store.insertJob(job(`newer${i}`, `newer${i}`, 30 + i))
+    store.insertQuestion(question('q4', 'only', 50))
+    expect(store.threads(2).map((thread) => thread.threadId)).toEqual(['only', 'newer2'])
+  })
+
+  it('turns each question asked outside a thread by an earlier server into a thread of its own when opened', () => {
+    const dir = dataDir()
+    let store = new ClaudeStore(dir)
+    store.close()
+    const db = new DatabaseSync(join(dir, 'claude.db'))
+    db.prepare("INSERT INTO questions (id, thread_id, question, previous, status, created_at) VALUES ('old', NULL, '前に聞いた', '[]', 'done', 1)").run()
+    db.close()
+    store = open(dir)
+    expect(store.question('old')).toMatchObject({ threadId: 'old' })
+    expect(store.thread('old')).toMatchObject({ title: '前に聞いた' })
+  })
+
   it('keeps the note of a note task, and leaves threads with only note tasks out of the list (docs/ai-note-tasks-plan.md)', () => {
     const store = open(dataDir())
     const note = { noteId: 'node:n', canvasId: 'canvas:c' }
@@ -210,8 +254,6 @@ describe('ClaudeStore', () => {
       ['q1', 'done'],
       ['q3', 'cancelled'],
     ])
-    // 答えたものだけ、答えた時刻の新しいものから
-    expect(store.answeredQuestions().map((q) => q.id)).toEqual(['q2', 'q1'])
     // 答えを作っていることになっているものは、開き直すと（サーバーが止まって途切れた）失敗にする
     store.insertQuestion({ id: 'q4', threadId: 't', question: '途中', previous: [], status: 'running', createdAt: 8 })
     store.interruptRunning('途切れました', 9)

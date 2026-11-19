@@ -113,11 +113,18 @@ describe('parseQuestionSource', () => {
 })
 
 // 答えを書く仕組みと、動いている質問の API を立てる（chat は会話の質問の置き場所、answered は答えを持つ付箋の一覧）
-async function start(questions: RunningQuestions | null, run?: OnceQuery, chat: ClaudeStore | null = null, answered: AnsweredNotes | null = null): Promise<string> {
+// announced は、会話が変わったと知らされた会話（onThread）
+async function start(
+  questions: RunningQuestions | null,
+  run?: OnceQuery,
+  chat: ClaudeStore | null = null,
+  answered: AnsweredNotes | null = null,
+  announced: string[] = [],
+): Promise<string> {
   const writer = run ? new AnswerWriter({ once: new ClaudeOnce({ run }) }) : null
   const server: Server = createServer((req, res) => {
     const path = new URL(req.url!, 'http://x').pathname
-    if (handleAnswer(req, res, path, writer, questions, chat)) return
+    if (handleAnswer(req, res, path, writer, questions, chat, (threadId) => announced.push(threadId))) return
     if (handleQuestions(req, res, path, questions, answered, chat)) return
     res.writeHead(404)
     res.end()
@@ -232,7 +239,7 @@ describe('the answer stream and the running questions', () => {
     expect(questions.list()).toEqual([])
   })
 
-  it('asks from the chat: keeps it in claude.db, writes the answer there and ends it as done without placing; mixes it into the list and gives it by id (claude-chat-tab-plan 7)', async () => {
+  it('asks from the chat: keeps it in claude.db, writes the answer there and ends it as done without placing; leaves it out of the list of answered notes and gives it by id (claude-chat-tab-plan 7, docs/ai-note-tasks-plan.md の E)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'canvcode-chat-questions-'))
     const store = new ClaudeStore(dir)
     cleanups.push(() => {
@@ -263,14 +270,9 @@ describe('the answer stream and the running questions', () => {
     expect(questions.list()).toEqual([])
     expect(changes.at(-1)).toEqual({ type: 'question-done', id, status: 'done' })
     expect(store.question(id)).toMatchObject({ status: 'done', body: '答え', model: 'claude-opus-5-5', answeredAt: expect.any(Number) })
-    // 一覧には、付箋の答えと答えた時刻の順に混ぜる（Canvas で絞ったときは出さない）
+    // 一覧（作業のタブ）には混ぜない（会話の質問は会話の欄に出す）
     const list = (await (await fetch(`${base}/api/claude/questions`)).json()) as { questions: Record<string, unknown>[] }
-    expect(list.questions).toEqual([
-      { kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', model: 'claude-opus-5-5', effort: 'medium', answeredAt: expect.any(Number) },
-      expect.objectContaining({ kind: 'note', noteId: 'node:n' }),
-    ])
-    const here = (await (await fetch(`${base}/api/claude/questions?canvasId=canvas:c`)).json()) as { questions: Record<string, unknown>[] }
-    expect(here.questions.map((item) => item.kind)).toEqual(['note'])
+    expect(list.questions).toEqual([expect.objectContaining({ kind: 'note', noteId: 'node:n' })])
     // 1 つを読む
     const one = await fetch(`${base}/api/claude/questions/chat/${id}`)
     expect(await one.json()).toMatchObject({ kind: 'chat', id, threadId, threadTitle: '付箋UIのレビュー', question: 'コンテキストとは？', previous, body: '答え', status: 'done' })
@@ -289,16 +291,24 @@ describe('the answer stream and the running questions', () => {
       rmSync(dir, { recursive: true, force: true })
     })
     const questions = new RunningQuestions()
-    const base = await start(questions, gated(new Promise(() => {})), store)
-    // 新しい会話から聞いたもの（threadId がない）
+    const announced: string[] = []
+    const base = await start(questions, gated(new Promise(() => {})), store, null, announced)
+    // 新しい会話から聞いたもの（threadId がない）は、新しい会話にする（会話の id は質問の id。docs/ai-note-tasks-plan.md の 10）
     const response = ask(base, { question: '会話の外', source: { kind: 'chat', label: '会話の外' } })
     await vi.waitFor(() => expect(questions.list()).toHaveLength(1))
     const id = questions.list()[0]!.id
-    expect(store.question(id)).toMatchObject({ status: 'running' })
-    expect(store.question(id)).not.toHaveProperty('threadId')
+    expect(questions.list()[0]).toMatchObject({ kind: 'chat', threadId: id })
+    expect(store.question(id)).toMatchObject({ status: 'running', threadId: id })
+    expect(store.thread(id)).toMatchObject({ threadId: id, title: '会話の外', jobCount: 0 })
+    expect(store.threads().map((thread) => thread.threadId)).toEqual([id])
+    expect(announced).toEqual([id])
     expect((await fetch(`${base}/api/claude/questions/${id}/cancel`, { method: 'POST' })).status).toBe(204)
-    expect((await lines(await response)).at(-1)).toMatchObject({ type: 'error', status: 499 })
+    const messages = await lines(await response)
+    expect(messages[0]).toEqual({ type: 'start', id, threadId: id })
+    expect(messages.at(-1)).toMatchObject({ type: 'error', status: 499 })
     expect(store.question(id)).toMatchObject({ status: 'cancelled' })
+    // 終わったときも知らせる（会話の一覧の時刻が変わる）
+    expect(announced).toEqual([id, id])
   })
 
   it('a question from the chat leaves the running list even when claude.db cannot take its answer or its failure', async () => {
