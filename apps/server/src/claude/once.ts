@@ -15,7 +15,8 @@ import { readPath, realish } from './permissions.ts'
 //   cwd は OS の一時フォルダ。使ってよいツールのほかは、フックと canUseTool の両方で断る
 // - MCP とファイルを読むツールは、ふつうは使わせない。会話の質問（claude/answer.ts）だけが、読むだけの canvcode の MCP（canvas）と
 //   ファイルを読むフォルダ（readRoots）を渡す（docs/question-canvas-tools-plan.md）。MCP は Agent SDK の同じプロセスの中の MCP としてつなぎ、
-//   ONCE_CANVAS_TOOLS だけを許す。Read・Glob・Grep は readRoots の中だけを読ませる（fileRefusal）
+//   ONCE_CANVAS_TOOLS だけを許す。Read・Glob・Grep は readRoots の中だけを読ませる（fileRefusal）。
+//   そのときは、WebFetch に渡せる URL を、その頼みの中にそのまま出たものに限る（SeenUrls。読んだ中身を URL に入れて外に送らせない）
 // - 同時に動かせる数と、待つ時間に上限がある（超えたら 429、時間切れは 504）
 
 // 使わせてよいツール（Web を調べるだけのもの）
@@ -55,6 +56,8 @@ export interface OnceRequest {
   canvas?: McpServer
   // ファイルを読ませるフォルダ（絶対パス）。渡すと Read・Glob・Grep を見せ、このフォルダの中だけを読ませる（fileRefusal）
   readRoots?: readonly string[]
+  // フックが通したツールの呼び出し（断ったものは来ない）。何をしているかを画面に出すため
+  onToolUse?: (name: string, input: Record<string, unknown>) => void
   // 既定は、ツールなしなら DEFAULT_ONCE_MAX_TURNS、ツールがあれば DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS（ツールのない答えは 1 ターンで終わる）
   maxTurns?: number
   // 答えの JSON の形（JSON Schema）。渡すと、答えを OnceResult の output に入れて返す
@@ -146,8 +149,11 @@ export class ClaudeOnce {
     const failure = request.failure ?? 'Claude が答えられませんでした'
     // 失敗の知らせ（頭とわけ。頭が空なら、わけだけ）
     const fail = (detail: string) => new JobError(502, failure ? `${failure}${detail ? `：${detail}` : ''}` : detail || 'Claude Code が誤りで終わりました')
-    const messages = await run({ prompt: request.prompt, options: onceOptions(request, tools, abortController) })
+    // 読むツールを渡すときに WebFetch に渡してよい URL。ツールの結果は、フック（PostToolUse）と、届いたメッセージの両方から集める
+    const seen = fetchGuard(request)
+    const messages = await run({ prompt: request.prompt, options: onceOptions(request, tools, abortController, seen) })
     for await (const message of messages) {
+      seen?.addMessage(message)
       request.onMessage?.(message)
       if (request.onThinking && message.type === 'stream_event') {
         const event = message.event
@@ -174,32 +180,47 @@ export class ClaudeOnce {
   }
 }
 
-// query() に渡すもの（テストで確かめるために出す）
-export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], abortController: AbortController): Options {
+// 読むツールを渡す頼みなら、WebFetch に渡してよい URL を覚えるもの（頼む文に出た URL から始める）。ほかは null（WebFetch は今のまま）
+export function fetchGuard(request: OnceRequest): SeenUrls | null {
+  return request.canvas || (request.readRoots ?? []).length > 0 ? new SeenUrls([request.prompt]) : null
+}
+
+// query() に渡すもの（テストで確かめるために出す）。seen は fetchGuard のもの（ClaudeOnce は、届いたメッセージからも URL を集める）
+export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], abortController: AbortController, seen: SeenUrls | null = fetchGuard(request)): Options {
   const thinking = request.onThinking !== undefined && thinksAdaptively(request.model)
   const asText = jsonAsText(request)
   const roots = request.readRoots ?? []
   const fileTools: string[] = roots.length > 0 ? [...ONCE_FILE_TOOLS] : []
   const canvasTools = request.canvas ? ONCE_CANVAS_TOOLS.map((name) => `mcp__${ONCE_MCP_SERVER}__${name}`) : []
-  // 尋ねずに使わせるもの。ファイルを読むツールは入れない（入れると canUseTool を通らずに許されるので、場所を確かめるのがフックだけになる。
-  // ワークスペースは cwd の外なので、Claude Code は canUseTool に尋ねる）
-  const unasked = [...tools, ...canvasTools]
+  // 尋ねずに使わせるもの。ファイルを読むツールと、URL を確かめる WebFetch は入れない（入れると canUseTool を通らずに許されるので、
+  // 確かめるのがフックだけになる。ワークスペースは cwd の外なので、Claude Code は Read などを canUseTool に尋ねる）
+  const unasked = [...tools, ...canvasTools].filter((name) => !(seen && name === 'WebFetch'))
   // 答えの JSON の形を渡したときは、答えを渡すツール（StructuredOutput。SDK が足す）も通す。断ると、答えられずにターン数の上限まで繰り返す
-  const allowed = new Set<string>(request.schema && !asText ? [...unasked, STRUCTURED_OUTPUT_TOOL] : unasked)
+  const allowed = new Set<string>([...tools, ...canvasTools, ...(request.schema && !asText ? [STRUCTURED_OUTPUT_TOOL] : [])])
   const systemPrompt = asText ? [request.systemPrompt, jsonInstruction(request.schema!)].filter(Boolean).join('\n\n') : request.systemPrompt
   const usable = [...tools, ...fileTools, ...canvasTools]
   const deny = (name: string) => `${name} は使えません（使えるのは ${usable.length > 0 ? usable.join('・') : 'なし'}）`
-  // 断る理由。使ってよいなら null。ファイルを読むツールは、読む場所で決める
+  // 断る理由。使ってよいなら null。ファイルを読むツールは読む場所で、読むツールを渡したときの WebFetch は URL で決める
   const refusal = (name: string, input: Record<string, unknown>): string | null => {
     if (fileTools.includes(name)) return fileRefusal(name, input, roots)
-    return allowed.has(name) ? null : deny(name)
+    if (!allowed.has(name)) return deny(name)
+    return seen && name === 'WebFetch' ? fetchRefusal(input, seen) : null
   }
   // 使ってよいツールのほかは、フックで断る（tools・MCP で見せていないので、ふつうは来ない。念のため）。ファイルを読むツールは、外を読むものを断る
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return {}
-    const reason = refusal(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
-    if (reason === null) return {}
+    const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
+    const reason = refusal(input.tool_name, toolInput)
+    if (reason === null) {
+      request.onToolUse?.(input.tool_name, toolInput)
+      return {}
+    }
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
+  }
+  // ツールの結果に出た URL を覚える（次の WebFetch に使える）。Claude Code は、結果を Claude に渡す前に、このフックを待つ
+  const collect: HookCallback = async (input) => {
+    if (input.hook_event_name === 'PostToolUse') seen?.addValue(input.tool_response)
+    return {}
   }
   return {
     cwd: tmpdir(),
@@ -207,13 +228,16 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
     ...(request.effort ? { effort: request.effort } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     tools: [...tools, ...fileTools],
-    // 使ってよいツールは尋ねずに使わせる（ファイルを読むツールは、canUseTool で場所を確かめてから）。ほかは断る（画面で尋ねる仕組みはない）
+    // 使ってよいツールは尋ねずに使わせる（ファイルを読むツールと WebFetch は、canUseTool でも確かめてから）。ほかは断る（画面で尋ねる仕組みはない）
     allowedTools: unasked,
+    // 読むツールを渡すときは、尋ねる決まり（default）をはっきり渡す。canUseTool の 2 つめの守りは、尋ねるモードでないと呼ばれない。
+    // 主の守りはフック（どのモードでも先に通る）。cwd は一時フォルダにしておく（cwd の下は、Claude Code が Read などを尋ねずに許す）
+    ...(seen ? { permissionMode: 'default' as const } : {}),
     canUseTool: async (name, input) => {
       const reason = refusal(name, input)
       return reason === null ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: reason }
     },
-    hooks: { PreToolUse: [{ hooks: [guard] }] },
+    hooks: { PreToolUse: [{ hooks: [guard] }], ...(seen ? { PostToolUse: [{ hooks: [collect] }] } : {}) },
     // 読むだけの canvcode の MCP は、同じプロセスの中でつなぐ（ほかの MCP はつながない）
     mcpServers: request.canvas ? { [ONCE_MCP_SERVER]: { type: 'sdk', name: ONCE_MCP_SERVER, instance: request.canvas } } : {},
     strictMcpConfig: true,
@@ -269,6 +293,86 @@ export function answeredModel(usage: Record<string, { costUSD?: number }>, reque
     models.sort((a, b) => (usage[b]?.costUSD ?? 0) - (usage[a]?.costUSD ?? 0))[0] ??
     requested
   )
+}
+
+// 読むツールを渡したときに、WebFetch で読ませない理由。読ませてよいなら null
+export function fetchRefusal(input: Record<string, unknown>, seen: SeenUrls): string | null {
+  const url = typeof input.url === 'string' ? input.url : ''
+  if (url && seen.has(url)) return null
+  return (
+    `WebFetch には、この頼みの中にそのまま出た URL だけを渡せます（質問・添えた材料・WebSearch の結果・読んだページ・キャンバスやファイルを読んだ結果）。` +
+    `出てきた URL を、文字を足したり変えたりせずに（クエリも足さずに）そのまま渡してください。ページを探すときは、先に WebSearch で探し、結果の URL を使ってください：${url || '（url がありません）'}`
+  )
+}
+
+// 頼みの中に出た URL（http・https）を、文字どおりに覚える。比べるときに同じとみなすのは、%エンコードの違い・末尾の / の有無・http と https だけ。
+// 文の中の URL は、末尾の句読点と閉じていない括弧を落としたもの、全角の句読点・括弧の手前までのもの、日本語などの ASCII でない字の手前までのものも覚える
+// （「https://example.com/aです」「(https://example.com/b)」のように書かれても、その URL として使えるように。どれも、出た文字の一部で、文字は足さない）
+export class SeenUrls {
+  private readonly urls = new Set<string>()
+
+  constructor(texts: readonly string[] = []) {
+    for (const text of texts) this.addText(text)
+  }
+
+  has(url: string): boolean {
+    return this.urls.has(canonicalUrl(url))
+  }
+
+  addText(text: string): void {
+    for (const [found] of text.matchAll(URL_IN_TEXT)) {
+      const ascii = found.replace(/[^\x21-\x7e][\s\S]*$/, '')
+      const sentence = found.replace(/[。、，．：；！？「」『』（）【】〔〕〈〉《》][\s\S]*$/, '')
+      for (const candidate of new Set([found, trimUrl(found), ascii, trimUrl(ascii), sentence, trimUrl(sentence)])) {
+        if (/^https?:\/\/[^/?#]+/i.test(candidate)) this.urls.add(canonicalUrl(candidate))
+      }
+    }
+  }
+
+  // ツールの結果（文字・配列・オブジェクト）の中の文字をすべて読む
+  addValue(value: unknown, depth = 0): void {
+    if (depth > 32) return
+    if (typeof value === 'string') this.addText(value)
+    else if (Array.isArray(value)) for (const item of value) this.addValue(item, depth + 1)
+    else if (typeof value === 'object' && value !== null) for (const item of Object.values(value)) this.addValue(item, depth + 1)
+  }
+
+  // 届いたメッセージのうち、ツールの結果だけを読む（Claude が書いた文は読まない。Claude が作った URL を許すことになるため）
+  addMessage(message: SDKMessage): void {
+    if (message.type !== 'user') return
+    const content = message.message.content
+    if (Array.isArray(content)) for (const block of content) if (block.type === 'tool_result') this.addValue(block.content)
+    if ('tool_use_result' in message) this.addValue(message.tool_use_result)
+  }
+}
+
+// 文の中の http(s) の URL（空白・引用符・山括弧・バックスラッシュで切る）
+const URL_IN_TEXT = /https?:\/\/[^\s<>"'`\\]+/gi
+
+// 末尾の句読点（全角のものも）と、閉じていない括弧を落とす
+function trimUrl(url: string): string {
+  let out = url
+  for (;;) {
+    const last = out.at(-1)
+    if (last && '.,;:!?。、，．：；！？」』）】〕〉》'.includes(last)) out = out.slice(0, -1)
+    else if (last && ')]}'.includes(last) && count(out, last) > count(out, { ')': '(', ']': '[', '}': '{' }[last]!)) out = out.slice(0, -1)
+    else return out
+  }
+}
+
+function count(text: string, char: string): number {
+  return text.split(char).length - 1
+}
+
+// 比べるための形：%エンコードをほどき（ほどけなければそのまま）、http を https に、末尾の / を落とす
+function canonicalUrl(url: string): string {
+  let decoded = url
+  try {
+    decoded = decodeURI(url)
+  } catch {
+    // そのまま
+  }
+  return decoded.replace(/^http:\/\//i, 'https://').replace(/\/+$/, '')
 }
 
 // ファイルを読むツール（Read・Glob・Grep）で読ませない理由。読ませてよいなら null（docs/question-canvas-tools-plan.md の 2）。

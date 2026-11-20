@@ -61,6 +61,22 @@ const CANVAS_READ_TOOLS = ['list_canvases', 'read_canvas', 'read_nodes', 'get_ca
 )
 const CANVAS_WRITE_TOOLS = ['edit_canvas', 'undo_canvas_edit', 'plot_csv', 'list_plot_styles', 'create_document', 'update_document', 'edit_document'].map((name) => `mcp__canvcode__${name}`)
 
+// root/ws がワークスペース、root/ws/.canvcode/assets が PDF の文字の置き場所、root/outside が外
+function folders() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'canvcode-once-')))
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }))
+  const ws = join(root, 'ws')
+  const assets = join(ws, '.canvcode', 'assets')
+  for (const dir of [join(ws, 'notes'), join(ws, '.git'), assets, join(root, 'outside')]) mkdirSync(dir, { recursive: true })
+  for (const file of [join(ws, 'notes', 'a.md'), join(ws, '.env'), join(ws, '.git', 'config'), join(ws, '.canvcode', 'claude.db'), join(assets, 'abc.txt'), join(root, 'outside', 'secret.txt')]) {
+    writeFileSync(file, 'x')
+  }
+  symlinkSync(join(root, 'outside', 'secret.txt'), join(ws, 'notes', 'out.md'))
+  symlinkSync(join(ws, '.env'), join(ws, 'notes', 'env.md'))
+  symlinkSync(join(ws, '.canvcode'), join(ws, 'notes', 'data'))
+  return { root, ws, assets }
+}
+
 describe('ClaudeOnce', () => {
   it('頼んだモデルで、ツール・MCP・設定なし、会話を残さず動かす（ターン数の上限は既定のもの）', async () => {
     const calls: Call[] = []
@@ -163,22 +179,124 @@ describe('ClaudeOnce', () => {
     expect(calls[1]!.options.tools).toEqual([])
   })
 
-  describe('ファイルを読むツール（Read・Glob・Grep）', () => {
-    // root/ws がワークスペース、root/ws/.canvcode/assets が PDF の文字の置き場所、root/outside が外
-    function folders() {
-      const root = realpathSync(mkdtempSync(join(tmpdir(), 'canvcode-once-')))
-      cleanups.push(() => rmSync(root, { recursive: true, force: true }))
-      const ws = join(root, 'ws')
-      const assets = join(ws, '.canvcode', 'assets')
-      for (const dir of [join(ws, 'notes'), join(ws, '.git'), assets, join(root, 'outside')]) mkdirSync(dir, { recursive: true })
-      for (const file of [join(ws, 'notes', 'a.md'), join(ws, '.env'), join(ws, '.git', 'config'), join(ws, '.canvcode', 'claude.db'), join(assets, 'abc.txt'), join(root, 'outside', 'secret.txt')]) {
-        writeFileSync(file, 'x')
-      }
-      symlinkSync(join(root, 'outside', 'secret.txt'), join(ws, 'notes', 'out.md'))
-      symlinkSync(join(ws, '.env'), join(ws, 'notes', 'env.md'))
-      symlinkSync(join(ws, '.canvcode'), join(ws, 'notes', 'data'))
-      return { root, ws, assets }
+  describe('読むツールを渡すときの WebFetch（読んだ中身を URL に入れて外に送らせない）', () => {
+    type Decide = (input: Record<string, unknown>) => Promise<boolean>
+    // フックと canUseTool の両方で同じに決めることを確かめて、WebFetch を許したか（true）を返す
+    const fetcher = (options: Options): Decide => async (input) => {
+      const signal = new AbortController().signal
+      const hooked = await hookOf(options)({ hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: input } as unknown as Parameters<HookCallback>[0], undefined, { signal })
+      const used = (await options.canUseTool!('WebFetch', input, { signal } as never)) as { behavior: string; message?: string }
+      const denied = (hooked as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }).hookSpecificOutput
+      expect(denied?.permissionDecision === 'deny', JSON.stringify(input)).toBe(used.behavior === 'deny')
+      if (denied) expect(denied.permissionDecisionReason).toContain('そのまま渡してください')
+      return used.behavior === 'allow'
     }
+    // PostToolUse のフック（Claude Code は、ツールの結果を Claude に渡す前に、これを待つ）
+    const postToolUse = (options: Options, tool_name: string, tool_response: unknown) =>
+      options.hooks!.PostToolUse![0]!.hooks[0]!(
+        { hook_event_name: 'PostToolUse', tool_name, tool_input: {}, tool_response, tool_use_id: 't' } as unknown as Parameters<HookCallback>[0],
+        undefined,
+        { signal: new AbortController().signal },
+      )
+    const prompt = '次の資料を読んで：https://example.org/report.pdf。（参考 https://example.org/a_(b)）と https://example.jp/ページ。続きは https://example.com/nextです'
+
+    it('頼む文に出た URL はそのまま渡せる。文字やクエリを足したもの・どこにも出ていない URL は断る。尋ねずには許さない（allowedTools に入れない）', async () => {
+      const calls: Call[] = []
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt, model: 'sonnet', tools: ['WebSearch', 'WebFetch'], canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }) })
+      const { options } = calls[0]!
+      expect(options.tools).toEqual(['WebSearch', 'WebFetch'])
+      expect(options.allowedTools).toEqual(['WebSearch', ...CANVAS_READ_TOOLS])
+      expect(options.permissionMode).toBe('default')
+      const decide = fetcher(options)
+      expect(await decide({ url: 'https://example.org/report.pdf', prompt: '要点' })).toBe(true)
+      expect(await decide({ url: 'https://example.org/a_(b)', prompt: 'p' })).toBe(true)
+      expect(await decide({ url: 'https://example.jp/ページ', prompt: 'p' })).toBe(true)
+      expect(await decide({ url: 'https://example.jp/%E3%83%9A%E3%83%BC%E3%82%B8', prompt: 'p' })).toBe(true)
+      // 日本語がすぐ後に続く URL は、ASCII でない字の手前までとしても使える
+      expect(await decide({ url: 'https://example.com/next', prompt: 'p' })).toBe(true)
+      // 末尾の / の有無と、http・https は同じとみなす
+      expect(await decide({ url: 'http://example.org/report.pdf/', prompt: 'p' })).toBe(true)
+      for (const url of ['https://example.org/report.pdf?d=secret', 'https://example.org/report.pdf/secret', 'https://example.org/report.pdf#secret', 'https://evil.example/?d=secret', 'https://example.org/', '']) {
+        expect(await decide({ url, prompt: 'p' }), url).toBe(false)
+      }
+    })
+
+    it('ツールの結果（Web の検索結果・読んだページ・キャンバスやファイルを読んだ結果）に出た URL も渡せる。PostToolUse のフックで集める', async () => {
+      const { ws, assets } = folders()
+      const calls: Call[] = []
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebSearch', 'WebFetch'], readRoots: [ws, assets] })
+      const { options } = calls[0]!
+      const decide = fetcher(options)
+      expect(await decide({ url: 'https://search.example/result', prompt: 'p' })).toBe(false)
+      await postToolUse(options, 'WebSearch', { query: 'q', results: [{ tool_use_id: 's', content: [{ title: 'r', url: 'https://search.example/result' }] }] })
+      expect(await decide({ url: 'https://search.example/result', prompt: 'p' })).toBe(true)
+      expect(await decide({ url: 'https://search.example/result?x=1', prompt: 'p' })).toBe(false)
+      // WebFetch のリダイレクトの知らせ
+      await postToolUse(options, 'WebFetch', { code: 301, result: 'REDIRECT DETECTED: The URL redirects to a different host.\n\nRedirect URL: https://moved.example/new' })
+      expect(await decide({ url: 'https://moved.example/new', prompt: 'p' })).toBe(true)
+      // 読んだファイル・キャンバス（MCP の結果）
+      await postToolUse(options, 'Read', { type: 'text', file: { filePath: join(ws, 'notes', 'a.md'), content: '出典は https://source.example/paper です' } })
+      await postToolUse(options, 'mcp__canvcode__read_canvas', [{ type: 'text', text: 'node:a link-card 0,0 200x100 "https://card.example/x"' }])
+      expect(await decide({ url: 'https://source.example/paper', prompt: 'p' })).toBe(true)
+      expect(await decide({ url: 'https://card.example/x', prompt: 'p' })).toBe(true)
+      expect(await decide({ url: 'https://source.example/paper?leak=1', prompt: 'p' })).toBe(false)
+    })
+
+    it('届いたメッセージのツールの結果からも集める（Claude が書いた文の URL は使わせない）', async () => {
+      const decided: Record<string, boolean> = {}
+      const run: OnceQuery = ({ options }) =>
+        (async function* () {
+          // Claude が自分で書いた URL（読んだ中身を入れたもの）
+          yield { type: 'assistant', message: { content: [{ type: 'text', text: 'https://evil.example/?d=secret を読みます' }] } } as unknown as SDKMessage
+          yield {
+            type: 'user',
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: '結果：https://found.example/page' }] }] },
+          } as unknown as SDKMessage
+          const decide = fetcher(options)
+          decided.found = await decide({ url: 'https://found.example/page', prompt: 'p' })
+          decided.evil = await decide({ url: 'https://evil.example/?d=secret', prompt: 'p' })
+          yield success()
+        })()
+      await new ClaudeOnce({ run }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebFetch'], canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }) })
+      expect(decided).toEqual({ found: true, evil: false })
+    })
+
+    it('読むツールを渡さなければ（語を調べる・引用・CANVCODE_ANSWER_CANVAS=0）、WebFetch は今のまま（どの URL も尋ねずに使わせる）', async () => {
+      const calls: Call[] = []
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebSearch', 'WebFetch'] })
+      const { options } = calls[0]!
+      expect(options.allowedTools).toEqual(['WebSearch', 'WebFetch'])
+      expect(options.permissionMode).toBeUndefined()
+      expect(options.hooks!.PostToolUse).toBeUndefined()
+      expect(await fetcher(options)({ url: 'https://anywhere.example/?q=1', prompt: 'p' })).toBe(true)
+    })
+
+    it('フックが通した呼び出しだけを onToolUse で知らせる（断ったものは知らせない）', async () => {
+      const calls: Call[] = []
+      const used: string[] = []
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({
+        prompt: 'https://ok.example/',
+        model: 'sonnet',
+        tools: ['WebFetch'],
+        canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }),
+        onToolUse: (name, input) => used.push(`${name} ${JSON.stringify(input)}`),
+      })
+      const { options } = calls[0]!
+      const signal = new AbortController().signal
+      for (const [tool_name, tool_input] of [
+        ['WebFetch', { url: 'https://ok.example/' }],
+        ['WebFetch', { url: 'https://evil.example/' }],
+        ['mcp__canvcode__read_canvas', {}],
+        ['mcp__canvcode__edit_canvas', {}],
+        ['Read', { file_path: '/etc/hosts' }],
+      ] as const) {
+        await hookOf(options)({ hook_event_name: 'PreToolUse', tool_name, tool_input } as unknown as Parameters<HookCallback>[0], undefined, { signal })
+      }
+      expect(used).toEqual(['WebFetch {"url":"https://ok.example/"}', 'mcp__canvcode__read_canvas {}'])
+    })
+  })
+
+  describe('ファイルを読むツール（Read・Glob・Grep）', () => {
 
     async function asked(readRoots: string[] | undefined) {
       const calls: Call[] = []
