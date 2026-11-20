@@ -1,19 +1,33 @@
+import { statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { EffortLevel, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { JobError } from './jobs.ts'
+import { readPath, realish } from './permissions.ts'
 
 // Claude を 1 回だけ動かして、答えを返す（画面の小さな頼みごとに使う共通の仕組み。単語を調べる claude/lookup.ts（MAI-99）など）。
 // - Claude Agent SDK の query() を 1 回だけ呼ぶ。認証は claude/jobs.ts と同じく、このマシンの Claude Code のもの（ログインか API キー）
 // - 呼ぶごとに、モデル（'haiku'・'sonnet' などの別名か、モデルの id）、使ってよいツール（なし、または WebSearch・WebFetch）、
 //   ターン数の上限、答えの JSON の形（JSON Schema。構造化出力）を決める。サーバー全体のモデルの指定（CANVCODE_CLAUDE_MODEL。
 //   Claude のパネルのジョブが使う）とは別
-// - ファイルの読み書き・シェル・サブエージェント・MCP・設定（CLAUDE.md・.claude/）は使わせない。会話も残さない（persistSession: false）。
+// - ファイルの書き込み・シェル・サブエージェント・設定（CLAUDE.md・.claude/）は使わせない。会話も残さない（persistSession: false）。
 //   cwd は OS の一時フォルダ。使ってよいツールのほかは、フックと canUseTool の両方で断る
+// - MCP とファイルを読むツールは、ふつうは使わせない。会話の質問（claude/answer.ts）だけが、読むだけの canvcode の MCP（canvas）と
+//   ファイルを読むフォルダ（readRoots）を渡す（docs/question-canvas-tools-plan.md）。MCP は Agent SDK の同じプロセスの中の MCP としてつなぎ、
+//   ONCE_CANVAS_TOOLS だけを許す。Read・Glob・Grep は readRoots の中だけを読ませる（fileRefusal）
 // - 同時に動かせる数と、待つ時間に上限がある（超えたら 429、時間切れは 504）
 
 // 使わせてよいツール（Web を調べるだけのもの）
 export const ONCE_TOOLS = ['WebSearch', 'WebFetch'] as const
 export type OnceTool = (typeof ONCE_TOOLS)[number]
+
+// 読むだけの canvcode の MCP のツール（mcp.ts の createMcpServer の readOnly が出すもの）。渡したサーバーがほかのツールを持っていても、これだけを使わせる
+export const ONCE_CANVAS_TOOLS = ['list_canvases', 'read_canvas', 'read_nodes', 'get_canvas_format', 'resolve_reference', 'list_documents', 'read_document', 'render_canvas'] as const
+// MCP のサーバーの名前（ツールの名前は mcp__canvcode__read_canvas など。会話のジョブと同じ）
+export const ONCE_MCP_SERVER = 'canvcode'
+// ファイルを読むツール（readRoots を渡したときだけ）
+export const ONCE_FILE_TOOLS = ['Read', 'Glob', 'Grep'] as const
 
 // 構造化出力で、モデルが答えを渡すのに呼ぶツール（outputFormat を渡すと、SDK が足す）
 export const STRUCTURED_OUTPUT_TOOL = 'StructuredOutput'
@@ -36,6 +50,11 @@ export interface OnceRequest {
   systemPrompt?: string
   // 使ってよいツール。既定はなし
   tools?: readonly OnceTool[]
+  // 読むだけの canvcode の MCP のサーバー（mcp.ts の createMcpServer の readOnly。頼みごとに作ったもの）。渡すと、同じプロセスの中の MCP として
+  // つなぎ、ONCE_CANVAS_TOOLS だけを尋ねずに使わせる。閉じるのは渡した側
+  canvas?: McpServer
+  // ファイルを読ませるフォルダ（絶対パス）。渡すと Read・Glob・Grep を見せ、このフォルダの中だけを読ませる（fileRefusal）
+  readRoots?: readonly string[]
   // 既定は、ツールなしなら DEFAULT_ONCE_MAX_TURNS、ツールがあれば DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS（ツールのない答えは 1 ターンで終わる）
   maxTurns?: number
   // 答えの JSON の形（JSON Schema）。渡すと、答えを OnceResult の output に入れて返す
@@ -159,30 +178,48 @@ export class ClaudeOnce {
 export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], abortController: AbortController): Options {
   const thinking = request.onThinking !== undefined && thinksAdaptively(request.model)
   const asText = jsonAsText(request)
+  const roots = request.readRoots ?? []
+  const fileTools: string[] = roots.length > 0 ? [...ONCE_FILE_TOOLS] : []
+  const canvasTools = request.canvas ? ONCE_CANVAS_TOOLS.map((name) => `mcp__${ONCE_MCP_SERVER}__${name}`) : []
+  // 尋ねずに使わせるもの。ファイルを読むツールは入れない（入れると canUseTool を通らずに許されるので、場所を確かめるのがフックだけになる。
+  // ワークスペースは cwd の外なので、Claude Code は canUseTool に尋ねる）
+  const unasked = [...tools, ...canvasTools]
   // 答えの JSON の形を渡したときは、答えを渡すツール（StructuredOutput。SDK が足す）も通す。断ると、答えられずにターン数の上限まで繰り返す
-  const allowed = new Set<string>(request.schema && !asText ? [...tools, STRUCTURED_OUTPUT_TOOL] : tools)
+  const allowed = new Set<string>(request.schema && !asText ? [...unasked, STRUCTURED_OUTPUT_TOOL] : unasked)
   const systemPrompt = asText ? [request.systemPrompt, jsonInstruction(request.schema!)].filter(Boolean).join('\n\n') : request.systemPrompt
-  const deny = (name: string) => `${name} は使えません（使えるのは ${tools.length > 0 ? tools.join('・') : 'なし'}）`
-  // 使ってよいツールのほかは、フックで断る（tools で見せていないので、ふつうは来ない。念のため）
+  const usable = [...tools, ...fileTools, ...canvasTools]
+  const deny = (name: string) => `${name} は使えません（使えるのは ${usable.length > 0 ? usable.join('・') : 'なし'}）`
+  // 断る理由。使ってよいなら null。ファイルを読むツールは、読む場所で決める
+  const refusal = (name: string, input: Record<string, unknown>): string | null => {
+    if (fileTools.includes(name)) return fileRefusal(name, input, roots)
+    return allowed.has(name) ? null : deny(name)
+  }
+  // 使ってよいツールのほかは、フックで断る（tools・MCP で見せていないので、ふつうは来ない。念のため）。ファイルを読むツールは、外を読むものを断る
   const guard: HookCallback = async (input) => {
-    if (input.hook_event_name !== 'PreToolUse' || allowed.has(input.tool_name)) return {}
-    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: deny(input.tool_name) } }
+    if (input.hook_event_name !== 'PreToolUse') return {}
+    const reason = refusal(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>)
+    if (reason === null) return {}
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
   }
   return {
     cwd: tmpdir(),
     model: request.model,
     ...(request.effort ? { effort: request.effort } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
-    tools: [...tools],
-    // 使ってよいツールは尋ねずに使わせる。ほかは断る（画面で尋ねる仕組みはない）
-    allowedTools: [...tools],
-    canUseTool: async (name, input) => (allowed.has(name) ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: deny(name) }),
+    tools: [...tools, ...fileTools],
+    // 使ってよいツールは尋ねずに使わせる（ファイルを読むツールは、canUseTool で場所を確かめてから）。ほかは断る（画面で尋ねる仕組みはない）
+    allowedTools: unasked,
+    canUseTool: async (name, input) => {
+      const reason = refusal(name, input)
+      return reason === null ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: reason }
+    },
     hooks: { PreToolUse: [{ hooks: [guard] }] },
-    mcpServers: {},
+    // 読むだけの canvcode の MCP は、同じプロセスの中でつなぐ（ほかの MCP はつながない）
+    mcpServers: request.canvas ? { [ONCE_MCP_SERVER]: { type: 'sdk', name: ONCE_MCP_SERVER, instance: request.canvas } } : {},
     strictMcpConfig: true,
     settingSources: [],
     persistSession: false,
-    maxTurns: request.maxTurns ?? (tools.length > 0 ? DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS : DEFAULT_ONCE_MAX_TURNS),
+    maxTurns: request.maxTurns ?? (usable.length > 0 ? DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS : DEFAULT_ONCE_MAX_TURNS),
     ...(request.schema && !asText ? { outputFormat: { type: 'json_schema', schema: request.schema } } : {}),
     // 考えている中身を受けるときは、途中のメッセージも受け、考えている中身を要約して返すよう頼む（既定の omitted では空になる）
     ...(thinking ? { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' } } : {}),
@@ -232,6 +269,48 @@ export function answeredModel(usage: Record<string, { costUSD?: number }>, reque
     models.sort((a, b) => (usage[b]?.costUSD ?? 0) - (usage[a]?.costUSD ?? 0))[0] ??
     requested
   )
+}
+
+// ファイルを読むツール（Read・Glob・Grep）で読ませない理由。読ませてよいなら null（docs/question-canvas-tools-plan.md の 2）。
+// - 読ませるのは、roots の中で、そこからのパスに . で始まる名前（隠しファイル・フォルダ）を通らない所だけ（readableFile）
+// - 触る場所は permissions.ts の readPath で出す（Glob は path と、pattern の固定の部分）。相対パスは cwd（一時フォルダ）から読むことになるので、外になる
+// - path を省いた Glob・Grep（cwd を探す）と、.. を含む Glob の pattern は断る
+// - Grep は、ファイル 1 つの中だけを探させる。Claude Code の Grep は ripgrep を --hidden で動かすので、フォルダを探させると、
+//   隠しファイル（.env など）の中身まで返す。フォルダの中は Glob（名前だけを返す）で探させる
+export function fileRefusal(name: string, input: Record<string, unknown>, roots: readonly string[]): string | null {
+  const where = `読めるのは ${roots.join('・')} の中だけです（. で始まる名前のファイル・フォルダは読めません）`
+  if (name === 'Glob' && typeof input.pattern === 'string' && input.pattern.split(/[\\/]/).includes('..')) return `Glob の pattern には .. を使えません。${where}`
+  const cwd = tmpdir()
+  const path = readPath(name, input, cwd)
+  if (path === undefined) return `${name} には、${name === 'Read' ? 'file_path に読むファイル' : 'path に探す所'}の絶対パスを渡してください。${where}`
+  const target = path === null ? null : resolve(cwd, path)
+  if (target === null || !readableFile(target, roots)) return `${String(name === 'Read' ? input.file_path : (input.path ?? input.pattern))} は読めません。${where}`
+  if (name === 'Grep' && !isFile(target)) return `Grep は、ファイル 1 つの中だけを探せます（path にファイルを渡す。フォルダの中は、Glob でファイルを探してから）。${where}`
+  return null
+}
+
+// path が roots のどれかの中で、そこからのパスに . で始まる名前（隠しファイル・フォルダと ..）がないか。
+// 書いたままのパスと、シンボリックリンクをたどった先（まだないファイルは、ある所までの親で）の両方で確かめる
+export function readableFile(path: string, roots: readonly string[]): boolean {
+  const given = resolve(path)
+  const real = realish(given)
+  return roots.some((root) => {
+    const realRoot = realish(resolve(root))
+    return (plainlyInside(resolve(root), given) || plainlyInside(realRoot, given)) && plainlyInside(realRoot, real)
+  })
+}
+
+function plainlyInside(dir: string, path: string): boolean {
+  const rel = relative(dir, path)
+  return rel === '' || (!isAbsolute(rel) && rel.split(sep).every((part) => !part.startsWith('.')))
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
 }
 
 function checkTools(tools: readonly string[]): OnceTool[] {

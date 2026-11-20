@@ -1,5 +1,9 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { describe, expect, it } from 'vitest'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { afterEach, describe, expect, it } from 'vitest'
 import { answeredModel, ClaudeOnce, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, jsonFromText, jsonInstruction, thinksAdaptively, type OnceQuery } from './once.ts'
 
 // Claude を 1 回だけ動かす共通の仕組み（単語を調べる MAI-99、APA の引用 MAI-98 などが使う）
@@ -45,6 +49,17 @@ const hanging: OnceQuery = ({ options }) =>
 
 const hookOf = (options: Options): HookCallback => options.hooks!.PreToolUse![0]!.hooks[0]!
 const preToolUse = (tool_name: string) => ({ hook_event_name: 'PreToolUse', tool_name, tool_input: {} }) as unknown as Parameters<HookCallback>[0]
+
+const cleanups: (() => void)[] = []
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup()
+})
+
+// 会話の質問に渡す、読むだけの canvcode の MCP のツール（mcp.ts の readOnly）と、渡さない書くツール
+const CANVAS_READ_TOOLS = ['list_canvases', 'read_canvas', 'read_nodes', 'get_canvas_format', 'resolve_reference', 'list_documents', 'read_document', 'render_canvas'].map(
+  (name) => `mcp__canvcode__${name}`,
+)
+const CANVAS_WRITE_TOOLS = ['edit_canvas', 'undo_canvas_edit', 'plot_csv', 'list_plot_styles', 'create_document', 'update_document', 'edit_document'].map((name) => `mcp__canvcode__${name}`)
 
 describe('ClaudeOnce', () => {
   it('頼んだモデルで、ツール・MCP・設定なし、会話を残さず動かす（ターン数の上限は既定のもの）', async () => {
@@ -120,6 +135,140 @@ describe('ClaudeOnce', () => {
     expect(calls[1]!.options.maxTurns).toBe(3)
     // 使わせられないツール
     await expect(once.ask({ prompt: 'p', model: 'haiku', tools: ['Bash' as never] })).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('読むだけの canvcode の MCP を渡すと、同じプロセスの中の MCP としてつなぎ、読むツールだけを許す（書くツールは来ても断る）', async () => {
+    const calls: Call[] = []
+    const canvas = new McpServer({ name: 'canvcode', version: '0.0.0' })
+    await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebSearch'], canvas })
+    const { options } = calls[0]!
+    expect(options.mcpServers).toEqual({ canvcode: { type: 'sdk', name: 'canvcode', instance: canvas } })
+    expect(options.strictMcpConfig).toBe(true)
+    expect(options.tools).toEqual(['WebSearch'])
+    expect(options.allowedTools).toEqual(['WebSearch', ...CANVAS_READ_TOOLS])
+    expect(options.maxTurns).toBe(DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS)
+    const hook = hookOf(options)
+    const signal = new AbortController().signal
+    for (const name of CANVAS_READ_TOOLS) {
+      expect(await hook(preToolUse(name), undefined, { signal }), name).toEqual({})
+      expect(await options.canUseTool!(name, { id: 'x' }, { signal } as never), name).toEqual({ behavior: 'allow', updatedInput: { id: 'x' } })
+    }
+    for (const name of [...CANVAS_WRITE_TOOLS, 'mcp__other__read_canvas', 'Bash', 'Read', 'Glob', 'Grep']) {
+      expect(await hook(preToolUse(name), undefined, { signal }), name).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+      expect(await options.canUseTool!(name, {}, { signal } as never), name).toMatchObject({ behavior: 'deny' })
+    }
+    // MCP だけでも、ツールのあるときのターン数の上限
+    await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }) })
+    expect(calls[1]!.options.maxTurns).toBe(DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS)
+    expect(calls[1]!.options.tools).toEqual([])
+  })
+
+  describe('ファイルを読むツール（Read・Glob・Grep）', () => {
+    // root/ws がワークスペース、root/ws/.canvcode/assets が PDF の文字の置き場所、root/outside が外
+    function folders() {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'canvcode-once-')))
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }))
+      const ws = join(root, 'ws')
+      const assets = join(ws, '.canvcode', 'assets')
+      for (const dir of [join(ws, 'notes'), join(ws, '.git'), assets, join(root, 'outside')]) mkdirSync(dir, { recursive: true })
+      for (const file of [join(ws, 'notes', 'a.md'), join(ws, '.env'), join(ws, '.git', 'config'), join(ws, '.canvcode', 'claude.db'), join(assets, 'abc.txt'), join(root, 'outside', 'secret.txt')]) {
+        writeFileSync(file, 'x')
+      }
+      symlinkSync(join(root, 'outside', 'secret.txt'), join(ws, 'notes', 'out.md'))
+      symlinkSync(join(ws, '.env'), join(ws, 'notes', 'env.md'))
+      symlinkSync(join(ws, '.canvcode'), join(ws, 'notes', 'data'))
+      return { root, ws, assets }
+    }
+
+    async function asked(readRoots: string[] | undefined) {
+      const calls: Call[] = []
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', ...(readRoots ? { readRoots } : {}) })
+      const { options } = calls[0]!
+      const signal = new AbortController().signal
+      const hook = hookOf(options)
+      // フックと canUseTool の両方で同じに決めることを確かめて、許したか（true）断ったか（false）を返す
+      const decide = async (name: string, input: Record<string, unknown>): Promise<boolean> => {
+        const hooked = await hook({ hook_event_name: 'PreToolUse', tool_name: name, tool_input: input } as unknown as Parameters<HookCallback>[0], undefined, { signal })
+        const used = (await options.canUseTool!(name, input, { signal } as never)) as { behavior: string; updatedInput?: unknown }
+        const denied = (hooked as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision === 'deny'
+        expect(denied, `${name} ${JSON.stringify(input)}`).toBe(used.behavior === 'deny')
+        if (used.behavior === 'allow') expect(used.updatedInput).toEqual(input)
+        return !denied
+      }
+      return { options, decide }
+    }
+
+    it('読めるフォルダを渡すと Read・Glob・Grep を見せる。尋ねずには許さない（allowedTools に入れず、canUseTool でも確かめる）', async () => {
+      const { ws, assets } = folders()
+      const { options } = await asked([ws, assets])
+      expect(options.tools).toEqual(['Read', 'Glob', 'Grep'])
+      expect(options.allowedTools).toEqual([])
+      expect(options.mcpServers).toEqual({})
+      expect(options.cwd).toBe(tmpdir())
+      expect(options.maxTurns).toBe(DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS)
+      // 渡さなければ（語を調べる・引用・メモ）、今のまま
+      expect((await asked(undefined)).options.tools).toEqual([])
+      expect((await asked([])).options.tools).toEqual([])
+    })
+
+    it('読めるフォルダの中は読ませる（PDF の文字の置き場所は、.canvcode の中でも読める）', async () => {
+      const { ws, assets } = folders()
+      const { decide } = await asked([ws, assets])
+      expect(await decide('Read', { file_path: join(ws, 'notes', 'a.md') })).toBe(true)
+      expect(await decide('Read', { file_path: join(assets, 'abc.txt'), offset: 10, limit: 50 })).toBe(true)
+      expect(await decide('Grep', { pattern: 'page 3', path: join(assets, 'abc.txt'), output_mode: 'content' })).toBe(true)
+      expect(await decide('Glob', { pattern: '**/*.md', path: ws })).toBe(true)
+      expect(await decide('Glob', { pattern: '*.txt', path: assets })).toBe(true)
+      expect(await decide('Glob', { pattern: `${ws}/notes/*.md` })).toBe(true)
+      // まだないファイルも、場所で決める
+      expect(await decide('Read', { file_path: join(ws, 'notes', 'new.md') })).toBe(true)
+    })
+
+    it('外・隠しファイル・.canvcode の中・シンボリックリンクや ../ で外に出るものは断る', async () => {
+      const { root, ws, assets } = folders()
+      const { decide } = await asked([ws, assets])
+      for (const path of [
+        join(root, 'outside', 'secret.txt'),
+        `${ws}/../outside/secret.txt`,
+        `${assets}/../claude.db`,
+        join(ws, '.env'),
+        join(ws, '.git', 'config'),
+        join(ws, '.canvcode', 'claude.db'),
+        // リンクで外・隠しファイル・.canvcode に出る
+        join(ws, 'notes', 'out.md'),
+        join(ws, 'notes', 'env.md'),
+        join(ws, 'notes', 'data', 'claude.db'),
+        '/etc/passwd',
+        tmpdir(),
+      ]) {
+        expect(await decide('Read', { file_path: path }), path).toBe(false)
+      }
+      expect(await decide('Glob', { pattern: '*', path: join(ws, '.git') })).toBe(false)
+      expect(await decide('Glob', { pattern: '*', path: join(root, 'outside') })).toBe(false)
+      expect(await decide('Glob', { pattern: '/etc/*' })).toBe(false)
+      expect(await decide('Glob', { pattern: '.canvcode/*', path: ws })).toBe(false)
+      expect(await decide('Glob', { pattern: '../outside/*', path: ws })).toBe(false)
+      expect(await decide('Glob', { pattern: '**/../../outside/*', path: ws })).toBe(false)
+      expect(await decide('Grep', { pattern: 'x', path: join(ws, '.env') })).toBe(false)
+      expect(await decide('Grep', { pattern: 'x', path: join(ws, 'notes', 'out.md') })).toBe(false)
+    })
+
+    it('相対パスと、path を省いた Glob・Grep（cwd の一時フォルダを探す）、フォルダを探す Grep（隠しファイルの中まで探す）は断る', async () => {
+      const { ws, assets } = folders()
+      const { decide } = await asked([ws, assets])
+      expect(await decide('Read', { file_path: 'notes/a.md' })).toBe(false)
+      expect(await decide('Read', {})).toBe(false)
+      expect(await decide('Glob', { pattern: '**/*.md' })).toBe(false)
+      expect(await decide('Glob', { pattern: 'notes/*.md' })).toBe(false)
+      expect(await decide('Grep', { pattern: 'x' })).toBe(false)
+      expect(await decide('Grep', { pattern: 'x', path: ws })).toBe(false)
+      expect(await decide('Grep', { pattern: 'x', path: assets })).toBe(false)
+      expect(await decide('Grep', { pattern: 'x', path: 'notes/a.md' })).toBe(false)
+      // ほかのツールは、今までどおり断る
+      expect(await decide('Bash', { command: `cat ${join(ws, 'notes', 'a.md')}` })).toBe(false)
+      expect(await decide('Write', { file_path: join(ws, 'notes', 'a.md'), content: 'y' })).toBe(false)
+      expect(await decide('NotebookEdit', { notebook_path: join(ws, 'a.ipynb') })).toBe(false)
+    })
   })
 
   it('失敗の答え・ターン数の上限・答えずに終わったときは 502', async () => {
