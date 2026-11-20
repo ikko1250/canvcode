@@ -224,8 +224,9 @@ function JobView(props: {
   )
 }
 
+// Claude の答えの文（Markdown）。画像などの外のものは読み込まない（説明の文字とリンクにする。開くだけで、URL に入れた中身が外へ送られるため）
 function MarkdownText(props: { text: string }) {
-  const html = useMemo(() => renderMarkdownToSafeHtml(props.text), [props.text])
+  const html = useMemo(() => renderMarkdownToSafeHtml(props.text, { remoteImages: false }), [props.text])
   return <div className="claude-text" dangerouslySetInnerHTML={{ __html: html }} />
 }
 

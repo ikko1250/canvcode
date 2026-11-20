@@ -7,7 +7,7 @@ import { runningText, toolLabel } from './toolGroups.ts'
 
 // 付箋で聞いた答えの中身（docs/canvas-answer-panel-plan.md の 4）。付箋の横のパネル（AnswerPopover）と、
 // 右のパネルの質問のタブの答えで同じものを使う。
-// - 本文はチャットと同じ Markdown の出し方（renderMarkdownToSafeHtml）
+// - 本文はチャットと同じ Markdown の出し方（renderMarkdownToSafeHtml。外の画像は読み込まず、説明の文字とリンクにする）
 // - 質問の付箋の文字が送ったときと違えば、本文の上に知らせる
 // - 関連する付箋：↗ と 1 行目。押すと、その付箋へ移る
 // - 下に「続けて聞く」「会話で続ける」「Canvasに残す」（付箋を置けないとき（全画面のエディタ）は出さない）。
@@ -56,7 +56,8 @@ export function AnswerView(props: {
 }) {
   const { answer, progress, task, error, questionChanged, related, onRelated, onContinue, onKeep, onStop, onChat, chatTitle, onOpenThread } = props
   const [chatMenu, setChatMenu] = useState(false)
-  const html = useMemo(() => (answer ? renderMarkdownToSafeHtml(answer.body) : ''), [answer])
+  // AI の答えなので、画像などの外のものは読み込まない（説明の文字とリンクにする。開くだけで、URL に入れた中身が外へ送られるため）
+  const html = useMemo(() => (answer ? renderMarkdownToSafeHtml(answer.body, { remoteImages: false }) : ''), [answer])
   if (task) return <TaskProgressView task={task} {...(onStop ? { onStop } : {})} />
   if (progress) return <AnswerProgressView progress={progress} {...(onStop ? { onStop } : {})} />
   // 作業の報告か（前の Q&A の答えには会話がない）
