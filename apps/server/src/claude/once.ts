@@ -397,10 +397,12 @@ export function urlsInText(text: string): string[] {
   return [...found].filter((url) => /^https?:\/\/[^/?#\s]+/i.test(url))
 }
 
-// 材料を頼む文に入れるときに、語の頭の @ を全角の ＠ にする（Claude Code のファイルの言及（@パス）として読ませない。見た目はほとんど同じ）。
-// メールアドレスのように、英数字などのすぐあとの @ はそのまま
+// 材料を頼む文に入れるときに、Claude Code がファイルの言及（@パス）とみなす @ を、全角の ＠ にする（見た目はほとんど同じ）。
+// 守りの本体は env の CLAUDE_CODE_DISABLE_FILE_MENTIONS。ここは念のためなので、CLI（2.1.322）が言及とみなす形だけを変える：
+// 文の頭か空白のすぐあと、。、？！のすぐあとの @。URL の中の /@（https://medium.com/@alice）・メールアドレス・git@github.com は変えない
+// （変えると、質問の文に書いた URL が Claude に違う形で渡り、開いてよい URL の一覧と合わなくなる）
 export function withoutFileMentions(text: string): string {
-  return text.replace(/(?<![A-Za-z0-9._%+-])@/g, '\uff20')
+  return text.replace(/(?<![^\s。、？！])@/g, '\uff20')
 }
 
 // 末尾の句読点（全角のものも）と、閉じていない括弧を落とす

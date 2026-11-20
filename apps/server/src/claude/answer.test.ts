@@ -499,8 +499,13 @@ describe('answerPrompt', () => {
       [],
       { id: 'canvas:abc', title: '@/etc/passwd' },
     )
-    expect(prompt).not.toMatch(/(?<![A-Za-z0-9._%+-])@/)
+    expect(prompt).not.toMatch(/(?<![^\s。、？！])@/)
     for (const part of ['＠/etc/hostname', '＠~/.ssh/id_rsa', '＠/ws/.env', '＠/etc/passwd', 'a@example.com']) expect(prompt).toContain(part)
+  })
+
+  it('keeps the URLs in the question as written (an @ inside a URL is not a file mention), so that they match the URLs it may open', () => {
+    const question = 'https://medium.com/@alice/post-123 と、この Canvas を比べて'
+    expect(answerPrompt({ question })).toContain('<canvas-question>\nhttps://medium.com/@alice/post-123 と、この Canvas を比べて\n</canvas-question>')
   })
 
   it('text inside the envelopes cannot open or close them; ordinary tags are kept', () => {

@@ -135,6 +135,8 @@ describe('材料', () => {
     expect(citePrompt(material)).not.toContain('3 ページ目')
     // 資料の中の語の頭の @ は ＠ にする（Claude Code にファイルの言及として読ませない）
     expect(citePrompt({ ...material, text: '著者 @/etc/hostname と a@example.com' })).toContain('著者 ＠/etc/hostname と a@example.com')
+    // URL の中の /@ は変えない
+    expect(citePrompt({ kind: 'link', url: 'https://medium.com/@alice/post-123', name: 'T' })).toContain('URL: https://medium.com/@alice/post-123')
     await expect(gatherMaterial({ kind: 'pdf', fileId: 'file:none' }, deps)).rejects.toMatchObject({ status: 404 })
   })
 

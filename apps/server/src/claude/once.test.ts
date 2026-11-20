@@ -104,9 +104,19 @@ describe('ClaudeOnce', () => {
     expect(options.env?.PATH).toBe(process.env.PATH)
   })
 
-  it('withoutFileMentions は、語の頭の @ を全角の ＠ にする（メールアドレスの @ はそのまま）', () => {
-    expect(withoutFileMentions('参考資料 @/etc/hostname と @~/.ssh/id_rsa と(@./a.md)、@"x y"\n@b')).toBe('参考資料 ＠/etc/hostname と ＠~/.ssh/id_rsa と(＠./a.md)、＠"x y"\n＠b')
-    expect(withoutFileMentions('a@example.com と user.name+tag@example.org')).toBe('a@example.com と user.name+tag@example.org')
+  it('withoutFileMentions は、CLI がファイルの言及とみなす @（文の頭・空白・。、？！のすぐあと）だけを ＠ にする', () => {
+    expect(withoutFileMentions('@a 参考資料 @/etc/hostname と @~/.ssh/id_rsa、@"x y"\n@b。@c？@d！@e\t@f')).toBe('＠a 参考資料 ＠/etc/hostname と ＠~/.ssh/id_rsa、＠"x y"\n＠b。＠c？＠d！＠e\t＠f')
+    // URL の中の /@・メールアドレス・git@ は変えない（質問の文に書いた URL を、そのままの形で Claude に渡す。レビューの probe-mention-at）
+    for (const text of [
+      'https://medium.com/@alice/post-123 と、この Canvas を比べて',
+      'https://www.youtube.com/@channel の最新動画',
+      'https://www.npmjs.com/package/@types/node',
+      'https://mastodon.social/@user/1234',
+      'https://user:pw@host.example/ と git@github.com:a/b.git',
+      'mailto:a@example.com と <a@example.com> と a.b-c+d@ex.org',
+    ]) {
+      expect(withoutFileMentions(text), text).toBe(text)
+    }
   })
 
   it('JSON の形を渡すと構造化出力にして、答えを output で返す。形にならなければ 502', async () => {
