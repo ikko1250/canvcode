@@ -381,15 +381,61 @@ test('答えのパネルの本文は 14px。長い答えは高さ 640px まで�
   expect(box.y).toBeLessThan(root.y + root.height - 120)
   await page.screenshot({ path: test.info().outputPath('answer-popover-shifted.png') })
 
-  // 短い答え：ずらすのは、収まるのに要る分だけ
+  // 新しい短い答え：測り直し、ずらすのは収まるのに要る分だけ
   await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 2 })
   await expect.poll(async () => (await popover.boundingBox())!.height).toBeLessThan(400)
-  box = (await popover.boundingBox())!
-  expect(box.y + box.height).toBeCloseTo(root.y + root.height - 8, 0)
+  await expect.poll(bottomOf).toBeCloseTo(root.y + root.height - 8, 0)
   // 下が空いていれば、ずらさない
   await noteTopAt(200)
   await expect.poll(async () => (await popover.boundingBox())!.y).toBeCloseTo(root.y + 200, 0)
   await page.screenshot({ path: test.info().outputPath('answer-popover-short.png') })
+})
+
+test('下に詰めて出した答えのパネルは、中身が伸びると上にずらし、縮んでも下へは戻さない。キャンバスが低くなったら収め直す', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  // 「変えたもの」を持つ短い報告
+  await giveReport(page, noteId, REPORT)
+  const rootLocator = page.locator('.canvas-container > div[tabindex]')
+  let root = (await rootLocator.boundingBox())!
+  await page.evaluate(
+    ({ id, y }) => {
+      const editor = (window as any).canvcode.editor
+      const bounds = editor.index.get(id).worldBounds
+      const { zoom } = editor.session.get().camera
+      editor.session.set({ camera: { x: bounds.x - 200 / zoom, y: bounds.y - y / zoom, zoom } })
+    },
+    { id: noteId, y: root.height - 120 },
+  )
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  const popover = page.locator('.answer-popover')
+  await expect(popover).toBeVisible()
+  const edges = async () => {
+    const box = (await popover.boundingBox())!
+    return { top: box.y, bottom: box.y + box.height }
+  }
+  await expect.poll(async () => (await edges()).bottom).toBeCloseTo(root.y + root.height - 8, 0)
+  const closed = await edges()
+
+  // 「変えたもの」を開く：下の端はそのままで、伸びた分だけ上にずらす
+  const summary = popover.locator('.answer-view-changes summary')
+  await summary.click()
+  await expect(popover.locator('.answer-view-changes li').first()).toBeVisible()
+  await expect.poll(async () => (await edges()).top).toBeLessThan(closed.top - 10)
+  await expect.poll(async () => (await edges()).bottom).toBeCloseTo(root.y + root.height - 8, 0)
+  const opened = await edges()
+  // 閉じる：上の端はそのまま（下へは戻さない）
+  await summary.click()
+  await expect(popover.locator('.answer-view-changes li').first()).toBeHidden()
+  await expect.poll(async () => (await edges()).bottom).toBeLessThan(opened.bottom - 10)
+  expect((await edges()).top).toBeCloseTo(opened.top, 0)
+
+  // キャンバスを低くする：パネルはキャンバスの中に収め直す
+  await page.setViewportSize({ width: 1000, height: 500 })
+  await expect.poll(async () => (await rootLocator.boundingBox())!.height).toBeLessThan(root.height)
+  root = (await rootLocator.boundingBox())!
+  await expect.poll(async () => (await edges()).bottom).toBeLessThanOrEqual(root.y + root.height - 8 + 0.5)
+  expect((await edges()).top).toBeGreaterThanOrEqual(root.y + 8 - 0.5)
 })
 
 test('答えのパネルの「Canvasに残す」で、答えを書式付きのテキストにして付箋の右に置く。Undo 1 回で消える', async ({ page }) => {

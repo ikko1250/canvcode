@@ -11,7 +11,8 @@ import { useNodesVersion } from './useNodesVersion.ts'
 // - 付箋の右上に合わせて、付箋の右に出す（右に入らなければ左）。カメラに付いて動くが、大きさは倍率によらない（幅 POPOVER_WIDTH、高さは中身に合わせて
 //   POPOVER_MAX_HEIGHT まで。本文は中でスクロール）。キャンバスの端からはみ出さない。
 //   下が詰まっているとき（付箋の上の端に合わせると、パネルの下の端がキャンバスの下にはみ出す）は、収まる所まで上にずらす
-//   （docs/answer-popover-size-plan.md）。高さの上限はキャンバスの高さだけで決め、位置によらない（測った高さで位置を決めても、高さが変わらない）
+//   （docs/answer-popover-size-plan.md）。高さの上限はキャンバスの高さだけで決め、位置によらない（測った高さで位置を決めても、高さが変わらない）。
+//   同じものを出している間は、上へはずらすが下へは戻さない（中身が伸び縮みしても、上の端が上下しない）
 //   右のデザインパネルを出しているときは、その左端を右の端とする（パネルはデザインパネルの下に重なるので、隠れないように）
 // - 上に「回答」（付箋の作業なら「作業」）とモデルの札。その下は AnswerView（本文・関連する付箋・「続けて聞く」「Canvasに残す」。
 //   答えを作っている間は進み具合、付箋の作業の間はその様子）
@@ -62,8 +63,11 @@ export function AnswerPopover(props: {
   const { editor, view, camera, noteId, catalog, progress, task, runningModel, error, onClose, onSeen, onFocusChange, besideDesignPanel, onRelated, onContinue, onKeep, onStop, onChat, chatTitle, onOpenThread } =
     props
   const rootRef = useRef<HTMLElement>(null)
-  // パネルの実際の高さ（中身に合わせた高さ。下が詰まっているときに、どれだけ上にずらすかを決める）
-  const [boxHeight, setBoxHeight] = useState(0)
+  // 位置を決める高さ：同じものを出している間に測った、いちばん高いパネルの高さ（中身に合わせた高さ）。下が詰まっているときに、
+  // どれだけ上にずらすかを決める。中身が縮んでも下へは戻さない（作業の間にツールの行が入れ替わって高さが伸び縮みしても、上の端が上下しない）
+  const [tallest, setTallest] = useState(0)
+  // キャンバスの大きさ（変わったら描き直す。位置と高さの上限は、描くときにキャンバスの大きさから決める）
+  const [, setCanvasSize] = useState('')
   // 付箋（と関連する付箋）が変わったら読み直す
   useNodesVersion(editor)
   const node = editor.getNode(noteId)
@@ -92,16 +96,25 @@ export function AnswerPopover(props: {
     return () => document.removeEventListener('focusin', onFocusIn)
   }, [onFocusChange])
 
-  // 高さを測る。出したときと、大きさが変わったとき（答えが届いた・書体を読み込んだなど）。ResizeObserver の知らせは描く前に来るので、
-  // flushSync でその場で位置を直す（ふつうの setState だと次のタスクで描き直すので、はみ出した位置が一瞬出る）
+  // パネルの高さを測る。出したとき・出すものが替わったとき（別の付箋、新しい答え、答え・答えを作っている間・作業の間の表示の切り替え）は
+  // 測り直し、そのあとは高くなったときだけ測り直す（書体の読み込み・「変えたもの」を開いたなど）。キャンバスの大きさも見る。
+  // ResizeObserver の知らせは描く前に来るので、flushSync でその場で位置を直す（ふつうの setState だと次のタスクで描き直すので、
+  // はみ出した位置が一瞬出る）。高さは getBoundingClientRect で測る（offsetHeight は整数に丸める）
+  const kind = task ? 'task' : progress ? 'progress' : 'answer'
   useLayoutEffect(() => {
     const el = rootRef.current
     if (!el) return
-    setBoxHeight(el.offsetHeight)
-    const observer = new ResizeObserver(() => flushSync(() => setBoxHeight(el.offsetHeight)))
+    setTallest(el.getBoundingClientRect().height)
+    const observer = new ResizeObserver(() =>
+      flushSync(() => {
+        setTallest((tallest) => Math.max(tallest, el.getBoundingClientRect().height))
+        setCanvasSize(`${view.root.clientWidth}x${view.root.clientHeight}`)
+      }),
+    )
     observer.observe(el)
+    observer.observe(view.root)
     return () => observer.disconnect()
-  }, [gone])
+  }, [gone, view, noteId, answeredAt, kind])
 
   // 開いたら（別の付箋に替わったら）、パネルにフォーカスする
   useEffect(() => {
@@ -134,7 +147,7 @@ export function AnswerPopover(props: {
   left = Math.max(EDGE, Math.min(left, right - POPOVER_WIDTH - EDGE))
   const maxHeight = Math.max(MIN_HEIGHT, Math.min(POPOVER_MAX_HEIGHT, height - 2 * EDGE))
   // 上の端は付箋の上の端に合わせる。下の端がキャンバスの下にはみ出すなら、収まる所まで上にずらす（キャンバスの上の端より上にはしない）
-  const top = Math.max(EDGE, Math.min((box.y - camera.y) * camera.zoom, height - EDGE - Math.min(boxHeight, maxHeight)))
+  const top = Math.max(EDGE, Math.min((box.y - camera.y) * camera.zoom, height - EDGE - Math.min(tallest, maxHeight)))
 
   const related: RelatedNote[] = (answer?.related ?? []).flatMap((id) =>
     editor.getNode(id)?.type === 'note' ? [{ id, label: firstLine(questionText(editor, [id]), RELATED_LABEL_LENGTH) }] : [],
