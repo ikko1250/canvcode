@@ -182,6 +182,10 @@
      ダイアログの本文、調べた語の意味 */
   --font-body: var(--font-weight-400) var(--font-size-16) / var(--line-height-170) var(--font-family-ui);
   --letter-spacing-body: 0.02em;
+  /* 狭い所の読む文。Std-14N-170（14px・行間 1.7・字間 0.02em）と、その中の見出しの Std-16B-170。付箋の横の答えのパネルの本文
+     （キャンバスの上に浮かぶ小さな枠なので、会話より 1 段小さくし、一度に多く見せる。docs/answer-popover-size-plan.md） */
+  --font-body-small: var(--font-weight-400) var(--font-size-14) / var(--line-height-170) var(--font-family-ui);
+  --font-subheading-small: var(--font-weight-700) var(--font-size-16) / var(--line-height-170) var(--font-family-ui);
   /* 見出し。ダイアログの名前は Std-20B-150（20px・行間 1.5）、Claude の回答の中の見出しと調べた語は Std-18B-160（18px・行間 1.6）。
      字間はどちらも 0.02em。ダイアログの名前は、DADS のモーダルダイアログの例（24px）より 1 段小さくし、長い名前
      （「…」が外で変更されました）でも、幅 480px のダイアログで 1 行に収まるようにする */
@@ -3610,6 +3614,18 @@ button.pdf-page-number:hover {
   flex: 1;
   flex-direction: column;
   min-height: 0;
+}
+
+/* パネルの中の答えの本文は、狭い所の読む文（14px）。見出しは 16px の太字。コード（Mono-14N-150）と h4〜h6（本文の太字）は .claude-text のまま。
+   質問のタブの答えと会話は 16px のまま */
+.answer-popover .claude-text {
+  font: var(--font-body-small);
+}
+
+.answer-popover .claude-text h1,
+.answer-popover .claude-text h2,
+.answer-popover .claude-text h3 {
+  font: var(--font-subheading-small);
 }
 
 .answer-view-body {
