@@ -481,8 +481,9 @@ export function App(props: { initial: InitialRecords }) {
     claudeViewRef.current = claudeView
   }, [claudeView])
   // パネルに渡す 1 回だけの頼み（docs/claude-chat-tab-plan.md）：会話のそのジョブへ戻る・付箋の質問を取り込む・作業のタブで会話の質問を開く。
-  // 閉じるときに消す（作業のタブは閉じると描き直すので、開き直したときに、もう一度効かないように。会話のパネルは描いたままで、受けた頼みは
-  // 覚えているが、Claude を使えなくなると描き直すので、こちらも消す）。取り込む札そのものは、会話のパネルが持つので残る
+  // 閉じるときに消す（作業のタブは閉じると描き直すので、開き直したときに、もう一度効かないように）。会話のパネルは、一度開いたら描いたまま
+  // （ClaudeClient は一度使えるとわかったら、使えないには戻らない）で、受けた頼みを覚えているので、消しても消さなくても同じように動く。
+  // 取り込む札そのものは、会話のパネルが持つので残る
   const [chatReveal, setChatReveal] = useState<ChatReveal | null>(null)
   const [chatImport, setChatImport] = useState<ChatImportRequest | null>(null)
   const [questionOpen, setQuestionOpen] = useState<QuestionOpenRequest | null>(null)

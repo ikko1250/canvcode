@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { OWN_KEYS_ATTRIBUTE, firstLine, fitTurns, isImeEvent } from '@canvcode/canvas'
 import { AnswerError, requestAnswer, type AnswerRequest } from './answer.ts'
 import { ChatComposer, type ComposeMode } from './ChatComposer.tsx'
@@ -17,6 +17,7 @@ import {
   type PendingPermission,
 } from './claudeClient.ts'
 import { loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } from './modelChoice.ts'
+import { withDraft } from './promptDraft.ts'
 import { answerOfEvents, toolLabel } from './toolGroups.ts'
 
 // 画面から Claude Code に頼むチャット（キャンバスの右に並べる）。
@@ -26,7 +27,8 @@ import { answerOfEvents, toolLabel } from './toolGroups.ts'
 //   題の ▾ で開く一覧から前の会話に戻れる（中身は選んだときに読む）。初めて開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる。
 //   上の並び（ChatHeader）・会話の欄（ChatLog）・入力欄（ChatComposer）に分ける（docs/claude-chat-tab-plan.md）
 // - 一度開いたら、閉じても描いたまま隠す（App。docs/claude-panel-keep-draft-plan.md）。開き直すと、書きかけの文・取り込む付箋の質問の札・
-//   「会話｜質問」・選んでいた会話・会話の欄のスクロールがそのまま残る。閉じたら、誤りの表示と「全部止める」の 1 回目は消す。
+//   「会話｜質問」・選んでいた会話・会話の欄のスクロールがそのまま残る。閉じたら、誤りの表示と「全部止める」の 1 回目は消し、
+//   開いている選ぶ欄・一覧・メニューを閉じる。隠している間は、会話の欄を描き直さない（Frozen。長い会話を SSE の知らせのたびに描き直さない）。
 //   書きかけは会話ごとに分けず 1 つ（会話を替えても付いてくる）。ページを読み直したら残らない
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
 // - Claude Code が許可を求めてきた呼び出し（auto mode が決められなかった Bash など）は、入力欄のすぐ上に警告の色のカードで並べ、
@@ -107,7 +109,7 @@ interface Props {
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
-  // 上の「会話｜質問」のタブ（キャンバスでだけ渡す。全画面のエディタでは、チャットだけを出す）
+  // 上の「会話｜作業」のタブ（キャンバスでだけ渡す。全画面のエディタでは、チャットだけを出す）
   tabs?: ReactNode
   // 答えを付箋に切り出す（キャンバスでだけ渡す）
   onCutToNote?(cut: ChatAnswerCut): void
@@ -161,22 +163,31 @@ export function ClaudePanel(props: Props) {
     const active = document.activeElement
     if (hidden && active instanceof HTMLElement && panelRef.current?.contains(active)) active.blur()
   }, [hidden])
-  // 閉じたら、誤りの表示と「全部止める」の 1 回目をやめる（開き直したときに、前のものを出さない。作業のタブとの行き来では残す）
+  // 閉じたら、誤りの表示と「全部止める」の 1 回目をやめ、開いている選ぶ欄・一覧・メニューを閉じる（closeRequest）。
+  // 開き直したときに、前のものを出さない。作業のタブとの行き来では残す
   const [seenClosed, setSeenClosed] = useState(closed)
+  const [closeRequest, setCloseRequest] = useState(0)
   if (closed !== seenClosed) {
     setSeenClosed(closed)
     if (closed) {
       setError(null)
       setConfirmStop(null)
+      setCloseRequest((n) => n + 1)
     }
   }
   // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）。
-  // 書きかけがあれば上書きせず、後ろに足す（withDraft）。初めて開くときは下書きと一緒に描く（初めから下書きがある）ので、
-  // null から比べて、そのときも入れる
+  // 書きかけがあれば上書きせず、後ろに足す（withDraft。前に入れた下書き（insertedDrafts）のまま手を入れていなければ、置き換える）。
+  // 下書きは会話で頼むもの（「グラフを作る」は plot_csv を使う。「質問」は Web だけで答える）なので、「質問」を選んでいても「会話」にする。
+  // 初めて開くときは下書きと一緒に描く（初めから下書きがある）ので、null から比べて、そのときも入れる
   const [seenDraft, setSeenDraft] = useState<typeof draft>(null)
+  const [insertedDrafts, setInsertedDrafts] = useState<readonly string[]>([])
   if (draft !== seenDraft) {
     setSeenDraft(draft)
-    if (draft) setPrompt(withDraft(prompt, draft.text))
+    if (draft) {
+      setPrompt(withDraft(prompt, draft.text, insertedDrafts))
+      if (!insertedDrafts.includes(draft.text)) setInsertedDrafts([...insertedDrafts, draft.text])
+      setMode('chat')
+    }
   }
   // 付箋の質問を取り込む（答えの「会話で続ける」）。新しい会話にするなら会話を外す。送るのは、次に文を書いて送ったとき
   const [seenImport, setSeenImport] = useState<typeof importRequest>(null)
@@ -483,6 +494,7 @@ export function ClaudePanel(props: Props) {
         }}
         onDelete={remove}
         onClose={onClose}
+        closeRequest={closeRequest}
       />
 
       <div
@@ -502,19 +514,21 @@ export function ClaudePanel(props: Props) {
           </p>
         )}
         {thread && !state.loaded.has(thread.threadId) && jobs.length === 0 && sideQuestions.length === 0 && <p className="claude-hint">読み込んでいます…</p>}
-        <ChatLog
-          jobs={jobs}
-          catalog={state.models}
-          askingJobs={waiting.jobs}
-          pendingIds={waiting.ids}
-          onCancel={(job) => void client.cancel(job.id).catch(fail)}
-          {...(onCutToNote ? { onCutToNote: cutToNote } : {})}
-          questions={sideQuestions}
-          questionProgress={questionProgress}
-          onStopQuestion={(id) => void client.cancelQuestion(id).catch(fail)}
-          {...(onCutToNote ? { onCutQuestion: cutQuestionToNote } : {})}
-          {...(onOpenImport ? { onOpenImport } : {})}
-        />
+        <Frozen frozen={hidden}>
+          <ChatLog
+            jobs={jobs}
+            catalog={state.models}
+            askingJobs={waiting.jobs}
+            pendingIds={waiting.ids}
+            onCancel={(job) => void client.cancel(job.id).catch(fail)}
+            {...(onCutToNote ? { onCutToNote: cutToNote } : {})}
+            questions={sideQuestions}
+            questionProgress={questionProgress}
+            onStopQuestion={(id) => void client.cancelQuestion(id).catch(fail)}
+            {...(onCutToNote ? { onCutQuestion: cutQuestionToNote } : {})}
+            {...(onOpenImport ? { onOpenImport } : {})}
+          />
+        </Frozen>
       </div>
 
       {thread && permissions.length > 0 && <PermissionList permissions={permissions} answering={answering} onAnswer={answer} />}
@@ -544,10 +558,20 @@ export function ClaudePanel(props: Props) {
         onClearAttachment={onClearAttachment}
         onSetting={chooseSetting}
         onSend={send}
+        closeRequest={closeRequest}
       />
     </aside>
   )
 }
+
+// 隠している間は、中を描き直さない（前に描いたものをそのまま出す）。見せたら、そのときの中身で描き直す。
+// 会話のパネルは閉じても描いたままなので、長い会話（ChatLog）を、付箋の作業の SSE の知らせのたびに描き直さないように
+const Frozen = memo(
+  function Frozen(props: { frozen: boolean; children: ReactNode }) {
+    return <>{props.children}</>
+  },
+  (_previous, next) => next.frozen,
+)
 
 // 画面で許可を待っている問い合わせ（古いものが上）。入力欄のすぐ上に、警告の色のカードで出す。断る判断の材料なので、コマンドは切らずに全部出す。
 // 許可のボタンにはフォーカスを置かず、1 つのキーで許可できるようにはしない。残りの時間は 15 秒ごとに描き直す
@@ -587,14 +611,6 @@ export function PermissionList(props: {
       ))}
     </div>
   )
-}
-
-// 入力欄の文に、頼み方の下書きを足す（「Claude におまかせ」）。空なら下書きだけ、書きかけがあれば空行を挟んで後ろに。
-// 閉じても書きかけは残るので、同じ下書きがもう入っていれば、足さずにそのまま（2 回押して同じ文が並ばないように）
-function withDraft(prompt: string, text: string): string {
-  if (!prompt.trim()) return text
-  if (prompt.includes(text)) return prompt
-  return `${prompt.trimEnd()}\n\n${text}`
 }
 
 // 断るまでの残りの時間

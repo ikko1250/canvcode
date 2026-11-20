@@ -18,8 +18,10 @@ export function ChatHeader(props: {
   onNew(): void
   onDelete(threadId: string): void
   onClose(): void
+  // 増えたら、開いている会話の一覧とメニューを閉じる（パネルを閉じたとき。開き直したときに、開いたまま出さない）
+  closeRequest?: number
 }) {
-  const { tabs, threads, thread, busy, onChoose, onNew, onDelete, onClose } = props
+  const { tabs, threads, thread, busy, onChoose, onNew, onDelete, onClose, closeRequest } = props
   const [listing, setListing] = useState(false)
   const [menu, setMenu] = useState(false)
   // 「この会話を消す」を 1 回押した
@@ -33,6 +35,13 @@ export function ChatHeader(props: {
   const [menuFor, setMenuFor] = useState(threadId)
   if (menuFor !== threadId) {
     setMenuFor(threadId)
+    setMenu(false)
+    setConfirmDelete(false)
+  }
+  const [seenCloseRequest, setSeenCloseRequest] = useState(closeRequest)
+  if (closeRequest !== seenCloseRequest) {
+    setSeenCloseRequest(closeRequest)
+    setListing(false)
     setMenu(false)
     setConfirmDelete(false)
   }

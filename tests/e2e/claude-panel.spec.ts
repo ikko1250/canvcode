@@ -954,6 +954,55 @@ test('the prompt box is empty when the panel is opened again after the prompt wa
   await expect(page.locator('.claude-job[data-job-id="j2"]')).toBeVisible()
 })
 
+// Safari のように、押してもボタンにフォーカスが移らない閉じ方（click()）でも、隠したパネルの中にフォーカスを残さない。
+// ブラウザが隠した要素のフォーカスを直す前（同じタスクの中）に見る
+test('closing without moving the focus (like Safari) leaves no focus in the hidden panel', async ({ page }) => {
+  await openApp(page)
+  await promptBox(page).fill('書きかけ')
+  await promptBox(page).focus()
+  const after = await page.evaluate(async () => {
+    const chat = document.querySelector<HTMLElement>('.claude-panel')!
+    document.querySelector<HTMLElement>('.claude-toggle')!.click()
+    // React の描き直しはマイクロタスクで済む（タスクを跨ぐと、ブラウザがフォーカスを直すことがある）
+    for (let i = 0; i < 50 && !chat.hidden; i++) await Promise.resolve()
+    return { hidden: chat.hidden, inPanel: Boolean(document.activeElement?.closest('.claude-panel')) }
+  })
+  expect(after).toEqual({ hidden: true, inPanel: false })
+  // C で開き直すと、書きかけは残っている
+  await page.keyboard.press('c')
+  await page.keyboard.press('c')
+  await expect(promptBox(page)).toBeFocused()
+  await expect(promptBox(page)).toHaveValue('書きかけ')
+})
+
+// モデルを選ぶ欄・会話の一覧・この会話のメニューを開いたまま閉じても、開き直したときは閉じている
+// （キーボードで閉じ・開くと、欄の外を押したことにならないので、欄は自分では閉じない）
+test('the model popover, the conversation list and the menu are closed when the panel is opened again', async ({ page }) => {
+  await openApp(page)
+  const closeAndOpenByKeys = async () => {
+    await page.locator('.claude-toggle').focus()
+    await page.keyboard.press('Enter')
+    await expect(panel(page)).toBeHidden()
+    await page.keyboard.press('c')
+    await page.keyboard.press('c')
+    await expect(promptBox(page)).toBeFocused()
+  }
+  await page.locator('.claude-model-button').click()
+  await expect(page.locator('.claude-model-popover')).toBeVisible()
+  await closeAndOpenByKeys()
+  await expect(page.locator('.claude-model-popover')).toHaveCount(0)
+
+  await page.locator('.claude-thread-button').click()
+  await expect(page.getByRole('listbox', { name: '会話' })).toBeVisible()
+  await closeAndOpenByKeys()
+  await expect(page.getByRole('listbox', { name: '会話' })).toHaveCount(0)
+
+  await panel(page).getByRole('button', { name: 'この会話のメニュー' }).click()
+  await expect(panel(page).getByRole('menu')).toBeVisible()
+  await closeAndOpenByKeys()
+  await expect(panel(page).getByRole('menu')).toHaveCount(0)
+})
+
 test('the file editor shows the chat directly, without the answers panel (MAI-102)', async ({ page }) => {
   await openApp(page, {}, { open: false })
   await page.route('**/api/refs', (route) => route.fulfill({ status: 200, json: {} }))
@@ -1293,10 +1342,10 @@ test('a question asked with no conversation chosen becomes a new conversation an
   expect(started[0]).toMatchObject({ prompt: 'これを表にして', threadId: id, imports: [{ label: '新しく聞く', question: '新しく聞く', answer: '答えです', questionId: id }] })
 })
 
-// 「グラフを作る」の「Claude におまかせ」：入力欄が空なら頼み方の下書きを入れ、書きかけがあれば空行を挟んで後ろに足す（上書きしない）。
-// 同じ下書きがもう入っていれば、足さない。表のカードを 1 つ置いた Canvas で確かめる（confirm-dialog.spec.ts と同じ置き方）
-test('「Claude におまかせ」 adds the draft after what was written instead of replacing it', async ({ page }) => {
-  const draft = 'この表（CSV）の中身に合うグラフを作って。列とグラフの種類、スタイル（list_plot_styles）は中身から選び、plot_csv で表の右に置いて。'
+// 表のカードを 1 つ置いた Canvas を開く（「グラフを作る」の「Claude におまかせ」を確かめる。confirm-dialog.spec.ts と同じ置き方）。
+// askFromPlotDialog は、表のカードの「グラフを作る…」→「Claude におまかせ」で、表を添えて会話のパネルを開く
+const PLOT_DRAFT = 'この表（CSV）の中身に合うグラフを作って。列とグラフの種類、スタイル（list_plot_styles）は中身から選び、plot_csv で表の右に置いて。'
+async function openTableApp(page: Page) {
   const csv = '名前,値\nA,1\nB,2\n'
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
   const canvas = { typeName: 'canvas', id: 'canvas:plot-test', title: 'Plot', parentCanvasId: null, ownerNodeId: null, createdAt: 0, updatedAt: 0, deletedAt: null, trash: null }
@@ -1330,18 +1379,51 @@ test('「Claude におまかせ」 adds the draft after what was written instead
     await expect(page.locator('.claude-attachment')).toContainText('表「一覧」')
     await expect(promptBox(page)).toBeFocused()
   }
+  return { askFromPlotDialog }
+}
 
+// 「Claude におまかせ」：入力欄が空なら頼み方の下書きを入れ、書きかけがあれば空行を挟んで後ろに足す（上書きしない）。
+// 同じ下書きがもう入っていれば、足さない（前に入れた下書きに手を入れていなければ置き換える所は、claude/promptDraft.test.ts）
+test('「Claude におまかせ」 adds the draft after what was written instead of replacing it', async ({ page }) => {
+  const { askFromPlotDialog } = await openTableApp(page)
   // 空なら入れる
   await askFromPlotDialog()
-  await expect(promptBox(page)).toHaveValue(draft)
+  await expect(promptBox(page)).toHaveValue(PLOT_DRAFT)
   // 書きかけがあれば、空行を挟んで後ろに足す（閉じても書きかけは残る）
   await promptBox(page).fill('先に書いた文\n')
   await promptBox(page).press('Escape')
   await expect(panel(page)).toBeHidden()
   await askFromPlotDialog()
-  await expect(promptBox(page)).toHaveValue(`先に書いた文\n\n${draft}`)
+  await expect(promptBox(page)).toHaveValue(`先に書いた文\n\n${PLOT_DRAFT}`)
   // 同じ下書きがもう入っていれば、足さない
   await promptBox(page).press('Escape')
   await askFromPlotDialog()
-  await expect(promptBox(page)).toHaveValue(`先に書いた文\n\n${draft}`)
+  await expect(promptBox(page)).toHaveValue(`先に書いた文\n\n${PLOT_DRAFT}`)
+})
+
+// 閉じても「会話｜質問」は残るが、「Claude におまかせ」の下書き（plot_csv を使う頼み）は会話で送る（「質問」は Web だけで答えるので、グラフを置けない）
+test('「Claude におまかせ」 switches to 会話 even if 質問 was chosen when the panel was closed, and sends the draft to the conversation', async ({ page }) => {
+  const { askFromPlotDialog } = await openTableApp(page)
+  const hits: string[] = []
+  await page.route('**/api/claude/answer', (route) => {
+    hits.push('answer')
+    return route.fulfill({ status: 500, json: { error: '質問で送った' } })
+  })
+  await page.route('**/api/claude/jobs', async (route) => {
+    hits.push('jobs')
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    const job = { id: 'j9', threadId: 't9', prompt: body.prompt, status: 'done', createdAt: Date.now(), eventCount: 1, events: [{ kind: 'text', text: '置きました' }] }
+    await route.fulfill({ status: 201, json: { job } })
+  })
+  await openChat(page)
+  const mode = page.getByRole('radiogroup', { name: '送り方' })
+  await mode.getByRole('radio', { name: '質問' }).click()
+  await promptBox(page).press('Escape')
+  await expect(panel(page)).toBeHidden()
+
+  await askFromPlotDialog()
+  await expect(promptBox(page)).toHaveValue(PLOT_DRAFT)
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  await page.keyboard.press('ControlOrMeta+Enter')
+  await expect.poll(() => hits).toEqual(['jobs'])
 })
