@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { isAbsolute, relative } from 'node:path'
+import { basename, isAbsolute, relative } from 'node:path'
 import type { EffortLevel, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { readJson, sendError, sendJson } from './http.ts'
@@ -552,11 +552,12 @@ function toolLine(name: string, input: Record<string, unknown>, roots: readonly 
   return null
 }
 
-// ファイルのパスを、読めるフォルダ（最初に中にあるもの）からのパスにする。どれの中でもなければ、そのまま
+// ファイルのパスを、読めるフォルダ（最初に中にあるもの）からのパスにする。フォルダそのものなら、その名前。どれの中でもなければ、そのまま
 function shownPath(path: string, roots: readonly string[]): string {
   for (const root of roots) {
     const rel = relative(root, path)
-    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) return rel
+    if (rel === '') return basename(root) || path
+    if (!rel.startsWith('..') && !isAbsolute(rel)) return rel
   }
   return path
 }

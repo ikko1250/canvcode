@@ -231,6 +231,8 @@ describe('AnswerWriter', () => {
         yield use('Grep', { pattern: '容量', path: '/ws/.canvcode/assets/abc.txt' })
         yield use('Read', { file_path: '/ws/.canvcode/assets/abc.txt', offset: 10 })
         yield use('Glob', { pattern: '**/*.md', path: '/ws' })
+        yield use('Grep', { pattern: 'x', path: '/ws' })
+        yield use('Read', { file_path: '/etc/hosts' })
         yield use('StructuredOutput', context)
         yield* answering(context)(params) as AsyncIterable<SDKMessage>
       })()
@@ -248,6 +250,9 @@ describe('AnswerWriter', () => {
     expect(text).toContain('― ファイルの中を探す：容量（.canvcode/assets/abc.txt）')
     expect(text).toContain('― ファイルを読む：.canvcode/assets/abc.txt')
     expect(text).toContain('― ファイルを探す：**/*.md')
+    // 読めるフォルダそのものは、その名前。外のファイルは、そのまま
+    expect(text).toContain('― ファイルの中を探す：x（ws）')
+    expect(text).toContain('― ファイルを読む：/etc/hosts')
   })
 
   it('reports the searches and the pages it reads with the thinking, and the steps: read, search, write', async () => {
