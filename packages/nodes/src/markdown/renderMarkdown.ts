@@ -22,7 +22,8 @@ export interface MarkdownRenderOptions {
   documentPath?: string
   // false なら、画像も含めて、何も読み込まない（AI の答え。docs/question-canvas-tools-plan.md の「レビューで見つかったこと」の B）。
   // 画像は、説明の文字（alt）と、http(s) ならそのリンクにする（読み込むと、URL に入れた中身が外へ送られるため）。data: の画像だけは出す。
-  // 生の HTML の、外のものを読み込む要素と属性（src・srcset・poster・style の url() など）も落とす（withoutRemoteResources）
+  // 生の HTML の、外のものを読み込む要素と属性（src・srcset・poster・style の url() など）も落とす（withoutRemoteResources）。
+  // 生の HTML の class も落とす（アプリのボタンなどの class を付けて、ボタンに見えるリンクを作らせない）
   remoteImages?: boolean
 }
 
@@ -336,12 +337,18 @@ function numberFootnotes(marked: Marked, tokens: Token[], kept: Token[]): Tokens
 
 function sanitizeHtml(
   html: string,
-  options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean; documentPath?: string } = {},
+  options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean; documentPath?: string; dropClasses?: boolean } = {},
 ): string {
   if (typeof window === 'undefined') return html
 
   const purifier = DOMPurify(window)
   const documentPath = options.documentPath
+  if (options.dropClasses) {
+    // 生の HTML の class を落とす（AI の答え。アプリのボタンなどの class を付けて、ボタンに見えるリンクを作らせない）
+    purifier.addHook('uponSanitizeAttribute', (_node, data) => {
+      if (data.attrName === 'class') data.keepAttr = false
+    })
+  }
   if (documentPath !== undefined) {
     // 生 HTML の <img src="相対パス"> を、Markdown ファイルの場所を基準にした URL にする
     purifier.addHook('uponSanitizeAttribute', (node, data) => {
@@ -399,7 +406,8 @@ export function renderMarkdown(
       html({ text }: Tokens.HTML | Tokens.Tag) {
         // Remove inline styles from user-authored HTML before the final pass
         // selectively preserves KaTeX's generated layout styles.
-        return sanitizeHtml(text, { documentPath })
+        // AI の答え（remoteImages: false）では、生の HTML の class も落とす（残る class は、marked・KaTeX・このファイルが付けるものだけ）
+        return sanitizeHtml(text, { documentPath, dropClasses: options.remoteImages === false })
       },
       image({ href, title, text }: Tokens.Image) {
         if (options.remoteImages === false && !/^data:image\//i.test(href.trim())) return imageLink(href, text)

