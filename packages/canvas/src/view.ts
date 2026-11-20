@@ -327,6 +327,11 @@ export class CanvasView {
   private pasteAtPointer = false
   // このタブで最後にコピーしたもの。プレーンテキストでしか貼り付けられなかったとき（Ctrl+Shift+V など）に使う
   private lastCopied: { payload: ClipboardPayload; text: string } | null = null
+  // Linux のブラウザは、中ボタンを離すと、最後に選んだ文字（PRIMARY の選択）を貼り付ける。どちらも、離したタスクの間だけ true。
+  // middleReleased：ページのどこかで中ボタンを離した（その paste はキャンバスに貼らない）
+  // middlePanEnded：キャンバスの中ボタンのパンを終えた（ブラウザの貼り付けそのものを止める）
+  private middleReleased = false
+  private middlePanEnded = false
 
   constructor(editor: Editor, container: HTMLElement, options: CanvasViewOptions = {}) {
     this.editorRef = editor
@@ -490,6 +495,20 @@ export class CanvasView {
     this.listen(this.root, 'pointermove', (e) => this.onPointerMove(e))
     this.listen(this.root, 'pointerup', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointercancel', (e) => this.onPointerUp(e))
+    // 中ボタンの貼り付け（middleReleased）。キャンバスの外（上のバー・AI 付箋の札など）で離したものも見るので、window で受ける。
+    // ボタンを 2 つ押していて中ボタンを先に離すと、Chromium では pointerup ではなく pointermove になる
+    const onMiddleRelease = (e: MouseEvent) => {
+      if (e.button !== 1 || (e.buttons & 4) !== 0 || this.middleReleased) return
+      this.middleReleased = true
+      window.setTimeout(() => (this.middleReleased = false), 0)
+    }
+    this.listen(window, 'pointerup', onMiddleRelease, { capture: true })
+    this.listen(window, 'pointermove', onMiddleRelease, { capture: true })
+    this.listen(window, 'auxclick', (e) => {
+      onMiddleRelease(e)
+      // Firefox は auxclick の既定の動作で貼り付ける（Chromium は pointerup。onPointerUp）
+      if (e.button === 1 && (this.panPointer || this.middlePanEnded)) e.preventDefault()
+    }, { capture: true })
     this.listen(this.root, 'pointerleave', () => {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
       if (this.editor.session.get().hoveredAiCorner) this.editor.session.set({ hoveredAiCorner: null })
@@ -2275,6 +2294,14 @@ export class CanvasView {
   }
 
   private onPointerUp(e: PointerEvent): void {
+    // 中ボタンのパン（とポータルを開くクリック）を終えたら、ブラウザに PRIMARY の選択を貼り付けさせない。
+    // パン中も続けている文字・ドキュメントの編集に入ってしまう。Chromium は pointerup の既定の動作で貼り付ける。
+    // 編集中の文字の中で押したもの（文字の要素が止めて、パンにならない）は、ふつうに貼り付ける
+    if (e.type === 'pointerup' && e.button === 1 && this.panPointer?.id === e.pointerId) {
+      e.preventDefault()
+      this.middlePanEnded = true
+      window.setTimeout(() => (this.middlePanEnded = false), 0)
+    }
     if (this.root.hasPointerCapture(e.pointerId)) this.root.releasePointerCapture(e.pointerId)
     if (e.pointerType === 'touch' && this.onTouchUp(e)) return
     const click = this.linkClick
@@ -2660,7 +2687,8 @@ export class CanvasView {
   }
 
   private async onPaste(e: ClipboardEvent): Promise<void> {
-    if (!this.ownsClipboardEvent(e)) return
+    // 中ボタンの貼り付け（Linux）は、キャンバスには貼らない（キャンバスの中ボタンはパン）。入力欄などへは、ブラウザに任せる
+    if (this.middleReleased || !this.ownsClipboardEvent(e)) return
     e.preventDefault()
     const data = e.clipboardData!
     const screen = this.pasteAtPointer && this.pointerScreen ? this.pointerScreen : { x: this.width / 2, y: this.height / 2 }
