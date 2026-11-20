@@ -332,6 +332,66 @@ test('縮小しても、三角の当たり判定は画面で 24px あり、答�
   await expect(page.locator('.answer-popover')).toBeVisible()
 })
 
+test('答えのパネルの本文は 14px。長い答えは高さ 640px まで出し、付箋が下のほうにあって下が詰まっていれば、収まる所まで上にずらす', async ({ page }) => {
+  // 高さ 640px のパネルと、その上下の余白が入る高さにする
+  await page.setViewportSize({ width: 1000, height: 900 })
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  const long = Array.from({ length: 40 }, (_, i) => `${i + 1} 段落目の説明です。`).join('\n\n')
+  await giveAnswer(page, noteId, { ...ANSWER, body: long, question: QUESTION, answeredAt: 1 })
+  const root = (await page.locator('.canvas-container > div[tabindex]').boundingBox())!
+  expect(root.height).toBeGreaterThan(640 + 16)
+  // 付箋の上の端を、キャンバスの上から y の所へ動かす
+  const noteTopAt = (y: number) =>
+    page.evaluate(
+      ({ id, y }) => {
+        const editor = (window as any).canvcode.editor
+        const bounds = editor.index.get(id).worldBounds
+        const { zoom } = editor.session.get().camera
+        editor.session.set({ camera: { x: bounds.x - 200 / zoom, y: bounds.y - y / zoom, zoom } })
+      },
+      { id: noteId, y },
+    )
+  const popover = page.locator('.answer-popover')
+
+  // 下が空いている：パネルの上の端は付箋の上の端に合わせ、高さは 640px
+  await noteTopAt(40)
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  await expect(popover).toBeVisible()
+  let box = (await popover.boundingBox())!
+  expect(box.y).toBeCloseTo(root.y + 40, 0)
+  expect(box.height).toBeCloseTo(640, 0)
+  // 本文は 14px・行間 1.7（質問のタブと会話は 16px のまま。ui-typography.spec.ts）
+  const text = await popover.locator('.answer-view-body p').first().evaluate((el) => {
+    const style = getComputedStyle(el)
+    return { size: parseFloat(style.fontSize), lineHeight: parseFloat(style.lineHeight) }
+  })
+  expect(text.size).toBe(14)
+  expect(text.lineHeight / text.size).toBeCloseTo(1.7, 2)
+
+  // 付箋をキャンバスの下のほうへ動かす：高さはそのままで、下の端がキャンバスの下の端（から 8px）に来るまで上にずらす
+  await noteTopAt(root.height - 120)
+  const bottomOf = async () => {
+    const box = (await popover.boundingBox())!
+    return box.y + box.height
+  }
+  await expect.poll(bottomOf).toBeCloseTo(root.y + root.height - 8, 0)
+  box = (await popover.boundingBox())!
+  expect(box.height).toBeCloseTo(640, 0)
+  expect(box.y).toBeLessThan(root.y + root.height - 120)
+  await page.screenshot({ path: test.info().outputPath('answer-popover-shifted.png') })
+
+  // 短い答え：ずらすのは、収まるのに要る分だけ
+  await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 2 })
+  await expect.poll(async () => (await popover.boundingBox())!.height).toBeLessThan(400)
+  box = (await popover.boundingBox())!
+  expect(box.y + box.height).toBeCloseTo(root.y + root.height - 8, 0)
+  // 下が空いていれば、ずらさない
+  await noteTopAt(200)
+  await expect.poll(async () => (await popover.boundingBox())!.y).toBeCloseTo(root.y + 200, 0)
+  await page.screenshot({ path: test.info().outputPath('answer-popover-short.png') })
+})
+
 test('答えのパネルの「Canvasに残す」で、答えを書式付きのテキストにして付箋の右に置く。Undo 1 回で消える', async ({ page }) => {
   const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
   await giveAnswer(page, noteId, { ...ANSWER, question: QUESTION, answeredAt: 1 })
