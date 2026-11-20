@@ -335,6 +335,8 @@ describe('ClaudeJobs', () => {
     expect(options.env?.PATH).toBe(process.env.PATH)
     expect(options.env?.CLAUDE_AGENT_SDK_CLIENT_APP).toBe('canvcode')
     expect(options.env?.CLAUDE_CODE_TMPDIR).toBe(process.env.CLAUDE_CODE_TMPDIR ?? tmpdir())
+    // 頼む文（取り込んだ答え・添えた所）の中の @パス を、ファイルのツールの見張りを通らずに読ませない
+    expect(options.env?.CLAUDE_CODE_DISABLE_FILE_MENTIONS).toBe('1')
     expect((options.systemPrompt as { append: string }).append).toContain('canvas:x')
   })
 

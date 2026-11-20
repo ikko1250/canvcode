@@ -133,6 +133,8 @@ describe('材料', () => {
     expect(material).toEqual({ kind: 'pdf', name: '論文.pdf', url: 'https://example.com/paper.pdf', fetched: '2026-11-01', text: '=== 1 ページ目 ===\n1 ページ目の題と著者\n\n=== 2 ページ目 ===\n2 ページ目' })
     expect(citePrompt(material)).toContain('取ってきた URL: https://example.com/paper.pdf（取得: 2026-11-01）')
     expect(citePrompt(material)).not.toContain('3 ページ目')
+    // 資料の中の語の頭の @ は ＠ にする（Claude Code にファイルの言及として読ませない）
+    expect(citePrompt({ ...material, text: '著者 @/etc/hostname と a@example.com' })).toContain('著者 ＠/etc/hostname と a@example.com')
     await expect(gatherMaterial({ kind: 'pdf', fileId: 'file:none' }, deps)).rejects.toMatchObject({ status: 404 })
   })
 

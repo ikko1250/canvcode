@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
 import { isEffortLevel, isModelName } from './models.ts'
-import { ONCE_MCP_SERVER, STRUCTURED_OUTPUT_TOOL, thinksAdaptively, type ClaudeOnce } from './once.ts'
+import { ONCE_MCP_SERVER, STRUCTURED_OUTPUT_TOOL, thinksAdaptively, withoutFileMentions, type ClaudeOnce } from './once.ts'
 import { parseQuestionSource, type ChatQuestionStore, type QuestionSource, type RunningQuestions } from './questions.ts'
 
 // キャンバスの AI：付箋で聞き、答えは付箋の横のパネルで見る（docs/canvas-answer-panel-plan.md）。
@@ -192,7 +192,7 @@ function webGuide(canvas: boolean): string {
       ? [
           '- 読んだファイルやキャンバスの中身を、WebFetch の URL や WebSearch の語に入れない',
           '- キャンバスやファイルを読むツールを 1 度でも使ったあとは、WebFetch で開けるのは、質問の文に書かれた URL だけ（書かれたままの形で渡す）。' +
-            'ほかのページが要るときは、開かずに、そのページの URL を質問に書いてもらうよう答えに書く',
+            'ほかのページが要るときは開かずに、開けなかったことと、そのサイトや資料の名前を答えに書く（URL は書かない）。要るなら、利用者に自分で URL を探して質問の文に書いてもらう',
           '- Web のページとキャンバスの両方が要るときは、先に WebSearch・WebFetch で調べてから、キャンバスやファイルを読む',
         ]
       : []),
@@ -328,8 +328,9 @@ function viewingEnvelope(viewing: ViewingCanvas): string {
 // 囲みの名前（<canvas-question> など）。中の文では「&lt;」に書き換える（ふつうの XML の <note> などは、そのまま）
 const ENVELOPE_TAG = /<(\/?)(canvas-(?:question|answer|previous|turn|context|candidates?|related|viewing))\b/gi
 
+// 中の文を囲みに入れる。語の頭の @ は ＠ にする（Claude Code にファイルの言及（@パス）として読ませない。once.ts の withoutFileMentions）
 function quote(text: string): string {
-  return text.replace(ENVELOPE_TAG, '&lt;$1$2')
+  return withoutFileMentions(text.replace(ENVELOPE_TAG, '&lt;$1$2'))
 }
 
 // 読まなかった ref の ID を並べる（多ければ、最初の 10 個と残りの数）

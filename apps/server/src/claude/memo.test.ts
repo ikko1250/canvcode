@@ -91,6 +91,15 @@ describe('MemoWriter', () => {
     expect(prompt).toContain('<text>\nえっと、項目です\n</text>')
     expect(options).toMatchObject({ model: DEFAULT_MEMO_MODEL, tools: [], mcpServers: {}, strictMcpConfig: true, settingSources: [], persistSession: false, maxTurns: 1 })
     expect(typeof options.systemPrompt).toBe('string')
+    // 付箋の文の中の @パス を、Claude Code に読ませない
+    expect(options.env?.CLAUDE_CODE_DISABLE_FILE_MENTIONS).toBe('1')
+    expect(options.env?.CLAUDE_AGENT_SDK_CLIENT_APP).toBe('canvcode')
+  })
+
+  it('付箋の文の語の頭の @ は ＠ にして渡す（ファイルの言及として読ませない）', async () => {
+    const calls: { prompt: string; options: Options }[] = []
+    await new MemoWriter({ run: answering('- a', calls) }).write('@/etc/hostname を見る。a@example.com')
+    expect(calls[0]!.prompt).toContain('<text>\n＠/etc/hostname を見る。a@example.com\n</text>')
   })
 
   it('モデルを変えられる', async () => {

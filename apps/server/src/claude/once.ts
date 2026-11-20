@@ -18,6 +18,8 @@ import { readPath, realish } from './permissions.ts'
 //   ONCE_CANVAS_TOOLS だけを許す。Read・Glob・Grep は readRoots の中だけを読ませる（fileRefusal）。
 //   そのときは、キャンバスかファイルを読むツールを 1 度でも通したら、WebFetch に渡せる URL を、利用者が書いた文（userText。質問の文）に書かれた
 //   URL だけにする（FetchGuard。読んだ中身を URL に入れて外に送らせない。docs/question-canvas-tools-plan.md の「レビューで見つかったこと」）
+// - 頼む文の中の @パス（ファイルの言及）を、Claude Code に読ませない（CLAUDE_CODE_DISABLE_FILE_MENTIONS。読むツールのフックを通らずに
+//   ファイルを読んで添えるため。材料に攻撃者が書けば、ワークスペースの外も読ませられた）。材料を頼む文に入れる所でも、語の頭の @ を ＠ にする（withoutFileMentions）
 // - 同時に動かせる数と、待つ時間に上限がある（超えたら 429、時間切れは 504）
 
 // 使わせてよいツール（Web を調べるだけのもの）
@@ -53,7 +55,7 @@ export interface OnceRequest {
   // 使ってよいツール。既定はなし
   tools?: readonly OnceTool[]
   // 読むだけの canvcode の MCP のサーバー（mcp.ts の createMcpServer の readOnly。頼みごとに作ったもの）。渡すと、同じプロセスの中の MCP として
-  // つなぎ、ONCE_CANVAS_TOOLS だけを尋ねずに使わせる。閉じるのは渡した側
+  // つなぎ、ONCE_CANVAS_TOOLS だけを使わせる（フックと canUseTool の両方で許し、読んだ印を付ける）。閉じるのは渡した側
   canvas?: McpServer
   // ファイルを読ませるフォルダ（絶対パス）。渡すと Read・Glob・Grep を見せ、このフォルダの中だけを読ませる（fileRefusal）
   readRoots?: readonly string[]
@@ -193,9 +195,9 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
   const roots = request.readRoots ?? []
   const fileTools: string[] = roots.length > 0 ? [...ONCE_FILE_TOOLS] : []
   const canvasTools = request.canvas ? ONCE_CANVAS_TOOLS.map((name) => `mcp__${ONCE_MCP_SERVER}__${name}`) : []
-  // 尋ねずに使わせるもの。ファイルを読むツールと、URL を確かめる WebFetch は入れない（入れると canUseTool を通らずに許されるので、
-  // 確かめるのがフックだけになる。ワークスペースは cwd の外なので、Claude Code は Read などを canUseTool に尋ねる）
-  const unasked = [...tools, ...canvasTools].filter((name) => !(guard && name === 'WebFetch'))
+  // 尋ねずに使わせるもの。読むツール（ファイル・キャンバス）と、URL を確かめる WebFetch は入れない（入れると canUseTool を通らずに許されるので、
+  // 確かめて読んだ印を付けるのがフックだけになる。ワークスペースは cwd の外なので、Claude Code は Read などを canUseTool に尋ねる。MCP のツールも尋ねる）
+  const unasked = tools.filter((name) => !(guard && name === 'WebFetch'))
   const readTools = new Set([...canvasTools, ...fileTools])
   // 答えの JSON の形を渡したときは、答えを渡すツール（StructuredOutput。SDK が足す）も通す。断ると、答えられずにターン数の上限まで繰り返す
   const allowed = new Set<string>([...tools, ...canvasTools, ...(request.schema && !asText ? [STRUCTURED_OUTPUT_TOOL] : [])])
@@ -207,6 +209,7 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
   // その結果を見る前に決めたものなので、中身は入らない）
   const refusal = (name: string, input: Record<string, unknown>): string | null => {
     const reason = fileTools.includes(name) ? fileRefusal(name, input, roots) : !allowed.has(name) ? deny(name) : guard && name === 'WebFetch' ? guard.refusal(input) : null
+    // フック（PreToolUse）と canUseTool の両方で印を付ける（どちらか一方を通らずに来ても付くように）
     if (reason === null && readTools.has(name)) guard?.markRead()
     return reason
   }
@@ -232,7 +235,7 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
     ...(request.effort ? { effort: request.effort } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     tools: [...tools, ...fileTools],
-    // 使ってよいツールは尋ねずに使わせる（ファイルを読むツールと WebFetch は、canUseTool でも確かめてから）。ほかは断る（画面で尋ねる仕組みはない）
+    // 使ってよいツールは尋ねずに使わせる（読むツールと WebFetch は、canUseTool でも確かめてから）。ほかは断る（画面で尋ねる仕組みはない）
     allowedTools: unasked,
     // 読むツールを渡すときは、尋ねる決まり（default）をはっきり渡す。canUseTool の 2 つめの守りは、尋ねるモードでないと呼ばれない。
     // 主の守りはフック（どのモードでも先に通る）。cwd は一時フォルダにしておく（cwd の下は、Claude Code が Read などを尋ねずに許す）
@@ -252,7 +255,8 @@ export function onceOptions(request: OnceRequest, tools: readonly OnceTool[], ab
     // 考えている中身を受けるときは、途中のメッセージも受け、考えている中身を要約して返すよう頼む（既定の omitted では空になる）
     ...(thinking ? { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' } } : {}),
     abortController,
-    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
+    // 頼む文の中の @パス を読ませない（読むツールのフックを通らない。材料に攻撃者が書ける）
+    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' },
   }
 }
 
@@ -320,36 +324,49 @@ export class FetchGuard {
     this.read = true
   }
 
-  // WebFetch で開かせない理由。開いてよいなら null。理由の文には、渡された URL を入れない
+  // WebFetch で開かせない理由。開いてよいなら null。理由の文には、渡された URL を入れない。
+  // 空白・改行・制御文字を含む URL は断る（WebFetch の結果の知らせに、そのまま行として入るため。new URL はそれらを捨てて同じ href にする）
   refusal(input: Record<string, unknown>): string | null {
     if (!this.read) return null
-    const url = typeof input.url === 'string' ? wireUrl(input.url) : null
+    const url = typeof input.url === 'string' && !unsafeUrl(input.url) ? wireUrl(input.url) : null
     if (url && (sameUrl(url, this.asked) || sameUrl(url, this.redirects))) return null
-    return (
-      'キャンバスやファイルを読んだあとは、WebFetch で開けるのは、質問の文に書かれた URL だけです（書かれたままの形で渡してください）。' +
-      'ほかのページが要るときは、開かずに、そのページの URL を質問に書いてもらうよう、答えに書いてください。'
-    )
+    return FETCH_REFUSAL
   }
 
-  // WebFetch の結果（PostToolUse）。質問の文に書かれた URL がリダイレクトしたときだけ、知らせの行き先の行から行き先を 1 つ許す
+  // WebFetch の結果（PostToolUse）。質問の文に書かれた URL がリダイレクトしたときだけ、知らせから行き先を 1 つ許す。
+  // 知らせとして読むのは、状態コードがリダイレクト（301・302・303・307・308）で、知らせの頭の 5 行が決まった形のものだけ
+  // （ふつうに読めたページ（2xx）の結果は、要約するモデルの答えで、その prompt は Claude が決めるので、知らせの形の文を書かせられる）。
+  // Original URL が開いた質問の URL で、Status が状態コードと同じであることも確かめる。Status の行のあと（prompt を含む）は読まない
   followRedirect(input: unknown, response: unknown): void {
-    const url = typeof (input as { url?: unknown } | null)?.url === 'string' ? wireUrl((input as { url: string }).url) : null
+    const raw = (input as { url?: unknown } | null)?.url
+    const url = typeof raw === 'string' && !unsafeUrl(raw) ? wireUrl(raw) : null
     if (!url || !sameUrl(url, this.asked)) return
-    const result = typeof (response as { result?: unknown } | null)?.result === 'string' ? (response as { result: string }).result : ''
-    if (!result.startsWith('REDIRECT DETECTED')) return
-    for (const line of result.split('\n')) {
-      const match = REDIRECT_LINE.exec(line)
-      const target = match ? wireUrl(match[1]!) : null
-      if (target) {
-        this.redirects.add(target)
-        return
-      }
-    }
+    const { code, result } = (typeof response === 'object' && response !== null ? response : {}) as { code?: unknown; result?: unknown }
+    if (typeof code !== 'number' || !REDIRECT_CODES.has(code) || typeof result !== 'string') return
+    const match = REDIRECT_NOTICE.exec(result)
+    if (!match || Number(match[3]) !== code) return
+    const original = wireUrl(match[1]!)
+    const target = wireUrl(match[2]!)
+    if (original && target && sameUrl(original, new Set([url]))) this.redirects.add(target)
   }
 }
 
-// リダイレクトの知らせの、行き先の行（Claude Code の WebFetch。今の形と古い形）。URL のあとに何か続く（長すぎて切った・名前が長すぎる）ものは読まない
-const REDIRECT_LINE = /^\s*Redirect URL(?: \(from the server's Location header — server-supplied, not verified\))?: (https?:\/\/\S+)\s*$/
+const FETCH_REFUSAL =
+  'キャンバスやファイルを読んだあとは、WebFetch で開けるのは、質問の文に書かれた URL だけです。' +
+  '開けなかったことと、そのサイトや資料の名前を答えに書いてください（URL は書かない）。要るときは、利用者に自分で URL を探して、質問の文に書いてもらってください。'
+
+// URL に入れさせない字があるか（空白・改行・制御文字。全角の空白なども）
+function unsafeUrl(url: string): boolean {
+  return /\s/.test(url) || [...url].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f)
+}
+
+// 同梱の Claude Code が、リダイレクトの知らせを出す状態コード
+const REDIRECT_CODES = new Set([301, 302, 303, 307, 308])
+
+// リダイレクトの知らせの頭（Claude Code の WebFetch）：1 行目、空の行、Original URL、行き先の行（今の形と古い形）、Status。
+// 行き先の URL のあとに何か続く（長すぎて切った・名前が長すぎる）ものは読まない。Status の行のあとは読まない（prompt を含む）
+const REDIRECT_NOTICE =
+  /^REDIRECT DETECTED: The URL redirects to a location that was not fetched automatically\.\n\n {4}Original URL: (\S+)\n {4}Redirect URL(?: \(from the server's Location header \u2014 server-supplied, not verified\))?: (https?:\/\/\S+)\n {4}Status: (\d{3})(?: [^\n]*)?(?:\n|$)/
 
 // WebFetch が送る形。http は https にする（WebFetch も https にして送る）。URL でなければ null
 function wireUrl(url: string): string | null {
@@ -378,6 +395,12 @@ export function urlsInText(text: string): string[] {
     found.add(trimUrl(match.replace(/[^\x21-\x7e][\s\S]*$/, '')))
   }
   return [...found].filter((url) => /^https?:\/\/[^/?#\s]+/i.test(url))
+}
+
+// 材料を頼む文に入れるときに、語の頭の @ を全角の ＠ にする（Claude Code のファイルの言及（@パス）として読ませない。見た目はほとんど同じ）。
+// メールアドレスのように、英数字などのすぐあとの @ はそのまま
+export function withoutFileMentions(text: string): string {
+  return text.replace(/(?<![A-Za-z0-9._%+-])@/g, '\uff20')
 }
 
 // 末尾の句読点（全角のものも）と、閉じていない括弧を落とす
