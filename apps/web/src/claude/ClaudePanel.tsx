@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { OWN_KEYS_ATTRIBUTE, firstLine, fitTurns } from '@canvcode/canvas'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { OWN_KEYS_ATTRIBUTE, firstLine, fitTurns, isImeEvent } from '@canvcode/canvas'
 import { AnswerError, requestAnswer, type AnswerRequest } from './answer.ts'
 import { ChatComposer, type ComposeMode } from './ChatComposer.tsx'
 import { ChatHeader } from './ChatHeader.tsx'
@@ -20,11 +20,14 @@ import { loadSetting, sameSetting, saveSetting, settingOf, type ModelSetting } f
 import { answerOfEvents, toolLabel } from './toolGroups.ts'
 
 // 画面から Claude Code に頼むチャット（キャンバスの右に並べる）。
-// - キャンバスでは、右上の「質問」と C で開くのは質問のタブ（QuestionPanel）で、会話（このチャット）は上の「会話｜質問」のタブで行き来する。
+// - キャンバスでは、右上の「作業」と C で開くのは作業のタブ（QuestionPanel）で、会話（このチャット）は上の「会話｜作業」のタブで行き来する。
 //   「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、チャットを直接開く（全画面のエディタでは、タブを出さない）
 // - 1 つの会話（thread）を見せる。送ると、その会話の続きとして頼む（上の ＋ で切る）。会話はサーバーの SQLite に残り、
-//   題の ▾ で開く一覧から前の会話に戻れる（中身は選んだときに読む）。開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる。
+//   題の ▾ で開く一覧から前の会話に戻れる（中身は選んだときに読む）。初めて開いたときは、少し前（RECENT_MS 以内）に動いた会話を見せる。
 //   上の並び（ChatHeader）・会話の欄（ChatLog）・入力欄（ChatComposer）に分ける（docs/claude-chat-tab-plan.md）
+// - 一度開いたら、閉じても描いたまま隠す（App。docs/claude-panel-keep-draft-plan.md）。開き直すと、書きかけの文・取り込む付箋の質問の札・
+//   「会話｜質問」・選んでいた会話・会話の欄のスクロールがそのまま残る。閉じたら、誤りの表示と「全部止める」の 1 回目は消す。
+//   書きかけは会話ごとに分けず 1 つ（会話を替えても付いてくる）。ページを読み直したら残らない
 // - 選んでいる場所（ref）を添えられる。右クリックの「Claude に頼む…」で開くと、選んでいた場所が添えてある
 // - Claude Code が許可を求めてきた呼び出し（auto mode が決められなかった Bash など）は、入力欄のすぐ上に警告の色のカードで並べ、
 //   「断る」「許可する」で答える。1 つのキーでは許可しない（許可のボタンにフォーカスを置かない）。答えないと、サーバーがしばらくして断る
@@ -92,13 +95,15 @@ interface Props {
   attachment: ClaudeAttachment | null
   // 増えたら入力欄にフォーカスする
   focusRequest: number
-  // 入力欄に入れておく頼み方の下書き（n が変わるたびに入れ直す。「グラフを作る」の「Claude におまかせ」）
+  // 入力欄に入れておく頼み方の下書き（n が変わるたびに入れる。書きかけがあれば後ろに足す。「グラフを作る」の「Claude におまかせ」）
   draft?: { text: string; n: number } | null
   // パネルが見えている置き場所（MAI-102。App がパネルの DOM をキャンバスの右と全画面のエディタの右半分の間で移す。隠しているなら null）。
   // 変わったら、会話の欄と入力欄のスクロールを戻す（DOM を移したり隠したりすると先頭に戻り、scroll イベントも来ないため）
   placement?: Element | null
-  // 隠しているか（付箋の答えのパネルを見せている間。閉じずに隠すので、書きかけの文と選んでいた会話が残る）
+  // 隠しているか（作業のタブを見せている間と、パネルを閉じている間。描いたまま隠すので、書きかけの文と選んでいた会話が残る）
   hidden?: boolean
+  // パネルを閉じているか（隠しているうちの、閉じているとき）。閉じたら、誤りの表示と「全部止める」の 1 回目を消す（作業のタブとの行き来では残す）
+  closed?: boolean
   onAttachSelection(): void
   onClearAttachment(): void
   onClose(): void
@@ -119,10 +124,11 @@ interface Props {
 }
 
 export function ClaudePanel(props: Props) {
-  const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, onAttachSelection, onClearAttachment, onClose, tabs, onCutToNote, reveal } = props
+  const { client, canvasId, attachment, focusRequest, draft, placement, hidden = false, closed = false, onAttachSelection, onClearAttachment, onClose, tabs, onCutToNote, reveal } = props
   const { importRequest, onThreadChange, onOpenImport, onOpenQuestion } = props
   const state = useClaudeState(client)
-  // 選んだ会話。null は新しい会話。開いたときに選ぶ最新の会話は、付箋の作業しかない会話を除く
+  // 選んだ会話。null は新しい会話。初めて開いたときに選ぶ最新の会話は、付箋の作業しかない会話を除く（閉じても描いたままなので、
+  // 開き直しても選んでいた会話のまま）
   const [chosenId, setThreadId] = useState<string | null>(() => {
     const latest = chatThreads(client.state)[0]
     return latest && (latest.running || Date.now() - latest.updatedAt < RECENT_MS) ? latest.threadId : null
@@ -139,21 +145,38 @@ export function ClaudePanel(props: Props) {
   // 「会話｜質問」を出さない所（全画面のエディタ）では、いつも会話で送る
   const mode: ComposeMode = onOpenQuestion ? chosenMode : 'chat'
   const [pendingImport, setPendingImport] = useState<ImportedQuestion | null>(null)
+  const panelRef = useRef<HTMLElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => client.connect(), [client])
   useEffect(() => void client.loadModels(), [client, state.availability])
-  // 隠している間に頼まれたら、見せたときにフォーカスする（付箋の答えのパネルから「チャット」で移ったとき）
+  // 隠している間に頼まれたら、見せたときにフォーカスする（作業のタブから「会話」で移ったときと、閉じていたパネルを開き直したとき）
   useEffect(() => {
     if (!hidden) inputRef.current?.focus({ preventScroll: true })
   }, [focusRequest, hidden])
+  // 隠したら、中にフォーカスを残さない（隠した入力欄にキーが届かないように）。× と Esc は先にエディタかキャンバスへ移すが、
+  // 右上の「作業」で閉じたとき、押してもボタンにフォーカスが移らないブラウザ（Safari）では、入力欄に残るので、ここで外す
+  useLayoutEffect(() => {
+    const active = document.activeElement
+    if (hidden && active instanceof HTMLElement && panelRef.current?.contains(active)) active.blur()
+  }, [hidden])
+  // 閉じたら、誤りの表示と「全部止める」の 1 回目をやめる（開き直したときに、前のものを出さない。作業のタブとの行き来では残す）
+  const [seenClosed, setSeenClosed] = useState(closed)
+  if (closed !== seenClosed) {
+    setSeenClosed(closed)
+    if (closed) {
+      setError(null)
+      setConfirmStop(null)
+    }
+  }
   // 新しい下書きが来たら入力欄に入れる（描画の中で前の値と比べる。React の「props が変わったら state を合わせる」書き方）。
-  // 閉じていたパネルは下書きと一緒に開く（初めから下書きがある）ので、null から比べて、開いたときも入れる
+  // 書きかけがあれば上書きせず、後ろに足す（withDraft）。初めて開くときは下書きと一緒に描く（初めから下書きがある）ので、
+  // null から比べて、そのときも入れる
   const [seenDraft, setSeenDraft] = useState<typeof draft>(null)
   if (draft !== seenDraft) {
     setSeenDraft(draft)
-    if (draft) setPrompt(draft.text)
+    if (draft) setPrompt(withDraft(prompt, draft.text))
   }
   // 付箋の質問を取り込む（答えの「会話で続ける」）。新しい会話にするなら会話を外す。送るのは、次に文を書いて送ったとき
   const [seenImport, setSeenImport] = useState<typeof importRequest>(null)
@@ -423,11 +446,11 @@ export function ClaudePanel(props: Props) {
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter は改行。Ctrl（⌘）+Enter で送る。変換中の Enter は IME に任せる
+    // Enter は改行。Ctrl（⌘）+Enter で送る。Esc で閉じる（書きかけの文は残る）。変換中の Enter と Esc は IME に任せる
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
       e.preventDefault()
       send()
-    } else if (e.key === 'Escape') {
+    } else if (e.key === 'Escape' && !isImeEvent(e.nativeEvent)) {
       e.preventDefault()
       onClose()
     }
@@ -447,7 +470,7 @@ export function ClaudePanel(props: Props) {
   }
 
   return (
-    <aside className="claude-panel" aria-label="Claude のチャット" hidden={hidden} tabIndex={-1} onKeyDown={onPanelKeyDown} {...{ [OWN_KEYS_ATTRIBUTE]: '' }}>
+    <aside ref={panelRef} className="claude-panel" aria-label="Claude のチャット" hidden={hidden} tabIndex={-1} onKeyDown={onPanelKeyDown} {...{ [OWN_KEYS_ATTRIBUTE]: '' }}>
       <ChatHeader
         {...(tabs ? { tabs } : {})}
         threads={threads}
@@ -564,6 +587,14 @@ export function PermissionList(props: {
       ))}
     </div>
   )
+}
+
+// 入力欄の文に、頼み方の下書きを足す（「Claude におまかせ」）。空なら下書きだけ、書きかけがあれば空行を挟んで後ろに。
+// 閉じても書きかけは残るので、同じ下書きがもう入っていれば、足さずにそのまま（2 回押して同じ文が並ばないように）
+function withDraft(prompt: string, text: string): string {
+  if (!prompt.trim()) return text
+  if (prompt.includes(text)) return prompt
+  return `${prompt.trimEnd()}\n\n${text}`
 }
 
 // 断るまでの残りの時間

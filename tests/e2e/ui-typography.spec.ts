@@ -195,7 +195,8 @@ test('the Claude panel conversation and the dialog body are 16px with a line hei
   await expectDadsText(page.locator('.claude-model-popover'))
   await page.keyboard.press('Escape')
   await claude.locator('.claude-close').click()
-  await expect(claude).toHaveCount(0)
+  // 閉じても描いたまま隠す（書きかけの文を残す。docs/claude-panel-keep-draft-plan.md）
+  await expect(claude).toBeHidden()
 
   // 確認のダイアログ：本文は 16px・行間 1.5 以上、名前とボタンも 14px 以上
   await page.evaluate(() => {

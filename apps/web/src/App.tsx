@@ -392,10 +392,15 @@ export function App(props: { initial: InitialRecords }) {
   // クライアントは画面を開いている間ずっと使う（SSE はパネルを初めて開いたときにつなぐ）
   const [claude] = useState(() => new ClaudeClient())
   const claudeState = useClaudeState(claude)
-  // パネルに出すもの。answers は質問のタブ（付箋で聞いた質問と答え。QuestionPanel）、chat は会話のタブ（ClaudePanel）。null は閉じている。
-  // キャンバスで右上の「質問」・C を押すと answers、上の「会話｜質問」のタブで行き来する（もう一度 C で会話の入力欄へ）。
-  // 「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、chat を直接開く。会話は質問を見ている間も閉じずに隠す（書きかけの文を残す）
+  // パネルに出すもの。answers は作業のタブ（付箋で頼んだ作業と答え。QuestionPanel）、chat は会話のタブ（ClaudePanel）。null は閉じている。
+  // キャンバスで右上の「作業」・C を押すと answers、上の「会話｜作業」のタブで行き来する（もう一度 C で会話の入力欄へ）。
+  // 「Claude に頼む…」（Ctrl+Alt+Enter）・全画面のエディタの「Claude」は、chat を直接開く。会話は、作業のタブを見ている間も閉じている間も、
+  // 描いたまま隠す（書きかけの文を残す）
   const [claudeView, setClaudeView] = useState<'answers' | 'chat' | null>(null)
+  // パネルを一度開いたか。一度開いたら、会話のパネルは閉じても描き直さずに隠す（書きかけの文・取り込む札・「会話｜質問」・選んでいる会話・
+  // スクロールが残る。docs/claude-panel-keep-draft-plan.md）。初めて開くまでは描かない。作業のタブは、閉じたら描くのをやめる（一覧に戻る）
+  const [claudeMounted, setClaudeMounted] = useState(false)
+  if (claudeView !== null && !claudeMounted) setClaudeMounted(true)
   const [claudeAttachment, setClaudeAttachment] = useState<ClaudeAttachment | null>(null)
   const [claudeFocus, setClaudeFocus] = useState(0)
   // 全画面のエディタでは、パネルをプレビューの代わりに右半分に出す（MAI-102）。エディタでほかの表示に切り替えたら、
@@ -475,8 +480,9 @@ export function App(props: { initial: InitialRecords }) {
   useLayoutEffect(() => {
     claudeViewRef.current = claudeView
   }, [claudeView])
-  // パネルに渡す 1 回だけの頼み（docs/claude-chat-tab-plan.md）：会話のそのジョブへ戻る・付箋の質問を取り込む・質問のタブで会話の質問を開く。
-  // パネルは閉じると描き直すので、閉じるときに消す（開き直したときに、もう一度効かないように）
+  // パネルに渡す 1 回だけの頼み（docs/claude-chat-tab-plan.md）：会話のそのジョブへ戻る・付箋の質問を取り込む・作業のタブで会話の質問を開く。
+  // 閉じるときに消す（作業のタブは閉じると描き直すので、開き直したときに、もう一度効かないように。会話のパネルは描いたままで、受けた頼みは
+  // 覚えているが、Claude を使えなくなると描き直すので、こちらも消す）。取り込む札そのものは、会話のパネルが持つので残る
   const [chatReveal, setChatReveal] = useState<ChatReveal | null>(null)
   const [chatImport, setChatImport] = useState<ChatImportRequest | null>(null)
   const [questionOpen, setQuestionOpen] = useState<QuestionOpenRequest | null>(null)
@@ -486,7 +492,8 @@ export function App(props: { initial: InitialRecords }) {
     setChatImport(null)
     setQuestionOpen(null)
   }, [])
-  // パネルを閉じる（× と Esc）。開き直したときに、使い終わった下書きをもう一度入れない
+  // パネルを閉じる（× と Esc）。開き直したときに、使い終わった下書きをもう一度入れない。会話のパネルは隠すだけ（書きかけの文は残る）なので、
+  // 先にフォーカスをエディタかキャンバスに移す（隠したパネルの中に残さない）
   const closeClaude = useCallback(() => {
     setClaudeView(null)
     forgetClaudeRequests()
@@ -2341,14 +2348,14 @@ export function App(props: { initial: InitialRecords }) {
   }
 
   // Claude のパネルの置き場所（MAI-102）。全画面のエディタを開いていて、チャットを開いていて、エディタで隠していなければ、エディタの右半分。
-  // 付箋の答えのパネルは、キャンバスの右にだけ出す（エディタを開いている間は隠す）
-  const claudeAvailable = claudeView !== null && claudeState.availability === 'on'
-  // 右のパネルの上の「会話｜質問」のタブ
+  // 付箋の答えのパネルは、キャンバスの右にだけ出す（エディタを開いている間は隠す）。閉じている会話のパネルは、キャンバスの右で隠しておく
+  const claudeOn = claudeState.availability === 'on'
+  // 右のパネルの上の「会話｜作業」のタブ
   const claudeTabs = (active: 'chat' | 'questions') => (
     <ClaudeTabs active={active} running={runningWork} onChat={() => askClaude('')} onQuestions={showAnswers} />
   )
   const claudeChat = claudeView === 'chat'
-  const claudeInEditor = claudeAvailable && claudeChat && openFileId !== null && !editorClaudeHidden
+  const claudeInEditor = claudeOn && claudeChat && openFileId !== null && !editorClaudeHidden
   const claudeSlot = claudeInEditor ? editorClaudeSlot : canvasClaudeSlot
   useLayoutEffect(() => {
     if (!claudeSlot || claudeHost.parentNode === claudeSlot) return
@@ -2848,30 +2855,34 @@ export function App(props: { initial: InitialRecords }) {
       </div>
       {/* Claude のパネルの、キャンバスの右の置き場所。全画面のエディタを開いている間は、右半分に移すか隠す（MAI-102） */}
       <div className={openFileId && !claudeInEditor ? 'claude-slot hidden' : 'claude-slot'} ref={setCanvasClaudeSlot} />
-      {claudeAvailable &&
+      {/* 作業のタブは開いている間だけ描く（閉じたら一覧に戻る）。会話のパネルは、一度開いたら閉じても描いたまま隠す（書きかけの文を残す） */}
+      {claudeMounted &&
+        claudeOn &&
         createPortal(
           <>
-            <QuestionPanel
-              claude={claude}
-              editor={editor}
-              seen={seenAnswers}
-              hidden={claudeChat}
-              focusRequest={claudeFocus}
-              tabs={claudeTabs('questions')}
-              canvasTitle={canvasTitle}
-              canPlace={!openFileId}
-              onOpenNote={(target, noteId) => void openNoteAnswer(target, noteId)}
-              onContinue={continueQuestion}
-              onKeep={keepQuestion}
-              onClose={closeClaude}
-              open={questionOpen}
-              onChat={importToChat}
-              chatTitle={chatThread?.title ?? null}
-              onOpenChat={openChatAnswer}
-              onContinueChat={continueChatQuestion}
-              onKeepChat={keepChatQuestion}
-              onOpenThread={(threadId, jobId) => openChatAnswer({ threadId, ...(jobId ? { jobId } : {}) })}
-            />
+            {claudeView !== null && (
+              <QuestionPanel
+                claude={claude}
+                editor={editor}
+                seen={seenAnswers}
+                hidden={claudeChat}
+                focusRequest={claudeFocus}
+                tabs={claudeTabs('questions')}
+                canvasTitle={canvasTitle}
+                canPlace={!openFileId}
+                onOpenNote={(target, noteId) => void openNoteAnswer(target, noteId)}
+                onContinue={continueQuestion}
+                onKeep={keepQuestion}
+                onClose={closeClaude}
+                open={questionOpen}
+                onChat={importToChat}
+                chatTitle={chatThread?.title ?? null}
+                onOpenChat={openChatAnswer}
+                onContinueChat={continueChatQuestion}
+                onKeepChat={keepChatQuestion}
+                onOpenThread={(threadId, jobId) => openChatAnswer({ threadId, ...(jobId ? { jobId } : {}) })}
+              />
+            )}
             <ClaudePanel
               client={claude}
               canvasId={canvasId}
@@ -2880,6 +2891,7 @@ export function App(props: { initial: InitialRecords }) {
               draft={claudeDraft}
               placement={claudePlacement}
               hidden={!claudeChat}
+              closed={claudeView === null}
               // 全画面のエディタでは、選んでいる行を添える
               onAttachSelection={() => (fileEditorRef.current ? fileEditorRef.current.askClaude() : askClaudeAboutSelection(true))}
               onClearAttachment={() => setClaudeAttachment(null)}
