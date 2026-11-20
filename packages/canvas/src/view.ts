@@ -490,6 +490,10 @@ export class CanvasView {
     this.listen(this.root, 'pointermove', (e) => this.onPointerMove(e))
     this.listen(this.root, 'pointerup', (e) => this.onPointerUp(e))
     this.listen(this.root, 'pointercancel', (e) => this.onPointerUp(e))
+    // Firefox は、中ボタンの貼り付け（onPointerUp を見る）を auxclick の既定の動作で行う
+    this.listen(this.root, 'auxclick', (e) => {
+      if (e.button === 1) e.preventDefault()
+    })
     this.listen(this.root, 'pointerleave', () => {
       if (this.editor.session.get().hoveredId) this.editor.session.set({ hoveredId: null })
       if (this.editor.session.get().hoveredAiCorner) this.editor.session.set({ hoveredAiCorner: null })
@@ -2275,6 +2279,10 @@ export class CanvasView {
   }
 
   private onPointerUp(e: PointerEvent): void {
+    // Linux のブラウザは、中ボタンを離すと、最後に選んだ文字（PRIMARY の選択）を貼り付ける。キャンバスの中ボタンは
+    // パンとポータルを開く操作なので、貼り付けさせない（paste イベントが来て文字のカードになる。編集中なら文字に入る）。
+    // Chromium は pointerup の既定の動作で貼り付ける
+    if (e.type === 'pointerup' && e.button === 1) e.preventDefault()
     if (this.root.hasPointerCapture(e.pointerId)) this.root.releasePointerCapture(e.pointerId)
     if (e.pointerType === 'touch' && this.onTouchUp(e)) return
     const click = this.linkClick
