@@ -1182,3 +1182,18 @@ test('a question asked with no conversation chosen becomes a new conversation an
   await expect.poll(() => started.length).toBe(1)
   expect(started[0]).toMatchObject({ prompt: 'これを表にして', threadId: id, imports: [{ label: '新しく聞く', question: '新しく聞く', answer: '答えです', questionId: id }] })
 })
+
+test('keeps 調べる done while Claude reads the canvas again after searching the web (docs/question-canvas-tools-plan.md)', async ({ page }) => {
+  const now = Date.now()
+  // 調べたあと、キャンバスを読んでいる（読むに戻った）会話の質問
+  const running = { kind: 'chat', id: 'q-reading', threadId: 't1', label: 'この図の出典は？', status: 'running', step: 'read', searched: true, thinking: '― Web で調べる：出典\n\n― キャンバスを読む', startedAt: now + 1000 }
+  const thread = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false, tasks: [], permissions: [] }
+  const snapshot = { type: 'snapshot', threads: [thread], running: [], questions: [running] }
+  await openApp(page, { events: (route) => route.fulfill({ body: `retry: 60000\n\ndata: ${JSON.stringify(snapshot)}\n\n`, contentType: 'text/event-stream' }) })
+  const steps = page.locator('.claude-question[data-question-id="q-reading"] .answer-view-step')
+  await expect(steps).toHaveCount(3)
+  await expect(steps.nth(0)).toHaveClass(/current/)
+  await expect(steps.nth(1)).toHaveClass(/done/)
+  await expect(steps.nth(1)).toContainText('✓ 調べる')
+  await expect(steps.nth(2)).toHaveClass(/todo/)
+})

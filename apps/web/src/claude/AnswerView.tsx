@@ -289,7 +289,9 @@ function AnswerProgressView(props: { progress: AnswerProgress; onStop?(): void }
       <div className="answer-view-steps" aria-label="進み具合">
         {STEPS.map((step, i) => {
           const skipped = step.step === 'search' && !progress.searched && current > i
-          const state = skipped ? 'skipped' : i < current ? 'done' : i === current ? 'current' : 'todo'
+          // 一度調べたら、調べたあとにキャンバスやファイルを読んでいる（読むに戻った）ときも、調べるは済みに見せる
+          const searched = step.step === 'search' && progress.searched && i > current
+          const state = skipped ? 'skipped' : i < current || searched ? 'done' : i === current ? 'current' : 'todo'
           return (
             <span key={step.step} className={`answer-view-step ${state}`}>
               {state === 'done' ? '✓ ' : state === 'current' ? '● ' : ''}
