@@ -1080,11 +1080,18 @@ test('作業のタブの「Canvas current｜all」で、いま開いている Ca
   for (const other of others) await expect(other).toBeVisible()
   await expect(here).toBeVisible()
   await panel.screenshot({ path: test.info().outputPath('filter-all.png') })
+  // 選んでいるボタンは太字になるが、切り替えてもボタンの位置と幅は変わらない（太字の幅を前もって取っておく）
+  const boxesOf = () => Promise.all([current, all].map(async (e) => (await e.boundingBox())!))
+  const before = await boxesOf()
 
   // current：ほかの Canvas の 3 つが消え、いまの Canvas の報告は残る。過去の作業は ?canvasId= を付けて読み直す
   await current.click()
   await expect(current).toHaveAttribute('aria-checked', 'true')
   await expect(all).toHaveAttribute('aria-checked', 'false')
+  for (const [i, box] of (await boxesOf()).entries()) {
+    expect(box.x).toBeCloseTo(before[i]!.x, 0)
+    expect(box.width).toBeCloseTo(before[i]!.width, 0)
+  }
   await expect(current).toHaveAttribute('tabindex', '0')
   await expect(all).toHaveAttribute('tabindex', '-1')
   for (const other of others) await expect(other).toHaveCount(0)

@@ -4789,6 +4789,17 @@ button.pdf-page-number:hover {
   font-weight: var(--font-weight-700);
 }
 
+/* 選んでいるボタンは太字になる。欧文（current）は太字で幅が広がり、切り替えると隣のボタンがずれるので、同じ文字（data-label）を
+   太字で高さ 0 の見えない行に置き、太字の幅を前もって取っておく（高さは変わらない。和文の「会話｜質問」は、太字でも幅が同じ） */
+.claude-mode button::after {
+  content: attr(data-label);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  font-weight: var(--font-weight-700);
+  visibility: hidden;
+}
+
 /* 送る（➤）。主な色の丸いボタン */
 .claude-panel .claude-send {
   flex: none;

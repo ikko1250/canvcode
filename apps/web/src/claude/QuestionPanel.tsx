@@ -48,11 +48,11 @@ const THREAD_TITLE_LENGTH = 20
 
 type Viewing = { kind: 'note'; noteId: string; canvasId: string } | { kind: 'chat'; id: string }
 
-// どの Canvas の作業を出すか（一覧の上の切り替え。ChoiceSwitch）
+// どの Canvas の作業を出すか（一覧の上の切り替え。ChoiceSwitch。ボタンの文字は英語なので、英語の声で読ませる）
 type Filter = 'all' | 'here'
 const FILTERS: readonly Choice<Filter>[] = [
-  { value: 'here', label: 'current', title: 'いま開いている Canvas で頼んだ作業だけ' },
-  { value: 'all', label: 'all', title: 'どの Canvas で頼んだ作業も' },
+  { value: 'here', label: 'current', title: 'いま開いている Canvas で頼んだ作業だけ', lang: 'en' },
+  { value: 'all', label: 'all', title: 'どの Canvas で頼んだ作業も', lang: 'en' },
 ]
 
 // 会話の質問を開く（会話の欄の、取り込んだ会話の質問のカードの ↗）。n が変わるたびに開く

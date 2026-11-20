@@ -1,13 +1,16 @@
 // 並んだボタンから 1 つを選ぶ切り替え（タブと同じ形。docs/work-canvas-filter-plan.md）。会話の入力欄の「会話｜質問」（ChatComposer）と、
 // 作業のタブの「Canvas current｜all」（QuestionPanel）で使う。見た目は styles.css の .claude-mode
 // - 入れ物は role="radiogroup"（aria-label で何を選ぶか）、ボタンは role="radio" と aria-checked。読み上げの名前は見えている文字のまま、
-//   説明は title に書く
+//   説明は title に書く。英語の文字（current・all）は lang="en" にして、英語の声で読ませる
+// - 選んでいるボタンは太字になる。切り替えても幅が変わらないよう、data-label の文字を太字で見えない所に置き、幅を取っておく（styles.css）
 // - 選んでいる方だけ Tab で止まる（roving tabIndex）。←→↑↓ で隣に切り替え（端からは反対の端へ）、フォーカスも移す
 
 export interface Choice<T extends string> {
   value: T
   label: string
   title: string
+  // label の言葉（ページの ja と違うときだけ）
+  lang?: string
 }
 
 // onChange は NoInfer（useState の set を渡したとき、T をその引数の型から推さない）
@@ -37,6 +40,8 @@ export function ChoiceSwitch<T extends string>(props: { label: string; choices: 
           tabIndex={choice.value === value ? 0 : -1}
           onClick={() => onChange(choice.value)}
           title={choice.title}
+          lang={choice.lang}
+          data-label={choice.label}
         >
           {choice.label}
         </button>
