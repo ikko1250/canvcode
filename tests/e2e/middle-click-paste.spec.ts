@@ -1,8 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 
 // Linux のブラウザは、中ボタンを離すと、最後に選んだ文字（PRIMARY の選択）を貼り付ける。
-// キャンバスでは中ボタンはパン（とポータルを新しいタブで開く）なので、貼り付けさせない。
-// ヘッドレスの Chromium でも、マウスで文字を選ぶと PRIMARY に入り、中ボタンで paste イベントが届く
+// キャンバスでは中ボタンはパン（とポータルを新しいタブで開く）なので、貼り付けさせない。編集中の文字の中では、ふつうに貼る。
+// ヘッドレスの Chromium・Firefox でも、マウスで文字を選ぶと PRIMARY に入り、中ボタンで paste イベントが届く。
+// Chromium と Firefox で止め方が違う（pointerup・auxclick）ので、Firefox でも回す（playwright.config.ts）
 
 const CANVAS_ID = 'canvas:middle-paste'
 
@@ -50,12 +51,15 @@ async function canvasPoint(page: Page, x: number, y: number) {
   return { x: rect.x + x, y: rect.y + y }
 }
 
-// 確かめる側：中ボタンを使わない、ふつうの貼り付けは届く（PRIMARY を選ぶやり方が効いていて、paste を数えられている）
-test('the harness sees a middle-click paste outside the canvas', async ({ page }) => {
+// 確かめる側：キャンバスの外で中ボタンを押すと paste が届く（PRIMARY を選ぶやり方が効いていて、paste を数えられている）。
+// キャンバスの外（上のバー・AI 付箋の札など）で離したものも、キャンバスには貼らない
+test('a middle click outside the canvas sends a paste, which the canvas does not take', async ({ page }) => {
   await openApp(page, [canvas])
   const at = (await page.locator('#primary-source').boundingBox())!
   await page.mouse.click(at.x + 5, at.y + 5, { button: 'middle' })
   await expect.poll(() => pastes(page)).toEqual(['PRIMARY_TEXT'])
+  await page.waitForTimeout(200)
+  expect(await nodeCount(page)).toBe(0)
 })
 
 test('middle drag pans without pasting the primary selection', async ({ page }) => {
@@ -100,4 +104,35 @@ test('middle drag while editing a text does not paste into it', async ({ page })
   await expect(editor).toBeFocused()
   await expect(editor).toHaveText('hello world')
   expect(await pastes(page)).toEqual([])
+})
+
+// 中ボタンでパンしながら左ボタンを押し、中ボタンを先に離す（Chromium では pointerup ではなく pointermove になる）
+test('releasing the middle button first while both are held does not paste', async ({ page }) => {
+  await openApp(page, [canvas, text])
+  const at = await canvasPoint(page, 500, 400)
+  await page.mouse.move(at.x, at.y)
+  await page.mouse.down({ button: 'middle' })
+  await page.mouse.move(at.x + 30, at.y + 20, { steps: 2 })
+  await page.mouse.down({ button: 'left' })
+  await page.mouse.up({ button: 'middle' })
+  await page.mouse.up({ button: 'left' })
+  await page.waitForTimeout(200)
+  expect(await nodeCount(page)).toBe(1)
+})
+
+// 編集中の文字の中で中ボタンを押すのは、パンにならない（文字の要素が止める）。そこでは Linux のふつうの貼り付けをする
+test('a middle click inside the text being edited still pastes into it', async ({ page }) => {
+  await openApp(page, [canvas, text])
+  const card = await canvasPoint(page, 120, 110)
+  await page.mouse.dblclick(card.x, card.y)
+  const editor = page.locator('.canvcode-text-editor')
+  await expect(editor).toBeFocused()
+  await page.keyboard.press('End')
+  const before = await camera(page)
+  await page.mouse.click(card.x, card.y, { button: 'middle' })
+  await expect.poll(() => pastes(page)).toHaveLength(1)
+  // 貼る位置は、Chromium はカーソルの所、Firefox は押した所。中身は PRIMARY に入っているもの
+  await expect.poll(async () => (await editor.textContent())!.length).toBeGreaterThan('hello world'.length)
+  expect(await camera(page)).toEqual(before)
+  expect(await nodeCount(page)).toBe(1)
 })

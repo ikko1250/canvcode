@@ -8,6 +8,8 @@ export default defineConfig({
   use: { baseURL: 'http://127.0.0.1:4179', viewport: { width: 1000, height: 800 }, trace: 'retain-on-failure' },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // ブラウザで止め方が違うもの（中ボタンの貼り付け）だけ、Firefox でも回す
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, testMatch: '**/middle-click-paste.spec.ts' },
   ],
   // テストはサーバーの応答を page.route などで差し替える。差し替えていない API が本物のサーバー（8787 の本番など）に
   // 届いてデータを書き換えないよう、開発サーバーの /api のプロキシ先を、誰も待ち受けていないポートにする（vite.config.ts）。
