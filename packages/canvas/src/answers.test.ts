@@ -454,6 +454,9 @@ describe('copying an answer to the canvas', () => {
     ])
     const meta = { contexts: [], answer: { body: answer, related: [], model: 'm', question: 'Q2', answeredAt: 1 } }
     expect(followUpContext('node:me', 'canvas:me', meta)!.turns.at(-1)!.answer).not.toContain('![')
+    // \r\n で 2 行にわたる画像も（付箋の写しは、ここで \n にそろえる）
+    const crlf = { contexts: [], answer: { body: '答え\r\n![a](https://evil.example/crlf\r\n"t")', related: [], model: 'm', question: 'Q3', answeredAt: 1 } }
+    expect(followUpContext('node:me', 'canvas:me', crlf)!.turns.at(-1)!.answer).toBe('答え\n画像「a」（https://evil.example/crlf）')
   })
 })
 
