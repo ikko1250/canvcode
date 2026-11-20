@@ -40,7 +40,7 @@ export function TextFormatToolbar(props: { editor: Editor; view: CanvasView | nu
   let top: number
   if (vertical) {
     left = x - GAP - VERTICAL_WIDTH
-    // 右に出すときは、札と欄（付箋より広いことがある）の右
+    // 右に出すときは、下の欄（付箋より広いことがある）の右。上の札は付箋より広くならない
     if (left < GAP) left = x + Math.max(AI_NOTE_UI_MIN_WIDTH, bounds.w * camera.zoom) + GAP
     left = Math.max(GAP, Math.min(left, (view?.root.clientWidth ?? Infinity) - GAP - VERTICAL_WIDTH))
     top = Math.min(Math.max(TOP_MARGIN, y), y + bounds.h * camera.zoom)
