@@ -5,13 +5,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { canvasSlideLayout } from '@canvcode/slides'
 import { AgentHost } from './agent/host.ts'
 import { AssetStore } from './assets.ts'
+import { ONCE_CANVAS_TOOLS } from './claude/once.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { LinkPreviewService, type RemoteResponse } from './linkPreview.ts'
-import { handleMcp, MCP_PATH } from './mcp.ts'
+import { createMcpServer, handleMcp, MCP_PATH } from './mcp.ts'
+import type { Plotter } from './plot.ts'
 import { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
 import { RefImageStore } from './refImages.ts'
@@ -948,5 +951,87 @@ describe('render_canvas', () => {
       'The scale is very small; render a smaller rect, the ids, or a slide to see details.',
       'Not found on the canvas: node:x.',
     ])
+  })
+})
+
+// 会話の質問（claude/answer.ts）に渡す、読むだけのサーバー。同じプロセスの中でつなぐ
+describe('a read-only server', () => {
+  async function readOnly(withRenders = true) {
+    const workspace = mkdtempSync(join(tmpdir(), 'canvcode-mcp-ro-'))
+    cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
+    const dataDir = join(workspace, '.canvcode')
+    const files = new FileStore(workspace, dataDir, () => {})
+    await files.init()
+    cleanups.push(() => files.close())
+    const records = new RecordStore(dataDir)
+    cleanups.push(() => records.close())
+    const agent = new AgentHost({ records, files })
+    cleanups.push(() => agent.dispose())
+    const assets = new AssetStore(dataDir)
+    await assets.init()
+    const renders = { hasTabs: () => true, request: async () => ({}) } as unknown as RenderBroker
+    // 書くためのもの（agent・pdf・plot）を渡しても、書くツールは出さない
+    const server = createMcpServer({
+      files,
+      records,
+      dataDir,
+      refImages: new RefImageStore(dataDir),
+      agent,
+      presence: () => null,
+      pdf: { assets, links: new LinkPreviewService(async () => ({}) as RemoteResponse) },
+      plot: {} as Plotter,
+      ...(withRenders ? { renders } : {}),
+      readOnly: true,
+    })
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverSide)
+    const client = new Client({ name: 'test', version: '0.0.0' })
+    await client.connect(clientSide)
+    cleanups.push(() => client.close())
+    return { client, records, files }
+  }
+
+  it('lists only the tools that read, never deferred behind tool search', async () => {
+    const { client } = await readOnly()
+    const { tools } = await client.listTools()
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'get_canvas_format',
+      'list_canvases',
+      'list_documents',
+      'read_canvas',
+      'read_document',
+      'read_nodes',
+      'render_canvas',
+      'resolve_reference',
+    ])
+    // 会話の質問が許すツール（claude/once.ts）と同じ
+    expect(tools.map((t) => t.name).sort()).toEqual([...ONCE_CANVAS_TOOLS].sort())
+    for (const tool of tools) {
+      expect(tool.annotations?.readOnlyHint, tool.name).toBe(true)
+      expect(tool._meta?.['anthropic/alwaysLoad'], tool.name).toBe(true)
+    }
+    // Canvas を描けないなら、render_canvas も出さない
+    const without = await readOnly(false)
+    expect((await without.client.listTools()).tools.map((t) => t.name)).not.toContain('render_canvas')
+  })
+
+  it('explains only how to read: no editing in get_canvas_format nor in the instructions', async () => {
+    const { client } = await readOnly()
+    const guide = ((await client.callTool({ name: 'get_canvas_format', arguments: {} })).content as { text: string }[])[0]!.text
+    expect(guide).toContain('# CanvCode canvas format')
+    expect(guide).toContain('read-only')
+    expect(guide).not.toMatch(/## Editing|edit_canvas|plot_csv|undo_canvas_edit/)
+    const instructions = client.getInstructions() ?? ''
+    expect(instructions).toContain('read_canvas')
+    expect(instructions).not.toMatch(/edit_canvas|edit_document|update_document|create_document|plot_csv|undo_canvas_edit|before editing/)
+  })
+
+  it('reads canvases and documents', async () => {
+    const { client, records, files } = await readOnly()
+    await files.create('markdown', 'メモ', '# 見出し\n')
+    const outline = await client.callTool({ name: 'read_canvas', arguments: { canvas_id: records.rootCanvasId } })
+    expect((outline.content as { text: string }[])[0]!.text).toContain(records.rootCanvasId)
+    const listed = await call(client, 'list_documents', {})
+    expect(listed.data.documents.map((d: { title: string }) => d.title)).toEqual(['メモ'])
   })
 })

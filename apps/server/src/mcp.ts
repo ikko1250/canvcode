@@ -32,13 +32,17 @@ import { THREAD_HEADER, THREAD_ID } from './threadHeader.ts'
 // - 第 6 段で、edit_canvas から PDF（ワークスペースのファイルか URL）を取り込み、空の Canvas の Portal を作れるようにした（agent/pdfSource.ts）
 // - 第 7 段で、表（CSV）からグラフ（matplotlib の PNG）を描いて画像のノードとして置くツールを足した（plot.ts。list_plot_styles・plot_csv）
 // - 第 8 段で、Canvas を画像にして見るツールを足した（render_canvas。描くのは開いているタブ。renders.ts。MAI-89）
+// - 第 9 段で、読むツールだけを持つサーバー（readOnly）を作れるようにした。会話の質問（claude/answer.ts）が、
+//   質問 1 回ごとに作り、Agent SDK の同じプロセスの中の MCP として渡す（docs/question-canvas-tools-plan.md）
 
 export const MCP_PATH = '/mcp'
 
 // agent がなければ、Canvas は読むだけ（書き換えるツールを出さない）。presence はユーザーがいま見ている所（SyncHub.latestPresence）。
 // pdf がなければ、edit_canvas で PDF を取り込めない。plot がなければ（か pdf の Asset がなければ）、グラフのツールを出さない。
 // renders がなければ、Canvas を画像にするツール（render_canvas）を出さない
-// threadId は、要求を送った画面の Claude Code の会話（ヘッダー THREAD_HEADER。handleMcp が読む）。Canvas の編集の記録に残す
+// threadId は、要求を送った画面の Claude Code の会話（ヘッダー THREAD_HEADER。handleMcp が読む）。Canvas の編集の記録に残す。
+// readOnly なら、読むツール（claude/once.ts の ONCE_CANVAS_TOOLS。render_canvas は renders があるときだけ）だけを出す。agent・pdf・plot を渡しても、書くツールは出さない。
+// 説明（instructions・get_canvas_format）も読むだけのものにし、どのツールもツール検索で後回しにさせない（ALWAYS_LOAD）
 export type McpDeps = RefDeps & {
   agent?: AgentHost
   presence?: () => Presence | null
@@ -46,34 +50,21 @@ export type McpDeps = RefDeps & {
   plot?: Plotter
   renders?: RenderBroker
   threadId?: string
+  readOnly?: boolean
 }
+
+// ツールの _meta に付けると、Claude Code はそのツールをツール検索の後ろに回さず、はじめから見せる。
+// 会話の質問は ToolSearch を使わせないので、後ろに回されると呼べない
+const ALWAYS_LOAD = { _meta: { 'anthropic/alwaysLoad': true } }
 
 export function createMcpServer(deps: McpDeps): McpServer {
   const { files } = deps
+  const readOnly = deps.readOnly === true
+  const meta = readOnly ? ALWAYS_LOAD : {}
   const server = new McpServer(
     { name: 'canvcode', version: '0.2.0' },
     {
-      instructions:
-        'CanvCode is an infinite canvas whose Markdown (.md), Python (.py) and table (.csv / .tsv) documents are real files. ' +
-        'Use list_documents to find a document id, read_document before editing, and prefer edit_document for small changes. ' +
-        'New documents appear under "未配置" (unplaced) in the sidebar; the user places them on a canvas. ' +
-        'When the user\'s message contains an id like ref:XXXXXXXXXX, it points at a place the user selected in CanvCode ' +
-        '(a region of a canvas, lines of a document, or a region of a PDF page): call resolve_reference with it first. ' +
-        'Document ids (file:...) in its result can be passed to read_document. ' +
-        'Documents in its result also carry absPath (the Markdown / Python file) or textPath (plain text extracted from a PDF, ' +
-        'each page starting with a "=== page N ===" line); read those files directly when you need more than the referenced part. ' +
-        'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details ' +
-        '(its file fields carry the same absPath / textPath, also on a portal to the pages of a PDF). ' +
-        'Canvas tools default to the canvas the user is viewing ("this", "here").' +
-        (deps.renders ? ' To see how slides or a diagram look, render_canvas returns a PNG drawn by an open CanvCode tab.' : '') +
-        (deps.agent
-          ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
-            ' To make a presentation, put slides on a canvas (edit_canvas: create type "slide" with a template; get_canvas_format explains them).' +
-            ' To show a PDF on a canvas, edit_canvas create type "pdf" with a path in the workspace or a url.' +
-            (deps.plot && deps.pdf
-              ? ' To chart a CSV / TSV document, read it (read_document), pick a style from list_plot_styles, then call plot_csv; it draws a PNG with matplotlib and places it as an image node.'
-              : '')
-          : ''),
+      instructions: readOnly ? readOnlyInstructions(deps) : editableInstructions(deps),
     },
   )
 
@@ -89,6 +80,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         kind: z.enum(['markdown', 'code', 'table']).optional().describe('markdown (.md), code (.py) or table (.csv / .tsv)'),
       },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     async ({ query, kind }) => {
       const needle = query?.toLowerCase()
@@ -106,11 +98,13 @@ export function createMcpServer(deps: McpDeps): McpServer {
     'read_document',
     {
       title: 'Read a document',
-      description:
-        'Read the full text of a Markdown, Python or table document. The returned hash can be passed to update_document as expected_hash. ' +
-        'For a PDF, it tells where its extracted text is.',
+      description: readOnly
+        ? 'Read the full text of a Markdown, Python or table document. For a PDF, it tells where its extracted text is.'
+        : 'Read the full text of a Markdown, Python or table document. The returned hash can be passed to update_document as expected_hash. ' +
+          'For a PDF, it tells where its extracted text is.',
       inputSchema: { id: z.string().describe('Document id (file:...) from list_documents') },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     ({ id }) =>
       guard(async () => {
@@ -136,6 +130,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         'a PNG of the region comes first; the "image" field maps its pixels to world coordinates.',
       inputSchema: { id: z.string().describe('Reference id, e.g. ref:Ab12Cd34Ef (the ref: prefix may be omitted)') },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     async ({ id }) => {
       const normalized = normalizeRefId(id)
@@ -153,6 +148,12 @@ export function createMcpServer(deps: McpDeps): McpServer {
       }
     },
   )
+
+  if (readOnly) {
+    // 書くツール（文書・Canvas の編集・グラフ）は出さない
+    registerCanvasTools(server, deps, undefined, deps.presence, undefined, undefined, deps.renders, undefined, meta)
+    return server
+  }
 
   server.registerTool(
     'create_document',
@@ -230,6 +231,47 @@ export function createMcpServer(deps: McpDeps): McpServer {
   return server
 }
 
+// サーバーの説明（AI に渡る）。書くツールを出すとき
+function editableInstructions(deps: McpDeps): string {
+  return (
+    'CanvCode is an infinite canvas whose Markdown (.md), Python (.py) and table (.csv / .tsv) documents are real files. ' +
+    'Use list_documents to find a document id, read_document before editing, and prefer edit_document for small changes. ' +
+    'New documents appear under "未配置" (unplaced) in the sidebar; the user places them on a canvas. ' +
+    REFERENCE_INSTRUCTIONS +
+    (deps.renders ? ' To see how slides or a diagram look, render_canvas returns a PNG drawn by an open CanvCode tab.' : '') +
+    (deps.agent
+      ? ' To change a canvas, batch operations into one edit_canvas call (get_canvas_format lists the ops); the user can undo it, or you can with undo_canvas_edit.' +
+        ' To make a presentation, put slides on a canvas (edit_canvas: create type "slide" with a template; get_canvas_format explains them).' +
+        ' To show a PDF on a canvas, edit_canvas create type "pdf" with a path in the workspace or a url.' +
+        (deps.plot && deps.pdf
+          ? ' To chart a CSV / TSV document, read it (read_document), pick a style from list_plot_styles, then call plot_csv; it draws a PNG with matplotlib and places it as an image node.'
+          : '')
+      : '')
+  )
+}
+
+// 読むツールだけを出すとき（readOnly）。書く話はしない
+function readOnlyInstructions(deps: McpDeps): string {
+  return (
+    'CanvCode is an infinite canvas whose Markdown (.md), Python (.py) and table (.csv / .tsv) documents are real files. ' +
+    'These tools only read the workspace; they cannot change canvases or documents. ' +
+    'Use list_documents to find a document id and read_document to read it. ' +
+    REFERENCE_INSTRUCTIONS +
+    (deps.renders ? ' To see what the outline cannot show (freehand strokes, images, how slides or a diagram look), render_canvas returns a PNG drawn by an open CanvCode tab.' : '')
+  )
+}
+
+// ref と Canvas の読み方（書くときも、読むだけのときも同じ）
+const REFERENCE_INSTRUCTIONS =
+  'When the user\'s message contains an id like ref:XXXXXXXXXX, it points at a place the user selected in CanvCode ' +
+  '(a region of a canvas, lines of a document, or a region of a PDF page): call resolve_reference with it first. ' +
+  'Document ids (file:...) in its result can be passed to read_document. ' +
+  'Documents in its result also carry absPath (the Markdown / Python file) or textPath (plain text extracted from a PDF, ' +
+  'each page starting with a "=== page N ===" line); read those files directly when you need more than the referenced part. ' +
+  'To see what is on a canvas, use list_canvases and read_canvas (a compact outline; get_canvas_format explains it), then read_nodes for details ' +
+  '(its file fields carry the same absPath / textPath, also on a portal to the pages of a PDF). ' +
+  'Canvas tools default to the canvas the user is viewing ("this", "here").'
+
 // ---- Canvas の上のもの ----
 
 // 説明は短くする（ツールの一覧は毎回 AI に渡る）。詳しいことは get_canvas_format に書く
@@ -242,6 +284,8 @@ function registerCanvasTools(
   plot?: Plotter,
   renders?: RenderBroker,
   threadId?: string,
+  // ツールに足す _meta（readOnly のサーバーの ALWAYS_LOAD）
+  meta: { _meta?: Record<string, unknown> } = {},
 ): void {
   const { records } = refDeps
   // Canvas の編集に残す、頼んだ会話
@@ -257,8 +301,11 @@ function registerCanvasTools(
     'get_canvas_format',
     {
       title: 'Get the canvas format',
-      description: 'Explains canvases, node types, coordinates, the read_canvas outline and edit_canvas ops. Call once first.',
+      description: agent
+        ? 'Explains canvases, node types, coordinates, the read_canvas outline and edit_canvas ops. Call once first.'
+        : 'Explains canvases, node types, coordinates and the read_canvas outline. Call it when the outline is unclear.',
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     () => text(canvasFormatGuide({ editable: Boolean(agent) })),
   )
@@ -270,6 +317,7 @@ function registerCanvasTools(
       description: 'The tree of canvases: id, title and node count; "viewing" marks the one the user is viewing. Filter by a substring of the title.',
       inputSchema: { query: z.string().optional().describe('Case-insensitive substring of the title') },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     ({ query }) => text(listCanvases(records, query, viewing()?.canvasId)),
   )
@@ -291,6 +339,7 @@ function registerCanvasTools(
         cursor: z.string().optional().describe('next= from the previous result'),
       },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     ({ canvas_id, view, ...options }) =>
       outlineGuard(() => {
@@ -311,6 +360,7 @@ function registerCanvasTools(
       description: 'Details of nodes by id (compact JSON): world position and size, text, colours, file (with absPath / textPath), arrow ends, children.',
       inputSchema: { ids: z.array(z.string()).min(1).max(100).describe('Node ids (node:...)') },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     async ({ ids }) => {
       const result = readNodes(records, ids)
@@ -319,7 +369,7 @@ function registerCanvasTools(
     },
   )
 
-  if (renders) registerRenderTool(server, records, renders, viewing)
+  if (renders) registerRenderTool(server, records, renders, viewing, meta)
 
   if (!agent) return
   server.registerTool(
@@ -648,7 +698,7 @@ const RENDER_MAX_EDGE_LIMIT = 2576
 const NO_TAB =
   'No CanvCode tab is open to render the canvas. Ask the user to open CanvCode (any canvas) in a browser and call render_canvas again; until then, check the canvas with read_canvas.'
 
-function registerRenderTool(server: McpServer, records: RecordStore, renders: RenderBroker, viewing: () => Presence | null): void {
+function registerRenderTool(server: McpServer, records: RecordStore, renders: RenderBroker, viewing: () => Presence | null, meta: { _meta?: Record<string, unknown> }): void {
   server.registerTool(
     'render_canvas',
     {
@@ -665,6 +715,7 @@ function registerRenderTool(server: McpServer, records: RecordStore, renders: Re
         max_edge: z.number().int().min(64).max(RENDER_MAX_EDGE_LIMIT).optional().describe(`Longest edge in pixels (default ${RENDER_MAX_EDGE})`),
       },
       annotations: { readOnlyHint: true },
+      ...meta,
     },
     async ({ canvas_id, slide, ids, rect, max_edge }) => {
       const current = viewing()
