@@ -3541,7 +3541,10 @@ button.pdf-page-number:hover {
   --target-reach-bottom: 8px;
   --target-reach-left: 3px;
   --target-reach-right: 22px;
-  flex: none;
+  /* 札は付箋の幅（AiNoteControls）。ボタンは中身の幅の半分までにし、名前（Canvas の名前は長いことがある）に残りを回す */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
   padding: 2px 4px;
   border: none;
   border-radius: var(--radius-small);
@@ -3549,6 +3552,22 @@ button.pdf-page-number:hover {
   color: var(--color-accent);
   font: inherit;
   cursor: pointer;
+}
+
+/* 狭い札：ボタンは「↗」だけ。縮めない */
+.ai-note-chips.compact .ai-note-chip button {
+  flex: none;
+  max-width: none;
+}
+
+/* ボタンの文字。はみ出す分は、ここで切って省略記号を付ける（ボタンで切ると、ボタンの当たり（::before）も切れる）。
+   上下の余白は、札の名前と同じく、欧文の下に出る字が切れないため */
+.ai-note-chip-button-text {
+  display: block;
+  padding-block: 2px;
+  margin-block: -2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ai-note-chip button:hover {

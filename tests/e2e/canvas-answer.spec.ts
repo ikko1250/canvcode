@@ -694,6 +694,106 @@ test('付箋の上の札・下の欄の上でも、ホイールでパン、Ctrl+
   await expect(textEditor).toBeFocused()
 })
 
+test('付箋の上の札は、縮小しても付箋の幅より広くしない。狭ければボタンを「↗」だけにし、とても狭ければ出さない（docs/ai-note-chip-width-plan.md）', async ({ page }) => {
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  // 札を 2 つ（会話の答えと、ほかの Canvas の前の答え）。名前は長い。ほかの Canvas の名前も長い（ボタンは札の中身の幅の半分まで）
+  const LONG_TITLE = '研究ノート 2026 年 11 月の議事録とまとめ'
+  await page.evaluate(
+    ({ id, title }) => {
+      const { editor, workspace } = (window as any).canvcode
+      editor.transact('ai', (tx: any) => {
+        const canvas = workspace.createCanvas(tx, title)
+        const node = editor.getNode(id)
+        const turns = [{ question: '前の質問', answer: '前の答え' }]
+        const contexts = [
+          { kind: 'chat', threadId: 't1', jobId: 'j1', label: '会話「Swift の開発環境の整え方と Xcode の入れ方」の答え', turns },
+          { kind: 'answer', noteId: 'node:far', canvasId: canvas.id, label: 'swiftの開発環境ってどうやって整えたら良いの? Xcode は無料？', turns },
+        ]
+        tx.put({ ...node, meta: { ...node.meta, ai: { ...node.meta?.ai, contexts } } })
+      })
+    },
+    { id: noteId, title: LONG_TITLE },
+  )
+  const chips = page.locator('.ai-note-chips')
+  const chatButton = chips.locator('.ai-note-chip.chat button')
+  const backButton = chips.locator('.ai-note-chip:not(.chat) button')
+  await expect(chips.locator('.ai-note-chip')).toHaveCount(2)
+  // ズームを zoom にして（付箋は画面の左上の近く）、付箋の画面の幅・札の幅と、札ごとに、中身が札の内側からはみ出していないか・
+  // ボタンの幅と札の中身の幅の半分・ボタンの文字を切っているか
+  const measure = (zoom: number) =>
+    page.evaluate(
+      ({ id, zoom }) => {
+        const editor = (window as any).canvcode.editor
+        const bounds = editor.index.get(id).worldBounds
+        editor.session.set({ camera: { x: bounds.x - 200 / zoom, y: bounds.y - 200 / zoom, zoom } })
+        return new Promise<{ note: number; chips: number; rows: { problems: string[]; button: number; half: number; truncated: boolean }[] }>((resolve) =>
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const rows = [...document.querySelectorAll('.ai-note-chip')].map((chip) => {
+                const style = getComputedStyle(chip)
+                const box = chip.getBoundingClientRect()
+                const inner = {
+                  left: box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+                  right: box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
+                }
+                const label = chip.querySelector('.ai-note-chip-label')!.getBoundingClientRect()
+                const button = chip.querySelector('button')!.getBoundingClientRect()
+                // ボタンの文字（直す前は span がなく、ボタンそのもの）
+                const text = chip.querySelector('.ai-note-chip-button-text') ?? chip.querySelector('button')!
+                const problems = [
+                  ...(label.left < inner.left - 0.5 ? ['label left'] : []),
+                  ...(label.right > button.left + 0.5 ? ['label overlaps button'] : []),
+                  ...(button.right > inner.right + 0.5 ? ['button right'] : []),
+                ]
+                return { problems, button: button.width, half: (inner.right - inner.left) / 2, truncated: text.scrollWidth > text.clientWidth }
+              })
+              resolve({ note: bounds.w * zoom, chips: document.querySelector('.ai-note-chips')!.getBoundingClientRect().width, rows })
+            }),
+          ),
+        )
+      },
+      { id: noteId, zoom },
+    )
+  // 等倍：付箋（既定の幅 220）と同じ幅。「↗ 会話へ」は切らずに出し、長い Canvas の名前は、札の中身の半分で切る
+  let size = await measure(1)
+  expect(size.chips).toBeCloseTo(size.note, 0)
+  expect(size.rows.map((row) => row.problems)).toEqual([[], []])
+  const [chat, back] = size.rows
+  expect(chat!.truncated).toBe(false)
+  expect(back!.truncated).toBe(true)
+  expect(back!.button).toBeLessThanOrEqual(back!.half + 0.5)
+  await expect(chatButton).toHaveText('↗ 会話へ')
+  await expect(backButton).toHaveText(`↗ ${LONG_TITLE}`)
+  await expect(backButton).toHaveAttribute('title', `元の付箋へ移る（${LONG_TITLE}）`)
+  // 縮小：付箋と同じ幅（これまでは 220px のままで、付箋からはみ出した）。狭いのでボタンは「↗」だけ。名前は今のまま
+  for (const zoom of [0.5, 0.3]) {
+    size = await measure(zoom)
+    expect(size.chips, `zoom ${zoom}`).toBeCloseTo(size.note, 0)
+    expect(size.rows.map((row) => row.problems), `zoom ${zoom}`).toEqual([[], []])
+    await expect(chatButton).toHaveText('↗')
+    await expect(backButton).toHaveText('↗')
+    await expect(chips.getByRole('button', { name: '↗ 会話へ' })).toBeVisible()
+    await expect(chips.getByRole('button', { name: `↗ ${LONG_TITLE}` })).toBeVisible()
+  }
+  await page.screenshot({ path: test.info().outputPath('chips-zoomed-out.png') })
+  // 付箋をもっと狭くして、札（「↗」と名前の頭）が入らなくなったら、札を出さない
+  const setWidth = (w: number) =>
+    page.evaluate(
+      ({ id, w }) => {
+        const editor = (window as any).canvcode.editor
+        const node = editor.getNode(id)
+        editor.transact('width', (tx: any) => tx.put({ ...node, props: { ...node.props, w } }))
+      },
+      { id: noteId, w },
+    )
+  await setWidth(150)
+  await expect(chips).toHaveCount(0)
+  // 幅を戻すと出る。狭い札の ↗ も押せる（元の付箋の Canvas へ移る。付箋はない）
+  await setWidth(220)
+  await backButton.click()
+  await expect(page.locator('.notice')).toContainText('付箋はもうありません')
+})
+
 test('付箋の上の札・下の欄は、デザインパネルの下に出る。横の答えのパネルは、デザインパネルの左に収める', async ({ page }) => {
   const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
   // 答えを持たせてから、前の答えを添える（giveAnswer は添えたものを空にする）
@@ -792,7 +892,7 @@ test('AI 付箋の文字を編集している間、書式のツールバー（BI
   expect(flat.width).toBeGreaterThan(flat.height)
   await page.keyboard.press('Escape')
 
-  // AI 付箋が画面の左端にあり、左に場所がない：札と欄（付箋より広い）の右に出し、画面からはみ出さない
+  // AI 付箋が画面の左端にあり、左に場所がない：札と欄（欄は付箋より広いことがある）の右に出し、画面からはみ出さない
   await page.evaluate((id) => {
     const editor = (window as any).canvcode.editor
     const bounds = editor.index.get(id).worldBounds

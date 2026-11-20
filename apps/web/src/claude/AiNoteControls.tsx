@@ -32,14 +32,19 @@ import { loadSetting, saveSetting, type ModelSetting } from './modelChoice.ts'
 //   添えられるのは MAX_AI_PLACES か所まで（サーバーの上限）。添えた数を押すと、添えたものの一覧（× で外す）
 // - 付箋の上の札：前の答え（続き）を添えた付箋には、いつも出す（「「質問」の答え」と、元の付箋へ移る ↗）。
 //   会話の答え（会話のタブの「付箋に切り出す」）を添えた付箋には「💬 会話「題」の答え」と、会話のそのジョブへ戻る「↗ 会話へ」
-//   （docs/claude-chat-tab-plan.md の 5）。両方あれば、上下に並べる
+//   （docs/claude-chat-tab-plan.md の 5）。両方あれば、上下に並べる。
+//   幅は付箋の画面の幅（縮小しても付箋より広くしない。docs/ai-note-chip-width-plan.md）。CHIP_COMPACT_WIDTH より狭ければボタンを「↗」だけにし、
+//   CHIP_MIN_WIDTH より狭ければ出さない
 // - 答えを作っている間は、送信を押せない（角の三角が点滅している）。文字の編集中は Ctrl+Enter でも送る
 // - 小さく表示しているときは出さない
 // - 札と欄の上のホイール・ピンチ（トラックパッド・マウス）は、キャンバスのパン・ズームに渡す（CanvasView の passWheel）
 const MIN_ZOOM = 0.3
-// 札と欄の幅の下限（画面のピクセル。付箋が狭くても、この幅で出す。書式のツールバーも、この幅を避ける）
+// 下の欄の幅の下限（画面のピクセル。付箋が狭くても、この幅で出す。書式のツールバーも、この幅を避ける）
 export const AI_NOTE_UI_MIN_WIDTH = 220
 const MIN_WIDTH = AI_NOTE_UI_MIN_WIDTH
+// 上の札：この幅（画面のピクセル）より狭ければ、ボタンを「↗」だけにする。CHIP_MIN_WIDTH より狭ければ（「↗」と名前の頭が入らない）、札を出さない
+const CHIP_COMPACT_WIDTH = 180
+const CHIP_MIN_WIDTH = 56
 
 export function AiNoteControls(props: {
   editor: Editor
@@ -205,11 +210,18 @@ export function AiNoteControls(props: {
         const answer = contexts.find((item) => item.kind === 'answer')
         const box = editor.index.get(node.id)?.worldBounds
         if ((!chat && !answer) || !box) return null
+        const width = box.w * camera.zoom
+        if (width < CHIP_MIN_WIDTH) return null
+        const compact = width < CHIP_COMPACT_WIDTH
+        // 前の答えの札の ↗ のボタンの名前と、説明（狭い札では名前が「↗」だけになるので、ほかの Canvas なら説明にその名前を入れる）
+        const elsewhere = answer?.kind === 'answer' && answer.canvasId !== editor.canvasId ? canvasTitle(answer.canvasId) : null
+        const back = `↗ ${elsewhere ?? '元の付箋'}`
+        const backTitle = elsewhere ? `元の付箋へ移る（${elsewhere}）` : '元の付箋へ移る'
         return (
           <div
             key={`chip:${node.id}`}
-            className="ai-note-chips"
-            style={{ ...screen(box.x, box.y), width: Math.max(MIN_WIDTH, box.w * camera.zoom) }}
+            className={compact ? 'ai-note-chips compact' : 'ai-note-chips'}
+            style={{ ...screen(box.x, box.y), width }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             {chat?.kind === 'chat' && (
@@ -222,8 +234,9 @@ export function AiNoteControls(props: {
                       onOpenChat({ threadId: chat.threadId!, ...(chat.jobId ? { jobId: chat.jobId } : {}), ...(chat.questionId ? { questionId: chat.questionId } : {}) })
                     }
                     title="会話のこの答えへ戻る"
+                    aria-label={compact ? '↗ 会話へ' : undefined}
                   >
-                    ↗ 会話へ
+                    <ChipButtonText compact={compact}>↗ 会話へ</ChipButtonText>
                   </button>
                 )}
               </div>
@@ -231,8 +244,8 @@ export function AiNoteControls(props: {
             {answer?.kind === 'answer' && (
               <div className="ai-note-chip" title="前の質問と答えを踏まえて答えます">
                 <span className="ai-note-chip-label">📎 「{answer.label}」の答え</span>
-                <button type="button" onClick={() => onOpenContext(answer.canvasId, answer.noteId)} title="元の付箋へ移る">
-                  ↗ {answer.canvasId === editor.canvasId ? '元の付箋' : canvasTitle(answer.canvasId)}
+                <button type="button" onClick={() => onOpenContext(answer.canvasId, answer.noteId)} title={backTitle} aria-label={compact ? back : undefined}>
+                  <ChipButtonText compact={compact}>{back}</ChipButtonText>
                 </button>
               </div>
             )}
@@ -376,6 +389,12 @@ export function AiNoteControls(props: {
         })()}
     </div>
   )
+}
+
+// 札のボタンの文字。狭い札（compact）では「↗」だけ（名前は aria-label で付ける）。はみ出す分は省略記号で切る
+// （切るのは中の span。ボタンで切ると、ボタンの当たり（::before）も切れる）
+function ChipButtonText({ compact, children }: { compact: boolean; children: string }) {
+  return <span className="ai-note-chip-button-text">{compact ? '↗' : children}</span>
 }
 
 function AreaIcon() {
