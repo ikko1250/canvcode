@@ -89,16 +89,25 @@ PDF の文字（`textPath`）や文書のファイル（`absPath`）を、Claude
 - e2e：`claude-panel.spec.ts` の質問の 2 件で、送った中身の `canvasId` を見る。
 - 本物の Claude で 1 回だけ質問を流し、ツールが見えていて read_canvas と Read を呼べることを確かめる。
 
+## 確かめた事実
+
+- 本物の Claude（Sonnet・low。同梱の Claude Code 2.1.322）で、文字の prompt のまま、同じプロセスの中の MCP が動いた。
+  `system/init` の `tools` に `mcp__canvcode__*` と Read・Glob・Grep が載り、`mcp_servers` は `canvcode`（connected・source sdk）。
+  ツール検索の後回しにはならず、Claude は read_canvas を直に呼んだ（見ている Canvas の id を渡し、list_canvases は呼ばなかった）。
+- ワークスペースのファイル（`data/info.txt`）は Read で読めた。わざと頼んだ `.env` の Read・フォルダの Grep・path を省いた Glob は、フックで断られた。
+- SDK は、`allowedTools` に入れたツールと `canUseTool` を一緒に渡すと、警告（`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`）を出す。
+  前から WebSearch・WebFetch で出ていたもので、読むツールの名前も載るようになった（フックでは確かめている）。
+
 ## 細分タスク
 
 - [x] プランを書く
-- [ ] 足すテストを書き、直す前のコードで落ちることを確かめる
-- [ ] `mcp.ts`・`outline.ts`：readOnly のサーバー
-- [ ] `once.ts`：同じプロセスの中の MCP と、ファイルを読むツールの見張り
-- [ ] `answer.ts`：ツール・上限・システムプロンプト・Canvas・進み具合
-- [ ] `index.ts`：渡すものと `CANVCODE_ANSWER_CANVAS`
-- [ ] 画面：`canvasId` を送る・言い方を直す
-- [ ] e2e・README
-- [ ] 型チェック・lint・単体テスト・e2e
-- [ ] 本物の Claude で 1 回流す
-- [ ] 作業ログ
+- [x] 足すテストを書き、直す前のコードで落ちることを確かめる
+- [x] `mcp.ts`・`outline.ts`：readOnly のサーバー
+- [x] `once.ts`：同じプロセスの中の MCP と、ファイルを読むツールの見張り
+- [x] `answer.ts`：ツール・上限・システムプロンプト・Canvas・進み具合
+- [x] `index.ts`：渡すものと `CANVCODE_ANSWER_CANVAS`
+- [x] 画面：`canvasId` を送る・言い方を直す
+- [x] e2e・README
+- [x] 型チェック・lint・単体テスト・e2e
+- [x] 本物の Claude で 1 回流す
+- [x] 作業ログ
