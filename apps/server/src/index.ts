@@ -25,7 +25,7 @@ import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
 import { MarkdownPdf } from './markdownPdf.ts'
-import { createMcpServer, handleMcp, MCP_PATH } from './mcp.ts'
+import { handleMcp, MCP_PATH, questionTools } from './mcp.ts'
 import { Plotter } from './plot.ts'
 import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
@@ -174,17 +174,7 @@ const answer = once
         const ref = records.getRef(refId)
         return ref ? resolveReference(ref, { records, files, dataDir: DATA_DIR }) : null
       },
-      ...(answerCanvas
-        ? {
-            canvasTools: () =>
-              createMcpServer({ files, records, dataDir: DATA_DIR, refImages, presence: () => sync.latestPresence(), renders, readOnly: true }),
-            readRoots: [WORKSPACE, join(DATA_DIR, 'assets')],
-            canvasTitle: (canvasId: string) => {
-              const canvas = records.get(canvasId)
-              return canvas && canvas.typeName === 'canvas' && !canvas.deletedAt ? (typeof canvas.title === 'string' ? canvas.title : '') : null
-            },
-          }
-        : {}),
+      ...(answerCanvas ? questionTools({ files, records, dataDir: DATA_DIR, refImages, presence: () => sync.latestPresence(), renders }) : {}),
       ...(process.env.CANVCODE_ANSWER_MODEL ? { model: process.env.CANVCODE_ANSWER_MODEL } : {}),
       ...(process.env.CANVCODE_ANSWER_WEB === '0' ? { web: false } : {}),
     })

@@ -1,5 +1,5 @@
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, relative, sep } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -229,6 +229,27 @@ export function createMcpServer(deps: McpDeps): McpServer {
 
   registerCanvasTools(server, deps, deps.agent, deps.presence, deps.pdf && { files, ...deps.pdf }, deps.plot, deps.renders, deps.threadId)
   return server
+}
+
+// 会話の質問（claude/answer.ts の AnswerWriter）に渡す、キャンバスとファイルを読むもの（index.ts が渡す）。
+// - canvasTools：読むだけのサーバー（readOnly）を作る（質問 1 回ごとに呼ぶ）。書くためのもの（agent・pdf・plot）は渡さない
+// - readRoots：Read・Glob・Grep で読ませるフォルダ。ワークスペースと、PDF から取り出した文字の置き場所（.canvcode/assets）
+// - canvasTitle：見ている Canvas の題。その Canvas がない・消えている・Canvas でないなら null
+export function questionTools(deps: Pick<McpDeps, 'files' | 'records' | 'dataDir' | 'refImages' | 'presence' | 'renders'>): {
+  canvasTools: () => McpServer
+  readRoots: string[]
+  canvasTitle: (canvasId: string) => string | null
+} {
+  const { files, records, dataDir, refImages, presence, renders } = deps
+  return {
+    canvasTools: () =>
+      createMcpServer({ files, records, dataDir, ...(refImages ? { refImages } : {}), ...(presence ? { presence } : {}), ...(renders ? { renders } : {}), readOnly: true }),
+    readRoots: [files.root, join(dataDir, 'assets')],
+    canvasTitle: (canvasId) => {
+      const canvas = records.get(canvasId)
+      return canvas && canvas.typeName === 'canvas' && !canvas.deletedAt ? (typeof canvas.title === 'string' ? canvas.title : '') : null
+    },
+  }
 }
 
 // サーバーの説明（AI に渡る）。書くツールを出すとき

@@ -9,11 +9,12 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { canvasSlideLayout } from '@canvcode/slides'
 import { AgentHost } from './agent/host.ts'
+import { editCanvas } from './agent/ops.ts'
 import { AssetStore } from './assets.ts'
 import { ONCE_CANVAS_TOOLS } from './claude/once.ts'
 import { FileStore, type FileEvent } from './files.ts'
 import { LinkPreviewService, type RemoteResponse } from './linkPreview.ts'
-import { createMcpServer, handleMcp, MCP_PATH } from './mcp.ts'
+import { createMcpServer, handleMcp, MCP_PATH, questionTools } from './mcp.ts'
 import type { Plotter } from './plot.ts'
 import { RecordStore } from './records.ts'
 import type { Presence } from './sync.ts'
@@ -1033,5 +1034,37 @@ describe('a read-only server', () => {
     expect((outline.content as { text: string }[])[0]!.text).toContain(records.rootCanvasId)
     const listed = await call(client, 'list_documents', {})
     expect(listed.data.documents.map((d: { title: string }) => d.title)).toEqual(['メモ'])
+  })
+})
+
+// index.ts が会話の質問（claude/answer.ts）に渡すもの
+describe('questionTools', () => {
+  it('makes a read-only server each time, reads the workspace and the PDF text folder, and tells the title of a canvas that is still there', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'canvcode-mcp-q-'))
+    cleanups.push(() => rmSync(workspace, { recursive: true, force: true }))
+    const dataDir = join(workspace, '.canvcode')
+    const files = new FileStore(workspace, dataDir, () => {})
+    await files.init()
+    cleanups.push(() => files.close())
+    const records = new RecordStore(dataDir)
+    cleanups.push(() => records.close())
+    const renders = { hasTabs: () => true, request: async () => ({}) } as unknown as RenderBroker
+    const tools = questionTools({ files, records, dataDir, refImages: new RefImageStore(dataDir), presence: () => null, renders })
+    expect(tools.readRoots).toEqual([files.root, join(dataDir, 'assets')])
+    const first = tools.canvasTools()
+    expect(tools.canvasTools()).not.toBe(first)
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
+    await first.connect(serverSide)
+    const client = new Client({ name: 'test', version: '0.0.0' })
+    await client.connect(clientSide)
+    cleanups.push(() => client.close())
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...ONCE_CANVAS_TOOLS].sort())
+    // 題：ある Canvas はその題、ない・Canvas でないものは null
+    expect(tools.canvasTitle(records.rootCanvasId)).toBe(String(records.get(records.rootCanvasId)!.title))
+    expect(tools.canvasTitle('canvas:nope')).toBeNull()
+    const agent = new AgentHost({ records, files })
+    cleanups.push(() => agent.dispose())
+    const made = editCanvas(agent, { canvasId: records.rootCanvasId, ops: [{ op: 'create', type: 'note', x: 0, y: 0, text: 'n' }] })
+    expect(tools.canvasTitle(Object.values(made.created)[0]!)).toBeNull()
   })
 })
