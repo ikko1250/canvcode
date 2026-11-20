@@ -320,10 +320,6 @@ export class FetchGuard {
     this.read = true
   }
 
-  get hasRead(): boolean {
-    return this.read
-  }
-
   // WebFetch で開かせない理由。開いてよいなら null。理由の文には、渡された URL を入れない
   refusal(input: Record<string, unknown>): string | null {
     if (!this.read) return null
