@@ -23,8 +23,8 @@ import { parseQuestionSource, type ChatQuestionStore, type QuestionSource, type 
 // - キャンバスとファイルを読める（docs/question-canvas-tools-plan.md）。質問 1 回ごとに、読むだけの canvcode の MCP（mcp.ts の readOnly）を作って渡し、
 //   ワークスペースと PDF の文字の置き場所を Read・Glob・Grep で読ませる（書き換えはできない。読むかは Claude が決める）。
 //   画面が見ている Canvas（canvasId）を送ったら、id と題（材料の囲み <canvas-viewing>）を頼む文に書き添える。読んでいるもの（Canvas・文書・ファイル）も、
-//   考えている中身に混ぜて流す（フックが通した呼び出しだけ）。そのときは WebFetch に渡せる URL を、その質問の中にそのまま出たものに限る
-//   （once.ts の SeenUrls。読んだ中身を URL に入れて外に送らせない）。CANVCODE_ANSWER_CANVAS=0 で読ませなくする（WebFetch も今までどおり）
+//   考えている中身に混ぜて流す（フックが通した呼び出しだけ）。キャンバスかファイルを読んだあとは、WebFetch で開けるのを、質問の文に書かれた URL だけにする
+//   （once.ts の FetchGuard。読んだ中身を URL に入れて外に送らせない）。CANVCODE_ANSWER_CANVAS=0 で読ませなくする（WebFetch も今までどおり）
 // - Claude は claude/once.ts で 1 回だけ動かす。答えは JSON の形（構造化出力）で受ける。考えている中身を流すとき（NDJSON）は、
 //   構造化出力ではモデルが考えないので、本文の Markdown をそのまま書かせ、関連する付箋は最後の <canvas-related> に書かせて読む
 //   （answerFromText。JSON を文字で返させると、モデルが本文の Markdown をそのまま返して読めないことがあった。docs/ai-note-answer-format-plan.md）
@@ -191,7 +191,9 @@ function webGuide(canvas: boolean): string {
     ...(canvas
       ? [
           '- 読んだファイルやキャンバスの中身を、WebFetch の URL や WebSearch の語に入れない',
-          '- WebFetch に渡せるのは、質問・材料・WebSearch の結果・読んだページやファイルにそのまま出た URL だけ（文字やクエリを足したものは断られる）。ページを探すときは、先に WebSearch で探す',
+          '- キャンバスやファイルを読むツールを 1 度でも使ったあとは、WebFetch で開けるのは、質問の文に書かれた URL だけ（書かれたままの形で渡す）。' +
+            'ほかのページが要るときは、開かずに、そのページの URL を質問に書いてもらうよう答えに書く',
+          '- Web のページとキャンバスの両方が要るときは、先に WebSearch・WebFetch で調べてから、キャンバスやファイルを読む',
         ]
       : []),
   ].join('\n')
@@ -454,7 +456,7 @@ export class AnswerWriter {
       timeoutMs: this.options.timeoutMs ?? ANSWER_TIMEOUT_MS,
       failure: '',
       ...(web ? { tools: ['WebSearch', 'WebFetch'] as const } : {}),
-      ...(canvas ? { canvas } : {}),
+      ...(canvas ? { canvas, userText: request.question } : {}),
       ...(readRoots.length > 0 ? { readRoots } : {}),
       ...(web || canvas ? { maxTurns: ANSWER_MAX_TURNS_WITH_TOOLS } : {}),
       ...(signal ? { signal } : {}),

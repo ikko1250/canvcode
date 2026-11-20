@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { afterEach, describe, expect, it } from 'vitest'
-import { answeredModel, ClaudeOnce, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, jsonFromText, jsonInstruction, thinksAdaptively, type OnceQuery } from './once.ts'
+import { answeredModel, ClaudeOnce, type OnceRequest, DEFAULT_ONCE_MAX_TURNS, DEFAULT_ONCE_MAX_TURNS_WITH_TOOLS, MAX_RUNNING_ONCE, STRUCTURED_OUTPUT_TOOL, jsonFromText, jsonInstruction, thinksAdaptively, type OnceQuery } from './once.ts'
 
 // Claude を 1 回だけ動かす共通の仕組み（単語を調べる MAI-99、APA の引用 MAI-98 などが使う）
 
@@ -180,119 +180,197 @@ describe('ClaudeOnce', () => {
   })
 
   describe('読むツールを渡すときの WebFetch（読んだ中身を URL に入れて外に送らせない）', () => {
-    type Decide = (input: Record<string, unknown>) => Promise<boolean>
-    // フックと canUseTool の両方で同じに決めることを確かめて、WebFetch を許したか（true）を返す
-    const fetcher = (options: Options): Decide => async (input) => {
-      const signal = new AbortController().signal
-      const hooked = await hookOf(options)({ hook_event_name: 'PreToolUse', tool_name: 'WebFetch', tool_input: input } as unknown as Parameters<HookCallback>[0], undefined, { signal })
-      const used = (await options.canUseTool!('WebFetch', input, { signal } as never)) as { behavior: string; message?: string }
-      const denied = (hooked as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }).hookSpecificOutput
-      expect(denied?.permissionDecision === 'deny', JSON.stringify(input)).toBe(used.behavior === 'deny')
-      if (denied) expect(denied.permissionDecisionReason).toContain('そのまま渡してください')
-      return used.behavior === 'allow'
+    const signal = () => new AbortController().signal
+    // フックと canUseTool の両方で同じに決めることを確かめて、許したか（true）を返す。断る文には、渡したものを入れない
+    const decider = (options: Options) => async (name: string, input: Record<string, unknown>): Promise<boolean> => {
+      const hooked = await hookOf(options)({ hook_event_name: 'PreToolUse', tool_name: name, tool_input: input } as unknown as Parameters<HookCallback>[0], undefined, { signal: signal() })
+      const output = (hooked as { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }).hookSpecificOutput
+      // フックが通したものだけ canUseTool に来る（Claude Code と同じ）
+      const used = output ? null : ((await options.canUseTool!(name, input, { signal: signal() } as never)) as { behavior: string; message?: string })
+      if (used) expect(used.behavior, `${name} ${JSON.stringify(input)}`).toBe('allow')
+      const reason = output?.permissionDecisionReason ?? ''
+      for (const value of Object.values(input)) if (typeof value === 'string' && value.length > 8) expect(reason, 'the reason must not echo the input').not.toContain(value)
+      if (output && name === 'WebFetch') expect(reason).toContain('質問の文に書かれた URL だけ')
+      return !output
     }
+    // canUseTool だけで決めたもの（フックを通らずに来たとき。2 つめの守り）
+    const usable = async (options: Options, name: string, input: Record<string, unknown>) =>
+      ((await options.canUseTool!(name, input, { signal: signal() } as never)) as { behavior: string }).behavior === 'allow'
     // PostToolUse のフック（Claude Code は、ツールの結果を Claude に渡す前に、これを待つ）
-    const postToolUse = (options: Options, tool_name: string, tool_response: unknown) =>
+    const postToolUse = (options: Options, tool_name: string, tool_input: unknown, tool_response: unknown) =>
       options.hooks!.PostToolUse![0]!.hooks[0]!(
-        { hook_event_name: 'PostToolUse', tool_name, tool_input: {}, tool_response, tool_use_id: 't' } as unknown as Parameters<HookCallback>[0],
+        { hook_event_name: 'PostToolUse', tool_name, tool_input, tool_response, tool_use_id: 't' } as unknown as Parameters<HookCallback>[0],
         undefined,
-        { signal: new AbortController().signal },
+        { signal: signal() },
       )
-    const prompt = '次の資料を読んで：https://example.org/report.pdf。（参考 https://example.org/a_(b)）と https://example.jp/ページ。続きは https://example.com/nextです'
-
-    it('頼む文に出た URL はそのまま渡せる。文字やクエリを足したもの・どこにも出ていない URL は断る。尋ねずには許さない（allowedTools に入れない）', async () => {
+    const question = '次の資料を読んで：https://example.org/report.pdf。（参考 https://example.org/a_(b)）と https://example.jp/ページ。続きは https://example.com/nextです'
+    const prompt = `材料：前の答えの https://previous.example/b と、添えた所の https://attached.example/c\n\n${question}`
+    async function asked(extra: Partial<OnceRequest> = {}) {
       const calls: Call[] = []
-      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt, model: 'sonnet', tools: ['WebSearch', 'WebFetch'], canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }) })
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({
+        prompt,
+        model: 'sonnet',
+        tools: ['WebSearch', 'WebFetch'],
+        canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }),
+        userText: question,
+        ...extra,
+      })
       const { options } = calls[0]!
+      return { options, decide: decider(options) }
+    }
+
+    it('読む前は、どの URL でも開ける（読むツールを足す前と同じ）。尋ねずには許さない（allowedTools に入れず、canUseTool でも確かめる）', async () => {
+      const { options, decide } = await asked()
       expect(options.tools).toEqual(['WebSearch', 'WebFetch'])
       expect(options.allowedTools).toEqual(['WebSearch', ...CANVAS_READ_TOOLS])
       expect(options.permissionMode).toBe('default')
-      const decide = fetcher(options)
-      expect(await decide({ url: 'https://example.org/report.pdf', prompt: '要点' })).toBe(true)
-      expect(await decide({ url: 'https://example.org/a_(b)', prompt: 'p' })).toBe(true)
-      expect(await decide({ url: 'https://example.jp/ページ', prompt: 'p' })).toBe(true)
-      expect(await decide({ url: 'https://example.jp/%E3%83%9A%E3%83%BC%E3%82%B8', prompt: 'p' })).toBe(true)
-      // 日本語がすぐ後に続く URL は、ASCII でない字の手前までとしても使える
-      expect(await decide({ url: 'https://example.com/next', prompt: 'p' })).toBe(true)
-      // 末尾の / の有無と、http・https は同じとみなす
-      expect(await decide({ url: 'http://example.org/report.pdf/', prompt: 'p' })).toBe(true)
-      for (const url of ['https://example.org/report.pdf?d=secret', 'https://example.org/report.pdf/secret', 'https://example.org/report.pdf#secret', 'https://evil.example/?d=secret', 'https://example.org/', '']) {
-        expect(await decide({ url, prompt: 'p' }), url).toBe(false)
+      expect(await decide('WebFetch', { url: 'https://anywhere.example/?q=1', prompt: 'p' })).toBe(true)
+      expect(await decide('WebFetch', { url: 'https://previous.example/b', prompt: 'p' })).toBe(true)
+      expect(await decide('WebSearch', { query: 'q' })).toBe(true)
+    })
+
+    it('キャンバスかファイルを読むツールを 1 度通したら、質問の文に書いた URL だけを開ける（添えた所・前の答え・どこにもない URL は断る）', async () => {
+      for (const reader of ['mcp__canvcode__read_canvas', 'mcp__canvcode__get_canvas_format', 'mcp__canvcode__list_documents']) {
+        const { options, decide } = await asked()
+        expect(await decide(reader, {})).toBe(true)
+        expect(await decide('WebFetch', { url: 'https://example.org/report.pdf', prompt: '要点' }), reader).toBe(true)
+        expect(await decide('WebFetch', { url: 'https://example.org/a_(b)', prompt: 'p' })).toBe(true)
+        expect(await decide('WebFetch', { url: 'https://example.jp/ページ', prompt: 'p' })).toBe(true)
+        // WebFetch が送る形が同じもの（%エンコードした日本語・ホストの大文字）は同じ
+        expect(await decide('WebFetch', { url: 'https://example.jp/%E3%83%9A%E3%83%BC%E3%82%B8', prompt: 'p' })).toBe(true)
+        expect(await decide('WebFetch', { url: 'https://EXAMPLE.org/report.pdf', prompt: 'p' })).toBe(true)
+        // 日本語がすぐ後に続く URL は、ASCII でない字の手前までとしても使える
+        expect(await decide('WebFetch', { url: 'https://example.com/next', prompt: 'p' })).toBe(true)
+        // http と https、末尾の / が 1 つあるかないかは同じ
+        expect(await decide('WebFetch', { url: 'http://example.org/report.pdf/', prompt: 'p' })).toBe(true)
+        expect(await usable(options, 'WebFetch', { url: 'https://example.org/report.pdf' })).toBe(true)
+        for (const url of [
+          'https://previous.example/b',
+          'https://attached.example/c',
+          'https://anywhere.example/',
+          'https://example.org/report.pdf?d=secret',
+          'https://example.org/report.pdf/secret',
+          'https://example.org/report.pdf#secret',
+          'https://example.org/',
+          '',
+        ]) {
+          expect(await decide('WebFetch', { url, prompt: 'p' }), url).toBe(false)
+          expect(await usable(options, 'WebFetch', { url, prompt: 'p' }), url).toBe(false)
+        }
       }
     })
 
-    it('ツールの結果（Web の検索結果・読んだページ・キャンバスやファイルを読んだ結果）に出た URL も渡せる。PostToolUse のフックで集める', async () => {
-      const { ws, assets } = folders()
-      const calls: Call[] = []
-      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebSearch', 'WebFetch'], readRoots: [ws, assets] })
-      const { options } = calls[0]!
-      const decide = fetcher(options)
-      expect(await decide({ url: 'https://search.example/result', prompt: 'p' })).toBe(false)
-      await postToolUse(options, 'WebSearch', { query: 'q', results: [{ tool_use_id: 's', content: [{ title: 'r', url: 'https://search.example/result' }] }] })
-      expect(await decide({ url: 'https://search.example/result', prompt: 'p' })).toBe(true)
-      expect(await decide({ url: 'https://search.example/result?x=1', prompt: 'p' })).toBe(false)
-      // WebFetch のリダイレクトの知らせ
-      await postToolUse(options, 'WebFetch', { code: 301, result: 'REDIRECT DETECTED: The URL redirects to a different host.\n\nRedirect URL: https://moved.example/new' })
-      expect(await decide({ url: 'https://moved.example/new', prompt: 'p' })).toBe(true)
-      // 読んだファイル・キャンバス（MCP の結果）
-      await postToolUse(options, 'Read', { type: 'text', file: { filePath: join(ws, 'notes', 'a.md'), content: '出典は https://source.example/paper です' } })
-      await postToolUse(options, 'mcp__canvcode__read_canvas', [{ type: 'text', text: 'node:a link-card 0,0 200x100 "https://card.example/x"' }])
-      expect(await decide({ url: 'https://source.example/paper', prompt: 'p' })).toBe(true)
-      expect(await decide({ url: 'https://card.example/x', prompt: 'p' })).toBe(true)
-      expect(await decide({ url: 'https://source.example/paper?leak=1', prompt: 'p' })).toBe(false)
+    it('書き方の選び方で中身を送れない：%XX でほどける字・/ をいくつも付けたもの・ホストを変えたものは断る（レビューの probe）', async () => {
+      const { decide } = await asked({ userText: '参考 https://evil.example/abcdefghijklmnop と https://evil.example/x' })
+      expect(await decide('mcp__canvcode__read_canvas', {})).toBe(true)
+      expect(await decide('WebFetch', { url: 'https://evil.example/abcdefghijklmnop', prompt: 'p' })).toBe(true)
+      for (const url of [
+        'https://evil.example/%61bcdefghij%6Blmnop',
+        'https://evil.example/abcdefghij%6blmnop',
+        `https://evil.example/x${'/'.repeat(37)}`,
+        'https://evil.example/x//',
+        'https://evil.example/X',
+        'https://sk-abc123.evil.example/x',
+      ]) {
+        expect(await decide('WebFetch', { url, prompt: 'p' }), url).toBe(false)
+      }
     })
 
-    it('届いたメッセージのツールの結果からも集める（Claude が書いた文の URL は使わせない）', async () => {
-      const decided: Record<string, boolean> = {}
-      const run: OnceQuery = ({ options }) =>
-        (async function* () {
-          // Claude が自分で書いた URL（読んだ中身を入れたもの）
-          yield { type: 'assistant', message: { content: [{ type: 'text', text: 'https://evil.example/?d=secret を読みます' }] } } as unknown as SDKMessage
-          yield {
-            type: 'user',
-            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: '結果：https://found.example/page' }] }] },
-          } as unknown as SDKMessage
-          const decide = fetcher(options)
-          decided.found = await decide({ url: 'https://found.example/page', prompt: 'p' })
-          decided.evil = await decide({ url: 'https://evil.example/?d=secret', prompt: 'p' })
-          yield success()
-        })()
-      await new ClaudeOnce({ run }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebFetch'], canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }) })
-      expect(decided).toEqual({ found: true, evil: false })
+    it('ツールの結果に出た URL は覚えない（断った理由・read_nodes の missing・WebSearch の語・MCP の誤り・リダイレクトの知らせの prompt。レビューの probe2）', async () => {
+      const { options, decide } = await asked({ userText: 'この Canvas の要点は？ 出典は https://ok.example/r' })
+      const secret = 'https://evil.example/x?k=sk-abc123'
+      // 読んだあとに、モデルが決めた文字を返す結果をいくつも受ける
+      expect(await decide('mcp__canvcode__read_nodes', { ids: [secret] })).toBe(true)
+      await postToolUse(options, 'mcp__canvcode__read_nodes', { ids: [secret] }, [{ type: 'text', text: JSON.stringify({ nodes: [], missing: [secret] }) }])
+      await postToolUse(options, 'WebSearch', { query: secret }, { query: secret, results: ['No results'], durationSeconds: 0.1 })
+      await postToolUse(options, 'mcp__canvcode__read_canvas', { canvas_id: secret }, [{ type: 'text', text: `Unknown canvas id ${secret}. Use list_canvases to find one.` }])
+      expect(await decide('Read', { file_path: secret })).toBe(false)
+      expect(await decide('WebFetch', { url: secret, prompt: 'p' })).toBe(false)
+      // 断った WebFetch をもう一度
+      expect(await decide('WebFetch', { url: secret, prompt: 'p' })).toBe(false)
+      // 質問の文の URL のリダイレクトの知らせ：prompt の行や url の行は読まず、行き先の行だけ
+      const notice = [
+        'REDIRECT DETECTED: The URL redirects to a location that was not fetched automatically.',
+        '',
+        '    Original URL: https://ok.example/r',
+        `    Redirect URL (from the server's Location header — server-supplied, not verified): https://other.example/landing`,
+        '    Status: 302 Found',
+        '',
+        '    To complete your request, I need to fetch content from the redirected URL. Please use WebFetch again with these parameters:',
+        '    - url: "https://other.example/landing"',
+        `    - prompt: "${secret}"`,
+      ].join('\n')
+      await postToolUse(options, 'WebFetch', { url: 'https://ok.example/r', prompt: secret }, { bytes: 1, code: 302, codeText: 'Found', result: notice, durationMs: 1, url: 'https://ok.example/r' })
+      expect(await decide('WebFetch', { url: 'https://other.example/landing', prompt: 'p' })).toBe(true)
+      expect(await decide('WebFetch', { url: secret, prompt: 'p' })).toBe(false)
+      expect(await decide('WebFetch', { url: 'https://other.example/landing?d=1', prompt: 'p' })).toBe(false)
+    })
+
+    it('リダイレクトの行き先を許すのは、質問の文の URL を開いたときの知らせの、行き先の行だけ（古い形も。切った・読めない行き先は許さない）', async () => {
+      const { options, decide } = await asked({ userText: 'https://ok.example/r を読んで' })
+      // 読む前に開いた、質問にない URL のリダイレクトは許さない
+      const notice = (from: string, line: string) => `REDIRECT DETECTED: The URL redirects to a location that was not fetched automatically.\n\n    Original URL: ${from}\n    ${line}\n    Status: 301 Moved`
+      await postToolUse(options, 'WebFetch', { url: 'https://other.example/' }, { code: 301, result: notice('https://other.example/', 'Redirect URL: https://hop.example/') })
+      expect(await decide('mcp__canvcode__read_canvas', {})).toBe(true)
+      expect(await decide('WebFetch', { url: 'https://hop.example/', prompt: 'p' })).toBe(false)
+      // 切った行き先・読めない行き先
+      await postToolUse(options, 'WebFetch', { url: 'https://ok.example/r' }, { code: 301, result: notice('https://ok.example/r', 'Redirect URL: (withheld — the server sent a redirect target that is not a valid http(s) URL)') })
+      await postToolUse(options, 'WebFetch', { url: 'https://ok.example/r' }, {
+        code: 301,
+        result: notice('https://ok.example/r', `Redirect URL (from the server's Location header — server-supplied, not verified): https://long.example/aaa […12 more characters withheld: too long to relay]`),
+      })
+      expect(await decide('WebFetch', { url: 'https://long.example/aaa', prompt: 'p' })).toBe(false)
+      // 知らせでない結果の中の行き先の行は読まない
+      await postToolUse(options, 'WebFetch', { url: 'https://ok.example/r' }, { code: 200, result: 'ページの文\nRedirect URL: https://fake.example/' })
+      expect(await decide('WebFetch', { url: 'https://fake.example/', prompt: 'p' })).toBe(false)
+      // 古い形
+      await postToolUse(options, 'WebFetch', { url: 'https://ok.example/r' }, { code: 301, result: notice('https://ok.example/r', 'Redirect URL: https://moved.example/new') })
+      expect(await decide('WebFetch', { url: 'https://moved.example/new', prompt: 'p' })).toBe(true)
+      // 行き先の行き先は許さない（1 段だけ）
+      await postToolUse(options, 'WebFetch', { url: 'https://moved.example/new' }, { code: 301, result: notice('https://moved.example/new', 'Redirect URL: https://third.example/') })
+      expect(await decide('WebFetch', { url: 'https://third.example/', prompt: 'p' })).toBe(false)
+    })
+
+    it('同じターンに並べた呼び出し：読むツールを先に通せば、あとの WebFetch は断る。WebFetch が先なら通す（その URL は、読んだ結果を見る前に決めたもの）', async () => {
+      const first = await asked()
+      expect(await first.decide('Read', { file_path: '/etc/hosts' })).toBe(false)
+      // 断った読む呼び出しは、読んだことにしない
+      expect(await first.decide('WebFetch', { url: 'https://anywhere.example/', prompt: 'p' })).toBe(true)
+      const { ws, assets } = folders()
+      const second = await asked({ readRoots: [ws, assets] })
+      expect(await second.decide('WebFetch', { url: 'https://anywhere.example/', prompt: 'p' })).toBe(true)
+      expect(await second.decide('Read', { file_path: join(ws, 'notes', 'a.md') })).toBe(true)
+      expect(await second.decide('WebFetch', { url: 'https://anywhere.example/', prompt: 'p' })).toBe(false)
+      expect(await second.decide('WebFetch', { url: 'https://example.org/report.pdf', prompt: 'p' })).toBe(true)
+      // 質問の文がなければ、読んだあとはどの URL も開けない
+      const none = await asked({ userText: undefined })
+      expect(await none.decide('mcp__canvcode__resolve_reference', { id: 'ref:AAAAAAAAAA' })).toBe(true)
+      expect(await none.decide('WebFetch', { url: 'https://example.org/report.pdf', prompt: 'p' })).toBe(false)
     })
 
     it('読むツールを渡さなければ（語を調べる・引用・CANVCODE_ANSWER_CANVAS=0）、WebFetch は今のまま（どの URL も尋ねずに使わせる）', async () => {
       const calls: Call[] = []
-      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebSearch', 'WebFetch'] })
+      await new ClaudeOnce({ run: answering(success(), calls) }).ask({ prompt: 'p', model: 'sonnet', tools: ['WebSearch', 'WebFetch'], userText: 'q' })
       const { options } = calls[0]!
       expect(options.allowedTools).toEqual(['WebSearch', 'WebFetch'])
       expect(options.permissionMode).toBeUndefined()
       expect(options.hooks!.PostToolUse).toBeUndefined()
-      expect(await fetcher(options)({ url: 'https://anywhere.example/?q=1', prompt: 'p' })).toBe(true)
+      expect(await decider(options)('WebFetch', { url: 'https://anywhere.example/?q=1', prompt: 'p' })).toBe(true)
     })
 
     it('フックが通した呼び出しだけを onToolUse で知らせる（断ったものは知らせない）', async () => {
-      const calls: Call[] = []
       const used: string[] = []
-      await new ClaudeOnce({ run: answering(success(), calls) }).ask({
-        prompt: 'https://ok.example/',
-        model: 'sonnet',
-        tools: ['WebFetch'],
-        canvas: new McpServer({ name: 'canvcode', version: '0.0.0' }),
-        onToolUse: (name, input) => used.push(`${name} ${JSON.stringify(input)}`),
-      })
-      const { options } = calls[0]!
-      const signal = new AbortController().signal
+      const { options } = await asked({ userText: 'https://ok.example/', onToolUse: (name, input) => used.push(`${name} ${JSON.stringify(input)}`) })
       for (const [tool_name, tool_input] of [
+        ['mcp__canvcode__read_canvas', {}],
         ['WebFetch', { url: 'https://ok.example/' }],
         ['WebFetch', { url: 'https://evil.example/' }],
-        ['mcp__canvcode__read_canvas', {}],
         ['mcp__canvcode__edit_canvas', {}],
         ['Read', { file_path: '/etc/hosts' }],
       ] as const) {
-        await hookOf(options)({ hook_event_name: 'PreToolUse', tool_name, tool_input } as unknown as Parameters<HookCallback>[0], undefined, { signal })
+        await hookOf(options)({ hook_event_name: 'PreToolUse', tool_name, tool_input } as unknown as Parameters<HookCallback>[0], undefined, { signal: signal() })
       }
-      expect(used).toEqual(['WebFetch {"url":"https://ok.example/"}', 'mcp__canvcode__read_canvas {}'])
+      expect(used).toEqual(['mcp__canvcode__read_canvas {}', 'WebFetch {"url":"https://ok.example/"}'])
     })
   })
 
