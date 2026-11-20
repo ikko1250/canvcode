@@ -1105,9 +1105,10 @@ test('asks one question from the prompt box without adding it to the chat, shows
   await promptBox(page).fill('コンテキストとは？')
   await page.getByRole('button', { name: '送る' }).click()
 
-  // 会話の最後の答えを前の答えとして添えて頼む。送っても「質問」のまま
+  // 会話の最後の答えを前の答えとして添え、見ている Canvas（Claude がキャンバスを読むため）も送って頼む。送っても「質問」のまま
   await expect.poll(() => asked.length).toBe(1)
   expect(asked[0]).toMatchObject({ question: 'コンテキストとは？', previous: [{ question: 'question', answer: 'Answer from Claude' }], source: { kind: 'chat', threadId: 't1', label: 'コンテキストとは？' } })
+  expect(asked[0]!.canvasId).toBe(await page.evaluate(() => (window as any).canvcode.editor.canvasId as string))
   expect(asked[0]).not.toHaveProperty('candidates')
   await expect(mode.getByRole('radio', { name: '質問' })).toHaveAttribute('aria-checked', 'true')
   await expect(promptBox(page)).toHaveValue('')
@@ -1161,6 +1162,7 @@ test('a question asked with no conversation chosen becomes a new conversation an
   await page.getByRole('button', { name: '送る' }).click()
   await expect.poll(() => asked.length).toBe(1)
   expect(asked[0]).toMatchObject({ source: { kind: 'chat', label: '新しく聞く' } })
+  expect(asked[0]!.canvasId).toBe(await page.evaluate(() => (window as any).canvcode.editor.canvasId as string))
   expect((asked[0] as { source: object }).source).not.toHaveProperty('threadId')
   // サーバーが作った会話を選ぶ（質問だけの会話でも「読み込んでいます…」は出さない）
   await expect(page.locator('.claude-thread-name')).toHaveText('新しく聞く')

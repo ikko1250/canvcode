@@ -40,6 +40,14 @@ describe('requestAnswer', () => {
     expect(JSON.parse(init.body as string)).toEqual({ question: 'q', model: 'opus' })
   })
 
+  it('sends the canvas the user is viewing (canvasId) with the question', async () => {
+    const fetch = vi.fn(async () => ndjson([`${JSON.stringify({ type: 'answer', answer })}\n`]))
+    vi.stubGlobal('fetch', fetch)
+    await requestAnswer({ question: 'ここの要点は？', canvasId: 'canvas:abc', source: { kind: 'chat', label: 'ここの要点は？' } }, { model: 'sonnet' })
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ question: 'ここの要点は？', canvasId: 'canvas:abc', source: { kind: 'chat', label: 'ここの要点は？' }, model: 'sonnet' })
+  })
+
   it('passes the id of the running question from the first line, and throws the status of an error line', async () => {
     vi.stubGlobal('fetch', async () => ndjson([`{"type":"start","id":"q-1"}\n{"type":"error","status":499,"error":"頼むのをやめました"}\n`]))
     const started: string[] = []
