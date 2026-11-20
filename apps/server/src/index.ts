@@ -25,7 +25,7 @@ import { FileStore, type FileEvent } from './files.ts'
 import { handleImport } from './import/import.ts'
 import { LinkPreviewService } from './linkPreview.ts'
 import { MarkdownPdf } from './markdownPdf.ts'
-import { handleMcp, MCP_PATH } from './mcp.ts'
+import { createMcpServer, handleMcp, MCP_PATH } from './mcp.ts'
 import { Plotter } from './plot.ts'
 import { RecordStore } from './records.ts'
 import { REF_SWEEP_INTERVAL_MS, sweepRefs } from './refCleanup.ts'
@@ -56,7 +56,9 @@ import { ThumbnailStore } from './thumbnails.ts'
 // - キャンバスの AI：付箋で聞き、答えの本文（Markdown）と関連する付箋を返す。画面が答えを付箋に持たせ、付箋の横のパネルに出す
 //   （/api/claude/answer。claude/answer.ts）。同じ claude/once.ts を使う。モデルは画面が送ったもの（AI 付箋の欄か Claude のパネルで最後に選んだもの）か、
 //   既定で Sonnet（CANVCODE_ANSWER_MODEL で変える）。答えを作っている質問は、動いている質問の一覧（claude/questions.ts）に載せ、
-//   Claude のパネルの SSE ですべてのタブに流す（止める・付箋に書いたと知らせるのは /api/claude/questions/<id>/cancel・finish）
+//   Claude のパネルの SSE ですべてのタブに流す（止める・付箋に書いたと知らせるのは /api/claude/questions/<id>/cancel・finish）。
+//   会話の質問は、キャンバスとファイルを読める（読むだけの canvcode の MCP を質問ごとに作り、ワークスペースと PDF の文字の置き場所を Read・Glob・Grep で読ませる。
+//   CANVCODE_ANSWER_CANVAS=0 で切る。docs/question-canvas-tools-plan.md）
 // - アイテム（PDF・リンクカード・Markdown のカード）の APA の引用を作る（/api/claude/cite。claude/cite.ts。MAI-98）。同じ claude/once.ts を使い、
 //   Web で項目を確かめさせる。モデルは既定で Sonnet（CANVCODE_CITE_MODEL で変える）。CANVCODE_CLAUDE=0 なら、これも切る
 // - 表（CSV）からグラフを描く（/api/plot。plot.ts）。python3 と matplotlib で PNG にし、スタイルはワークスペースの style.py
@@ -161,7 +163,10 @@ const once = process.env.CANVCODE_CLAUDE === '0' ? null : new ClaudeOnce()
 const lookup = once ? new WordLookup({ once, ...(process.env.CANVCODE_LOOKUP_MODEL ? { model: process.env.CANVCODE_LOOKUP_MODEL } : {}) }) : null
 // APA の引用（claude/cite.ts）。同じ once を使い、同時に動かせる数の上限を語を調べるのと分け合う。既定は Sonnet
 // キャンバスの AI：付箋で聞き、付箋で答える（claude/answer.ts）。同じ once を使う。既定は Sonnet（画面がモデルを送らなければ。CANVCODE_ANSWER_MODEL で変える）
-// 付箋で聞く（キャンバスの AI）。添えたキャンバスの一部は、MCP の resolve_reference と同じ中身にして渡す（画像は渡さない）
+// 付箋で聞く（キャンバスの AI）。添えたキャンバスの一部は、MCP の resolve_reference と同じ中身にして渡す（画像は渡さない）。
+// キャンバスとファイルは、Claude が読むだけのツールで読む（CANVCODE_ANSWER_CANVAS=0 で切る）。読ませるのは、ワークスペースと
+// PDF から取り出した文字の置き場所（.canvcode/assets。ワークスペースの中でも、. で始まる名前の所は once.ts が断る）
+const answerCanvas = process.env.CANVCODE_ANSWER_CANVAS !== '0'
 const answer = once
   ? new AnswerWriter({
       once,
@@ -169,6 +174,17 @@ const answer = once
         const ref = records.getRef(refId)
         return ref ? resolveReference(ref, { records, files, dataDir: DATA_DIR }) : null
       },
+      ...(answerCanvas
+        ? {
+            canvasTools: () =>
+              createMcpServer({ files, records, dataDir: DATA_DIR, refImages, presence: () => sync.latestPresence(), renders, readOnly: true }),
+            readRoots: [WORKSPACE, join(DATA_DIR, 'assets')],
+            canvasTitle: (canvasId: string) => {
+              const canvas = records.get(canvasId)
+              return canvas && canvas.typeName === 'canvas' && !canvas.deletedAt ? (typeof canvas.title === 'string' ? canvas.title : '') : null
+            },
+          }
+        : {}),
       ...(process.env.CANVCODE_ANSWER_MODEL ? { model: process.env.CANVCODE_ANSWER_MODEL } : {}),
       ...(process.env.CANVCODE_ANSWER_WEB === '0' ? { web: false } : {}),
     })
