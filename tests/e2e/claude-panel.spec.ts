@@ -1100,6 +1100,18 @@ test('asks one question from the prompt box without adding it to the chat, shows
   // 「質問」にすると、入力欄の言い方が変わる
   const mode = page.getByRole('radiogroup', { name: '送り方' })
   await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  // キーでも切り替える：選んでいる方だけ Tab で止まり、→ で「質問」にしてフォーカスも移す（← で戻す）
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('tabindex', '0')
+  await expect(mode.getByRole('radio', { name: '質問' })).toHaveAttribute('tabindex', '-1')
+  await mode.getByRole('radio', { name: '会話' }).focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(mode.getByRole('radio', { name: '質問' })).toHaveAttribute('aria-checked', 'true')
+  await expect(mode.getByRole('radio', { name: '質問' })).toBeFocused()
+  await expect(mode.getByRole('radio', { name: '質問' })).toHaveAttribute('tabindex', '0')
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('tabindex', '-1')
+  await page.keyboard.press('ArrowLeft')
+  await expect(mode.getByRole('radio', { name: '会話' })).toHaveAttribute('aria-checked', 'true')
+  await expect(mode.getByRole('radio', { name: '会話' })).toBeFocused()
   await mode.getByRole('radio', { name: '質問' }).click()
   await expect(promptBox(page)).toHaveAttribute('placeholder', 'この 1 つだけ、会話に入れずに聞く…')
   await promptBox(page).fill('コンテキストとは？')

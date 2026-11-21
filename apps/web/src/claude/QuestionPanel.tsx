@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type Keyboa
 import { OWN_KEYS_ATTRIBUTE, aiNoteMeta, firstLine, questionText, type AiAnswer, type AiNoteMeta, type Editor } from '@canvcode/canvas'
 import type { NodeRecord } from '@canvcode/core'
 import { AnswerView, type RelatedNote } from './AnswerView.tsx'
+import { ChoiceSwitch, type Choice } from './ChoiceSwitch.tsx'
 import { PermissionList } from './ClaudePanel.tsx'
 import {
   noteTaskPermissions,
@@ -23,9 +24,10 @@ import { runningText } from './toolGroups.ts'
 import { useNodesVersion } from './useNodesVersion.ts'
 
 // 右のパネルの質問のタブ（docs/canvas-answer-panel-plan.md の 6）。付箋で聞いた質問を、どの Canvas からでも見る。
-// - ① 一覧：上に「すべてのキャンバス ▾」。動作中（サーバーが流す動いている質問。ほかのタブ・端末で頼んだものも。進み具合と止めるボタン）と、
-//   過去の回答（答えを持つ付箋。新しいものから。まだ見ていないものに青い点）。過去の回答はサーバーから読み（ほかの Canvas のものも）、
-//   開いている Canvas のものは Editor から読む（書いたばかり・消したばかりでも合うように）
+// - ① 一覧：上に「Canvas current｜all」の切り替え（docs/work-canvas-filter-plan.md。既定は all。current で、いま開いている Canvas で
+//   頼んだものだけにする。選んだものは覚えず、パネルを閉じると all に戻る）。動作中（サーバーが流す動いている質問。ほかのタブ・端末で
+//   頼んだものも。進み具合と止めるボタン）と、過去の回答（答えを持つ付箋。新しいものから。まだ見ていないものに青い点）。過去の回答は
+//   サーバーから読み（ほかの Canvas のものも）、開いている Canvas のものは Editor から読む（書いたばかり・消したばかりでも合うように）
 // - ② 答え：「← 一覧」、質問、Canvas と時刻、モデルの札、「↗ 付箋へ移動」、AnswerView（本文・関連する付箋・「続けて聞く」「会話で続ける」「Canvasに残す」）。
 //   答えを作っている間は、進み具合と考えている中身と「やめる」。開いたら、その答えを見たことにする
 // - ③ この場で続けて聞く：「続けて聞く」「Canvasに残す」は、元の付箋がいま開いている Canvas になければ、画面の真ん中に置く（App）
@@ -45,6 +47,13 @@ const RELATED_LABEL_LENGTH = 30
 const THREAD_TITLE_LENGTH = 20
 
 type Viewing = { kind: 'note'; noteId: string; canvasId: string } | { kind: 'chat'; id: string }
+
+// どの Canvas の作業を出すか（一覧の上の切り替え。ChoiceSwitch。ボタンの文字は英語なので、英語の声で読ませる）
+type Filter = 'all' | 'here'
+const FILTERS: readonly Choice<Filter>[] = [
+  { value: 'here', label: 'current', title: 'いま開いている Canvas で頼んだ作業だけ', lang: 'en' },
+  { value: 'all', label: 'all', title: 'どの Canvas で頼んだ作業も', lang: 'en' },
+]
 
 // 会話の質問を開く（会話の欄の、取り込んだ会話の質問のカードの ↗）。n が変わるたびに開く
 export interface QuestionOpenRequest {
@@ -86,7 +95,7 @@ export function QuestionPanel(props: {
   useSyncExternalStore(seen.subscribe, seen.getSnapshot)
   const nodesVersion = useNodesVersion(editor)
   const panelRef = useRef<HTMLElement>(null)
-  const [filter, setFilter] = useState<'all' | 'here'>('all')
+  const [filter, setFilter] = useState<Filter>('all')
   const [viewing, setViewing] = useState<Viewing | null>(null)
   const [past, setPast] = useState<readonly AnsweredItem[]>([])
   const [detail, setDetail] = useState<AnsweredNoteDetail | null>(null)
@@ -370,21 +379,24 @@ export function QuestionPanel(props: {
         </div>
       ) : (
         <div className="question-list">
-          <span className="question-filter">
-            <select value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'here')} aria-label="どの Canvas の作業を出すか">
-              <option value="all">すべてのキャンバス</option>
-              <option value="here">いま開いているキャンバス</option>
-            </select>
-            <span className="question-filter-caret" aria-hidden="true">
-              ▾
+          <div className="question-filter">
+            <span className="question-filter-label" aria-hidden="true">
+              Canvas
             </span>
-          </span>
-          {running.length === 0 && tasks.length === 0 && shown.length === 0 && (
-            <p className="claude-hint">
-              付箋の作業は、まだありません。AI 付箋に頼みたいことを書いて送ると、Claude が作業し、ここに並びます（どの Canvas
-              で頼んだものも）。報告は付箋に残ります。質問は、会話のタブの入力欄の「質問」で聞けます（答えは会話の欄に出ます）。
-            </p>
-          )}
+            <ChoiceSwitch label="どの Canvas の作業を出すか" choices={FILTERS} value={filter} onChange={setFilter} />
+          </div>
+          {running.length === 0 && tasks.length === 0 && shown.length === 0 &&
+            (filter === 'here' ? (
+              <p className="claude-hint">
+                いま開いている Canvas で頼んだ作業は、まだありません。AI 付箋に頼みたいことを書いて送ると、Claude が作業し、ここに並びます。ほかの
+                Canvas で頼んだものは、上の「all」で見られます。
+              </p>
+            ) : (
+              <p className="claude-hint">
+                付箋の作業は、まだありません。AI 付箋に頼みたいことを書いて送ると、Claude が作業し、ここに並びます（どの Canvas
+                で頼んだものも）。報告は付箋に残ります。質問は、会話のタブの入力欄の「質問」で聞けます（答えは会話の欄に出ます）。
+              </p>
+            ))}
           {asking.length > 0 && <PermissionList permissions={asking} answering={answeringPermissions} onAnswer={(permission, decision) => answerPermission(permission as PendingPermission & { threadId: string }, decision)} />}
           {running.length + tasks.length > 0 && (
             <section className="question-section">
