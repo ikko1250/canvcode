@@ -8,7 +8,7 @@ import type { FileStore } from '../files.ts'
 import type { RecordStore } from '../records.ts'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
-import type { ClaudeOnce } from './once.ts'
+import { withoutFileMentions, type ClaudeOnce } from './once.ts'
 
 // アイテム（PDF・リンクカード・Markdown のカード）の APA（7 版）の引用を作る（右クリックの「APA の引用を置く」。MAI-98）。
 // - 材料はサーバーが集める。PDF：取り出した 1・2 ページ目の文字（pages.json）とファイル名。リンクカード：URL と題・説明・サイト名（画面が送る）。
@@ -383,7 +383,8 @@ export function citePrompt(material: CiteMaterial): string {
     else if (material.kind === 'pdf') lines.push('（この PDF からは文字を取り出せませんでした。ファイル名と URL から探してください）')
   }
   lines.push('</material>')
-  return lines.join('\n')
+  // 資料の中の語の頭の @ は ＠ にする（Claude Code にファイルの言及（@パス）として読ませない。once.ts の withoutFileMentions）
+  return withoutFileMentions(lines.join('\n'))
 }
 
 // ---- 答えを確かめて、引用の文にする ----

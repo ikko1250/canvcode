@@ -15,6 +15,8 @@ export interface AnswerRequest {
   refs?: { label: string; refId: string }[]
   // 関連する付箋の候補（質問の付箋の近くの付箋）
   candidates?: { id: string; text: string }[]
+  // 質問した人が見ている Canvas（サーバーが id と題を Claude に知らせ、Claude はキャンバスを読むツールでそこを読む）
+  canvasId?: string
   // どの付箋の質問か・どの会話の質問か（label は質問の 1 行目。会話の質問は、会話を選んでいなければ threadId がない）
   source?: { noteId: string; canvasId: string; label: string } | { kind: 'chat'; threadId?: string; label: string }
 }
@@ -28,7 +30,7 @@ export interface AnswerResult {
   model: string
 }
 
-// 進み具合：質問を読んでいる・Web を調べている・答えを書いている
+// 進み具合：質問（とキャンバス・ファイル）を読んでいる・Web を調べている・答えを書いている
 export type AnswerStep = 'read' | 'search' | 'write'
 
 // 答えられなかった。status はサーバーの状態コード（499 は、やめた。ほかのタブで止めたときも）

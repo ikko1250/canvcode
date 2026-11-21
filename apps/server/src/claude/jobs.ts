@@ -623,7 +623,9 @@ export class ClaudeJobs {
       ...(this.deps.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.deps.maxBudgetUsd } : {}),
       // env は Claude Code の環境を丸ごと置き換えるので、process.env を広げたうえで足す。
       // CLAUDE_CODE_TMPDIR は、バックグラウンドの作業の出力の置き場をサーバーが知るため（permissions.ts の sessionReadRoots）
-      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_TMPDIR: this.guardSettings.tmpRoot },
+      // CLAUDE_CODE_DISABLE_FILE_MENTIONS は、頼む文の中の @パス を読ませないため（ファイルのツールの見張り（permissions.ts）を通らずに読んで添える。
+      // 取り込んだ答えや、添えた所の中身に書ける）
+      env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_TMPDIR: this.guardSettings.tmpRoot, CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' },
     }
   }
 

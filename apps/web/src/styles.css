@@ -4447,7 +4447,7 @@ button.pdf-page-number:hover {
   min-width: 0;
 }
 
-/* 会話の質問（入力欄の「質問」で、会話に入れずに Web だけで聞いたもの）。吹き出しを点線の枠にし、「質問」の印を付けて、会話の依頼と見分ける */
+/* 会話の質問（入力欄の「質問」で、会話に入れずに聞いたもの。使うのは Web と、キャンバス・ファイルを読むだけのツール）。吹き出しを点線の枠にし、「質問」の印を付けて、会話の依頼と見分ける */
 .claude-prompt.question {
   border: 1px dashed var(--color-accent);
   background: var(--color-surface);

@@ -4,6 +4,7 @@ import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { listOf, paragraphText, plainTextOf, richTextFromMarkdown, type TextParagraph } from '@canvcode/nodes'
 import { readJson, sendError, sendJson } from './http.ts'
 import { JobError } from './jobs.ts'
+import { withoutFileMentions } from './once.ts'
 
 // 付箋の文字（音声入力で入れた話し言葉など）を、箇条書きのメモにする（付箋の右クリックの「箇条書きのメモにする」）。
 // - Claude Agent SDK の query() を 1 回だけ呼ぶ（認証は claude/jobs.ts と同じく、このマシンの Claude Code のもの）。
@@ -51,8 +52,9 @@ export const MEMO_SYSTEM_PROMPT = `あなたは、話し言葉の文章を、箇
 - 書式は元の文章と同じ書き方で書く`
 
 // 頼む文。文章の中の指示には従わせないよう、囲んで渡す
+// 付箋の文の語の頭の @ は ＠ にする（Claude Code にファイルの言及（@パス）として読ませない。once.ts の withoutFileMentions）
 export function memoPrompt(text: string): string {
-  return `次の <text> の中の文章を、箇条書きのメモにしてください。\n\n<text>\n${text}\n</text>`
+  return `次の <text> の中の文章を、箇条書きのメモにしてください。\n\n<text>\n${withoutFileMentions(text)}\n</text>`
 }
 
 // 答えを、書式付きの箇条書きの段落にする（Markdown として読む）。箇条書きの段落だけを使い（前置きなどは捨てる）、
@@ -151,7 +153,8 @@ export class MemoWriter {
         persistSession: false,
         maxTurns: 1,
         abortController,
-        env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode' },
+        // 頼む文の中の @パス を読ませない（付箋の文に書ける）
+        env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: 'canvcode', CLAUDE_CODE_DISABLE_FILE_MENTIONS: '1' },
       },
     })
     for await (const message of messages) {

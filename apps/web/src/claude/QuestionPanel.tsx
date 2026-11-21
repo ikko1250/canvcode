@@ -506,7 +506,8 @@ function StepsLabel(props: { question: RunningQuestion }) {
     <>
       {steps.map((step, i) => {
         const at = order.indexOf(step)
-        const state = at < current ? 'done' : at === current ? 'current' : 'todo'
+        // 一度調べたら、読むに戻っても、調べるは済みに見せる
+        const state = at === current ? 'current' : at < current || (step === 'search' && question.searched) ? 'done' : 'todo'
         return (
           <span key={step}>
             {i > 0 && ' → '}
