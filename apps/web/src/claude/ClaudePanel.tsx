@@ -45,8 +45,9 @@ import { answerOfEvents, toolLabel } from './toolGroups.ts'
 //   付箋の札の ↗ で戻ってきたら（reveal）、その会話を選び、そのジョブまでスクロールして、少しのあいだ色を付ける
 // - 付箋の質問を取り込む（答えの「会話で続ける」。importRequest）：入力欄の上に「付箋の質問を取り込みます「質問」 ×」の札を置く。
 //   取り込むだけでは Claude を動かさず、次に送る文と一緒に渡す（imports）。取り込めるのは 1 度に 1 つ。会話の欄には、そのジョブの頼んだ文の上にカードを出す
-// - 入力欄の「会話｜質問」（キャンバスでだけ）：「質問」で送ると、その 1 つだけ会話に入れずに聞く（POST /api/claude/answer。Web だけを使い、
-//   前の答えとして、会話の最後の終わったジョブを添える）。送っても「質問」のまま（docs/ai-note-tasks-plan.md の E）。会話の欄に、聞いた時刻の位置で
+// - 入力欄の「会話｜質問」（キャンバスでだけ）：「質問」で送ると、その 1 つだけ会話に入れずに聞く（POST /api/claude/answer。Web と、
+//   キャンバス・ファイルを読むだけのツールを使う。見ている Canvas と、前の答えとして会話の最後の終わったジョブを添える。
+//   docs/question-canvas-tools-plan.md）。送っても「質問」のまま（docs/ai-note-tasks-plan.md の E）。会話の欄に、聞いた時刻の位置で
 //   質問と答えをそのまま出す（答えを作っている間は進み具合と考えている中身と「やめる」）。会話を選ばずに聞いたら、サーバーが新しい会話を作り、それを選ぶ
 
 // 添える場所。refId が null の間は保存している
@@ -349,7 +350,8 @@ export function ClaudePanel(props: Props) {
   }
 
   // 入力欄の「質問」：その 1 つだけ、会話に入れずに聞く。前の答えとして、会話の最後の終わったジョブ（頼んだ文と答え）を添え、
-  // 添えた所は refs にする。答えはサーバーが claude.db に書き、会話の欄に出る。会話を選んでいなければ、サーバーが作った新しい会話を選ぶ。
+  // 添えた所は refs にする。見ている Canvas も送る（Claude がキャンバスを読むときに使う。「質問」はキャンバスでだけ出るので、全画面のエディタからは送らない）。
+  // 答えはサーバーが claude.db に書き、会話の欄に出る。会話を選んでいなければ、サーバーが作った新しい会話を選ぶ。
   // サーバーが受けたら（start）入力欄を空ける（「質問」のまま）。受ける前の誤りは、入力欄の下に出す
   const ask = () => {
     const text = prompt.trim()
@@ -360,6 +362,7 @@ export function ClaudePanel(props: Props) {
       question: text,
       ...(previous ? { previous: fitTurns([previous]) } : {}),
       ...(attachment?.refId ? { refs: [{ label: attachment.label, refId: attachment.refId }] } : {}),
+      ...(canvasId ? { canvasId } : {}),
       source: { kind: 'chat', ...(thread ? { threadId: thread.threadId } : {}), label: firstLine(text) },
     }
     setSending(true)

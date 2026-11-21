@@ -171,8 +171,9 @@ export function expandHome(path: string): string | null {
 
 // 読むツールが触る場所。null は ~user/… のように外とみなすもの、undefined は省いた（cwd）。どれも ~ を置き換えたあと。
 // Glob は、path（省けばワークスペース）と pattern の固定の部分（ワイルドカードを含む最初の区切りより前）から出す
-// （path を省いて pattern を /etc/host* のような絶対パスや ~/… にすると、ワークスペースの外を探せたため）。Grep は path
-function readPath(name: string, input: Record<string, unknown>, workspace: string): string | null | undefined {
+// （path を省いて pattern を /etc/host* のような絶対パスや ~/… にすると、ワークスペースの外を探せたため）。Grep は path。
+// workspace は、Glob の相対パスを読む所（Claude Code の cwd）。会話の質問（claude/once.ts）は、cwd の一時フォルダを渡す
+export function readPath(name: string, input: Record<string, unknown>, workspace: string): string | null | undefined {
   if (name !== 'Glob') {
     const path = toolPath(name, input)
     return path === undefined ? undefined : expandHome(path)
@@ -209,7 +210,8 @@ export function inside(dir: string, path: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
-function realish(path: string): string {
+// realpath。まだないファイルは、ある所までの親をたどってから、残りをつなぐ
+export function realish(path: string): string {
   let current = path
   const rest: string[] = []
   while (!existsSync(current)) {

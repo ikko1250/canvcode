@@ -10,6 +10,7 @@ import {
   richTextToMarkdown,
   textStyle,
   textType,
+  withoutRemoteImages,
   type NoteProps,
   type TextProps,
   type TextRunFormat,
@@ -200,7 +201,7 @@ export function previousTurnsOf(meta: AiNoteMeta | null): PreviousTurn[] {
 
 // 会話の答えの札（会話のタブの「付箋に切り出す」・会話の質問の「続けて聞く」）。title は会話の題、question と answer は頼んだ文と答え（Markdown）、
 // previous はその前の質問と答え（会話の質問に添えた前の答え）。名前は「会話「題」の答え」（会話がなければ「「質問」の答え」）、
-// 写しは FOLLOW_UP_TURNS 個・FOLLOW_UP_LENGTH 文字に収める
+// 写しは FOLLOW_UP_TURNS 個・FOLLOW_UP_LENGTH 文字に収める。答えの写しからは、外の画像を除く（写しの答え）
 export function chatContext(chat: {
   threadId?: string
   jobId?: string
@@ -217,8 +218,14 @@ export function chatContext(chat: {
     ...(chat.jobId ? { jobId: chat.jobId } : {}),
     ...(chat.questionId ? { questionId: chat.questionId } : {}),
     label: title ? `会話「${clip(title, CHAT_TITLE_LENGTH)}」の答え` : `「${firstLine(chat.question, CONTEXT_LABEL_LENGTH)}」の答え`,
-    turns: fitTurns([...(chat.previous ?? []), { question: chat.question, answer: chat.answer }]),
+    turns: fitTurns(copiedTurns([...(chat.previous ?? []), { question: chat.question, answer: chat.answer }])),
   }
+}
+
+// 答えの写し：AI が書いた答えから、外の画像を除く（画像の説明と URL の文字にする。withoutRemoteImages）。
+// 写しは付箋に添えて Claude に渡し、また描くこともあるので、写す所で外す（docs/question-canvas-tools-plan.md の「レビューで見つかったこと」の B）
+function copiedTurns(turns: readonly PreviousTurn[]): PreviousTurn[] {
+  return turns.map((turn) => ({ question: turn.question, answer: withoutRemoteImages(turn.answer) }))
 }
 
 // 「続けて聞く」で、続きの付箋に添える札。元の付箋（noteId。canvasId はその Canvas）の前の答えの札の写しに、元の付箋の質問と答えを足す。
@@ -226,7 +233,7 @@ export function chatContext(chat: {
 export function followUpContext(noteId: string, canvasId: string, meta: AiNoteMeta | null): Extract<AiContext, { kind: 'answer' }> | null {
   const answer = meta?.answer
   if (!answer) return null
-  const turns = fitTurns([...previousTurnsOf(meta), { question: answer.question, answer: answer.body }])
+  const turns = fitTurns(copiedTurns([...previousTurnsOf(meta), { question: answer.question, answer: answer.body }]))
   return { kind: 'answer', noteId, canvasId, label: firstLine(answer.question, CONTEXT_LABEL_LENGTH), turns }
 }
 
@@ -278,12 +285,13 @@ export function placeFollowUpAt(editor: Editor, tx: Transaction<WorkspaceRecord>
   return draft.id
 }
 
-// 「Canvasに残す」：答えの本文（Markdown）を書式付きのテキストにして置く。1 回の Undo で消える。置いたテキストの id（置けなければ null）。
+// 「Canvasに残す」：答えの本文（Markdown）を書式付きのテキストにして置く。外の画像は、説明と URL の文字にする（withoutRemoteImages）。
+// 1 回の Undo で消える。置いたテキストの id（置けなければ null）。
 // at が付箋なら、その右（重なれば、さらに右の空いている所）に置き、付箋から矢印を引く。点なら、そこを真ん中にして置く（矢印は引かない）
 export function placeAnswerText(editor: Editor, body: string, at: { noteId: string } | { center: Vec }, options: { label?: string } = {}): string | null {
   const draft = editor.makeNode('text', { x: 0, y: 0, parentId: editor.canvasId }) as NodeRecord<TextProps>
   const style = { ...draft.props, fontSize: ANSWER_TEXT_FONT_SIZE, w: ANSWER_TEXT_WIDTH, autoWidth: false }
-  const paragraphs = richTextFromMarkdown(body.replace(/\r\n?/g, '\n').trim(), { base: textBase(style) })
+  const paragraphs = richTextFromMarkdown(withoutRemoteImages(body.replace(/\r\n?/g, '\n').trim()), { base: textBase(style) })
   const text: NodeRecord<TextProps> = { ...draft, props: { ...style, paragraphs } }
   const size = textType.getBounds(text)
   const source = 'noteId' in at ? editor.index.get(at.noteId) : undefined

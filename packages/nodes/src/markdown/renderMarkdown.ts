@@ -20,6 +20,11 @@ export interface MarkdownRenderOptions {
   sourceLines?: boolean
   // この Markdown ファイルのワークスペースからのパス。あれば、相対パスの画像をサーバーの /api/workspace/ から読む
   documentPath?: string
+  // false なら、画像も含めて、何も読み込まない（AI の答え。docs/question-canvas-tools-plan.md の「レビューで見つかったこと」の B）。
+  // 画像は、説明の文字（alt）と、http(s) ならそのリンクにする（読み込むと、URL に入れた中身が外へ送られるため）。data: の画像だけは出す。
+  // 生の HTML の、外のものを読み込む要素と属性（src・srcset・poster・style の url() など）も落とす（withoutRemoteResources）。
+  // 生の HTML の class も落とす（アプリのボタンなどの class を付けて、ボタンに見えるリンクを作らせない）
+  remoteImages?: boolean
 }
 
 export const SOURCE_LINE_ATTR = 'data-line'
@@ -332,12 +337,18 @@ function numberFootnotes(marked: Marked, tokens: Token[], kept: Token[]): Tokens
 
 function sanitizeHtml(
   html: string,
-  options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean; documentPath?: string } = {},
+  options: { allowKaTeXStyles?: boolean; allowSourceLines?: boolean; documentPath?: string; dropClasses?: boolean } = {},
 ): string {
   if (typeof window === 'undefined') return html
 
   const purifier = DOMPurify(window)
   const documentPath = options.documentPath
+  if (options.dropClasses) {
+    // 生の HTML の class を落とす（AI の答え。アプリのボタンなどの class を付けて、ボタンに見えるリンクを作らせない）
+    purifier.addHook('uponSanitizeAttribute', (_node, data) => {
+      if (data.attrName === 'class') data.keepAttr = false
+    })
+  }
   if (documentPath !== undefined) {
     // 生 HTML の <img src="相対パス"> を、Markdown ファイルの場所を基準にした URL にする
     purifier.addHook('uponSanitizeAttribute', (node, data) => {
@@ -395,9 +406,11 @@ export function renderMarkdown(
       html({ text }: Tokens.HTML | Tokens.Tag) {
         // Remove inline styles from user-authored HTML before the final pass
         // selectively preserves KaTeX's generated layout styles.
-        return sanitizeHtml(text, { documentPath })
+        // AI の答え（remoteImages: false）では、生の HTML の class も落とす（残る class は、marked・KaTeX・このファイルが付けるものだけ）
+        return sanitizeHtml(text, { documentPath, dropClasses: options.remoteImages === false })
       },
       image({ href, title, text }: Tokens.Image) {
+        if (options.remoteImages === false && !/^data:image\//i.test(href.trim())) return imageLink(href, text)
         const src = isSafeUrl(href, true)
           ? href
           : documentPath !== undefined
@@ -432,10 +445,53 @@ export function renderMarkdown(
   if (footnotes.length > 0) {
     html += marked.parser([{ type: 'footnote-list', raw: '', items: footnotes }])
   }
+  const safe = sanitizeHtml(html, { allowKaTeXStyles: true, allowSourceLines: options.sourceLines })
   return {
-    html: sanitizeHtml(html, { allowKaTeXStyles: true, allowSourceLines: options.sourceLines }),
+    html: options.remoteImages === false ? withoutRemoteResources(safe) : safe,
     truncated: cutIndex < tokens.length,
   }
+}
+
+// 読み込まない画像の代わり：説明の文字（alt。なければ「画像」）を、http(s) なら新しいタブで開くリンクにする
+function imageLink(href: string, alt: string): string {
+  const label = escapeHtml(alt.trim() ? `画像：${alt.trim()}` : '画像')
+  const url = href.trim()
+  return /^https?:\/\//i.test(url) ? `<a class="md-image-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${label}</a>` : `<span class="md-image-link">${label}</span>`
+}
+
+// 読み込みを起こす要素（img は imageLink にする）と属性。DOMPurify の許す一覧（allowedTags・allowedAttributes）の外のものも、念のため見る
+const REMOTE_ELEMENTS = new Set(['audio', 'embed', 'frame', 'frameset', 'iframe', 'image', 'link', 'object', 'picture', 'portal', 'source', 'track', 'use', 'video', 'script', 'style', 'svg', 'math', 'meta', 'base'])
+const REMOTE_ATTRIBUTES = ['src', 'srcset', 'poster', 'background', 'data', 'action', 'formaction', 'ping', 'lowsrc', 'dynsrc', 'longdesc', 'xlink:href']
+const REMOTE_STYLE = /url\s*\(|image-set|@import|expression\s*\(/i
+
+// 無害化した HTML から、外のものを読み込む所を除く（remoteImages: false）。<template> の中は読み込まないので、そこで組み替える
+export function withoutRemoteResources(html: string): string {
+  if (typeof document === 'undefined') return html.replace(/<(?:img|input|source|video|audio|iframe|embed|object|picture|track|link|image|use)\b[^>]*>/gi, '')
+  const template = document.createElement('template')
+  template.innerHTML = html
+  for (const element of [...template.content.querySelectorAll('*')]) {
+    const name = element.localName
+    if (name === 'img') {
+      const src = element.getAttribute('src') ?? ''
+      if (/^data:image\//i.test(src.trim())) {
+        element.removeAttribute('srcset')
+        continue
+      }
+      const holder = document.createElement('template')
+      holder.innerHTML = imageLink(src, element.getAttribute('alt') ?? '')
+      element.replaceWith(holder.content)
+      continue
+    }
+    if (REMOTE_ELEMENTS.has(name)) {
+      element.remove()
+      continue
+    }
+    for (const attribute of REMOTE_ATTRIBUTES) element.removeAttribute(attribute)
+    if (name !== 'a') element.removeAttribute('href')
+    const style = element.getAttribute('style')
+    if (style && REMOTE_STYLE.test(style)) element.removeAttribute('style')
+  }
+  return template.innerHTML
 }
 
 // ブロックを一つずつ HTML にして、先頭のタグに data-line（そのブロックが始まる行）を付ける。

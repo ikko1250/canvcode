@@ -64,6 +64,13 @@ describe('WordLookup', () => {
   })
 })
 
+describe('lookupPrompt', () => {
+  it('語と前後の文の語の頭の @ を ＠ にする（Claude Code にファイルの言及として読ませない）', () => {
+    expect(lookupPrompt('@x', '前の文 @/etc/hostname と a@example.com')).toBe(lookupPrompt('＠x', '前の文 ＠/etc/hostname と a@example.com'))
+    expect(lookupPrompt('@x', '前の文 @/etc/hostname')).not.toMatch(/(?<![^\s。、？！<>])@/)
+  })
+})
+
 describe('POST /api/claude/lookup', () => {
   async function start(lookup: WordLookup | null): Promise<string> {
     const server: Server = createServer((req, res) => {

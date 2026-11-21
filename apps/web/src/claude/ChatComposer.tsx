@@ -1,4 +1,5 @@
 import type { KeyboardEvent, RefObject, UIEvent } from 'react'
+import { ChoiceSwitch, type Choice } from './ChoiceSwitch.tsx'
 import type { ModelCatalog } from './claudeClient.ts'
 import { ModelPicker } from './ModelPicker.tsx'
 import type { ModelSetting } from './modelChoice.ts'
@@ -10,6 +11,12 @@ import type { ModelSetting } from './modelChoice.ts'
 //   モデルの札、➤（送る）
 
 export type ComposeMode = 'chat' | 'question'
+
+// 「会話｜質問」の切り替え（ChoiceSwitch）
+const MODES: readonly Choice<ComposeMode>[] = [
+  { value: 'chat', label: '会話', title: '会話の続きとして頼む（Canvas や文書も編集できる）' },
+  { value: 'question', label: '質問', title: 'この 1 つだけ、会話に入れずに聞く（答えは質問のタブにも出る）' },
+]
 
 export interface ComposerAttachment {
   label: string
@@ -86,43 +93,7 @@ export function ChatComposer(props: {
         <button type="button" className="claude-attach" onClick={onAttachSelection} aria-label="選んでいる所を添える" title="選んでいるノード（直前の範囲選択）を添える">
           📎
         </button>
-        {onMode && (
-          <div
-            className="claude-mode"
-            role="radiogroup"
-            aria-label="送り方"
-            onKeyDown={(e) => {
-              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
-              e.preventDefault()
-              const next = mode === 'chat' ? 'question' : 'chat'
-              onMode(next)
-              e.currentTarget.querySelector<HTMLElement>(`[data-mode="${next}"]`)?.focus()
-            }}
-          >
-            <button
-              type="button"
-              role="radio"
-              data-mode="chat"
-              aria-checked={mode === 'chat'}
-              tabIndex={mode === 'chat' ? 0 : -1}
-              onClick={() => onMode('chat')}
-              title="会話の続きとして頼む（Canvas や文書も編集できる）"
-            >
-              会話
-            </button>
-            <button
-              type="button"
-              role="radio"
-              data-mode="question"
-              aria-checked={mode === 'question'}
-              tabIndex={mode === 'question' ? 0 : -1}
-              onClick={() => onMode('question')}
-              title="この 1 つだけ、会話に入れずに聞く（答えは質問のタブにも出る）"
-            >
-              質問
-            </button>
-          </div>
-        )}
+        {onMode && <ChoiceSwitch label="送り方" choices={MODES} value={mode} onChange={onMode} />}
         <span className="claude-compose-spacer" />
         <ModelPicker catalog={catalog} setting={setting} onChange={onSetting} {...(closeRequest !== undefined ? { closeRequest } : {})} />
         <button type="button" className="claude-send" disabled={!canSend} onClick={onSend} aria-label="送る" title="送る（Ctrl+Enter）">

@@ -14,7 +14,7 @@ import { answerOfEvents, groupEvents, groupLabel, runningText, toolLabel, type T
 // - 答え（そのジョブの文章をつないだもの）にマウスを乗せると、下に「📌 付箋に切り出す」「コピー」と、右にモデルの札
 //   （かかった時間と費用はツールチップ）。タッチの端末では、初めから出す。失敗・止めたときは 1 行で出す
 // - 付箋から取り込んだ質問（imports）は、そのジョブの頼んだ文の上に「付箋の質問を取り込みました「質問」とその答え ↗ 付箋へ」のカード
-// - 会話の質問（入力欄の「質問」で、会話に入れずに Web だけで聞いたもの。docs/ai-note-tasks-plan.md の E）は、聞いた時刻の位置に、
+// - 会話の質問（入力欄の「質問」で、会話に入れずに聞いたもの。docs/ai-note-tasks-plan.md の E）は、聞いた時刻の位置に、
 //   「質問」の印を付けた吹き出しと、答え（Markdown）をそのまま出す。答えを作っている間は、進み具合と考えている中身と「やめる」。
 //   答えには「📌 付箋に切り出す」「コピー」とモデルの札。答えられなかった・やめたときは 1 行
 
@@ -76,7 +76,7 @@ export function ChatLog(props: ChatLogProps) {
   )
 }
 
-// 会話の質問（会話に入れずに、Web だけで聞いたもの）：「質問」の印の吹き出しと、答え
+// 会話の質問（会話に入れずに聞いたもの。Web と、キャンバス・ファイルを読むだけのツールを使う）：「質問」の印の吹き出しと、答え
 function QuestionView(props: {
   question: ChatQuestion
   progress: RunningQuestion | null
@@ -88,7 +88,7 @@ function QuestionView(props: {
   return (
     <div className={`claude-job claude-question ${question.status}`} data-question-id={question.id}>
       <div className="claude-prompt question">
-        <div className="claude-prompt-tag" title="会話には入れずに、Web だけを使って聞いた質問">質問</div>
+        <div className="claude-prompt-tag" title="会話には入れずに聞いた質問（Web と、キャンバス・ファイルを読むだけのツールを使う）">質問</div>
         <div className="claude-prompt-text">{question.question}</div>
       </div>
       {question.status === 'running' ? (
@@ -136,7 +136,7 @@ function QuestionActions(props: { question: ChatQuestion; answer: string; catalo
       <button type="button" className="claude-answer-copy" onClick={() => void copyText(answer).then((ok) => setCopied(ok ? 'done' : 'failed'))} title="答えを Markdown のままコピーする">
         {copied === 'done' ? 'コピーしました' : copied === 'failed' ? 'コピーできませんでした' : 'コピー'}
       </button>
-      <span className="claude-answer-model" title="会話には入れずに、Web だけを使って答えた">
+      <span className="claude-answer-model" title="会話には入れずに答えた（Web と、キャンバス・ファイルを読むだけのツールを使う）">
         {settingLabel(catalog, { ...(question.model ? { model: question.model } : {}), ...(question.effort ? { effort: question.effort as Effort } : {}) })}
       </span>
     </div>
@@ -224,8 +224,9 @@ function JobView(props: {
   )
 }
 
+// Claude の答えの文（Markdown）。画像などの外のものは読み込まない（説明の文字とリンクにする。開くだけで、URL に入れた中身が外へ送られるため）
 function MarkdownText(props: { text: string }) {
-  const html = useMemo(() => renderMarkdownToSafeHtml(props.text), [props.text])
+  const html = useMemo(() => renderMarkdownToSafeHtml(props.text, { remoteImages: false }), [props.text])
   return <div className="claude-text" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
