@@ -1069,3 +1069,96 @@ test('ほかのタブ・Canvas の作業も並ぶ。動作中は今している�
   })
   expect(placed).toEqual({ kind: 'answer', noteId: 'node:far2', canvasId: 'canvas:other', label: 'Tkrzw-Dict の使い方は？', turns: [{ question: 'Tkrzw-Dict の使い方は？', answer: '辞書を引く。' }] })
 })
+
+test('作業のタブの「Canvas current｜all」で、いま開いている Canvas で頼んだ作業だけに絞る。既定は all で、←→ でも切り替える（docs/work-canvas-filter-plan.md）', async ({ page }) => {
+  // ほかの Canvas の動作中の作業・許可の問い合わせ・過去の作業
+  const running = taskJob('node:far1', 'canvas:other', { prompt: 'この関数を図にして', createdAt: Date.now() - 125_000 })
+  const permission = { id: 'p1', jobId: THREAD, name: 'Bash', detail: 'npm run build', createdAt: Date.now(), expiresAt: Date.now() + 600_000 }
+  const past = { noteId: 'node:far2', canvasId: 'canvas:other', canvasTitle: '研究ノート', question: 'Tkrzw-Dict の使い方は？', model: 'claude-opus-5-5', answeredAt: Date.now() - 3_600_000 }
+  const events = eventsChannel()
+  const noteId = await openApp(page, accepting([]), events.handler)
+  const canvasId = await canvasIdOf(page)
+  events.send({ type: 'snapshot', threads: [taskThread('node:far1', 'canvas:other', { permissions: [permission] })], running: [running], questions: [] })
+  // 過去の作業を読んだときの問い合わせ（?canvasId= を付けたら、その Canvas のものだけを返す。ここでは、ほかの Canvas のものを返さない）
+  const queries: string[] = []
+  await page.route('**/api/claude/questions*', (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname !== '/api/claude/questions') return route.fallback()
+    queries.push(url.search)
+    return route.fulfill({ json: { questions: url.searchParams.has('canvasId') ? [] : [past] } })
+  })
+  // いまの Canvas の報告
+  await giveReport(page, noteId, { ...REPORT, answeredAt: Date.now() - 60_000 })
+
+  await page.locator('.claude-toggle').click()
+  const panel = page.locator('.question-panel')
+  const filter = panel.getByRole('radiogroup', { name: 'どの Canvas の作業を出すか' })
+  const current = filter.getByRole('radio', { name: 'current' })
+  const all = filter.getByRole('radio', { name: 'all' })
+  const here = panel.locator('.question-row', { hasText: `「${QUESTION}」` })
+  const others = [panel.locator('.question-row.running', { hasText: '「この関数を図にして」' }), panel.locator('.claude-permission'), panel.locator('.question-row', { hasText: '「Tkrzw-Dict の使い方は？」' })]
+  // 前に弱い文字の「Canvas」、ボタンは current → all。既定は all（選んでいる方だけ Tab で止まる）
+  await expect(panel.locator('.question-filter-label')).toHaveText('Canvas')
+  await expect(panel.locator('.question-filter-label')).toHaveAttribute('aria-hidden', 'true')
+  await expect(filter.getByRole('radio')).toHaveText(['current', 'all'])
+  await expect(all).toHaveAttribute('aria-checked', 'true')
+  await expect(current).toHaveAttribute('aria-checked', 'false')
+  await expect(all).toHaveAttribute('tabindex', '0')
+  await expect(current).toHaveAttribute('tabindex', '-1')
+  await expect(current).toHaveAttribute('title', 'いま開いている Canvas で頼んだ作業だけ')
+  await expect(all).toHaveAttribute('title', 'どの Canvas で頼んだ作業も')
+  for (const other of others) await expect(other).toBeVisible()
+  await expect(here).toBeVisible()
+  await panel.screenshot({ path: test.info().outputPath('filter-all.png') })
+  // 選んでいるボタンは太字になるが、切り替えてもボタンの位置と幅は変わらない（太字の幅を前もって取っておく）
+  const boxesOf = () => Promise.all([current, all].map(async (e) => (await e.boundingBox())!))
+  const before = await boxesOf()
+
+  // current：ほかの Canvas の 3 つが消え、いまの Canvas の報告は残る。過去の作業は ?canvasId= を付けて読み直す
+  await current.click()
+  await expect(current).toHaveAttribute('aria-checked', 'true')
+  await expect(all).toHaveAttribute('aria-checked', 'false')
+  for (const [i, box] of (await boxesOf()).entries()) {
+    expect(box.x).toBeCloseTo(before[i]!.x, 0)
+    expect(box.width).toBeCloseTo(before[i]!.width, 0)
+  }
+  await expect(current).toHaveAttribute('tabindex', '0')
+  await expect(all).toHaveAttribute('tabindex', '-1')
+  for (const other of others) await expect(other).toHaveCount(0)
+  await expect(here).toBeVisible()
+  await expect.poll(() => queries).toContain(`?canvasId=${encodeURIComponent(canvasId)}`)
+  await panel.screenshot({ path: test.info().outputPath('filter-current.png') })
+
+  // ←→ で切り替え、フォーカスも移す
+  await expect(current).toBeFocused()
+  await page.keyboard.press('ArrowRight')
+  await expect(all).toHaveAttribute('aria-checked', 'true')
+  await expect(all).toBeFocused()
+  for (const other of others) await expect(other).toBeVisible()
+  await page.keyboard.press('ArrowLeft')
+  await expect(current).toHaveAttribute('aria-checked', 'true')
+  await expect(current).toBeFocused()
+  for (const other of others) await expect(other).toHaveCount(0)
+
+  // いまの Canvas に何もなければ、そう出す（ほかの Canvas のものは all で見られる）
+  await page.evaluate((id) => (window as any).canvcode.editor.deleteNodes([id]), noteId)
+  await expect(here).toHaveCount(0)
+  await expect(panel.locator('.claude-hint')).toContainText('いま開いている Canvas で頼んだ作業は、まだありません')
+
+  // all で戻る（過去の作業は、?canvasId= を付けずに読み直す）
+  await all.click()
+  await expect(all).toHaveAttribute('aria-checked', 'true')
+  for (const other of others) await expect(other).toBeVisible()
+  await expect(panel.locator('.claude-hint')).toHaveCount(0)
+  await expect.poll(() => queries.at(-1)).toBe('')
+
+  // 狭い画面（パネルが画面いっぱい）でも、「Canvas」と 2 つのボタンが 1 行に並び、一覧の幅に収まる
+  await page.setViewportSize({ width: 320, height: 640 })
+  const boxes = await Promise.all([panel.locator('.question-filter-label'), current, all].map(async (e) => (await e.boundingBox())!))
+  const list = (await panel.locator('.question-list').boundingBox())!
+  const middles = boxes.map((box) => box.y + box.height / 2)
+  expect(Math.max(...middles) - Math.min(...middles)).toBeLessThan(1)
+  expect(boxes[0]!.x + boxes[0]!.width).toBeLessThan(boxes[1]!.x)
+  expect(boxes[1]!.x + boxes[1]!.width).toBeLessThanOrEqual(boxes[2]!.x)
+  expect(boxes[2]!.x + boxes[2]!.width).toBeLessThanOrEqual(list.x + list.width - 12)
+})
