@@ -47,9 +47,11 @@ export function ChatComposer(props: {
   onClearImport?(): void
   onSetting(setting: ModelSetting): void
   onSend(): void
+  // 増えたら、開いているモデルを選ぶ欄を閉じる（パネルを閉じたとき）
+  closeRequest?: number
 }) {
   const { inputRef, prompt, placeholder, attachment, importLabel, importFromChat = false, mode, onMode, catalog, setting, canSend, error } = props
-  const { onPrompt, onKeyDown, onScroll, onAttachSelection, onClearAttachment, onClearImport, onSetting, onSend } = props
+  const { onPrompt, onKeyDown, onScroll, onAttachSelection, onClearAttachment, onClearImport, onSetting, onSend, closeRequest } = props
   return (
     <div className={`claude-compose${mode === 'question' ? ' question' : ''}`}>
       {(attachment || importLabel) && (
@@ -93,7 +95,7 @@ export function ChatComposer(props: {
         </button>
         {onMode && <ChoiceSwitch label="送り方" choices={MODES} value={mode} onChange={onMode} />}
         <span className="claude-compose-spacer" />
-        <ModelPicker catalog={catalog} setting={setting} onChange={onSetting} />
+        <ModelPicker catalog={catalog} setting={setting} onChange={onSetting} {...(closeRequest !== undefined ? { closeRequest } : {})} />
         <button type="button" className="claude-send" disabled={!canSend} onClick={onSend} aria-label="送る" title="送る（Ctrl+Enter）">
           ➤
         </button>

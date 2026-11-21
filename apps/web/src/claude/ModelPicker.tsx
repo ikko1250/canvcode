@@ -19,9 +19,15 @@ import {
 //   段の点を押すか、つまみを引いて選ぶ（キーは ←→・Home・End）。左端の名前と、選んでいるものの名前（太字）を添える
 // - 「Model ›」を押すと、全部のバージョンの一覧に替わる（古いバージョンと「既定」はここで選ぶ）。選ぶか「‹ Model」で戻る
 // 選んだ値は次に送るときから使う。欄の外を押すか Esc で閉じる（一覧なら Esc でまずスライダーに戻る。Esc はパネルを閉じない）。
-// placement が down なら、欄は下に開く（AI モードの付箋の下の欄）
-export function ModelPicker(props: { catalog: ModelCatalog | undefined; setting: ModelSetting; onChange(setting: ModelSetting): void; placement?: 'up' | 'down' }) {
-  const { catalog, setting, onChange, placement = 'up' } = props
+// placement が down なら、欄は下に開く（AI モードの付箋の下の欄）。closeRequest が増えたら、欄を閉じる（会話のパネルを閉じたとき）
+export function ModelPicker(props: {
+  catalog: ModelCatalog | undefined
+  setting: ModelSetting
+  onChange(setting: ModelSetting): void
+  placement?: 'up' | 'down'
+  closeRequest?: number
+}) {
+  const { catalog, setting, onChange, placement = 'up', closeRequest } = props
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<'sliders' | 'list'>('sliders')
   const rootRef = useRef<HTMLDivElement>(null)
@@ -34,6 +40,11 @@ export function ModelPicker(props: { catalog: ModelCatalog | undefined; setting:
   const close = () => {
     setOpen(false)
     setView('sliders')
+  }
+  const [seenCloseRequest, setSeenCloseRequest] = useState(closeRequest)
+  if (closeRequest !== seenCloseRequest) {
+    setSeenCloseRequest(closeRequest)
+    close()
   }
 
   useEffect(() => {
